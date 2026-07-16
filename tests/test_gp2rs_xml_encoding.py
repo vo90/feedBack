@@ -13,8 +13,8 @@ functional test would pass on the old code too. These assertions instead pin
 the locale-independent contract directly.
 """
 
+import ast
 import inspect
-import re
 import xml.etree.ElementTree as ET
 
 import gp2rs
@@ -24,30 +24,46 @@ import gp2rs_gpx
 def test_arrangement_xml_writes_specify_utf8():
     # Every write of the arrangement XML string must pass encoding="utf-8"
     # so non-ASCII metadata survives regardless of the host locale.
+    writes = []
     for mod in (gp2rs, gp2rs_gpx):
-        src = inspect.getsource(mod)
-        bare = re.findall(r"\.write_text\(\s*xml_str\s*\)", src)
-        assert not bare, (
-            f"{mod.__name__}: XML write must pass encoding=\"utf-8\" — a bare "
-            f"write_text() uses the platform default (cp1252 on Windows) and "
-            f"mangles non-ASCII metadata into invalid UTF-8"
-        )
-        assert 'write_text(xml_str, encoding="utf-8")' in src, (
-            f"{mod.__name__}: expected a UTF-8-pinned arrangement XML write"
-        )
+        tree = ast.parse(inspect.getsource(mod))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "write_text"
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "xml_str"
+            ):
+                continue
+
+            encoding = next(
+                (kw.value for kw in node.keywords if kw.arg == "encoding"), None
+            )
+            assert (
+                isinstance(encoding, ast.Constant)
+                and encoding.value.lower().replace("_", "-") == "utf-8"
+            ), (
+                f"{mod.__name__}:{node.lineno}: arrangement XML write must pass "
+                'encoding="utf-8"; the platform default corrupts non-ASCII '
+                "metadata on Windows"
+            )
+            writes.append((mod.__name__, node.lineno))
+
+    # One writer in gp2rs and two in gp2rs_gpx (vocal and instrument paths).
+    # Pin the count so a newly added output path cannot silently evade this test.
+    assert len(writes) == 3
 
 
-def test_utf8_write_round_trips_non_ascii_album():
+def test_utf8_write_round_trips_non_ascii_album(tmp_path):
     # The behavioural end of the contract: a © album name written as UTF-8
     # parses cleanly and reads back intact (the cp1252 write does not).
-    from pathlib import Path
-    import tempfile
-
     xml_str = (
         '<?xml version="1.0"?>\n<song>\n'
         "  <albumName>Chrysalis©1982</albumName>\n</song>\n"
     )
-    path = Path(tempfile.mkdtemp()) / "arr.xml"
+    path = tmp_path / "arr.xml"
     path.write_text(xml_str, encoding="utf-8")
     root = ET.parse(path).getroot()
     assert root.findtext("albumName") == "Chrysalis©1982"
