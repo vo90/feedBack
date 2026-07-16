@@ -212,6 +212,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine (`app.js`, `highway.js`, `playSong`, `showScreen`, the capability registry).
 
 ### Fixed
+- **Guitar Pro import no longer fails on non-ASCII song metadata (Windows).**
+  The GP→arrangement-XML writers wrote their output with `Path.write_text()`
+  and no explicit encoding, so on Windows (cp1252 default) a metadata
+  character like the © in an album name ("Chrysalis©1982") was written as a
+  lone `0xA9` byte — invalid UTF-8 — and import died with
+  `not well-formed (invalid token): line N, column 22`. All three arrangement
+  XML writes now pin `encoding="utf-8"`.
 - **Career passports review polish** — the passport tabs and book overlay carry
   proper ARIA semantics (`aria-selected`/`aria-controls`/`tabpanel`;
   `role="dialog"` + `aria-modal` with focus moved to the close button on open
