@@ -12392,6 +12392,12 @@
                             }
                         }
                     }
+                    // Compact repeat frames normally omit their gem bodies. Keep
+                    // them when a bend/vibrato/tremolo ribbon is present, though;
+                    // sustain ribbons intentionally render outside the skipBody
+                    // gate and would otherwise approach with no visible note head.
+                    const suppressRepeatGems = repeatChordMaySuppressGems(
+                        isRepeat, chordLinksSlide, chordNotes);
                     if (!deferChordGems || _deferFallback || suppressSynthChord) {
                         for (const cn of chordNotes) {
                             // Suppress non-first gems while an authored arpeggio frame
@@ -12435,7 +12441,7 @@
                                 now,
                                 cn.f === 0 ? chordCX : undefined,
                                 skipLabel,
-                                (isRepeat && !chordLinksSlide) || suppressSynthChord,
+                                suppressRepeatGems || suppressSynthChord,
                                 chordTailHoldS,
                                 cn.f === 0 ? laneWForOpenStrings : undefined,
                                 true,
@@ -14061,6 +14067,20 @@
 
         function noteHasVibrato(n) {
             return !!(n && (n.vb || n.vibrato));
+        }
+
+        function noteHasVisibleMotionSustain(n) {
+            return !!(n && Number(n.sus) > 0 && (
+                Number(n.bn) > 0
+                || (Array.isArray(n.bnv) && n.bnv.length > 0)
+                || noteHasVibrato(n)
+                || n.tr
+            ));
+        }
+
+        function repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes) {
+            if (!isRepeat || chordLinksSlide) return false;
+            return !chordNotes.some(noteHasVisibleMotionSustain);
         }
 
         function bendVisualDirY(stringIdx) {
