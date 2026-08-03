@@ -1416,6 +1416,20 @@
         return { f0, f1 };
     }
 
+    // Chord gems occupy fret cells, while lane bounds use the surrounding
+    // fret-wire coordinates. Compare against the playable span so a note on
+    // the lower boundary wire is not mistaken for a note inside the lane.
+    function playedFretSpanCoversShape(anchorSpan, fMin, fMax) {
+        return !!anchorSpan && fMin >= anchorSpan.f0 && fMax <= anchorSpan.f1;
+    }
+
+    function chordFallbackLaneBounds(fMin, fMax) {
+        return laneBoundsFromAnchor({
+            fret: fMin,
+            width: Math.max(4, fMax - fMin + 1),
+        });
+    }
+
     function anchorPlayedFretSpanAt(anchorArr, t) {
         if (!anchorArr || !anchorArr.length) return null;
         return anchorPlayedFretInclusiveSpan(getChartAnchorAt(anchorArr, t));
@@ -12095,7 +12109,9 @@
                     const _chAnchorT = chDtEarly > 0 ? ch.t
                         : (maxSus > 0 && now < ch.t + maxSus) ? ch.t
                         : now;
-                    const chAncB = anchorLaneBoundsAt(anchors, _chAnchorT);
+                    const chAnc = getChartAnchorAt(anchors, _chAnchorT);
+                    const chAncB = laneBoundsFromAnchor(chAnc);
+                    const chAncPlayed = anchorPlayedFretInclusiveSpan(chAnc);
                     // Open-string X: chart <anchor> lane centre when present (not curX /
                     // fretted centroid), matching highway span.
                     let chordCX = curX;
@@ -12134,16 +12150,25 @@
                         // 2–4 with an anchor locked to frets 5–8), the framebox
                         // would clip the very gems it's supposed to contain, so
                         // fall back to chord-fret-based bounds instead.
-                        const anchorCoversChordFrets = chAncB && anyFretted
-                            ? (fMinCh >= chAncB.dMin && fMaxCh <= chAncB.dMax)
+                        const anchorCoversChordFrets = anyFretted
+                            ? playedFretSpanCoversShape(chAncPlayed, fMinCh, fMaxCh)
                             : true; // all-open chord: anchor centre is fine
                         if (chAncB && anchorCoversChordFrets) {
                             chordFrameXL = xFret(chAncB.dMin);
                             chordFrameXR = xFret(chAncB.dMax);
                             chordFrameAnchorMatched = true;
                         } else if (anyFretted) {
-                            chordFrameXL = xFret(fMinCh - 1);
-                            chordFrameXR = xFret(Math.max(fMaxCh, fMinCh + 2));
+                            // Recreate a normal four-fret anchor lane around the
+                            // chord. Using only three cells made this fallback
+                            // narrower than an authored width=4 lane and left its
+                            // frame misaligned with neighbouring highway segments.
+                            const fallbackB = chordFallbackLaneBounds(fMinCh, fMaxCh);
+                            chordFrameXL = xFret(fallbackB.dMin);
+                            chordFrameXR = xFret(fallbackB.dMax);
+                            // This fallback is wire-aligned just like a real anchor,
+                            // so keep the open-string slab on the exact same bounds.
+                            chordFrameAnchorMatched = true;
+                            chordCX = (chordFrameXL + chordFrameXR) * 0.5;
                         } else {
                             const wNut = openNoteLaneBoxW(ch.t);
                             chordFrameXL = chordCX - wNut * 0.5;
