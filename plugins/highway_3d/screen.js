@@ -1291,6 +1291,79 @@
     // key is always a safe JS integer for songs ≤ 214,748 s (well above any song).
     function _noteKey(t, s) { return ((t * 10000 + 0.5) | 0) * 10 + s; }
 
+    // Extends _noteKey with the fret while remaining a safe integer for any
+    // realistic chart. Used by chart-static cross-stream deduplication.
+    function _noteFretKey(t, s, f) { return _noteKey(t, s) * 64 + Number(f) + 1; }
+
+    // A coincident standalone note may carry technique/teaching information
+    // that is absent from its chord member. Only default wire fields are safe
+    // to discard; unknown future fields deliberately count as meaningful.
+    function _noteHasStandaloneVisualData(n) {
+        if (!n || typeof n !== 'object') return false;
+        for (const key of Object.keys(n)) {
+            if (key === 't' || key === 's' || key === 'f') continue;
+            const v = n[key];
+            if (v == null) continue;
+            switch (key) {
+                case 'sus': case 'bn': case 'bt':
+                    if (Number(v) === 0) continue;
+                    return true;
+                case 'sl': case 'slu': case 'rh': case 'pkd':
+                case 'fg': case 'ch': case 'sd':
+                    if (Number(v) < 0) continue;
+                    return true;
+                case 'ho': case 'po': case 'hm': case 'hp':
+                case 'pm': case 'mt': case 'vb': case 'tr':
+                case 'ac': case 'tp': case 'ln': case 'fhm':
+                case 'plk': case 'slp': case 'ig':
+                    if (v === false) continue;
+                    return true;
+                case 'bnv':
+                    if (Array.isArray(v) && v.length === 0) continue;
+                    return true;
+                default:
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    function coincidentPlainRepeatNotes(notes, chords, shapeSignature) {
+        const result = new Set();
+        if (!Array.isArray(notes) || !Array.isArray(chords)
+            || typeof shapeSignature !== 'function') return result;
+
+        const repeatedMembers = new Set();
+        let prevSig = null;
+        let prevTime = -Infinity;
+        for (const ch of chords) {
+            const sig = shapeSignature(ch);
+            const isRepeat = sig !== null && prevSig === sig
+                && Math.abs(ch.t - prevTime) < 0.5;
+            if (isRepeat && Array.isArray(ch.notes)) {
+                for (const cn of ch.notes) {
+                    repeatedMembers.add(_noteFretKey(ch.t, cn.s, cn.f));
+                }
+            }
+            if (!ch.h3dSynth && sig !== null) {
+                prevSig = sig;
+                prevTime = ch.t;
+            }
+        }
+
+        for (const n of notes) {
+            const key = _noteFretKey(n.t, n.s, n.f);
+            if (!_noteHasStandaloneVisualData(n) && repeatedMembers.has(key)) {
+                // Store the event itself, not only its musical coordinates. A
+                // chart can legally carry a plain duplicate and a distinct
+                // technique note at the same time/string/fret; only the plain
+                // event is redundant with the repeat chord.
+                result.add(n);
+            }
+        }
+        return result;
+    }
+
     // Binary lower-bound: returns the first index i in arr where arr[i].t >= t.
     // Assumes arr is sorted ascending by .t (bundle.notes / bundle.chords always are).
     // Byte-identical to core's bundle.lowerBoundT — kept as a local because this
@@ -4740,6 +4813,12 @@
         let _slideTargetSet = null;
         let _slideTargetNotesRef = null;
         let _slideTargetChordsRef = null;
+
+        // Plain standalone notes that exactly duplicate a member of a compact
+        // repeat chord. Cached by chart-array identity; see the pre-pass below.
+        let _coincidentRepeatNoteSet = null;
+        let _coincidentRepeatNotesRef = null;
+        let _coincidentRepeatChordsRef = null;
 
         let _laneRailFlagsRefHs = null;
         let _laneRailFlagsRefTpl = null;
@@ -10121,6 +10200,11 @@
             // recompute or string-6+ template notes stay dropped from synth
             // chords after the count grows.
             _mergeCacheResult = null;
+            // Repeat-note dedup depends on chordShapeSignature(), which filters
+            // members through validString()/nStr too.
+            _coincidentRepeatNoteSet = null;
+            _coincidentRepeatNotesRef = null;
+            _coincidentRepeatChordsRef = null;
         }
         function mergeChordShape(ch, chordNotes, templates) {
             if (_chordShapeCache.has(ch)) return _chordShapeCache.get(ch);
@@ -11158,6 +11242,21 @@
                 _slideTargetChordsRef = bundle.chords;
             }
 
+            // ── Coincident repeat-note deduplication (chart-static) ────────
+            // Some charts author a plain standalone note on the same onset,
+            // string and fret as a member of a repeated chord. The compact
+            // repeat frame suppresses its chord gems, but the independent note
+            // stream would still draw that one duplicate (especially obvious
+            // for wide open-string slabs). Preserve standalone events carrying
+            // any non-default metadata; those may express a real technique.
+            if (notes !== _coincidentRepeatNotesRef
+                || bundle.chords !== _coincidentRepeatChordsRef) {
+                _coincidentRepeatNoteSet = coincidentPlainRepeatNotes(
+                    notes, bundle.chords, chordShapeSignature);
+                _coincidentRepeatNotesRef = notes;
+                _coincidentRepeatChordsRef = bundle.chords;
+            }
+
             /** Arpeggio lane purple rails — authored-marker cache + bounds cache. */
             let laneRailArpHsFlags = null;
             let laneRailBoundLo = null;
@@ -11853,6 +11952,7 @@
                 const _noteRenderLo = lowerBoundT(notes, now - 30);
                 for (let _ni = _noteRenderLo; _ni < notes.length; _ni++) {
                     const n = notes[_ni];
+                    if (_coincidentRepeatNoteSet.has(n)) continue;
                     if (n.f > 0 && n.t > now && n.t < now + 2) activeFrets.add(n.f);
                     if (n.t > now) {
                         const dt = n.t - now;
@@ -16116,6 +16216,9 @@
             _slideTargetSet = null;
             _slideTargetNotesRef = null;
             _slideTargetChordsRef = null;
+            _coincidentRepeatNoteSet = null;
+            _coincidentRepeatNotesRef = null;
+            _coincidentRepeatChordsRef = null;
         }
 
         function canvasSize(canvas) {
