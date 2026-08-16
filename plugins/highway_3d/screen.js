@@ -1291,6 +1291,91 @@
     // key is always a safe JS integer for songs ≤ 214,748 s (well above any song).
     function _noteKey(t, s) { return ((t * 10000 + 0.5) | 0) * 10 + s; }
 
+    /**
+     * Return the authored note objects whose attack gem must be suppressed
+     * because a preceding note on the same string links into them.
+     *
+     * `linkNext` is per note (including chord members), so build one onset
+     * stream per string across both representations. Only the immediately
+     * following onset can be the destination. A same-fret destination is a
+     * held continuation; a changed-fret destination is suppressed only when
+     * it matches the source's authored slide target. That distinction keeps
+     * real HO/PO attacks visible in partial-chord transitions.
+     */
+    function hwyLinkNextTargetNotes(notes, chords, onsetTolerance = 1e-6) {
+        const targets = new Set();
+        const lanes = new Map();
+        const eps = Number.isFinite(onsetTolerance) && onsetTolerance >= 0
+            ? onsetTolerance
+            : 1e-6;
+
+        const addEvent = (note, time) => {
+            if (!note || typeof note !== 'object'
+                || !Number.isFinite(time)
+                || !Number.isInteger(note.s) || note.s < 0
+                || !Number.isFinite(note.f) || note.f < 0) return;
+            let lane = lanes.get(note.s);
+            if (!lane) {
+                lane = [];
+                lanes.set(note.s, lane);
+            }
+            lane.push({ note, time });
+        };
+
+        if (Array.isArray(notes)) {
+            for (const note of notes) addEvent(note, note && note.t);
+        }
+        if (Array.isArray(chords)) {
+            for (const chord of chords) {
+                if (!chord || !Array.isArray(chord.notes)) continue;
+                for (const note of chord.notes) addEvent(note, chord.t);
+            }
+        }
+
+        for (const lane of lanes.values()) {
+            lane.sort((a, b) => a.time - b.time);
+            let groupStart = 0;
+            while (groupStart < lane.length) {
+                const groupTime = lane[groupStart].time;
+                let groupEnd = groupStart + 1;
+                while (groupEnd < lane.length
+                    && Math.abs(lane[groupEnd].time - groupTime) <= eps) groupEnd++;
+                if (groupEnd >= lane.length) break;
+
+                const nextTime = lane[groupEnd].time;
+                let nextEnd = groupEnd + 1;
+                while (nextEnd < lane.length
+                    && Math.abs(lane[nextEnd].time - nextTime) <= eps) nextEnd++;
+
+                for (let i = groupStart; i < groupEnd; i++) {
+                    const source = lane[i].note;
+                    if (source.ln !== true) continue;
+                    const slideTarget = Number.isFinite(source.sl) && source.sl >= 0
+                        ? source.sl
+                        : Number.isFinite(source.slu) && source.slu >= 0
+                            ? source.slu
+                            : -1;
+                    for (let j = groupEnd; j < nextEnd; j++) {
+                        const destination = lane[j].note;
+                        if (destination.f === source.f
+                            || (slideTarget >= 0 && destination.f === slideTarget)) {
+                            targets.add(destination);
+                        }
+                    }
+                }
+                groupStart = groupEnd;
+            }
+        }
+        return targets;
+    }
+
+    // Legacy skipBody callers suppress only an approaching gem. An explicit
+    // linkNext destination is a continuation, so its attack stays suppressed
+    // at and after the hit line as well.
+    function hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, dt) {
+        return explicitLinkTarget === true || (skipBody === true && dt > 0);
+    }
+
     // Binary lower-bound: returns the first index i in arr where arr[i].t >= t.
     // Assumes arr is sorted ascending by .t (bundle.notes / bundle.chords always are).
     // Byte-identical to core's bundle.lowerBoundT — kept as a local because this
@@ -4719,13 +4804,12 @@
         let _arpGhostInferRefNotes = null;
         let _arpGhostInferRefTpl = null;
 
-        // Slide-target gem suppression. A Set of "t_s" keys for notes in
-        // bundle.notes that are the linkNext destination of a preceding note
-        // (single or chord). The gem is suppressed (skipBody=true) but the
-        // sustain/slide trail still renders so the slide motion stays visible.
-        let _slideTargetSet = null;
-        let _slideTargetNotesRef = null;
-        let _slideTargetChordsRef = null;
+        // Explicit linkNext destinations whose attacks stay suppressed through
+        // the hit line. The Set contains the authored note objects so
+        // coincident notes with different frets cannot hide one another.
+        let _linkNextTargetSet = null;
+        let _linkNextTargetNotesRef = null;
+        let _linkNextTargetChordsRef = null;
 
         let _laneRailFlagsRefHs = null;
         let _laneRailFlagsRefTpl = null;
@@ -11084,64 +11168,15 @@
                 }
             }
 
-            // ── Slide-target gem-suppression pre-pass (chart-static) ──────
-            // Detects notes in bundle.notes that are the slide/link destination
-            // of a preceding note. The gem (outline+core) is suppressed via
-            // skipBody=true, but the sustain/slide trail still renders because
-            // the trail block is now outside the !skipBody gate in drawNote().
-            //
-            // NOTE: an authored `linkNext` flag is NOT present in bundle.notes —
-            // note_to_wire() in lib/song.py emits only t, s, f, sus, sl, slu,
-            // bn, ho, po, hm, hp, pm, mt, vb, tr, ac, tp. So this is an
-            // intentional timing/fret heuristic, not a link-flag lookup.
-            //
-            // Two source patterns (source has sus > 0):
-            //   Case 1 — source has sl/slu: destination.f === source's slide target
-            //   Case 2 — same fret (hold), destination has sl/slu (hold→slide)
-            //
-            // Sources can be single notes OR chord notes (bundle.chords).
-            if (notes !== _slideTargetNotesRef || bundle.chords !== _slideTargetChordsRef) {
-                _slideTargetSet = null;
-                if (notes && notes.length) {
-                    const stSet = new Set();
-                    const checkSrc = (srcT, srcS, srcF, srcSus, srcSl) => {
-                        if (!(srcSus > 0)) return;
-                        const endT = srcT + srcSus;
-                        // Reuse the renderer's shared next-on-string tolerance
-                        // rather than a separate hardcoded literal.
-                        const EPS = NEXT_ON_STRING_T_EPS;
-                        let lo = 0, hi = notes.length;
-                        while (lo < hi) { const m = (lo + hi) >> 1; if (notes[m].t < endT - EPS) lo = m + 1; else hi = m; }
-                        for (let j = lo; j < notes.length; j++) {
-                            const q = notes[j];
-                            if (q.t > endT + EPS) break;
-                            if (q.s !== srcS || q.t <= srcT || Math.abs(q.t - endT) >= EPS) continue;
-                            const qSl = (Number.isFinite(q.sl) && q.sl >= 0) ? q.sl
-                                      : (Number.isFinite(q.slu) && q.slu >= 0) ? q.slu : -1;
-                            if (srcSl >= 0 && q.f === srcSl) { stSet.add(_noteKey(q.t, q.s)); break; } // case 1
-                            if (q.f === srcF && qSl >= 0)    { stSet.add(_noteKey(q.t, q.s)); break; } // case 2
-                        }
-                    };
-                    for (let i = 0; i < notes.length; i++) {
-                        const p = notes[i];
-                        checkSrc(p.t, p.s, p.f, p.sus,
-                            (Number.isFinite(p.sl) && p.sl >= 0) ? p.sl : (Number.isFinite(p.slu) && p.slu >= 0) ? p.slu : -1);
-                    }
-                    const rc = bundle.chords;
-                    if (rc && rc.length) {
-                        for (let ci = 0; ci < rc.length; ci++) {
-                            const ch = rc[ci]; if (!ch.notes) continue;
-                            for (let ni = 0; ni < ch.notes.length; ni++) {
-                                const cn = ch.notes[ni];
-                                checkSrc(ch.t, cn.s, cn.f, cn.sus,
-                                    (Number.isFinite(cn.sl) && cn.sl >= 0) ? cn.sl : (Number.isFinite(cn.slu) && cn.slu >= 0) ? cn.slu : -1);
-                            }
-                        }
-                    }
-                    if (stSet.size > 0) _slideTargetSet = stSet;
-                }
-                _slideTargetNotesRef = notes;
-                _slideTargetChordsRef = bundle.chords;
+            // ── Linked-target gem-suppression pre-pass (chart-static) ─────
+            // Authored `ln` metadata is authoritative for attack suppression.
+            // It covers standalone notes and chord members in either source or
+            // destination representation. Do not infer links from timing alone:
+            // grace-slide targets deliberately omit `ln` because they are struck.
+            if (notes !== _linkNextTargetNotesRef || bundle.chords !== _linkNextTargetChordsRef) {
+                _linkNextTargetSet = hwyLinkNextTargetNotes(notes, bundle.chords);
+                _linkNextTargetNotesRef = notes;
+                _linkNextTargetChordsRef = bundle.chords;
             }
 
             /** Arpeggio lane purple rails — authored-marker cache + bounds cache. */
@@ -11855,10 +11890,9 @@
                     const _inArpPersist = _arpPersistKeys.has(_noteKey(n.t, n.s));
                     if (!_inArpPersist && n.t + (n.sus || 0) < ndVerdictT0) continue;
                     if (!validString(n.s)) continue;
-                    // Suppress the gem for linkNext slide-target notes (skipBody=true).
-                    // The sustain/slide trail still renders because it now lives outside
-                    // the !skipBody gate in drawNote().
-                    const _isSlideTgt = !!(_slideTargetSet && _slideTargetSet.has(_noteKey(n.t, n.s)));
+                    // Authored linkNext membership stays separate from skipBody,
+                    // which is reserved for repeat/synthetic chord behavior.
+                    const _isLinkNextTgt = !!(_linkNextTargetSet && _linkNextTargetSet.has(n));
                     // Always show the fret label — suppressing it for repeated frets on the same
                     // string caused the label to be invisible throughout the note's flight and
                     // only appear moments before being played (when the previous note's linger
@@ -11885,7 +11919,7 @@
                         now,
                         singleOpenX,
                         skipLabel,
-                        _isSlideTgt,
+                        false,
                         GHOST_HOLD_AFTER_ONSET,
                         singleOpenLaneW,
                         arGhostCid != null,
@@ -11894,6 +11928,7 @@
                         _arpBoundsForNote,
                         _ghostPrevBuf.get(Math.round(n.t * 1e4) * 10 + n.s) ?? -Infinity,
                         _arpBoundsForNote !== null, // showDropLine: white line for arp note-stream notes
+                        _isLinkNextTgt,
                     );
                     if (arGhostCid != null) {
                         const _arpBounds = _arpBoundsForNote;
@@ -12394,6 +12429,7 @@
                     }
                     if (!deferChordGems || _deferFallback || suppressSynthChord) {
                         for (const cn of chordNotes) {
+                            const _isLinkNextTgt = !!(_linkNextTargetSet && _linkNextTargetSet.has(cn));
                             // Suppress non-first gems while an authored arpeggio frame
                             // approaches — but not for the deferred fallback path, where
                             // all chord gems serve as the only visual preview.
@@ -12444,6 +12480,7 @@
                                 null,
                                 _ghostPrevBuf.get(Math.round(ch.t * 1e4) * 10 + cn.s) ?? -Infinity,
                                 chordHighwayLavenderArpVisual || suppressSynthChord || chordWireHighDensity(ch),
+                                _isLinkNextTgt,
                             );
                             lastFretForString[cn.s] = cn.f;
                             // gate by THIS note's own sustain against the
@@ -14236,9 +14273,10 @@
         }
 
         // skipLabel: don't draw per-note connector label (repeated fret)
-        // skipBody:  don't draw the 3D note mesh (repeat chord — still shows projection)
+        // skipBody:  don't draw the approaching 3D note mesh (repeat chord — still shows projection)
         // showDropLine: draw a white vertical drop line from note to below board (arpeggio / synth chord notes)
-        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false) {
+        // explicitLinkTarget: suppress this continuation's attack at every phase
+        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false) {
             const s = n.s;
             // Belt + suspenders: callers already gate via validString(),
             // but drawNote is also entered through { ...cn } chord-note
@@ -14320,13 +14358,10 @@
             const hitDist = Math.abs(dt);
             const hit = hitDist < 0.15 || sustained || (_ndHasProvider && dt < 0);
             const hitFade = sustained ? 0.7 : (hitDist < 0.15 ? 1 - hitDist / 0.15 : 0);
-            // skipBody (slide-target gem suppression) only applies to this
-            // note's own pre-hit approach — it exists so the destination's
-            // approaching gem doesn't duplicate the source note's gem, which
-            // is already sliding toward this fret. Once this note is hit,
-            // its gem must render normally so a chained slide (this note
-            // sliding on to a further fret) keeps following.
-            const effSkipBody = skipBody && dt > 0;
+            // Legacy skipBody applies only to the pre-hit approach. An explicit
+            // linkNext target is not re-struck, so its attack remains hidden at
+            // and after onset; its sustain and any outgoing slide still render.
+            const effSkipBody = hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, dt);
             const hasTechniqueVibrato = noteHasVibrato(n);
             const techniqueYNow = sustained ? techniqueYOffsetWorld(n, now) : 0;
             const noteZ = sustained ? 0 : Math.min(0, dZ(dt));
@@ -14755,11 +14790,10 @@
             } // end gem block — technique labels reopen !skipBody below
 
             // ── Sustain trail ─────────────────────────────────────────────
-            // Rendered for ALL notes with sustain, including skipBody=true
-            // slide-target notes (e.g. linkNext hold→slide: gem suppressed,
-            // slide trail stays visible as the continuation of the sustain).
-            // _ndGetNoteState is queried for every note (skipBody slide
-            // targets included), so the trail picks bright mGlow[s] when the
+            // Rendered for ALL notes with sustain, including legacy skipBody
+            // and explicit linkNext targets (gem suppressed, trail visible as
+            // the continuation of the sustain). _ndGetNoteState is queried for
+            // every note, so the trail picks bright mGlow[s] when the
             // provider confirms hit/active and dim mSus[s] otherwise — a
             // slide-target trail is not forced dim.
             // Chord-member open strings (fromChord && f === 0) skip the
@@ -14895,14 +14929,12 @@
             // off to the on-note arrow.
             //
             // Placed outside the !effSkipBody block (unlike the on-note
-            // arrow above) so a note whose own gem is suppressed because
-            // it's the destination of a previous slide (skipBody) can
-            // still preview ITS OWN outgoing slide ahead of time — i.e.
+            // arrow above) so a suppressed destination can still preview
+            // ITS OWN outgoing slide ahead of time — i.e.
             // multi-leg/chained slides — when slideArrowChainPreviewVisible
-            // is on. For a normal note (skipBody === false) this behaves
-            // exactly as before.
+            // is on. Normal notes are unaffected.
             if (slideArrowNeckVisible && dt > 0 && slideSt && validString(s) && !arpGhostOnlyMode && !_overLinger
-                && (!skipBody || slideArrowChainPreviewVisible)) {
+                && (!(skipBody || explicitLinkTarget) || slideArrowChainPreviewVisible)) {
                 const slideDirN = Math.sign(fretMid(slideSt.endFret) - fretMid(n.f)) * (_leftyCached ? -1 : 1);
                 if (slideDirN !== 0) {
                     const neckAlpha = Math.max(0, Math.min(1, 1 - dt / GHOST_UPCOMING_WIN));
@@ -15180,7 +15212,8 @@
             // Styled to match the standalone single-note connector: tinted with
             // the incoming note's string colour and 50% length (anchored at the
             // fret-label end), instead of a full-height white line to the board.
-            const _wantDropLine = pDropLine && n.f > 0 && dt >= 0 && fromChord && showDropLine && !skipBody;
+            const _wantDropLine = pDropLine && n.f > 0 && dt >= 0 && fromChord
+                && showDropLine && !skipBody && !explicitLinkTarget;
             if (_wantDropLine) {
                 const _minStrY = Math.min(sY(0), sY(nStr - 1));
                 const _dropY = _minStrY - S_GAP * 0.8;
@@ -15242,8 +15275,8 @@
             // scale the whole opacity by (_vibrancyProjOp / 0.15) so the slider
             // affects the projection the same way it affects note bodies.
             const projScale = _vibrancyProjOp / 0.15;
-            // effSkipBody (= skipBody && dt > 0, #862): a slide-destination note
-            // whose own gem is suppressed pre-hit isn't dimmed once it's hit.
+            // Linked continuations stay dim; generic skipBody callers return
+            // to full projection brightness after their onset.
             const bodyDim = effSkipBody ? 0.38 : 1;
             if (n.f > 0 && projectionVisible && (
                 (!_overLinger && isNextOnString && dt > -ghostHold && dt < ghostWin && projFactor > 0.001 && !isBlocked)
@@ -16068,9 +16101,9 @@
             _camBootstrapHolding = false;
             _camBootstrapMode = null;
             _songKey = null;
-            _slideTargetSet = null;
-            _slideTargetNotesRef = null;
-            _slideTargetChordsRef = null;
+            _linkNextTargetSet = null;
+            _linkNextTargetNotesRef = null;
+            _linkNextTargetChordsRef = null;
         }
 
         function canvasSize(canvas) {

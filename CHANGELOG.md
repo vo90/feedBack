@@ -313,6 +313,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine (`app.js`, `highway.js`, `playSong`, `showScreen`, the capability registry).
 
 ### Fixed
+- **3D Highway respects authored linked-note continuations.** A `linkNext`
+  destination no longer reappears as a newly struck gem at the hit line. The
+  renderer follows explicit per-string links for standalone and chord-member
+  notes, while keeping unrelated hammer-ons in partial chords visible.
 - **Count-in follows the song's meter and its pickup measure.** The count-in
   (loop wrap, section practice, and the "Countdown before song" setting) always
   clicked exactly four beats, so a 3/4 song was counted in 4/4, and a song
