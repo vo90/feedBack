@@ -20,6 +20,13 @@ let _popoverEl = null;
 let _btnEl = null;
 let _open = false;
 let _openTimer = null;
+let _lastSongRouteKey = '';
+let _pendingPersistedSongVolume = null;
+let _songVolumePersistTimer = null;
+let _nativeSongGainPending = null;
+let _nativeSongGainDrain = null;
+const _recordedRealtimeBridges = new Set();
+const SONG_VOLUME_PERSIST_DELAY_MS = 150;
 
 function _audioEl() { return document.getElementById('audio'); }
 
@@ -99,13 +106,33 @@ function _recordAudioBridge(bridgeId, legacySurface, participantId, outcome, rea
 function _reportSongRoute(routeKind, availability, reason) {
     const session = _audioSession();
     if (!session || typeof session.setRoute !== 'function') return;
-    session.setRoute({
+    const route = {
         routeId: 'song-output',
         routeKind: routeKind || (window._juceMode ? 'juce' : 'html5'),
         availability: availability || 'available',
         selectedByUser: true,
         fallbackReason: reason || '',
-    });
+    };
+    // Volume changes do not change the route. Avoid re-emitting route events and
+    // rebuilding audio-session diagnostics on every key-repeat tick.
+    const routeKey = `${route.routeKind}\n${route.availability}\n${route.fallbackReason}`;
+    if (routeKey === _lastSongRouteKey) return;
+    session.setRoute(route);
+    _lastSongRouteKey = routeKey;
+}
+
+function _recordRealtimeBridgeOnce(bridgeId, legacySurface, participantId, outcome, reason) {
+    const key = `${bridgeId}\n${outcome || 'handled'}\n${reason || ''}`;
+    if (_recordedRealtimeBridges.has(key)) return;
+    const session = _audioSession();
+    if (!session || typeof session.recordBridgeHit !== 'function') return;
+    _recordedRealtimeBridges.add(key);
+    _recordAudioBridge(bridgeId, legacySurface, participantId, outcome, reason);
+}
+
+function _resetSongVolumeTelemetry() {
+    _lastSongRouteKey = '';
+    _recordedRealtimeBridges.clear();
 }
 
 function _clampSongVolume(v) {
@@ -125,19 +152,79 @@ let _songVolumeMemory = (() => {
 })();
 
 function _readSongVolume() {
-    try {
-        const stored = parseFloat(localStorage.getItem('volume'));
-        return Number.isFinite(stored) ? _clampSongVolume(stored) : _songVolumeMemory;
-    } catch (e) {
-        return _songVolumeMemory;
-    }
+    // Memory is authoritative while the page is alive. Reading localStorage on
+    // every held-key repeat is synchronous and would also make debounced writes
+    // return a stale value between ticks.
+    return _songVolumeMemory;
 }
 
-function _applySongVolume(v) {
+function _syncSongFaderState(value) {
+    const songFader = _faders.get('song');
+    if (songFader) _registerAudioSessionFader(songFader, value, 'audio-mix.song-volume');
+}
+
+function _flushSongVolumePersistence() {
+    if (_songVolumePersistTimer !== null) {
+        clearTimeout(_songVolumePersistTimer);
+        _songVolumePersistTimer = null;
+    }
+    if (_pendingPersistedSongVolume === null) return;
+    const value = _pendingPersistedSongVolume;
+    _pendingPersistedSongVolume = null;
+    try {
+        localStorage.setItem('volume', String(value));
+    } catch (e) {
+        // Ignore storage failures (for example in private mode or sandboxed contexts).
+    }
+    // Keep diagnostics accurate after the realtime burst has settled. This is
+    // deliberately outside the key-repeat path because participant registration
+    // emits topology events and rebuilds capability diagnostics.
+    _syncSongFaderState(value);
+}
+
+function _scheduleSongVolumePersistence(value) {
+    _pendingPersistedSongVolume = value;
+    if (_songVolumePersistTimer !== null) clearTimeout(_songVolumePersistTimer);
+    _songVolumePersistTimer = setTimeout(() => {
+        _songVolumePersistTimer = null;
+        _flushSongVolumePersistence();
+    }, SONG_VOLUME_PERSIST_DELAY_MS);
+}
+
+function _queueNativeSongGain(setGain, linear) {
+    // Electron IPC is asynchronous. Keep the first update immediate, but while
+    // it is in flight retain only the newest requested value instead of building
+    // an unbounded invoke()/Promise queue during keyboard auto-repeat.
+    _nativeSongGainPending = { setGain, linear };
+    if (!_nativeSongGainDrain) {
+        _nativeSongGainDrain = (async function drainNativeSongGain() {
+            while (_nativeSongGainPending) {
+                const pending = _nativeSongGainPending;
+                _nativeSongGainPending = null;
+                try {
+                    await pending.setGain('backing', pending.linear);
+                } catch (_) { /* IPC unavailable */ }
+            }
+        })().finally(() => {
+            _nativeSongGainDrain = null;
+            // A new key event can land after the drain's final pending check but
+            // before this continuation runs. Start another drain and chain it so
+            // that narrow handoff cannot strand the newest requested value.
+            if (_nativeSongGainPending) {
+                const pending = _nativeSongGainPending;
+                return _queueNativeSongGain(pending.setGain, pending.linear);
+            }
+        });
+    }
+    return _nativeSongGainDrain;
+}
+
+function _applySongVolume(v, deferCoordinatorSync) {
     const normalized = _clampSongVolume(v == null ? _readSongVolume() : v);
     _songVolumeMemory = normalized;
     const a = _audioEl();
     if (a) a.volume = normalized / 100;
+    if (!deferCoordinatorSync) _syncSongFaderState(normalized);
     const linear = normalized / 100;
     // Multi-stem sloppak: the stems plugin mutes the core <audio> element and
     // routes every stem through its own master GainNode, so a.volume above is
@@ -151,36 +238,26 @@ function _applySongVolume(v) {
         // The bridge hit is attributed by outcome (handled vs failed) so support
         // data reflects reality rather than always reporting success.
         try {
-            // `void` marks the floating Promise as intentionally discarded,
-            // consistent with the other ignored async calls in this module.
-            void Promise.resolve(stemsSetMaster(linear))
-                .then(function () {
-                    _recordAudioBridge('stems.master-volume', 'window.feedBack.stems.setMasterVolume', 'core.song', 'handled');
-                })
-                .catch(function () {
-                    _recordAudioBridge('stems.master-volume', 'window.feedBack.stems.setMasterVolume', 'core.song', 'failed', 'Stems master volume hook rejected');
-                });
+            const result = stemsSetMaster(linear);
+            if (result && typeof result.then === 'function') {
+                void Promise.resolve(result)
+                    .then(function () {
+                        _recordRealtimeBridgeOnce('stems.master-volume', 'window.feedBack.stems.setMasterVolume', 'core.song', 'handled');
+                    })
+                    .catch(function () {
+                        _recordRealtimeBridgeOnce('stems.master-volume', 'window.feedBack.stems.setMasterVolume', 'core.song', 'failed', 'Stems master volume hook rejected');
+                    });
+            } else {
+                _recordRealtimeBridgeOnce('stems.master-volume', 'window.feedBack.stems.setMasterVolume', 'core.song', 'handled');
+            }
         } catch (_) {
-            _recordAudioBridge('stems.master-volume', 'window.feedBack.stems.setMasterVolume', 'core.song', 'failed', 'Stems master volume hook threw');
+            _recordRealtimeBridgeOnce('stems.master-volume', 'window.feedBack.stems.setMasterVolume', 'core.song', 'failed', 'Stems master volume hook threw');
         }
     }
-    _registerAudioSessionFader({
-        id: 'song',
-        label: 'Song',
-        unit: '%',
-        min: 0,
-        max: 100,
-        step: 1,
-        defaultValue: _readSongVolume(),
-        // Carry the get/set handlers on every re-registration. registerMix-
-        // Participant replaces the participant wholesale, so omitting these
-        // here wipes the fader.set-value handler installed by
-        // _registerSongFader() — leaving the mixer slider a visual no-op that
-        // never actually changes the volume (all formats alike).
-        getValue: _readSongVolume,
-        setValue: _writeSongVolume,
-    }, normalized, 'audio-mix.song-volume');
-    _recordAudioBridge('audio-mix.song-volume', 'applySongVolume', 'core.song', 'handled');
+    // The participant is registered once by _registerSongFader(). Re-registering
+    // it here turned every 1% key-repeat step into topology events, duplicate
+    // suppression, and full diagnostics snapshots on the gameplay thread.
+    _recordRealtimeBridgeOnce('audio-mix.song-volume', 'applySongVolume', 'core.song', 'handled');
     // Desktop + JUCE: song audio is mixed in the native engine; HTML5 volume is ignored.
     if (window._juceMode) {
         const setGain = window.feedBackDesktop?.audio?.setGain;
@@ -189,8 +266,7 @@ function _applySongVolume(v) {
             // synchronous throw from setGain, the .catch() covers a rejected IPC.
             try {
                 _reportSongRoute('juce', 'available');
-                return Promise.resolve(setGain('backing', linear))
-                    .catch(function () { /* IPC unavailable */ })
+                return _queueNativeSongGain(setGain, linear)
                     .then(function () { return normalized; });
             } catch (_) { /* IPC unavailable */ }
         }
@@ -201,12 +277,10 @@ function _applySongVolume(v) {
 
 function _writeSongVolume(v) {
     const normalized = _clampSongVolume(v);
-    void _applySongVolume(normalized);
-    try {
-        localStorage.setItem('volume', String(normalized));
-    } catch (e) {
-        // Ignore storage failures (for example in private mode or sandboxed contexts).
-    }
+    void _applySongVolume(normalized, true);
+    _updateRenderedFaderValue('core.song', 'song', normalized, '%');
+    _scheduleSongVolumePersistence(normalized);
+    return normalized;
 }
 
 function registerFader(spec) {
@@ -285,6 +359,28 @@ function getFaders() {
 function _formatValue(v, unit) {
     const s = v === Math.round(v) ? v.toFixed(0) : v.toFixed(2);
     return unit ? s + unit : s;
+}
+
+function _updateRenderedFaderValue(participantId, faderId, value, unit) {
+    if (!_open || !_popoverEl || typeof _popoverEl.querySelectorAll !== 'function') return;
+    const committed = Number(value);
+    if (!Number.isFinite(committed)) return;
+    const faderKey = `${participantId}:${faderId}`;
+    const strips = _popoverEl.querySelectorAll('[data-fader-key]');
+    for (const strip of strips) {
+        if (!strip || strip.getAttribute('data-fader-key') !== faderKey) continue;
+        const slider = strip.querySelector('.mixer-strip-fader');
+        const valueEl = strip.querySelector('.mixer-strip-value');
+        if (!slider || !valueEl) return;
+        const min = Number(slider.min);
+        const max = Number(slider.max);
+        const displayed = Math.min(Number.isFinite(max) ? max : committed,
+            Math.max(Number.isFinite(min) ? min : committed, committed));
+        slider.value = String(displayed);
+        window.handleSliderInput?.(slider);
+        valueEl.textContent = _formatValue(displayed, unit || '');
+        return;
+    }
 }
 
 function _legacyFaderForSummary(summary) {
@@ -504,11 +600,13 @@ function _init() {
     _registerSongFader();
     if (window.feedBack && window.feedBack.on) {
         window.feedBack.on('screen:changed', _onScreenChanged);
+        window.feedBack.on('song:loading', _resetSongVolumeTelemetry);
         window.feedBack.on('audio-mix:fader-value-changed', () => { if (_open) _renderPopover(); });
         window.feedBack.on('audio-mix:fader-unavailable', () => { if (_open) _renderPopover(); });
         window.feedBack.on('audio-mix:participant-registered', () => { if (_open) _renderPopover(); });
         window.feedBack.on('audio-mix:participant-removed', () => { if (_open) _renderPopover(); });
     }
+    window.addEventListener('pagehide', _flushSongVolumePersistence);
     window.dispatchEvent(new Event('feedBack:audio:ready'));
 }
 

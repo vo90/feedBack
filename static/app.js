@@ -952,6 +952,9 @@ function _adjustSongVolume(delta) {
     if (!audioApi) return;
     const current = audioApi.readSongVolume?.() ?? 80;
     const next = Math.max(0, Math.min(100, Math.round(current + delta)));
+    // Keyboard auto-repeat continues after the volume reaches its limit. Do no
+    // audio, persistence, or diagnostics work for those unchanged repeats.
+    if (next === current) return;
     const songFader = audioApi.getFaders?.().find(f => f.id === 'song');
     if (songFader) songFader.setValue(next);
 }
