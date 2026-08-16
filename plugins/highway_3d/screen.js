@@ -1291,6 +1291,23 @@
     // key is always a safe JS integer for songs ≤ 214,748 s (well above any song).
     function _noteKey(t, s) { return ((t * 10000 + 0.5) | 0) * 10 + s; }
 
+    // Binary lower-bound: returns the first index i in arr where arr[i].t >= t.
+    // Assumes arr is sorted ascending by .t (bundle.notes / bundle.chords always are).
+    // Byte-identical to core's bundle.lowerBoundT — kept as a local because this
+    // plugin must run on downlevel hosts whose bundles don't carry the helper
+    // (it's called from ~30 sites incl. top-level helpers that don't receive a
+    // bundle). New code that already holds a bundle should prefer
+    // bundle.lowerBoundT / bundle.lowerBoundTime.
+    function lowerBoundT(arr, t) {
+        let lo = 0, hi = arr.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (arr[mid].t < t) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+
     // Extends _noteKey with the fret while remaining a safe integer for any
     // realistic chart. Used by chart-static cross-stream deduplication.
     function _noteFretKey(t, s, f) { return _noteKey(t, s) * 64 + Number(f) + 1; }
@@ -1362,23 +1379,6 @@
             }
         }
         return result;
-    }
-
-    // Binary lower-bound: returns the first index i in arr where arr[i].t >= t.
-    // Assumes arr is sorted ascending by .t (bundle.notes / bundle.chords always are).
-    // Byte-identical to core's bundle.lowerBoundT — kept as a local because this
-    // plugin must run on downlevel hosts whose bundles don't carry the helper
-    // (it's called from ~30 sites incl. top-level helpers that don't receive a
-    // bundle). New code that already holds a bundle should prefer
-    // bundle.lowerBoundT / bundle.lowerBoundTime.
-    function lowerBoundT(arr, t) {
-        let lo = 0, hi = arr.length;
-        while (lo < hi) {
-            const mid = (lo + hi) >>> 1;
-            if (arr[mid].t < t) lo = mid + 1;
-            else hi = mid;
-        }
-        return lo;
     }
 
     /**
@@ -16161,6 +16161,9 @@
             _lookaheadHiNeckLatch = false;
             _measureStarts = []; _measureStartsRef = null;
             _clkAudioT = NaN; _clkPerf = NaN; _clkRate = 1; _frameNow = 0;
+            _coincidentRepeatNoteSet = null;
+            _coincidentRepeatNotesRef = null;
+            _coincidentRepeatChordsRef = null;
             prevLowFretBonus = 0;
             prevLockActive = false;
             _camSnapped = false;
@@ -16171,9 +16174,6 @@
             _slideTargetSet = null;
             _slideTargetNotesRef = null;
             _slideTargetChordsRef = null;
-            _coincidentRepeatNoteSet = null;
-            _coincidentRepeatNotesRef = null;
-            _coincidentRepeatChordsRef = null;
         }
 
         function canvasSize(canvas) {
