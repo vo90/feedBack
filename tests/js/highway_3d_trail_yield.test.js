@@ -21,13 +21,39 @@ function loadHelpers() {
         'const NFRETS = 24; const NEXT_ON_STRING_T_EPS = 0.06;\n'
         + block
         + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyTrailOverlapsGemX, hwyTrailYieldAmountAt,'
-        + ' hwyTrailPriorityWorldZ, TRAIL_YIELD_DEFAULTS })',
+        + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, TRAIL_YIELD_DEFAULTS })',
+    );
+}
+
+function loadSlideOffsetHelpers() {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8');
+    const start = src.indexOf('    function slideTrailEnd(');
+    const end = src.indexOf('    // Camera tgtDist building blocks', start);
+    assert.notEqual(start, -1);
+    assert.notEqual(end, -1);
+    return vm.runInNewContext(
+        'const fretMid = f => f * 10;\n'
+        + src.slice(start, end)
+        + '\n({ slideTrailEnd, slideOffsetWorldX })',
+    );
+}
+
+function loadTremoloOffset() {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8');
+    const start = src.indexOf('        function tremoloOffsetWorldX(');
+    const end = src.indexOf('        /** Rendered X centre', start);
+    assert.notEqual(start, -1);
+    assert.notEqual(end, -1);
+    return vm.runInNewContext(
+        'const TREMOLO_BUMP_S = 0.06;\n'
+        + src.slice(start, end)
+        + '\ntremoloOffsetWorldX',
     );
 }
 
 const helpers = loadHelpers();
 
-test('same-fret onset index is sorted, bounded, and merges duplicate members', () => {
+test('per-fret onset indexes are sorted, bounded, and merge duplicate members', () => {
     const notes = [
         { t: 3, s: 2, f: 3, sus: 2 },
         { t: 4, s: 8, f: 3, sus: 1 },
@@ -37,10 +63,102 @@ test('same-fret onset index is sorted, bounded, and merges duplicate members', (
         { t: 2, notes: [{ s: 4, f: 3, sus: 0 }] },
         { t: 3, notes: [{ s: 2, f: 3, sus: 4 }] },
     ];
-    const events = helpers.hwyBuildTrailYieldEvents(notes, chords, 6)[3];
+    const eventsByFret = helpers.hwyBuildTrailYieldEvents(notes, chords, 6);
+    const events = eventsByFret[3];
     assert.deepEqual(
-        Array.from(events, ({ t, s, end }) => [t, s, end]),
-        [[2, 4, 2], [3, 2, 7]],
+        Array.from(events, ({ t, s, f, end }) => [t, s, f, end]),
+        [[2, 4, 3, 2], [3, 2, 3, 7]],
+    );
+    assert.equal(events[0].chordMeta.size, 1);
+    assert.equal(events[1].standalone, true);
+    assert.ok(events[1].chordMeta, 'duplicate standalone/chord metadata is retained');
+});
+
+test('one footprint rule covers stationary and technique-shifted trails', () => {
+    const canOcclude = helpers.hwyTrailFootprintsCanOcclude;
+    assert.equal(canOcclude(true, false, false, 10, 2, 11, 2), true);
+    assert.equal(canOcclude(true, false, false, 10, 2, 13, 2), false);
+    assert.equal(
+        canOcclude(false, true, false, 10, 2, 11, 2, 20, 2, 21, 2),
+        true,
+        'bend/vibrato movement may reveal a physically covered opposite lane',
+    );
+    assert.equal(canOcclude(false, true, true, 10, 2, 11, 2, 20, 2, 21, 2), false);
+    assert.equal(canOcclude(false, true, false, 10, 2, 11, 2, 20, 2, 24, 2), false);
+});
+
+test('slides qualify at their rendered fret rather than their starting fret', () => {
+    const { slideTrailEnd, slideOffsetWorldX } = loadSlideOffsetHelpers();
+    const note = { t: 0, s: 1, f: 3, sus: 2, sl: 7 };
+    const slideSt = slideTrailEnd(note);
+    const trailX = 30 + slideOffsetWorldX(note, 1, slideSt);
+    assert.ok(trailX > 40 && trailX < 50);
+    assert.equal(
+        helpers.hwyTrailFootprintsCanOcclude(
+            true, false, false, trailX, 4.65, trailX, 5.5,
+        ),
+        true,
+    );
+    assert.equal(
+        helpers.hwyTrailFootprintsCanOcclude(
+            true, false, false, trailX, 4.65, 30, 5.5,
+        ),
+        false,
+        'the old starting-fret match must not survive after the slide moves away',
+    );
+
+    const unpitched = { ...note, sl: undefined, slu: 7 };
+    assert.notEqual(
+        slideOffsetWorldX(unpitched, 1, slideTrailEnd(unpitched)),
+        slideOffsetWorldX(note, 1, slideSt),
+        'pitched and unpitched easing both feed the rendered-position matcher',
+    );
+});
+
+test('tremolo can reach an adjacent high-fret footprint without becoming a multi-fret slide', () => {
+    const tremoloOffsetWorldX = loadTremoloOffset();
+    const trailW = 4.65;
+    const offset = tremoloOffsetWorldX({ t: 0, sus: 1, tr: true }, 0, trailW);
+    assert.ok(offset > 0 && offset < trailW * 0.5);
+    assert.equal(
+        helpers.hwyTrailFootprintsCanOcclude(
+            true, false, false, 0, trailW, 6, 5.5,
+        ),
+        false,
+    );
+    assert.equal(
+        helpers.hwyTrailFootprintsCanOcclude(
+            true, false, false, offset, trailW, 6, 5.5,
+        ),
+        true,
+    );
+});
+
+test('wide open targets use footprint overlap instead of a fret-zero special case', () => {
+    const canOcclude = helpers.hwyTrailFootprintsCanOcclude;
+    assert.equal(canOcclude(true, false, false, 20, 4.65, 50, 5.5), false);
+    assert.equal(canOcclude(true, false, false, 20, 4.65, 50, 80), true);
+});
+
+test('candidate filters can apply the shared footprint rule beyond a fret bucket', () => {
+    const starts = new Float64Array(2);
+    const ends = new Float64Array(2);
+    const crossFretEvent = { t: 1, s: 0, f: 7, end: 1 };
+    assert.equal(
+        helpers.hwyFillTrailYieldTimes(
+            [crossFretEvent], 0, 1, 0.5, 2, false, starts, ends,
+            0, 2, helpers.TRAIL_YIELD_DEFAULTS,
+            event => event.f === 7,
+        ),
+        1,
+    );
+    assert.equal(
+        helpers.hwyFillTrailYieldTimes(
+            [{ t: 1, s: 2, f: 5, end: 1 }], 0, 1, 0.5, 2, false, starts, ends,
+            0, 2, helpers.TRAIL_YIELD_DEFAULTS,
+            () => false,
+        ),
+        0,
     );
 });
 
@@ -323,6 +441,39 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
     );
 });
 
+test('rendering and eligibility share one time-sampled footprint model', () => {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8');
+    const centerDecl = src.indexOf('        function sustainTrailCenterXAt(');
+    const matcherDecl = src.indexOf('        function trailYieldEventMatchesRenderedFootprint(');
+    const rendererDecl = src.indexOf('        function slideRibbonUpdatePositions(');
+    assert.notEqual(centerDecl, -1);
+    assert.notEqual(matcherDecl, -1);
+    assert.notEqual(rendererDecl, -1);
+
+    const centerBody = src.slice(centerDecl, src.indexOf('\n        }', centerDecl) + 10);
+    assert.match(centerBody, /_leftyCached\s*\?\s*-1\s*:\s*1/);
+    assert.match(centerBody, /slideOffsetWorldX\(/);
+    assert.match(centerBody, /tremoloOffsetWorldX\(/);
+
+    const matcherBody = src.slice(matcherDecl, src.indexOf('\n        }', matcherDecl) + 10);
+    assert.match(matcherBody, /Math\.min\(event\.t,\s*ctx\.susEnd\)/);
+    assert.match(matcherBody, /sustainTrailCenterXAt\(/);
+    assert.match(matcherBody, /trailYieldOpenTargetXBounds\(/);
+    assert.match(matcherBody, /hwyTrailFootprintsCanOcclude\(/);
+
+    const rendererBody = src.slice(rendererDecl, src.indexOf('        function noteHasVibrato(', rendererDecl));
+    assert.match(rendererBody, /sustainTrailCenterXAt\(/);
+
+    assert.match(src, /function\s+trailYieldSweepMayReachFret\(/);
+    assert.match(src, /slideOffsetWorldX\(n,\s*n\.t\s*\+\s*\(n\.sus\s*\|\|\s*0\),\s*ctx\.slideSt\)/);
+    assert.match(src, /const\s+tremoloReach\s*=\s*n\.tr\s*\?\s*ctx\.trailW\s*\*\s*0\.375\s*:\s*0/);
+    assert.match(src, /function\s+collectTrailYieldTargetsForStrand\(/);
+    assert.match(src, /_trailYieldEventsByFret\[f\][\s\S]{0,350}?trailYieldEventMatchesRenderedFootprint/);
+    assert.match(src, /for\s*\(let f = 0; f <= NFRETS/);
+    assert.match(src, /collectTrailYieldTargetsForStrand\([\s\S]{0,220}?xBase\s*\+\s*offsets\[si\],/);
+    assert.match(src, /collectTrailYieldTargetsForStrand\([\s\S]{0,220}?xBase,/);
+});
+
 test('3D settings expose one shared width and separate passing-note and endpoint timing', () => {
     const src = fs.readFileSync(SCREEN_JS, 'utf8');
     const settingsPath = path.join(__dirname, '..', '..', 'plugins', 'highway_3d', 'settings.html');
@@ -343,7 +494,7 @@ test('3D settings expose one shared width and separate passing-note and endpoint
     assert.equal((html.match(/id="h3d-trail-yield-min-scale"/g) || []).length, 1);
     assert.doesNotMatch(html, /trail-yield-end-min-scale/);
     assert.match(html, /Endpoint visibility window:/);
-    assert.match(html, /Checks this far after the trail end[\s\S]{0,160}?starts narrowing the same amount before the end/);
+    assert.match(html, /Checks this far after the trail end[\s\S]{0,160}?begins narrowing this far before that note/);
     assert.doesNotMatch(src, /TRAIL_YIELD_END_LOOKAHEAD_S/);
     for (const id of [
         'h3d-trail-yield-taper-duration',

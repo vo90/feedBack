@@ -1027,10 +1027,10 @@
 
     /** Match `nextNoteByString` onset to this note (float + chart rounding; avoids ghost / glow flicker). */
     const NEXT_ON_STRING_T_EPS = 0.06;
-    // Sustain-trail reveal: when a later same-fret gem sits on the visually
-    // lower string, taper only the part of the older trail surrounding that
-    // gem. This is a chart-space shape, not a live animation: the notch is
-    // already present when that section of trail first enters the viewport.
+    // Sustain-trail reveal: when a later gem sits behind a rendered strand,
+    // taper only the part of the older trail surrounding that gem. This is a
+    // chart-space shape, not a live animation: the notch is already present
+    // when that section of trail first enters the viewport.
     // Defaults clear the next instruction gently, then restore the ringing
     // trail quickly; advanced settings can tune each part independently.
     const TRAIL_YIELD_DEFAULTS = Object.freeze({
@@ -1055,6 +1055,27 @@
             || !Number.isFinite(gemX) || !Number.isFinite(gemWidth)) return false;
         return Math.abs(trailX - gemX)
             <= (Math.max(0, trailWidth) + Math.max(0, gemWidth)) * 0.5;
+    }
+
+    /** Shared eligibility rule after source/target geometry has been resolved. */
+    function hwyTrailFootprintsCanOcclude(
+        visuallyBelow,
+        techniqueMovesY,
+        sameString,
+        trailX,
+        trailWidth,
+        gemX,
+        gemWidth,
+        trailY = 0,
+        trailHeight = 0,
+        gemY = 0,
+        gemHeight = 0,
+    ) {
+        if (!visuallyBelow && (!techniqueMovesY || sameString)) return false;
+        if (!hwyTrailOverlapsGemX(trailX, trailWidth, gemX, gemWidth)) return false;
+        return visuallyBelow || hwyTrailOverlapsGemX(
+            trailY, trailHeight, gemY, gemHeight,
+        );
     }
 
     /**
@@ -1082,28 +1103,50 @@
         return worldZ === null ? fallbackWorldZ : worldZ;
     }
 
-    /** Chart-static same-fret onset index; rebuilt only when arrangement arrays change. */
+    /** Chart-static fret index; rebuilt only when arrangement arrays change. */
     function hwyBuildTrailYieldEvents(notes, chords, stringCount) {
         const byFret = new Array(NFRETS + 1);
-        const add = (t, s, f, sustain) => {
+        const add = (t, s, f, sustain, accent = false, chordMeta = null) => {
             if (!Number.isFinite(t) || !Number.isInteger(s) || s < 0 || s >= stringCount) return;
             if (!Number.isInteger(f) || f < 0 || f > NFRETS) return;
             const duration = Number.isFinite(sustain) ? Math.max(0, sustain) : 0;
-            (byFret[f] || (byFret[f] = [])).push({ t, s, end: t + duration });
+            (byFret[f] || (byFret[f] = [])).push({
+                t, s, f, end: t + duration,
+                accent: !!accent,
+                standalone: chordMeta === null,
+                chordMeta,
+            });
         };
         if (notes) {
             for (let i = 0; i < notes.length; i++) {
                 const n = notes[i];
-                add(n?.t, n?.s, n?.f, n?.sus);
+                add(n?.t, n?.s, n?.f, n?.sus, n?.ac);
             }
         }
         if (chords) {
             for (let ci = 0; ci < chords.length; ci++) {
                 const ch = chords[ci];
                 if (!ch?.notes) continue;
+                const strings = new Set();
+                let minF = Infinity, maxF = -Infinity;
                 for (let ni = 0; ni < ch.notes.length; ni++) {
                     const n = ch.notes[ni];
-                    add(ch.t, n?.s, n?.f, n?.sus);
+                    if (!Number.isInteger(n?.s) || n.s < 0 || n.s >= stringCount
+                        || !Number.isInteger(n?.f) || n.f < 0 || n.f > NFRETS) continue;
+                    strings.add(n.s);
+                    if (n.f > 0) {
+                        minF = Math.min(minF, n.f);
+                        maxF = Math.max(maxF, n.f);
+                    }
+                }
+                const chordMeta = {
+                    size: strings.size,
+                    minF,
+                    maxF,
+                };
+                for (let ni = 0; ni < ch.notes.length; ni++) {
+                    const n = ch.notes[ni];
+                    add(ch.t, n?.s, n?.f, n?.sus, n?.ac, chordMeta);
                 }
             }
         }
@@ -1112,12 +1155,17 @@
             if (!events || events.length < 2) continue;
             events.sort((a, b) => a.t - b.t || a.s - b.s);
             // Standalone arpeggio notes can duplicate chord members. Collapse
-            // exact onset/string duplicates so dense charts stay cheap to scan.
+            // exact onset/string/fret duplicates so dense charts stay cheap to
+            // scan, retaining enough origin metadata to resolve open-gem bounds.
             let write = 1;
             for (let read = 1; read < events.length; read++) {
                 const prev = events[write - 1], cur = events[read];
-                if (Math.abs(cur.t - prev.t) < 1e-6 && cur.s === prev.s) {
+                if (Math.abs(cur.t - prev.t) < 1e-6
+                    && cur.s === prev.s) {
                     prev.end = Math.max(prev.end, cur.end);
+                    prev.accent = prev.accent || cur.accent;
+                    prev.standalone = prev.standalone || cur.standalone;
+                    if (!prev.chordMeta && cur.chordMeta) prev.chordMeta = cur.chordMeta;
                     continue;
                 }
                 events[write++] = cur;
@@ -1134,7 +1182,7 @@
      * reverses that relationship. Returns a count so the per-frame path never
      * allocates an array.
      */
-    function hwyFillTrailYieldTimes(events, sourceT, sourceString, now, susEnd, inverted, outStarts, outEnds, initialCount = 0, visibleEnd = susEnd, settings = TRAIL_YIELD_DEFAULTS) {
+    function hwyFillTrailYieldTimes(events, sourceT, sourceString, now, susEnd, inverted, outStarts, outEnds, initialCount = 0, visibleEnd = susEnd, settings = TRAIL_YIELD_DEFAULTS, eventMatches = null) {
         const cfg = settings || TRAIL_YIELD_DEFAULTS;
         const capacity = Math.min(outStarts.length, outEnds.length);
         let count = Math.max(0, Math.min(capacity, initialCount | 0));
@@ -1147,10 +1195,9 @@
             else hi = mid;
         }
         const finiteVisibleEnd = Number.isFinite(visibleEnd) ? visibleEnd : susEnd;
-        // The endpoint visibility window is deliberately the same value that
-        // positions the taper before the trail end. A compatible lower gem
-        // arriving within that window after the end therefore qualifies the
-        // endpoint, matching what the settings control communicates.
+        // The endpoint visibility window is measured back from the upcoming
+        // gem. A compatible target arriving within that window after the trail
+        // end therefore qualifies the endpoint and consumes part of the taper.
         const endpointLookahead = Number.isFinite(cfg.endLeadTime)
             ? Math.max(0, cfg.endLeadTime)
             : TRAIL_YIELD_DEFAULTS.endLeadTime;
@@ -1171,7 +1218,9 @@
             const visuallyBelow = inverted
                 ? event.s < sourceString
                 : event.s > sourceString;
-            if (!visuallyBelow) continue;
+            if (eventMatches) {
+                if (!eventMatches(event, visuallyBelow)) continue;
+            } else if (!visuallyBelow) continue;
             // One notch reveals every member of a same-time chord wave. Scan
             // the tiny fixed output because open-note rails append candidates
             // from more than one fret bucket and those buckets interleave.
@@ -4969,24 +5018,25 @@
         let _slideTargetNotesRef = null;
         let _slideTargetChordsRef = null;
 
-        // Same-fret onset index for localized sustain yielding. It is rebuilt
-        // once per arrangement; drawNote only scans the current fret's short
-        // time window and writes target times into this fixed scratch buffer.
+        // Per-fret onset index for localized sustain yielding. Rebuilt once per
+        // arrangement; drawNote scans only conservative footprint buckets and
+        // bounded chart-time windows into fixed scratch buffers.
         let _trailYieldEventsByFret = [];
         let _trailYieldNotesRef = null;
         let _trailYieldChordsRef = null;
         let _trailYieldNStr = 0;
-        const _trailYieldStartsScratch = new Float64Array(MAX_RENDER_STRINGS * 4);
-        const _trailYieldEndsScratch = new Float64Array(MAX_RENDER_STRINGS * 4);
+        const TRAIL_YIELD_TARGET_CAPACITY = MAX_RENDER_STRINGS * 16;
+        const _trailYieldStartsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
+        const _trailYieldEndsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
         // Standalone open notes render two separated rails. Keep independent
         // windows so only the rail physically covering a later gem yields.
         const _trailYieldOpenStartsScratch = [
-            new Float64Array(MAX_RENDER_STRINGS * 4),
-            new Float64Array(MAX_RENDER_STRINGS * 4),
+            new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
+            new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
         ];
         const _trailYieldOpenEndsScratch = [
-            new Float64Array(MAX_RENDER_STRINGS * 4),
-            new Float64Array(MAX_RENDER_STRINGS * 4),
+            new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
+            new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
         ];
         const _trailYieldOpenCountsScratch = new Uint8Array(2);
 
@@ -5629,6 +5679,23 @@
         let _leftyCached = false;
         const xFret = f => (_leftyCached ? -fretX(f) : fretX(f));
         const xFretMid = f => (_leftyCached ? -fretMid(f) : fretMid(f));
+        const OPEN_NOTE_PAD_X = NW * 0.4;
+        // Open-string note width: same outer span as the chord frame (anchor
+        // plus horizontal padding, or the default four-fret window). Kept at
+        // factory scope so note rendering and trail/gem matching share it.
+        function openNoteLaneBoxW(chartTime) {
+            const bounds = anchorLaneBoundsAt(_drawAnchors, chartTime);
+            if (bounds) {
+                const xl = fretX(bounds.dMin);
+                const xr = fretX(bounds.dMax);
+                if (xr > xl) return (xr - xl) + OPEN_NOTE_PAD_X * 2;
+            }
+            const fMin = 1, fMax = 4;
+            const xl = fretX(fMin - 1);
+            const xr = fretX(Math.max(fMax, fMin + 2));
+            if (xr > xl) return (xr - xl) + OPEN_NOTE_PAD_X * 2;
+            return 40 * K;
+        }
         const boardSpanX = () => {
             const x0 = xFret(0);
             const xN = xFret(NFRETS);
@@ -11545,25 +11612,6 @@
                 ? lookaheadComputeFretBounds(now, anchors, notes, chords)
                 : null;
 
-            // Open-string note width: same outer span as chord frame (anchor + padX,
-            // or default 4-fret window when chart has no anchor at t).
-            const padChordOpenX = NW * 0.4;
-            const openNoteLaneBoxW = chartTime => {
-                const chAncB = anchorLaneBoundsAt(anchors, chartTime);
-                if (chAncB) {
-                    const xl = fretX(chAncB.dMin);
-                    const xr = fretX(chAncB.dMax);
-                    if (xr > xl) return (xr - xl) + padChordOpenX * 2;
-                }
-                const spanF = 4;
-                const fMinCh = 1;
-                const fMaxCh = fMinCh + spanF - 1;
-                const xl = fretX(fMinCh - 1);
-                const xr = fretX(Math.max(fMaxCh, fMinCh + 2));
-                if (xr > xl) return (xr - xl) + padChordOpenX * 2;
-                return 40 * K;
-            };
-
             // ── Frame state ───────────────────────────────────────────────
             // Reuse hoisted scratch arrays — reset only the live [0..nStr) /
             // [0..NFRETS] range instead of allocating new arrays every frame.
@@ -14336,19 +14384,11 @@
         function slideRibbonUpdatePositions(geom, strandBaseX, tw, th, y, sliceDur, susStart, now, n, slideSt, yieldStarts = null, yieldEnds = null, yieldCount = 0, trailEnd = Infinity, yieldSettings = TRAIL_YIELD_DEFAULTS) {
             const pa = geom.attributes.position.array;
             const S = SLIDE_RIBBON_SAMPLES;
-            // slideOffsetWorldX is defined at module scope so it returns a
-            // right-handed delta (built from non-lefty fretMid). strandBaseX is
-            // already lefty-mirrored via xFretMid at the call site, so the
-            // delta needs the same sign flip to keep the slide tracking the
-            // mirrored fretboard direction.
-            const dirMul = _leftyCached ? -1 : 1;
             let v = 0;
             for (let k = 0; k <= S; k++) {
                 const Tk = susStart + (k / S) * sliceDur;
                 const zk = dZ(Tk - now);
-                const xc = strandBaseX
-                    + dirMul * slideOffsetWorldX(n, Tk, slideSt)
-                    + tremoloOffsetWorldX(n, Tk, tw);
+                const xc = sustainTrailCenterXAt(n, strandBaseX, Tk, slideSt, tw);
                 const yc = y + techniqueYOffsetWorld(n, Tk);
                 const yieldAmount = yieldCount > 0
                     ? hwyTrailYieldAmountAt(
@@ -14471,6 +14511,172 @@
             const phase = (elapsed % TREMOLO_BUMP_S) / TREMOLO_BUMP_S;
             const tri = (Math.abs(phase - 0.5) - 0.25) * 3;
             return trailW * 0.5 * tri;
+        }
+
+        /** Rendered X centre of one sustain strand at a chart time. */
+        function sustainTrailCenterXAt(n, strandBaseX, chartTime, slideSt, trailW) {
+            return strandBaseX
+                + (_leftyCached ? -1 : 1) * slideOffsetWorldX(n, chartTime, slideSt)
+                + tremoloOffsetWorldX(n, chartTime, trailW);
+        }
+
+        // Shared, allocation-free footprint matcher. Candidate discovery has
+        // specialized indexes, but every path (fretted, open, slide, tremolo,
+        // bend/vibrato and endpoint) reaches this same visibility rule.
+        const _trailYieldMatchContext = {
+            note: null,
+            slideSt: null,
+            strandBaseX: 0,
+            trailW: 0,
+            trailH: 0,
+            susEnd: 0,
+            techniqueMovesY: false,
+        };
+        const _trailYieldTargetXBounds = new Float64Array(2);
+
+        function trailYieldAddTargetXBounds(center, width, bounds) {
+            const halfW = Math.max(0, width) * 0.5;
+            bounds[0] = Math.min(bounds[0], center - halfW);
+            bounds[1] = Math.max(bounds[1], center + halfW);
+        }
+
+        /** Resolve the same open-gem span used by standalone/chord rendering. */
+        function trailYieldOpenTargetXBounds(event, bounds) {
+            bounds[0] = Infinity;
+            bounds[1] = -Infinity;
+            const anchor = anchorLaneBoundsAt(_drawAnchors, event.t);
+            const anchorCX = anchor
+                ? (xFret(anchor.dMin) + xFret(anchor.dMax)) * 0.5
+                : curX;
+            const outlineWidthScale = (35 / 40) * 1.1
+                * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
+            const coreWidthScale = event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1;
+            const bodyScale = 0.96 * Math.max(coreWidthScale, outlineWidthScale);
+
+            if (event.standalone || !event.chordMeta) {
+                trailYieldAddTargetXBounds(
+                    anchorCX, openNoteLaneBoxW(event.t) * bodyScale, bounds,
+                );
+            }
+
+            const meta = event.chordMeta;
+            if (meta) {
+                const anyFretted = Number.isFinite(meta.minF) && Number.isFinite(meta.maxF);
+                let chordCX = anchorCX;
+                if (!anchor && anyFretted) {
+                    chordCX = (xFretMid(meta.minF) + xFretMid(meta.maxF)) * 0.5;
+                }
+                let laneW = openNoteLaneBoxW(event.t);
+                if (meta.size > 1) {
+                    const anchorCoversFrets = anchor && anyFretted
+                        ? meta.minF >= anchor.dMin && meta.maxF <= anchor.dMax
+                        : true;
+                    if (anchor && anchorCoversFrets) {
+                        laneW = Math.abs(xFret(anchor.dMax) - xFret(anchor.dMin));
+                    } else if (anyFretted) {
+                        laneW = Math.abs(
+                            xFret(Math.max(meta.maxF, meta.minF + 2))
+                            - xFret(meta.minF - 1)
+                        ) + OPEN_NOTE_PAD_X * 2;
+                    } else {
+                        laneW += OPEN_NOTE_PAD_X * 2;
+                    }
+                }
+                trailYieldAddTargetXBounds(chordCX, laneW * bodyScale, bounds);
+            }
+            return Number.isFinite(bounds[0]) && Number.isFinite(bounds[1]);
+        }
+
+        function trailYieldEventMatchesRenderedFootprint(event, visuallyBelow) {
+            const ctx = _trailYieldMatchContext;
+            const n = ctx.note;
+            if (!n) return false;
+            // Reject impossible string relationships before resolving any
+            // geometry. The shared rule below repeats this guard so the pure
+            // helper remains correct and independently testable.
+            if (!visuallyBelow
+                && (!ctx.techniqueMovesY || event.s === n.s)) return false;
+
+            // Post-end targets compare against the terminal trail face; motion
+            // must not continue through the empty gap after the sustain ends.
+            const sampleT = Math.min(event.t, ctx.susEnd);
+            const trailX = sustainTrailCenterXAt(
+                n, ctx.strandBaseX, sampleT, ctx.slideSt, ctx.trailW,
+            );
+            let targetX, targetW;
+            if (event.f === 0) {
+                if (!trailYieldOpenTargetXBounds(event, _trailYieldTargetXBounds)) return false;
+                targetX = (_trailYieldTargetXBounds[0] + _trailYieldTargetXBounds[1]) * 0.5;
+                targetW = _trailYieldTargetXBounds[1] - _trailYieldTargetXBounds[0];
+            } else {
+                targetX = xFretMid(event.f);
+                targetW = NW * 1.1
+                    * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
+            }
+            const trailY = visuallyBelow
+                ? 0
+                : sY(n.s) + techniqueYOffsetWorld(n, sampleT);
+            const targetH = event.f === 0
+                ? NH * 0.1 * 1.5 * 1.1
+                    * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1)
+                : NH * 1.1
+                    * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
+            return hwyTrailFootprintsCanOcclude(
+                visuallyBelow,
+                ctx.techniqueMovesY,
+                event.s === n.s,
+                trailX,
+                ctx.trailW,
+                targetX,
+                targetW,
+                trailY,
+                ctx.trailH,
+                visuallyBelow ? 0 : sY(event.s),
+                targetH,
+            );
+        }
+
+        /**
+         * Conservative fret-bucket test for a strand's complete X sweep. The
+         * exact footprint predicate still runs at each candidate onset; this
+         * only avoids opening time windows for frets the strand cannot reach.
+         */
+        function trailYieldSweepMayReachFret(sweepCenter, sweepWidth, fret) {
+            const widestGem = NW * 1.1 * ACCENT_RIM_XY_SCALE_MUL;
+            return hwyTrailOverlapsGemX(
+                sweepCenter, sweepWidth, xFretMid(fret), widestGem,
+            );
+        }
+
+        /** Collect one strand's qualifying targets through the shared matcher. */
+        function collectTrailYieldTargetsForStrand(
+            n, now, susEnd, visibleEnd, starts, ends, strandBaseX,
+        ) {
+            const ctx = _trailYieldMatchContext;
+            ctx.strandBaseX = strandBaseX;
+            const slideEndX = strandBaseX
+                + (_leftyCached ? -1 : 1)
+                    * slideOffsetWorldX(n, n.t + (n.sus || 0), ctx.slideSt);
+            // tremoloOffsetWorldX ranges from -0.375 to +0.375 trail widths.
+            const tremoloReach = n.tr ? ctx.trailW * 0.375 : 0;
+            const sweepCenter = (strandBaseX + slideEndX) * 0.5;
+            const sweepWidth = Math.abs(slideEndX - strandBaseX)
+                + ctx.trailW + tremoloReach * 2;
+            let count = 0;
+            // Fret zero is always considered because an open gem spans the
+            // active lane; fretted buckets use this cheap conservative sweep.
+            for (let f = 0; f <= NFRETS && count < starts.length; f++) {
+                if (f > 0 && !trailYieldSweepMayReachFret(
+                    sweepCenter, sweepWidth, f,
+                )) continue;
+                count = hwyFillTrailYieldTimes(
+                    _trailYieldEventsByFret[f],
+                    n.t, n.s, now, susEnd, _invertedCached,
+                    starts, ends, count, visibleEnd, trailYieldSettings,
+                    trailYieldEventMatchesRenderedFootprint,
+                );
+            }
+            return count;
         }
 
         /* ── Note renderer ───────────────────────────────────────────────── */
@@ -15123,38 +15329,36 @@
                             : SINGLE_SUS_OFFSETS;
                         let yieldCount = 0;
                         const visibleYieldEnd = susStart + sliceDur;
-                        if (trailYieldSettings.enabled && n.f === 0) {
-                            const trailWidth = tw + 0.4 * K;
-                            const gemWidth = NW * 1.1;
-                            for (let si = 0; si < offsets.length; si++) {
-                                const starts = _trailYieldOpenStartsScratch[si];
-                                const ends = _trailYieldOpenEndsScratch[si];
-                                let strandCount = hwyFillTrailYieldTimes(
-                                    _trailYieldEventsByFret[0],
-                                    n.t, s, now, susEnd, _invertedCached,
-                                    starts, ends, 0, visibleYieldEnd, trailYieldSettings,
-                                );
-                                const strandX = xBase + offsets[si];
-                                for (let f = 1; f <= NFRETS && strandCount < starts.length; f++) {
-                                    if (!hwyTrailOverlapsGemX(
-                                        strandX, trailWidth, xFretMid(f), gemWidth,
-                                    )) continue;
-                                    strandCount = hwyFillTrailYieldTimes(
-                                        _trailYieldEventsByFret[f],
-                                        n.t, s, now, susEnd, _invertedCached,
-                                        starts, ends, strandCount, visibleYieldEnd, trailYieldSettings,
+                        if (trailYieldSettings.enabled) {
+                            const ctx = _trailYieldMatchContext;
+                            ctx.note = n;
+                            ctx.slideSt = slideSt;
+                            ctx.trailW = tw + 0.4 * K;
+                            ctx.trailH = th + 0.4 * K;
+                            ctx.susEnd = susEnd;
+                            ctx.techniqueMovesY = (Number(n.bn) > 0)
+                                || (Array.isArray(n.bnv) && n.bnv.length > 0)
+                                || hasTechniqueVibrato;
+
+                            if (n.f === 0) {
+                                // Each open rail is an independent strand.
+                                for (let si = 0; si < offsets.length; si++) {
+                                    const starts = _trailYieldOpenStartsScratch[si];
+                                    const ends = _trailYieldOpenEndsScratch[si];
+                                    const strandCount = collectTrailYieldTargetsForStrand(
+                                        n, now, susEnd, visibleYieldEnd,
+                                        starts, ends, xBase + offsets[si],
                                     );
+                                    _trailYieldOpenCountsScratch[si] = strandCount;
+                                    yieldCount += strandCount;
                                 }
-                                _trailYieldOpenCountsScratch[si] = strandCount;
-                                yieldCount += strandCount;
+                            } else {
+                                yieldCount = collectTrailYieldTargetsForStrand(
+                                    n, now, susEnd, visibleYieldEnd,
+                                    _trailYieldStartsScratch, _trailYieldEndsScratch,
+                                    xBase,
+                                );
                             }
-                        } else if (trailYieldSettings.enabled) {
-                            yieldCount = hwyFillTrailYieldTimes(
-                                _trailYieldEventsByFret[n.f],
-                                n.t, s, now, susEnd, _invertedCached,
-                                _trailYieldStartsScratch, _trailYieldEndsScratch,
-                                0, visibleYieldEnd, trailYieldSettings,
-                            );
                         }
                         const ribbonSusTrail = yieldCount > 0 || !!(
                             (slideSt && n.f > 0 && (n.sus || 0) > 1e-4)
