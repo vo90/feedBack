@@ -402,14 +402,14 @@ test('sus-trail strip renderOrder formula keeps trails strictly below chord fram
     assert.ok(layerIndex('SUSTAIN_TRAIL') < layerIndex('CHORD_FRAME'));
 });
 
-test('sus-trail ribbon renderOrder uses target-aware depth on the named trail layer', () => {
+test('sus-trail ribbon renderOrder conditionally includes target trails on the named layer', () => {
     // The ribbon midpoint is the fallback. A yielding strand may promote that
     // depth behind its actual obscured target and attached trail before using
     // the sustain-trail layer.
     assert.match(
         src(),
-        /const\s+ribbonOrderZ\s*=\s*hwyTrailPriorityWorldZ\([\s\S]{0,500}?-\s*_ribDt\s*\*\s*TS[\s\S]{0,500}?strandTargetTrailEnds[\s\S]{0,80}?\)\s*;/,
-        'sus-trail ribbon depth must include target gems and attached trails',
+        /const\s+ribbonOrderZ\s*=\s*hwyTrailPriorityWorldZ\([\s\S]{0,500}?-\s*_ribDt\s*\*\s*TS[\s\S]{0,500}?includeTargetTrails\s*\?\s*strandTargetTrailEnds\s*:\s*null[\s\S]{0,80}?\)\s*;/,
+        'sus-trail ribbon depth must include attached trails only when requested',
     );
     assert.match(
         src(),

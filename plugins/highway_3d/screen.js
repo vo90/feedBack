@@ -1036,6 +1036,7 @@
     const TRAIL_YIELD_DEFAULTS = Object.freeze({
         enabled: true,
         gemInFront: false,
+        includeTrails: false,
         minScale: 0.30,
         leadTime: 0.50,
         taperDuration: 0.05,
@@ -1106,11 +1107,10 @@
      * Depth used to order one yielding ribbon strand. A ribbon is one pooled
      * mesh, so its geometric midpoint cannot consistently represent gems near
      * either end of a long sustain. Strands with real yield targets instead
-     * use a target depth: the farthest attached target trail when notes are
-     * prioritized (the covering trail paints before every target), or the
-     * nearest gem when trails are prioritized (the covering trail paints after
-     * every target). The named layer breaks an equal-depth tie in the selected
-     * direction.
+     * use a target depth: the farthest requested target extent when notes are
+     * prioritized (a gem onset, or its trail endpoint when included), or the
+     * nearest gem when trails are prioritized. The named layer breaks an
+     * equal-depth tie in the selected direction.
      */
     function hwyTrailPriorityWorldZ(
         fallbackWorldZ,
@@ -1127,10 +1127,10 @@
         const count = Math.min(yieldStarts.length, Math.max(0, yieldCount | 0));
         for (let i = 0; i < count; i++) {
             if (!Number.isFinite(yieldStarts[i])) continue;
-            // Front-priority mode includes the target's attached sustain. Put
-            // the covering ribbon behind the far edge of that trail, not just
-            // behind its gem onset. Trail-priority mode intentionally keeps
-            // using the onset so the covering ribbon paints after both.
+            // When target endpoints are supplied, front-priority mode includes
+            // the attached sustain. Otherwise both modes intentionally use the
+            // gem onset, with their selected depth extreme and layer deciding
+            // which side of that gem the covering ribbon paints on.
             const targetT = gemInFront && targetTrailEnds
                 && Number.isFinite(targetTrailEnds[i])
                 ? Math.max(yieldStarts[i], targetTrailEnds[i])
@@ -1148,13 +1148,15 @@
     // named render layer (1 / RENDER_ORDER_LAYER_STACK.length). The trail body
     // itself adds 0.0005, so this step must be larger than that sub-layer.
     const TRAIL_YIELD_STRING_ORDER_STEP = 0.002;
-    function hwyTrailPriorityStringOffset(stringIndex, stringCount, inverted, gemInFront) {
+    function hwyTrailPriorityStringOffset(
+        stringIndex, stringCount, inverted, targetTrailsInFront,
+    ) {
         if (!Number.isInteger(stringIndex) || !Number.isInteger(stringCount)
             || stringCount <= 1 || stringIndex < 0 || stringIndex >= stringCount) return 0;
         const visuallyLowerRank = inverted
             ? stringCount - 1 - stringIndex
             : stringIndex;
-        const priorityRank = gemInFront
+        const priorityRank = targetTrailsInFront
             ? visuallyLowerRank
             : stringCount - 1 - visuallyLowerRank;
         return priorityRank * TRAIL_YIELD_STRING_ORDER_STEP;
@@ -2757,7 +2759,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration };
+    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -3167,7 +3169,7 @@
     // means (fall back to default rather than silently flipping to
     // false). Add new boolean keys to BG_DEFAULTS and they pick this
     // up via the dispatch below.
-    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront']);
+    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront', 'trailYieldIncludeTrails']);
     function _bgCoerceBool(val, fallback) {
         if (val === 'true' || val === '1') return true;
         if (val === 'false' || val === '0') return false;
@@ -3332,6 +3334,7 @@
     window.h3dBgSetBloom        = (v) => _bgWriteGlobal('bloom', !!v);
     window.h3dBgSetTrailYieldEnabled = (v) => _bgWriteGlobal('trailYieldEnabled', !!v);
     window.h3dBgSetTrailYieldGemInFront = (v) => _bgWriteGlobal('trailYieldGemInFront', !!v);
+    window.h3dBgSetTrailYieldIncludeTrails = (v) => _bgWriteGlobal('trailYieldIncludeTrails', !!v);
     window.h3dBgSetTrailYieldMinScale = (v) => _bgWriteGlobal('trailYieldMinScale', v);
     window.h3dBgSetTrailYieldLeadTime = (v) => _bgWriteGlobal('trailYieldLeadTime', v);
     window.h3dBgSetTrailYieldTaperDuration = (v) => _bgWriteGlobal('trailYieldTaperDuration', v);
@@ -8927,6 +8930,7 @@
                     changedKey === 'slideArrowChainPreviewVisible' ||
                     changedKey === 'trailYieldEnabled' ||
                     changedKey === 'trailYieldGemInFront' ||
+                    changedKey === 'trailYieldIncludeTrails' ||
                     changedKey === 'trailYieldMinScale' ||
                     changedKey === 'trailYieldLeadTime' ||
                     changedKey === 'trailYieldTaperDuration' ||
@@ -9260,6 +9264,7 @@
             slideArrowChainPreviewVisible = _bgReadSetting(panelKey, 'slideArrowChainPreviewVisible');
             trailYieldSettings.enabled = _bgReadSetting(panelKey, 'trailYieldEnabled');
             trailYieldSettings.gemInFront = _bgReadSetting(panelKey, 'trailYieldGemInFront');
+            trailYieldSettings.includeTrails = _bgReadSetting(panelKey, 'trailYieldIncludeTrails');
             trailYieldSettings.minScale = _bgReadSetting(panelKey, 'trailYieldMinScale');
             trailYieldSettings.leadTime = _bgReadSetting(panelKey, 'trailYieldLeadTime');
             trailYieldSettings.taperDuration = _bgReadSetting(panelKey, 'trailYieldTaperDuration');
@@ -14743,6 +14748,8 @@
             // bounded X sweep so the gem and its trail receive one consistent
             // priority. Slides are monotonic; tremolo's complete lateral reach
             // is known analytically, so this stays constant-time and allocation-free.
+            if (!trailYieldSettings.gemInFront
+                || !trailYieldSettings.includeTrails) return false;
             const targetTrailEnd = Math.min(ctx.susEnd, event.end);
             // drawNote uses the same 0.01 s cutoff for emitting a sustain.
             if (!visuallyBelow || targetTrailEnd <= event.t + 0.01) return false;
@@ -14862,6 +14869,8 @@
             n, now, susEnd, visibleEnd, starts, ends, targetTrailEnds, strandBaseX,
         ) {
             const ctx = _trailYieldMatchContext;
+            const includeTargetTrails = trailYieldSettings.gemInFront
+                && trailYieldSettings.includeTrails;
             ctx.strandBaseX = strandBaseX;
             const slideEndX = strandBaseX
                 + (_leftyCached ? -1 : 1)
@@ -14884,7 +14893,7 @@
                     starts, ends, count, visibleEnd, trailYieldSettings,
                     trailYieldEventMatchesRenderedFootprint,
                     trailYieldMarkTarget,
-                    targetTrailEnds,
+                    includeTargetTrails ? targetTrailEnds : null,
                 );
             }
             return count;
@@ -15646,18 +15655,20 @@
                                 const strandYieldCount = trailYieldSettings.enabled
                                     ? (n.f === 0 ? _trailYieldOpenCountsScratch[si] : yieldCount)
                                     : 0;
+                                const includeTargetTrails = trailYieldSettings.gemInFront
+                                    && trailYieldSettings.includeTrails;
                                 const ribbonOrderZ = hwyTrailPriorityWorldZ(
                                     -_ribDt * TS, now,
                                     strandYieldStarts, strandYieldCount,
                                     trailYieldSettings.gemInFront, TS,
-                                    strandTargetTrailEnds,
+                                    includeTargetTrails ? strandTargetTrailEnds : null,
                                 );
                                 const ribbonRenderOrder = renderOrderForLayerAtZ(
                                     ribbonOrderZ, 'SUSTAIN_TRAIL',
                                 ) + (strandYieldCount > 0
                                     ? hwyTrailPriorityStringOffset(
                                         n.s, nStr, _invertedCached,
-                                        trailYieldSettings.gemInFront,
+                                        includeTargetTrails,
                                     )
                                     : 0);
                                 const olMesh = pSusRibbonOl.get();

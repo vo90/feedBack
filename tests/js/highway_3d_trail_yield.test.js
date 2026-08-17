@@ -57,6 +57,7 @@ const helpers = loadHelpers();
 test('reviewed trail-visibility defaults match the showcase settings', () => {
     assert.equal(helpers.TRAIL_YIELD_DEFAULTS.enabled, true);
     assert.equal(helpers.TRAIL_YIELD_DEFAULTS.gemInFront, false);
+    assert.equal(helpers.TRAIL_YIELD_DEFAULTS.includeTrails, false);
     assert.equal(helpers.TRAIL_YIELD_DEFAULTS.minScale, 0.30);
     assert.equal(helpers.TRAIL_YIELD_DEFAULTS.leadTime, 0.50);
     assert.equal(helpers.TRAIL_YIELD_DEFAULTS.taperDuration, 0.05);
@@ -560,6 +561,7 @@ test('ribbon faces are outward-wound for the highway negative-Z direction', () =
 test('yielding uses the existing ribbon path and gem front priority is optional', () => {
     const src = fs.readFileSync(SCREEN_JS, 'utf8');
     assert.equal(helpers.TRAIL_YIELD_DEFAULTS.gemInFront, false);
+    assert.equal(helpers.TRAIL_YIELD_DEFAULTS.includeTrails, false);
     assert.match(src, /const\s+ribbonSusTrail\s*=\s*yieldCount\s*>\s*0\s*\|\|/);
     assert.match(src, /const\s+isTrailYieldTarget\s*=\s*!!\(trailYieldGemEvent[\s\S]{0,140}?_trailYieldTargetFrame\s*===\s*_trailYieldFrameId\)/);
     assert.match(src, /hwyTrailYieldGemLayer\([\s\S]{0,140}?'NOTE_OUTLINE',\s*'NOTE_OUTLINE_BEHIND_TRAIL'/);
@@ -627,6 +629,11 @@ test('rendering and eligibility share one rendered footprint model', () => {
     assert.match(matcherBody, /Math\.min\(ctx\.susEnd,\s*event\.end\)/);
     assert.match(matcherBody, /slideOffsetWorldX\(n,\s*targetTrailEnd,\s*ctx\.slideSt\)/);
     assert.match(matcherBody, /hwyTrailSweepOverlapsGemX\(/);
+    assert.match(
+        matcherBody,
+        /if\s*\(!trailYieldSettings\.gemInFront[\s\S]{0,100}?\|\|\s*!trailYieldSettings\.includeTrails\)\s*return false;[\s\S]{0,900}?hwyTrailSweepOverlapsGemX\(/,
+        'trail-only crossings must not promote an otherwise unobscured gem',
+    );
 
     const rendererBody = src.slice(rendererDecl, src.indexOf('        function noteHasVibrato(', rendererDecl));
     assert.match(rendererBody, /sustainTrailCenterXAt\(/);
@@ -648,6 +655,7 @@ test('3D settings expose one shared width and separate passing-note and endpoint
     const ids = [
         'h3d-trail-yield-enabled',
         'h3d-trail-yield-gem-in-front',
+        'h3d-trail-yield-include-trails',
         'h3d-trail-yield-min-scale',
         'h3d-trail-yield-lead-time',
         'h3d-trail-yield-taper-duration',
@@ -675,6 +683,7 @@ test('3D settings expose one shared width and separate passing-note and endpoint
     const uiDefaultLiterals = {
         trailYieldEnabled: 'true',
         trailYieldGemInFront: 'false',
+        trailYieldIncludeTrails: 'false',
         trailYieldMinScale: '0\\.30',
         trailYieldLeadTime: '0\\.50',
         trailYieldTaperDuration: '0\\.05',
@@ -694,6 +703,7 @@ test('3D settings expose one shared width and separate passing-note and endpoint
     const setterKeys = [
         'TrailYieldEnabled',
         'TrailYieldGemInFront',
+        'TrailYieldIncludeTrails',
         'TrailYieldMinScale',
         'TrailYieldLeadTime',
         'TrailYieldTaperDuration',
@@ -711,6 +721,21 @@ test('3D settings expose one shared width and separate passing-note and endpoint
             : `trailYield${key[0].toUpperCase()}${key.slice(1)}`;
         assert.match(src, new RegExp(`_bgReadSetting\\(panelKey, '${bgKey}'\\)`));
     }
+
+    assert.match(
+        html,
+        /function\s+syncFrontPriority\(\)[\s\S]{0,500}?includeTrailsControl\.disabled\s*=\s*!gemInFront\.checked/,
+        'the attached-trail option must only be available with note front priority',
+    );
+    assert.match(
+        src,
+        /const\s+includeTargetTrails\s*=\s*trailYieldSettings\.gemInFront\s*&&\s*trailYieldSettings\.includeTrails/,
+    );
+    assert.match(
+        src,
+        /includeTargetTrails\s*\?\s*strandTargetTrailEnds\s*:\s*null/,
+        'target trail endpoints must only affect ordering when explicitly included',
+    );
 
     const scriptStart = html.indexOf('<script>', html.indexOf('id="h3d-trail-yield-enabled"'));
     const scriptEnd = html.indexOf('</script>', scriptStart);
