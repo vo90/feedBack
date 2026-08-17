@@ -22,8 +22,8 @@
 //   [chordFrameRenderOrder] chord frame edges = renderOrderForLayerAtZ(z, CHORD_FRAME)
 //   [layered above chordFrameRenderOrder] chord-frame glow, connector/drop lines
 //   [below chordFrameRenderOrder] sustain-trail strip segments (Z-proportional, always < frame)
-//   [renderOrderForLayerAtZ(noteZ, NOTE_OUTLINE)] note gem outline
-//   [renderOrderForLayerAtZ(noteZ, NOTE_CORE)] note gem core
+//   [renderOrderForLayerAtZ(noteZ, NOTE_*_BEHIND_TRAIL)] note gem when front priority is off
+//   [renderOrderForLayerAtZ(noteZ, NOTE_OUTLINE / NOTE_CORE)] note gem when front priority is on
 //   [techniqueMarkerRenderOrder] technique markers
 //   [after board wire layers] note fret labels, above gem symbols and fret wires
 //   [renderOrderForLayerAtZ(0, BOARD_STRING)]    string mesh (drawn over gems but under fret wires)
@@ -312,7 +312,7 @@ test('chordFrameRenderOrder uses renderOrderForLayerAtZ(z, CHORD_FRAME)', () => 
     assert.ok(layerIndex('CHORD_FRAME') < layerIndex('NOTE_OUTLINE'));
 });
 
-test('note outline uses renderOrderForLayerAtZ(noteZ, NOTE_OUTLINE)', () => {
+test('note outline uses renderOrderForLayerAtZ with its selected named layer', () => {
     // Per-note gem renderOrder. noteZ is negative (ahead of hit line → negative
     // Z in world space). At noteZ=0 (on the hit line), the note outline uses
     // the near render-order base plus its layer index; far notes clamp to the
@@ -320,8 +320,8 @@ test('note outline uses renderOrderForLayerAtZ(noteZ, NOTE_OUTLINE)', () => {
     // The ordered layer list keeps gems above chord frames everywhere.
     assert.match(
         src(),
-        /outline\.renderOrder\s*=\s*renderOrderForLayerAtZ\(\s*noteZ\s*,\s*'NOTE_OUTLINE'\s*\)\s*;/,
-        'note outline must use renderOrderForLayerAtZ(noteZ, NOTE_OUTLINE)',
+        /outline\.renderOrder\s*=\s*renderOrderForLayerAtZ\(\s*noteZ\s*,\s*noteOutlineLayer\s*\)\s*;/,
+        'note outline must use renderOrderForLayerAtZ(noteZ, noteOutlineLayer)',
     );
     assert.strictEqual(layerIndex('CHORD_FILL'), 0);
 });
@@ -402,35 +402,41 @@ test('sus-trail strip renderOrder formula keeps trails strictly below chord fram
     assert.ok(layerIndex('SUSTAIN_TRAIL') < layerIndex('CHORD_FRAME'));
 });
 
-test('sus-trail ribbon renderOrder formula mirrors strip formula using time-based depth', () => {
-    // Ribbons use _ribDt (time from now to ribbon midpoint) converted to the
-    // same Z scale as dZ() on the sustain-trail layer.
+test('sus-trail ribbon renderOrder uses target-aware depth on the named trail layer', () => {
+    // The ribbon midpoint is the fallback. A yielding strand may promote that
+    // depth to its actual obscured target before using the sustain-trail layer.
     assert.match(
         src(),
-        /const\s+ribbonRenderOrder\s*=\s*renderOrderForLayerAtZ\(\s*-\s*_ribDt\s*\*\s*TS\s*,\s*'SUSTAIN_TRAIL'\s*\)\s*;/,
-        'sus-trail ribbon renderOrder must use renderOrderForLayerAtZ on the sustain-trail layer',
+        /const\s+ribbonOrderZ\s*=\s*hwyTrailPriorityWorldZ\([\s\S]{0,220}?-\s*_ribDt\s*\*\s*TS[\s\S]{0,220}?\)\s*;/,
+        'sus-trail ribbon depth must be resolved from its midpoint and yield targets',
     );
+    assert.match(src(), /const\s+ribbonRenderOrder\s*=\s*renderOrderForLayerAtZ\(\s*ribbonOrderZ\s*,\s*'SUSTAIN_TRAIL'\s*,?\s*\)\s*;/);
 });
 
 // ---------------------------------------------------------------------------
 // Note gem ordering (outline < core, both driven by named depth layers)
 // ---------------------------------------------------------------------------
 
-test('note gem outline uses the named outline layer', () => {
+test('note gem outline switches between the named layers around sustain trails', () => {
     assert.match(
         src(),
-        /outline\.renderOrder\s*=\s*renderOrderForLayerAtZ\(\s*noteZ\s*,\s*'NOTE_OUTLINE'\s*\)\s*;/,
-        'note gem outline must use NOTE_OUTLINE',
+        /const\s+noteOutlineLayer\s*=\s*trailYieldSettings\.gemInFront\s*\?\s*'NOTE_OUTLINE'\s*:\s*'NOTE_OUTLINE_BEHIND_TRAIL'\s*;/,
+        'note gem outline must select its named layer from the front-priority setting',
     );
+    assert.match(src(), /outline\.renderOrder\s*=\s*renderOrderForLayerAtZ\(\s*noteZ\s*,\s*noteOutlineLayer\s*\)\s*;/);
+    assert.ok(layerIndex('NOTE_OUTLINE_BEHIND_TRAIL') < layerIndex('SUSTAIN_TRAIL'));
     assert.ok(layerIndex('NOTE_OUTLINE') > layerIndex('FRET_COLUMN'));
 });
 
-test('note gem core uses the named layer above outline', () => {
+test('note gem core switches between the named layers around sustain trails', () => {
     assert.match(
         src(),
-        /core\.renderOrder\s*=\s*renderOrderForLayerAtZ\(\s*noteZ\s*,\s*'NOTE_CORE'\s*\)\s*;/,
-        'note gem core must use NOTE_CORE',
+        /const\s+noteCoreLayer\s*=\s*trailYieldSettings\.gemInFront\s*\?\s*'NOTE_CORE'\s*:\s*'NOTE_CORE_BEHIND_TRAIL'\s*;/,
+        'note gem core must select its named layer from the front-priority setting',
     );
+    assert.match(src(), /core\.renderOrder\s*=\s*renderOrderForLayerAtZ\(\s*noteZ\s*,\s*noteCoreLayer\s*\)\s*;/);
+    assert.ok(layerIndex('NOTE_CORE_BEHIND_TRAIL') > layerIndex('NOTE_OUTLINE_BEHIND_TRAIL'));
+    assert.ok(layerIndex('NOTE_CORE_BEHIND_TRAIL') < layerIndex('SUSTAIN_TRAIL'));
     assert.ok(layerIndex('NOTE_CORE') > layerIndex('NOTE_OUTLINE'));
 });
 

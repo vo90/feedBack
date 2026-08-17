@@ -973,6 +973,9 @@
         'CHORD_FILL',
         'CHORD_STRUM_FILL',
         'CHORD_STRUM_LINE',
+        'NOTE_OUTLINE_BEHIND_TRAIL',
+        'NOTE_CORE_BEHIND_TRAIL',
+        'NOTE_FACE_BEHIND_TRAIL',
         'SUSTAIN_TRAIL',
         'CHORD_FRAME',
         'CHORD_EDGE_GLOW',
@@ -1024,6 +1027,220 @@
 
     /** Match `nextNoteByString` onset to this note (float + chart rounding; avoids ghost / glow flicker). */
     const NEXT_ON_STRING_T_EPS = 0.06;
+    // Sustain-trail reveal: when a later same-fret gem sits on the visually
+    // lower string, taper only the part of the older trail surrounding that
+    // gem. This is a chart-space shape, not a live animation: the notch is
+    // already present when that section of trail first enters the viewport.
+    // Defaults clear the next instruction gently, then restore the ringing
+    // trail quickly; advanced settings can tune each part independently.
+    const TRAIL_YIELD_DEFAULTS = Object.freeze({
+        enabled: true,
+        gemInFront: false,
+        minScale: 0.15,
+        leadTime: 0.42,
+        taperDuration: 0.30,
+        holdAfter: 0.10,
+        recoverDuration: 0.24,
+        endLeadTime: 0.42,
+        endTaperDuration: 0.30,
+    });
+    function hwySmoothstep01(x) {
+        const t = Math.max(0, Math.min(1, x));
+        return t * t * (3 - 2 * t);
+    }
+
+    /** True when a rendered sustain strand and gem overlap horizontally. */
+    function hwyTrailOverlapsGemX(trailX, trailWidth, gemX, gemWidth) {
+        if (!Number.isFinite(trailX) || !Number.isFinite(trailWidth)
+            || !Number.isFinite(gemX) || !Number.isFinite(gemWidth)) return false;
+        return Math.abs(trailX - gemX)
+            <= (Math.max(0, trailWidth) + Math.max(0, gemWidth)) * 0.5;
+    }
+
+    /**
+     * Depth used to order one yielding ribbon strand. A ribbon is one pooled
+     * mesh, so its geometric midpoint cannot consistently represent gems near
+     * either end of a long sustain. Strands with real yield targets instead
+     * use a target depth: the farthest target when gems are prioritized (the
+     * trail paints before every target), or the nearest when trails are
+     * prioritized (the trail paints after every target). The named layer
+     * breaks an equal-depth tie in the selected direction.
+     */
+    function hwyTrailPriorityWorldZ(fallbackWorldZ, now, yieldStarts, yieldCount, gemInFront, travelSpeed) {
+        if (!yieldStarts || yieldCount <= 0) return fallbackWorldZ;
+        let worldZ = null;
+        const speed = Number.isFinite(travelSpeed) ? Math.max(0, travelSpeed) : 0;
+        const count = Math.min(yieldStarts.length, Math.max(0, yieldCount | 0));
+        for (let i = 0; i < count; i++) {
+            if (!Number.isFinite(yieldStarts[i])) continue;
+            const targetWorldZ = Math.min(0, -(yieldStarts[i] - now) * speed);
+            if (worldZ === null) worldZ = targetWorldZ;
+            else worldZ = gemInFront
+                ? Math.min(worldZ, targetWorldZ)
+                : Math.max(worldZ, targetWorldZ);
+        }
+        return worldZ === null ? fallbackWorldZ : worldZ;
+    }
+
+    /** Chart-static same-fret onset index; rebuilt only when arrangement arrays change. */
+    function hwyBuildTrailYieldEvents(notes, chords, stringCount) {
+        const byFret = new Array(NFRETS + 1);
+        const add = (t, s, f, sustain) => {
+            if (!Number.isFinite(t) || !Number.isInteger(s) || s < 0 || s >= stringCount) return;
+            if (!Number.isInteger(f) || f < 0 || f > NFRETS) return;
+            const duration = Number.isFinite(sustain) ? Math.max(0, sustain) : 0;
+            (byFret[f] || (byFret[f] = [])).push({ t, s, end: t + duration });
+        };
+        if (notes) {
+            for (let i = 0; i < notes.length; i++) {
+                const n = notes[i];
+                add(n?.t, n?.s, n?.f, n?.sus);
+            }
+        }
+        if (chords) {
+            for (let ci = 0; ci < chords.length; ci++) {
+                const ch = chords[ci];
+                if (!ch?.notes) continue;
+                for (let ni = 0; ni < ch.notes.length; ni++) {
+                    const n = ch.notes[ni];
+                    add(ch.t, n?.s, n?.f, n?.sus);
+                }
+            }
+        }
+        for (let f = 0; f < byFret.length; f++) {
+            const events = byFret[f];
+            if (!events || events.length < 2) continue;
+            events.sort((a, b) => a.t - b.t || a.s - b.s);
+            // Standalone arpeggio notes can duplicate chord members. Collapse
+            // exact onset/string duplicates so dense charts stay cheap to scan.
+            let write = 1;
+            for (let read = 1; read < events.length; read++) {
+                const prev = events[write - 1], cur = events[read];
+                if (Math.abs(cur.t - prev.t) < 1e-6 && cur.s === prev.s) {
+                    prev.end = Math.max(prev.end, cur.end);
+                    continue;
+                }
+                events[write++] = cur;
+            }
+            events.length = write;
+        }
+        return byFret;
+    }
+
+    /**
+     * Fill `out` with nearby lower-string onsets covered by this sustain, plus
+     * near-adjacent onsets that need its terminal face to yield.
+     * Non-inverted highways put larger string indices lower on screen; invert
+     * reverses that relationship. Returns a count so the per-frame path never
+     * allocates an array.
+     */
+    function hwyFillTrailYieldTimes(events, sourceT, sourceString, now, susEnd, inverted, outStarts, outEnds, initialCount = 0, visibleEnd = susEnd, settings = TRAIL_YIELD_DEFAULTS) {
+        const cfg = settings || TRAIL_YIELD_DEFAULTS;
+        const capacity = Math.min(outStarts.length, outEnds.length);
+        let count = Math.max(0, Math.min(capacity, initialCount | 0));
+        if (!events || events.length === 0 || count >= capacity) return count;
+        const tLo = sourceT + NEXT_ON_STRING_T_EPS;
+        let lo = 0, hi = events.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (events[mid].t < tLo) lo = mid + 1;
+            else hi = mid;
+        }
+        const finiteVisibleEnd = Number.isFinite(visibleEnd) ? visibleEnd : susEnd;
+        // The endpoint visibility window is deliberately the same value that
+        // positions the taper before the trail end. A compatible lower gem
+        // arriving within that window after the end therefore qualifies the
+        // endpoint, matching what the settings control communicates.
+        const endpointLookahead = Number.isFinite(cfg.endLeadTime)
+            ? Math.max(0, cfg.endLeadTime)
+            : TRAIL_YIELD_DEFAULTS.endLeadTime;
+        // Scan beyond susEnd only once the endpoint itself is in the rendered
+        // slice. Long off-screen sustains therefore retain the old cheap bound.
+        const endIsVisible = finiteVisibleEnd >= susEnd - 1e-6;
+        const tHi = Math.min(
+            susEnd + endpointLookahead,
+            finiteVisibleEnd + (endIsVisible ? endpointLookahead : 0),
+        );
+        for (let i = lo; i < events.length; i++) {
+            const event = events[i];
+            if (event.t > tHi) break;
+            if (event.t <= sourceT + NEXT_ON_STRING_T_EPS
+                || event.t > susEnd + endpointLookahead + 1e-6) continue;
+            const yieldEnd = Math.min(susEnd, Math.max(event.t, event.end));
+            if (yieldEnd + cfg.holdAfter + cfg.recoverDuration < now) continue;
+            const visuallyBelow = inverted
+                ? event.s < sourceString
+                : event.s > sourceString;
+            if (!visuallyBelow) continue;
+            // One notch reveals every member of a same-time chord wave. Scan
+            // the tiny fixed output because open-note rails append candidates
+            // from more than one fret bucket and those buckets interleave.
+            let duplicate = -1;
+            for (let j = 0; j < count; j++) {
+                if (Math.abs(event.t - outStarts[j]) < NEXT_ON_STRING_T_EPS) {
+                    duplicate = j;
+                    break;
+                }
+            }
+            if (duplicate >= 0) {
+                outEnds[duplicate] = Math.max(outEnds[duplicate], yieldEnd);
+                continue;
+            }
+            if (count >= capacity) break;
+            outStarts[count] = event.t;
+            outEnds[count++] = yieldEnd;
+        }
+        return count;
+    }
+
+    /** Smooth local notch strength (0=normal trail, 1=fully yielded). */
+    function hwyTrailYieldAmountAt(chartTime, yieldStarts, yieldEnds, yieldCount, trailEnd = Infinity, settings = TRAIL_YIELD_DEFAULTS) {
+        const cfg = settings || TRAIL_YIELD_DEFAULTS;
+        let amount = 0;
+        for (let i = 0; i < yieldCount; i++) {
+            const targetT = yieldStarts[i];
+            const targetEnd = yieldEnds[i];
+            let local = 0;
+            const terminal = Number.isFinite(trailEnd) && targetT >= trailEnd - 1e-6;
+            const leadTime = Math.max(0.001, terminal ? cfg.endLeadTime : cfg.leadTime);
+            // Both passing and endpoint yields are timed from the upcoming
+            // gem. Endpoint trails simply stop at trailEnd, so a post-end gap
+            // consumes part of the lead window and leaves less existing trail
+            // for the taper. Compress the transition to that available span.
+            const taperStart = targetT - leadTime;
+            const availableTaperTime = terminal
+                ? Math.max(0, trailEnd - taperStart)
+                : leadTime;
+            const taperDuration = Math.max(
+                0.001,
+                Math.min(
+                    availableTaperTime,
+                    terminal ? cfg.endTaperDuration : cfg.taperDuration,
+                ),
+            );
+            const fullAt = taperStart + taperDuration;
+            if (terminal && availableTaperTime <= 1e-6
+                && Math.abs(chartTime - trailEnd) <= 1e-6) {
+                // At the exact visibility-window boundary no longitudinal
+                // trail remains for a timed taper. Narrow the terminal face so
+                // the final ribbon slice still yields instead of doing nothing.
+                local = 1;
+            } else if (chartTime > taperStart && chartTime < fullAt) {
+                local = hwySmoothstep01((chartTime - taperStart) / taperDuration);
+            } else if (chartTime >= fullAt && chartTime <= (terminal
+                ? trailEnd
+                : targetEnd + cfg.holdAfter)) {
+                local = 1;
+            } else if (!terminal && chartTime > targetEnd + cfg.holdAfter
+                && chartTime < targetEnd + cfg.holdAfter + cfg.recoverDuration) {
+                local = 1 - hwySmoothstep01(
+                    (chartTime - targetEnd - cfg.holdAfter) / Math.max(0.001, cfg.recoverDuration)
+                );
+            }
+            amount = Math.max(amount, local);
+        }
+        return amount;
+    }
     /** Fixed pre-impact ramp window for lead-note board ghosts (Primary + Upcoming slots). */
     const GHOST_UPCOMING_WIN = 0.6;
     /** Ghost starts at this fraction of full size/brightness and grows to 1.0 as it approaches. */
@@ -1111,18 +1328,22 @@
         for (let k = 0; k < S; k++) {
             const b = k * 4;
             const nx = (k + 1) * 4;
+            // dZ() sends later samples toward -Z, so wind each face for that
+            // direction. The previous +Z winding exposed the underside to the
+            // camera while its vertex normals still pointed outward, making
+            // ribbon-rendered sustains look darker than box-rendered sustains.
             // Bottom (-Y outward)
-            idx[o++] = b; idx[o++] = b + 1; idx[o++] = nx + 1;
-            idx[o++] = b; idx[o++] = nx + 1; idx[o++] = nx;
+            idx[o++] = b; idx[o++] = nx + 1; idx[o++] = b + 1;
+            idx[o++] = b; idx[o++] = nx; idx[o++] = nx + 1;
             // Top (+Y outward)
-            idx[o++] = b + 3; idx[o++] = nx + 3; idx[o++] = nx + 2;
-            idx[o++] = b + 3; idx[o++] = nx + 2; idx[o++] = b + 2;
+            idx[o++] = b + 3; idx[o++] = nx + 2; idx[o++] = nx + 3;
+            idx[o++] = b + 3; idx[o++] = b + 2; idx[o++] = nx + 2;
             // Left (-X outward)
-            idx[o++] = b; idx[o++] = nx; idx[o++] = nx + 3;
-            idx[o++] = b; idx[o++] = nx + 3; idx[o++] = b + 3;
+            idx[o++] = b; idx[o++] = nx + 3; idx[o++] = nx;
+            idx[o++] = b; idx[o++] = b + 3; idx[o++] = nx + 3;
             // Right (+X outward)
-            idx[o++] = b + 1; idx[o++] = b + 2; idx[o++] = nx + 2;
-            idx[o++] = b + 1; idx[o++] = nx + 2; idx[o++] = nx + 1;
+            idx[o++] = b + 1; idx[o++] = nx + 2; idx[o++] = b + 2;
+            idx[o++] = b + 1; idx[o++] = nx + 1; idx[o++] = nx + 2;
         }
         return idx;
     })();
@@ -2397,7 +2618,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true };
+    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -2807,7 +3028,7 @@
     // means (fall back to default rather than silently flipping to
     // false). Add new boolean keys to BG_DEFAULTS and they pick this
     // up via the dispatch below.
-    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom']);
+    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront']);
     function _bgCoerceBool(val, fallback) {
         if (val === 'true' || val === '1') return true;
         if (val === 'false' || val === '0') return false;
@@ -2817,8 +3038,20 @@
     // hysteresis; zoomSmoothing the zoom dead zone; tiltSmoothing the
     // vertical-tilt deadband + correction strength. All three slider-
     // shaped settings share the same parse + clamp behaviour.
-    const _BG_FLOAT_KEYS = new Set(['intensity', 'cameraSmoothing', 'zoomSmoothing', 'tiltSmoothing', 'cameraLockZoom', 'textSize', 'vibrancy', 'glow', 'chordDiagramSize', 'sectionHudSize', 'toneHudSize', 'hitFx']);
+    const _BG_FLOAT_KEYS = new Set(['intensity', 'cameraSmoothing', 'zoomSmoothing', 'tiltSmoothing', 'cameraLockZoom', 'textSize', 'vibrancy', 'glow', 'chordDiagramSize', 'sectionHudSize', 'toneHudSize', 'hitFx', 'trailYieldMinScale', 'trailYieldLeadTime', 'trailYieldTaperDuration', 'trailYieldHoldAfter', 'trailYieldRecoverDuration', 'trailYieldEndLeadTime', 'trailYieldEndTaperDuration']);
     function _bgCoerce(key, val) {
+        const trailRange = key === 'trailYieldMinScale' ? [0.05, 0.50]
+            : (key === 'trailYieldHoldAfter' ? [0, 0.50]
+                : (key === 'trailYieldLeadTime' || key === 'trailYieldEndLeadTime'
+                    ? [0.10, 1]
+                    : (key === 'trailYieldTaperDuration' || key === 'trailYieldRecoverDuration'
+                        || key === 'trailYieldEndTaperDuration' ? [0.01, 1] : null)));
+        if (trailRange) {
+            const n = parseFloat(val);
+            return Number.isFinite(n)
+                ? Math.max(trailRange[0], Math.min(trailRange[1], n))
+                : BG_DEFAULTS[key];
+        }
         if (_BG_FLOAT_KEYS.has(key)) {
             const n = parseFloat(val);
             return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : BG_DEFAULTS[key];
@@ -2958,6 +3191,15 @@
     window.h3dBgSetTimingFx     = (v) => _bgWriteGlobal('timingFx', !!v);
     window.h3dBgSetStreakFx     = (v) => _bgWriteGlobal('streakFx', !!v);
     window.h3dBgSetBloom        = (v) => _bgWriteGlobal('bloom', !!v);
+    window.h3dBgSetTrailYieldEnabled = (v) => _bgWriteGlobal('trailYieldEnabled', !!v);
+    window.h3dBgSetTrailYieldGemInFront = (v) => _bgWriteGlobal('trailYieldGemInFront', !!v);
+    window.h3dBgSetTrailYieldMinScale = (v) => _bgWriteGlobal('trailYieldMinScale', v);
+    window.h3dBgSetTrailYieldLeadTime = (v) => _bgWriteGlobal('trailYieldLeadTime', v);
+    window.h3dBgSetTrailYieldTaperDuration = (v) => _bgWriteGlobal('trailYieldTaperDuration', v);
+    window.h3dBgSetTrailYieldHoldAfter = (v) => _bgWriteGlobal('trailYieldHoldAfter', v);
+    window.h3dBgSetTrailYieldRecoverDuration = (v) => _bgWriteGlobal('trailYieldRecoverDuration', v);
+    window.h3dBgSetTrailYieldEndLeadTime = (v) => _bgWriteGlobal('trailYieldEndLeadTime', v);
+    window.h3dBgSetTrailYieldEndTaperDuration = (v) => _bgWriteGlobal('trailYieldEndTaperDuration', v);
     window.h3dBgSetToneHudVisible   = (v) => _bgWriteGlobal('toneHudVisible', !!v);
     window.h3dBgSetToneHudPosition  = (v) => _bgWriteGlobal('toneHudPosition', v);
     window.h3dBgSetToneHudSize      = (v) => _bgWriteGlobal('toneHudSize', v);
@@ -4727,6 +4969,27 @@
         let _slideTargetNotesRef = null;
         let _slideTargetChordsRef = null;
 
+        // Same-fret onset index for localized sustain yielding. It is rebuilt
+        // once per arrangement; drawNote only scans the current fret's short
+        // time window and writes target times into this fixed scratch buffer.
+        let _trailYieldEventsByFret = [];
+        let _trailYieldNotesRef = null;
+        let _trailYieldChordsRef = null;
+        let _trailYieldNStr = 0;
+        const _trailYieldStartsScratch = new Float64Array(MAX_RENDER_STRINGS * 4);
+        const _trailYieldEndsScratch = new Float64Array(MAX_RENDER_STRINGS * 4);
+        // Standalone open notes render two separated rails. Keep independent
+        // windows so only the rail physically covering a later gem yields.
+        const _trailYieldOpenStartsScratch = [
+            new Float64Array(MAX_RENDER_STRINGS * 4),
+            new Float64Array(MAX_RENDER_STRINGS * 4),
+        ];
+        const _trailYieldOpenEndsScratch = [
+            new Float64Array(MAX_RENDER_STRINGS * 4),
+            new Float64Array(MAX_RENDER_STRINGS * 4),
+        ];
+        const _trailYieldOpenCountsScratch = new Uint8Array(2);
+
         let _laneRailFlagsRefHs = null;
         let _laneRailFlagsRefTpl = null;
 
@@ -4818,6 +5081,10 @@
         // flying note bodies — see fretNumberGhostScope for chord-hand vs all.
         let showFretOnNote = false;
         let fretNumberGhostScope = 'chords';
+        // Cached, per-instance sustain reveal curve. Settings changes mutate
+        // this one object; drawNote passes the same reference through the pure
+        // geometry helpers, so live tuning adds no per-frame allocations.
+        const trailYieldSettings = { ...TRAIL_YIELD_DEFAULTS };
         // Camera-X smoothing dial (issue #34). 0 = twitchy (track every
         // upcoming fret), 1 = calm (ignore small intra-cluster shifts).
         // Cached here and refreshed via the bg listener to avoid a
@@ -7431,7 +7698,7 @@
             }));
             mGlow = activePalette.map(c => new T.MeshLambertMaterial({
                 color: 0xffffff, emissive: c, emissiveIntensity: 1.5,
-                transparent: true, opacity: 1.0, depthWrite: false,
+                transparent: true, opacity: 1.0, depthTest: false, depthWrite: false,
             }));
             _laneTargetColor = new T.Color(0x4488ff);
             _fwHitColor = new T.Color(FRET_WIRE_HIT_HEX);
@@ -7439,7 +7706,11 @@
             _fwHitGlow.fill(0);
             _fwHitPrevTime = -Infinity;
             mSus = activePalette.map(c => new T.MeshLambertMaterial({
+                // Trail/gem occlusion is controlled by the named render stack.
+                // Disabling both depth flags keeps the live front-priority
+                // setting deterministic in either direction.
                 color: c, transparent: true, opacity: 0.35,
+                depthTest: false, depthWrite: false,
             }));
             mWhiteOutline = new T.MeshLambertMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.6, transparent: true, opacity: 1.0, depthWrite: false });
             const _outlineColors = [0xFF5552, 0xFFF352, 0x31CAFF, 0xFFAE31, 0x84FF42, 0xE639FF];
@@ -7532,7 +7803,7 @@
             // ~345°) — distinct from the string red 0xff2828 at hue ~0°. Note rendering
             // swaps its outline.material between mWhiteOutline / per-string
             // mHitBright[s] / mMissOutline based on recent notedetect events.
-            mMissOutline = new T.MeshLambertMaterial({ color: 0xff0066, emissive: 0xff0066, emissiveIntensity: 1.2, transparent: true, opacity: 1.0, depthWrite: false });
+            mMissOutline = new T.MeshLambertMaterial({ color: 0xff0066, emissive: 0xff0066, emissiveIntensity: 1.2, transparent: true, opacity: 1.0, depthTest: false, depthWrite: false });
             // Transparent placeholder for front (+Z, group 4) and back (-Z, group 5)
             // of the lateral face-fill material array. Also the default material for
             // the pNoteEdge pool: pool consumers reassign .material before render, so
@@ -7549,7 +7820,7 @@
             // + lateral faces flash green regardless of which string was hit.
             mHitBright = activePalette.map(() => new T.MeshLambertMaterial({
                 color: 0x22ff88, emissive: 0x22ff88, emissiveIntensity: 4.0 * glowMul,
-                transparent: true, opacity: 1.0, depthWrite: false,
+                transparent: true, opacity: 1.0, depthTest: false, depthWrite: false,
             }));
             mHitBrightArrays = mHitBright.map(m => [m, m, m, m, mEdgeTransparent, mEdgeTransparent]);
 
@@ -7571,8 +7842,8 @@
             // The body is rendered on top with opacity:1 on hit/miss, which
             // fully covers the outline center — only the fringe that extends
             // past the body edges (0.2*K on each side) is visible.
-            mSusOutline     = new T.MeshLambertMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.3, transparent: true, opacity: 0.75, depthWrite: false });
-            mHitSusOutline  = new T.MeshLambertMaterial({ color: 0x22ff88, emissive: 0x22ff88, emissiveIntensity: 0.8, transparent: true, opacity: 0.45, depthWrite: false });
+            mSusOutline     = new T.MeshLambertMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.3, transparent: true, opacity: 0.75, depthTest: false, depthWrite: false });
+            mHitSusOutline  = new T.MeshLambertMaterial({ color: 0x22ff88, emissive: 0x22ff88, emissiveIntensity: 0.8, transparent: true, opacity: 0.45, depthTest: false, depthWrite: false });
             mBeatM = new T.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25 });
             mBeatQ = new T.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.07 });
 
@@ -8485,7 +8756,16 @@
                     changedKey === 'projectionVisible' ||
                     changedKey === 'slideArrowApproachVisible' ||
                     changedKey === 'slideArrowNeckVisible' ||
-                    changedKey === 'slideArrowChainPreviewVisible') {
+                    changedKey === 'slideArrowChainPreviewVisible' ||
+                    changedKey === 'trailYieldEnabled' ||
+                    changedKey === 'trailYieldGemInFront' ||
+                    changedKey === 'trailYieldMinScale' ||
+                    changedKey === 'trailYieldLeadTime' ||
+                    changedKey === 'trailYieldTaperDuration' ||
+                    changedKey === 'trailYieldHoldAfter' ||
+                    changedKey === 'trailYieldRecoverDuration' ||
+                    changedKey === 'trailYieldEndLeadTime' ||
+                    changedKey === 'trailYieldEndTaperDuration') {
                     // Flag flips don't need a mesh rebuild — just refresh
                     // the per-instance state for the next frame to consult.
                     // Same shape for showFretOnNote (#12), cameraSmoothing
@@ -8810,6 +9090,15 @@
             slideArrowApproachVisible = _bgReadSetting(panelKey, 'slideArrowApproachVisible');
             slideArrowNeckVisible     = _bgReadSetting(panelKey, 'slideArrowNeckVisible');
             slideArrowChainPreviewVisible = _bgReadSetting(panelKey, 'slideArrowChainPreviewVisible');
+            trailYieldSettings.enabled = _bgReadSetting(panelKey, 'trailYieldEnabled');
+            trailYieldSettings.gemInFront = _bgReadSetting(panelKey, 'trailYieldGemInFront');
+            trailYieldSettings.minScale = _bgReadSetting(panelKey, 'trailYieldMinScale');
+            trailYieldSettings.leadTime = _bgReadSetting(panelKey, 'trailYieldLeadTime');
+            trailYieldSettings.taperDuration = _bgReadSetting(panelKey, 'trailYieldTaperDuration');
+            trailYieldSettings.holdAfter = _bgReadSetting(panelKey, 'trailYieldHoldAfter');
+            trailYieldSettings.recoverDuration = _bgReadSetting(panelKey, 'trailYieldRecoverDuration');
+            trailYieldSettings.endLeadTime = _bgReadSetting(panelKey, 'trailYieldEndLeadTime');
+            trailYieldSettings.endTaperDuration = _bgReadSetting(panelKey, 'trailYieldEndTaperDuration');
             _vibrancyIdleOp = 0.4  + 0.6  * vibrancy;
             _vibrancyProjOp = 0.15 + 0.35 * vibrancy;
             // Custom image asset is a single GLOBAL slot — bytes are
@@ -10107,6 +10396,9 @@
             // recompute or string-6+ template notes stay dropped from synth
             // chords after the count grows.
             _mergeCacheResult = null;
+            _trailYieldNotesRef = null;
+            _trailYieldChordsRef = null;
+            _trailYieldNStr = 0;
         }
         function mergeChordShape(ch, chordNotes, templates) {
             if (_chordShapeCache.has(ch)) return _chordShapeCache.get(ch);
@@ -11142,6 +11434,15 @@
                 }
                 _slideTargetNotesRef = notes;
                 _slideTargetChordsRef = bundle.chords;
+            }
+
+            if (_trailYieldNotesRef !== notes
+                || _trailYieldChordsRef !== chords
+                || _trailYieldNStr !== nStr) {
+                _trailYieldEventsByFret = hwyBuildTrailYieldEvents(notes, chords, nStr);
+                _trailYieldNotesRef = notes;
+                _trailYieldChordsRef = chords;
+                _trailYieldNStr = nStr;
             }
 
             /** Arpeggio lane purple rails — authored-marker cache + bounds cache. */
@@ -14032,7 +14333,7 @@
          * for slides, bends, vibrato and tremolo — smooth contour vs stacked
          * BoxGeometry segments.
          */
-        function slideRibbonUpdatePositions(geom, strandBaseX, tw, th, y, sliceDur, susStart, now, n, slideSt) {
+        function slideRibbonUpdatePositions(geom, strandBaseX, tw, th, y, sliceDur, susStart, now, n, slideSt, yieldStarts = null, yieldEnds = null, yieldCount = 0, trailEnd = Infinity, yieldSettings = TRAIL_YIELD_DEFAULTS) {
             const pa = geom.attributes.position.array;
             const S = SLIDE_RIBBON_SAMPLES;
             // slideOffsetWorldX is defined at module scope so it returns a
@@ -14049,10 +14350,18 @@
                     + dirMul * slideOffsetWorldX(n, Tk, slideSt)
                     + tremoloOffsetWorldX(n, Tk, tw);
                 const yc = y + techniqueYOffsetWorld(n, Tk);
-                pa[v++] = xc - tw * 0.5; pa[v++] = yc - th * 0.5; pa[v++] = zk;
-                pa[v++] = xc + tw * 0.5; pa[v++] = yc - th * 0.5; pa[v++] = zk;
-                pa[v++] = xc + tw * 0.5; pa[v++] = yc + th * 0.5; pa[v++] = zk;
-                pa[v++] = xc - tw * 0.5; pa[v++] = yc + th * 0.5; pa[v++] = zk;
+                const yieldAmount = yieldCount > 0
+                    ? hwyTrailYieldAmountAt(
+                        Tk, yieldStarts, yieldEnds, yieldCount, trailEnd, yieldSettings,
+                    )
+                    : 0;
+                const yieldScale = 1 - (1 - yieldSettings.minScale) * yieldAmount;
+                const halfW = tw * yieldScale * 0.5;
+                const halfH = th * yieldScale * 0.5;
+                pa[v++] = xc - halfW; pa[v++] = yc - halfH; pa[v++] = zk;
+                pa[v++] = xc + halfW; pa[v++] = yc - halfH; pa[v++] = zk;
+                pa[v++] = xc + halfW; pa[v++] = yc + halfH; pa[v++] = zk;
+                pa[v++] = xc - halfW; pa[v++] = yc + halfH; pa[v++] = zk;
             }
             geom.attributes.position.needsUpdate = true;
             // Normals are pre-baked at geometry creation (see mkSlideRibbonGeo);
@@ -14692,7 +15001,13 @@
                 // each frame (a recycled mesh may carry a gradient geometry from a
                 // prior core use). Outline always uses the plain box.
                 outline.geometry = gNote;
-                outline.renderOrder = renderOrderForLayerAtZ(noteZ, 'NOTE_OUTLINE');
+                const noteOutlineLayer = trailYieldSettings.gemInFront
+                    ? 'NOTE_OUTLINE' : 'NOTE_OUTLINE_BEHIND_TRAIL';
+                const noteCoreLayer = trailYieldSettings.gemInFront
+                    ? 'NOTE_CORE' : 'NOTE_CORE_BEHIND_TRAIL';
+                const noteFaceLayer = trailYieldSettings.gemInFront
+                    ? 'TECHNIQUE_MARKER' : 'NOTE_FACE_BEHIND_TRAIL';
+                outline.renderOrder = renderOrderForLayerAtZ(noteZ, noteOutlineLayer);
                 outline.position.set(x, y + techniqueYNow, noteZ);
                 outline.rotation.z = approachRot;
                 const ndRim = 1.1;
@@ -14713,7 +15028,7 @@
                 if (_ndFaceMat) {
                     const edges = pNoteEdge.get();
                     edges.material = _ndFaceMat;
-                    edges.renderOrder = renderOrderForLayerAtZ(noteZ, 'TECHNIQUE_MARKER');
+                    edges.renderOrder = renderOrderForLayerAtZ(noteZ, noteFaceLayer);
                     edges.position.set(x, y + techniqueYNow, noteZ + 0.001);
                     edges.rotation.z = approachRot;
                     if (n.f === 0) {
@@ -14734,7 +15049,7 @@
                 core.material = n.ac ? mAccentCore[s] : mStr[s];
                 // Gradient gem body for strings 0..5; flat box otherwise.
                 core.geometry = (!n.ac && gNoteGrad[s]) ? gNoteGrad[s] : gNote;
-                core.renderOrder = renderOrderForLayerAtZ(noteZ, 'NOTE_CORE');
+                core.renderOrder = renderOrderForLayerAtZ(noteZ, noteCoreLayer);
                 core.position.set(x, y + techniqueYNow, noteZ + 0.001);
                 core.rotation.z = approachRot;
                 if (n.f === 0) {
@@ -14806,7 +15121,42 @@
                         const offsets = (n.f === 0)
                             ? [-(NW * 3 * openWScale), NW * 3 * openWScale]
                             : SINGLE_SUS_OFFSETS;
-                        const ribbonSusTrail = !!(
+                        let yieldCount = 0;
+                        const visibleYieldEnd = susStart + sliceDur;
+                        if (trailYieldSettings.enabled && n.f === 0) {
+                            const trailWidth = tw + 0.4 * K;
+                            const gemWidth = NW * 1.1;
+                            for (let si = 0; si < offsets.length; si++) {
+                                const starts = _trailYieldOpenStartsScratch[si];
+                                const ends = _trailYieldOpenEndsScratch[si];
+                                let strandCount = hwyFillTrailYieldTimes(
+                                    _trailYieldEventsByFret[0],
+                                    n.t, s, now, susEnd, _invertedCached,
+                                    starts, ends, 0, visibleYieldEnd, trailYieldSettings,
+                                );
+                                const strandX = xBase + offsets[si];
+                                for (let f = 1; f <= NFRETS && strandCount < starts.length; f++) {
+                                    if (!hwyTrailOverlapsGemX(
+                                        strandX, trailWidth, xFretMid(f), gemWidth,
+                                    )) continue;
+                                    strandCount = hwyFillTrailYieldTimes(
+                                        _trailYieldEventsByFret[f],
+                                        n.t, s, now, susEnd, _invertedCached,
+                                        starts, ends, strandCount, visibleYieldEnd, trailYieldSettings,
+                                    );
+                                }
+                                _trailYieldOpenCountsScratch[si] = strandCount;
+                                yieldCount += strandCount;
+                            }
+                        } else if (trailYieldSettings.enabled) {
+                            yieldCount = hwyFillTrailYieldTimes(
+                                _trailYieldEventsByFret[n.f],
+                                n.t, s, now, susEnd, _invertedCached,
+                                _trailYieldStartsScratch, _trailYieldEndsScratch,
+                                0, visibleYieldEnd, trailYieldSettings,
+                            );
+                        }
+                        const ribbonSusTrail = yieldCount > 0 || !!(
                             (slideSt && n.f > 0 && (n.sus || 0) > 1e-4)
                             || (Number(n.bn) > 0)
                             || (Array.isArray(n.bnv) && n.bnv.length > 0)
@@ -14847,9 +15197,25 @@
                             // Same depth-based renderOrder as box trail — ribbon center
                             // at susStart + sliceDur/2, using TS so it matches dZ().
                             const _ribDt = Math.max(0, susStart + sliceDur / 2 - now);
-                            const ribbonRenderOrder = renderOrderForLayerAtZ(-_ribDt * TS, 'SUSTAIN_TRAIL');
                             for (let si = 0; si < offsets.length; si++) {
                                 const strandX = xBase + offsets[si];
+                                const strandYieldStarts = n.f === 0
+                                    ? _trailYieldOpenStartsScratch[si]
+                                    : _trailYieldStartsScratch;
+                                const strandYieldEnds = n.f === 0
+                                    ? _trailYieldOpenEndsScratch[si]
+                                    : _trailYieldEndsScratch;
+                                const strandYieldCount = trailYieldSettings.enabled
+                                    ? (n.f === 0 ? _trailYieldOpenCountsScratch[si] : yieldCount)
+                                    : 0;
+                                const ribbonOrderZ = hwyTrailPriorityWorldZ(
+                                    -_ribDt * TS, now,
+                                    strandYieldStarts, strandYieldCount,
+                                    trailYieldSettings.gemInFront, TS,
+                                );
+                                const ribbonRenderOrder = renderOrderForLayerAtZ(
+                                    ribbonOrderZ, 'SUSTAIN_TRAIL',
+                                );
                                 const olMesh = pSusRibbonOl.get();
                                 olMesh.renderOrder = ribbonRenderOrder;
                                 olMesh.scale.set(1, 1, 1);
@@ -14860,6 +15226,8 @@
                                     olMesh.geometry, strandX,
                                     tw + 0.4 * K, th + 0.4 * K,
                                     y, sliceDur, susStart, now, n, slideSt,
+                                    strandYieldStarts, strandYieldEnds, strandYieldCount,
+                                    susEnd, trailYieldSettings,
                                 );
                                 const body = pSusRibbon.get();
                                 body.renderOrder = ribbonRenderOrder + 0.0005;
@@ -14870,6 +15238,8 @@
                                 slideRibbonUpdatePositions(
                                     body.geometry, strandX, tw, th, y,
                                     sliceDur, susStart, now, n, slideSt,
+                                    strandYieldStarts, strandYieldEnds, strandYieldCount,
+                                    susEnd, trailYieldSettings,
                                 );
                             }
                         }
@@ -16071,6 +16441,10 @@
             _slideTargetSet = null;
             _slideTargetNotesRef = null;
             _slideTargetChordsRef = null;
+            _trailYieldEventsByFret = [];
+            _trailYieldNotesRef = null;
+            _trailYieldChordsRef = null;
+            _trailYieldNStr = 0;
         }
 
         function canvasSize(canvas) {
