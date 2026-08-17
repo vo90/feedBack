@@ -766,13 +766,13 @@
             const defaults = {
                 trailYieldEnabled: true,
                 trailYieldGemInFront: false,
-                trailYieldMinScale: 0.15,
-                trailYieldLeadTime: 0.42,
-                trailYieldTaperDuration: 0.30,
-                trailYieldHoldAfter: 0.10,
-                trailYieldRecoverDuration: 0.24,
-                trailYieldEndLeadTime: 0.42,
-                trailYieldEndTaperDuration: 0.30,
+                trailYieldMinScale: 0.30,
+                trailYieldLeadTime: 0.50,
+                trailYieldTaperDuration: 0.05,
+                trailYieldHoldAfter: 0.05,
+                trailYieldRecoverDuration: 0.05,
+                trailYieldEndLeadTime: 0.50,
+                trailYieldEndTaperDuration: 0.05,
             };
             const controls = [
                 ['h3d-trail-yield-min-scale', 'trailYieldMinScale', 'h3dBgSetTrailYieldMinScale', 0.05, 0.50, true],
@@ -1170,7 +1170,7 @@
          no-selection / NaN state. -->
     <script>
         (function () {
-            const DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, trailYieldEnabled: true, trailYieldGemInFront: false, trailYieldMinScale: 0.15, trailYieldLeadTime: 0.42, trailYieldTaperDuration: 0.30, trailYieldHoldAfter: 0.10, trailYieldRecoverDuration: 0.24, trailYieldEndLeadTime: 0.42, trailYieldEndTaperDuration: 0.30 };
+            const DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, trailYieldEnabled: true, trailYieldGemInFront: false, trailYieldMinScale: 0.30, trailYieldLeadTime: 0.50, trailYieldTaperDuration: 0.05, trailYieldHoldAfter: 0.05, trailYieldRecoverDuration: 0.05, trailYieldEndLeadTime: 0.50, trailYieldEndTaperDuration: 0.05 };
             const VALID_STYLES = new Set(['off', 'particles', 'silhouettes', 'lights', 'geometric', 'butterchurn', 'image', 'video']);
             // Scene color themes — the single id+label source for BOTH the
             // Background and Highway dropdowns AND the validator below. The

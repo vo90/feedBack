@@ -1036,13 +1036,13 @@
     const TRAIL_YIELD_DEFAULTS = Object.freeze({
         enabled: true,
         gemInFront: false,
-        minScale: 0.15,
-        leadTime: 0.42,
-        taperDuration: 0.30,
-        holdAfter: 0.10,
-        recoverDuration: 0.24,
-        endLeadTime: 0.42,
-        endTaperDuration: 0.30,
+        minScale: 0.30,
+        leadTime: 0.50,
+        taperDuration: 0.05,
+        holdAfter: 0.05,
+        recoverDuration: 0.05,
+        endLeadTime: 0.50,
+        endTaperDuration: 0.05,
     });
     function hwySmoothstep01(x) {
         const t = Math.max(0, Math.min(1, x));

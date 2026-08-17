@@ -54,6 +54,18 @@ function loadTremoloOffset() {
 
 const helpers = loadHelpers();
 
+test('reviewed trail-visibility defaults match the showcase settings', () => {
+    assert.equal(helpers.TRAIL_YIELD_DEFAULTS.enabled, true);
+    assert.equal(helpers.TRAIL_YIELD_DEFAULTS.gemInFront, false);
+    assert.equal(helpers.TRAIL_YIELD_DEFAULTS.minScale, 0.30);
+    assert.equal(helpers.TRAIL_YIELD_DEFAULTS.leadTime, 0.50);
+    assert.equal(helpers.TRAIL_YIELD_DEFAULTS.taperDuration, 0.05);
+    assert.equal(helpers.TRAIL_YIELD_DEFAULTS.holdAfter, 0.05);
+    assert.equal(helpers.TRAIL_YIELD_DEFAULTS.recoverDuration, 0.05);
+    assert.equal(helpers.TRAIL_YIELD_DEFAULTS.endLeadTime, 0.50);
+    assert.equal(helpers.TRAIL_YIELD_DEFAULTS.endTaperDuration, 0.05);
+});
+
 test('per-fret onset indexes are sorted, bounded, and merge duplicate members', () => {
     const notes = [
         { t: 3, s: 2, f: 3, sus: 2 },
@@ -261,7 +273,7 @@ test('a near-adjacent lower gem tapers the terminal trail face', () => {
     assert.equal(
         helpers.hwyTrailYieldAmountAt(susEnd, starts, ends, count, susEnd, settings),
         1,
-        'the terminal cross-section should reach the same 15% yield as an interior notch',
+        'the terminal cross-section should reach the same 30% yield as an interior notch',
     );
 
     assert.equal(
@@ -321,19 +333,19 @@ test('a narrowed trail endpoint uses its upcoming gem depth in both priority mod
     }
 });
 
-test('short-note notch eases in, reaches 15 percent, then recovers', () => {
+test('short-note notch eases in, reaches 30 percent, then recovers', () => {
     const starts = new Float64Array([10]);
     const ends = new Float64Array([10]);
     const amount = chartTime => helpers.hwyTrailYieldAmountAt(chartTime, starts, ends, 1);
 
-    assert.ok(amount(9.58) < 1e-12);
-    assert.ok(amount(9.73) > 0 && amount(9.73) < 1);
-    assert.equal(amount(9.88), 1);
+    assert.ok(amount(9.49) < 1e-12);
+    assert.ok(amount(9.525) > 0 && amount(9.525) < 1);
+    assert.equal(amount(9.55), 1);
     assert.ok(Math.abs(
-        1 - (1 - helpers.TRAIL_YIELD_DEFAULTS.minScale) * amount(9.88) - 0.15,
+        1 - (1 - helpers.TRAIL_YIELD_DEFAULTS.minScale) * amount(9.55) - 0.30,
     ) < 1e-12);
-    assert.ok(amount(10.22) > 0 && amount(10.22) < 1);
-    assert.equal(amount(10.34), 0);
+    assert.ok(amount(10.075) > 0 && amount(10.075) < 1);
+    assert.equal(amount(10.10), 0);
 });
 
 test('custom around-note timing controls narrowing, hold, and recovery independently', () => {
@@ -407,8 +419,8 @@ test('a lower sustained note keeps the local notch open until its trail ends', (
     const starts = new Float64Array([10]);
     const ends = new Float64Array([14]);
     assert.equal(helpers.hwyTrailYieldAmountAt(13, starts, ends, 1), 1);
-    assert.ok(helpers.hwyTrailYieldAmountAt(14.22, starts, ends, 1) > 0);
-    assert.equal(helpers.hwyTrailYieldAmountAt(14.34, starts, ends, 1), 0);
+    assert.ok(helpers.hwyTrailYieldAmountAt(14.075, starts, ends, 1) > 0);
+    assert.equal(helpers.hwyTrailYieldAmountAt(14.10, starts, ends, 1), 0);
 });
 
 test('yield windows exist as soon as their chart section enters the visible slice', () => {
@@ -567,6 +579,25 @@ test('3D settings expose one shared width and separate passing-note and endpoint
         assert.match(html, new RegExp(`id="${id}" min="0\\.01"`));
     }
     assert.match(src, /trailYieldEndTaperDuration'\s*\?\s*\[0\.01,\s*1\]/);
+
+    const uiDefaultLiterals = {
+        trailYieldEnabled: 'true',
+        trailYieldGemInFront: 'false',
+        trailYieldMinScale: '0\\.30',
+        trailYieldLeadTime: '0\\.50',
+        trailYieldTaperDuration: '0\\.05',
+        trailYieldHoldAfter: '0\\.05',
+        trailYieldRecoverDuration: '0\\.05',
+        trailYieldEndLeadTime: '0\\.50',
+        trailYieldEndTaperDuration: '0\\.05',
+    };
+    for (const [key, literal] of Object.entries(uiDefaultLiterals)) {
+        assert.equal(
+            (html.match(new RegExp(`${key}:\\s*${literal}`, 'g')) || []).length,
+            2,
+            `${key} should match in both settings-page default tables`,
+        );
+    }
 
     const setterKeys = [
         'TrailYieldEnabled',
