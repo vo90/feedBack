@@ -1057,6 +1057,20 @@
             <= (Math.max(0, trailWidth) + Math.max(0, gemWidth)) * 0.5;
     }
 
+    /** True when any part of a strand's bounded X sweep reaches a gem footprint. */
+    function hwyTrailSweepOverlapsGemX(
+        trailStartX, trailEndX, trailWidth, lateralReach, gemX, gemWidth,
+    ) {
+        if (!Number.isFinite(trailStartX) || !Number.isFinite(trailEndX)
+            || !Number.isFinite(lateralReach)) return false;
+        const reach = Math.max(0, lateralReach);
+        const lo = Math.min(trailStartX, trailEndX) - reach;
+        const hi = Math.max(trailStartX, trailEndX) + reach;
+        return hwyTrailOverlapsGemX(
+            (lo + hi) * 0.5, hi - lo + Math.max(0, trailWidth), gemX, gemWidth,
+        );
+    }
+
     /**
      * Resolve one gem layer without changing ordinary highway ordering.
      * The preference belongs to a trail/gem relationship, not every gem: only
@@ -14709,7 +14723,7 @@
                     * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1)
                 : NH * 1.1
                     * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
-            return hwyTrailFootprintsCanOcclude(
+            const onsetMatches = hwyTrailFootprintsCanOcclude(
                 visuallyBelow,
                 ctx.techniqueMovesY,
                 event.s === n.s,
@@ -14721,6 +14735,26 @@
                 ctx.trailH,
                 visuallyBelow ? 0 : sY(event.s),
                 targetH,
+            );
+            if (onsetMatches) return true;
+
+            // A moving source can miss the gem at its onset, then cross the
+            // target's attached sustain before either trail ends. Include that
+            // bounded X sweep so the gem and its trail receive one consistent
+            // priority. Slides are monotonic; tremolo's complete lateral reach
+            // is known analytically, so this stays constant-time and allocation-free.
+            const targetTrailEnd = Math.min(ctx.susEnd, event.end);
+            // drawNote uses the same 0.01 s cutoff for emitting a sustain.
+            if (!visuallyBelow || targetTrailEnd <= event.t + 0.01) return false;
+            const slideDir = _leftyCached ? -1 : 1;
+            const sweepStartX = ctx.strandBaseX
+                + slideDir * slideOffsetWorldX(n, event.t, ctx.slideSt);
+            const sweepEndX = ctx.strandBaseX
+                + slideDir * slideOffsetWorldX(n, targetTrailEnd, ctx.slideSt);
+            const tremoloReach = n.tr ? ctx.trailW * 0.375 : 0;
+            return hwyTrailSweepOverlapsGemX(
+                sweepStartX, sweepEndX, ctx.trailW, tremoloReach,
+                targetX, targetW,
             );
         }
 

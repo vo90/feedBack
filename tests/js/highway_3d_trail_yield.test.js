@@ -20,7 +20,7 @@ function loadHelpers() {
     return vm.runInNewContext(
         'const NFRETS = 24; const NEXT_ON_STRING_T_EPS = 0.06;\n'
         + block
-        + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyTrailOverlapsGemX, hwyTrailYieldAmountAt,'
+        + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyTrailOverlapsGemX, hwyTrailSweepOverlapsGemX, hwyTrailYieldAmountAt,'
         + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailPriorityStringOffset, hwyTrailYieldGemLayer,'
         + ' TRAIL_YIELD_DEFAULTS })',
     );
@@ -204,6 +204,24 @@ test('only covered notes on visually lower strings create yield windows', () => 
         helpers.hwyFillTrailYieldTimes([{ t: 0.9, s: 4, end: 0.9 }], 0, 5, 0.5, 20, true, starts, ends),
         1,
         'inverted highways reverse which string is visually lower',
+    );
+});
+
+test('a moving source qualifies when it crosses the lower target sustain after onset', () => {
+    const overlaps = helpers.hwyTrailOverlapsGemX;
+    const sweepOverlaps = helpers.hwyTrailSweepOverlapsGemX;
+    assert.equal(overlaps(0, 2, 3, 2), false, 'the onset itself is clear');
+    assert.equal(
+        sweepOverlaps(0, 2, 2, 0, 3, 2), true,
+        'a later crossing over the target trail qualifies',
+    );
+    assert.equal(
+        sweepOverlaps(0, -2, 2, 0, 3, 2), false,
+        'a nearby trail moving away does not become a false target',
+    );
+    assert.equal(
+        sweepOverlaps(0, 0, 2, 1, 3, 2), true,
+        'the bounded tremolo reach participates without time sampling',
     );
 });
 
@@ -587,7 +605,7 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
     );
 });
 
-test('rendering and eligibility share one time-sampled footprint model', () => {
+test('rendering and eligibility share one rendered footprint model', () => {
     const src = fs.readFileSync(SCREEN_JS, 'utf8');
     const centerDecl = src.indexOf('        function sustainTrailCenterXAt(');
     const matcherDecl = src.indexOf('        function trailYieldEventMatchesRenderedFootprint(');
@@ -606,6 +624,9 @@ test('rendering and eligibility share one time-sampled footprint model', () => {
     assert.match(matcherBody, /sustainTrailCenterXAt\(/);
     assert.match(matcherBody, /trailYieldOpenTargetXBounds\(/);
     assert.match(matcherBody, /hwyTrailFootprintsCanOcclude\(/);
+    assert.match(matcherBody, /Math\.min\(ctx\.susEnd,\s*event\.end\)/);
+    assert.match(matcherBody, /slideOffsetWorldX\(n,\s*targetTrailEnd,\s*ctx\.slideSt\)/);
+    assert.match(matcherBody, /hwyTrailSweepOverlapsGemX\(/);
 
     const rendererBody = src.slice(rendererDecl, src.indexOf('        function noteHasVibrato(', rendererDecl));
     assert.match(rendererBody, /sustainTrailCenterXAt\(/);
