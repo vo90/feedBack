@@ -1092,25 +1092,58 @@
      * Depth used to order one yielding ribbon strand. A ribbon is one pooled
      * mesh, so its geometric midpoint cannot consistently represent gems near
      * either end of a long sustain. Strands with real yield targets instead
-     * use a target depth: the farthest target when gems are prioritized (the
-     * trail paints before every target), or the nearest when trails are
-     * prioritized (the trail paints after every target). The named layer
-     * breaks an equal-depth tie in the selected direction.
+     * use a target depth: the farthest attached target trail when notes are
+     * prioritized (the covering trail paints before every target), or the
+     * nearest gem when trails are prioritized (the covering trail paints after
+     * every target). The named layer breaks an equal-depth tie in the selected
+     * direction.
      */
-    function hwyTrailPriorityWorldZ(fallbackWorldZ, now, yieldStarts, yieldCount, gemInFront, travelSpeed) {
+    function hwyTrailPriorityWorldZ(
+        fallbackWorldZ,
+        now,
+        yieldStarts,
+        yieldCount,
+        gemInFront,
+        travelSpeed,
+        targetTrailEnds = null,
+    ) {
         if (!yieldStarts || yieldCount <= 0) return fallbackWorldZ;
         let worldZ = null;
         const speed = Number.isFinite(travelSpeed) ? Math.max(0, travelSpeed) : 0;
         const count = Math.min(yieldStarts.length, Math.max(0, yieldCount | 0));
         for (let i = 0; i < count; i++) {
             if (!Number.isFinite(yieldStarts[i])) continue;
-            const targetWorldZ = Math.min(0, -(yieldStarts[i] - now) * speed);
+            // Front-priority mode includes the target's attached sustain. Put
+            // the covering ribbon behind the far edge of that trail, not just
+            // behind its gem onset. Trail-priority mode intentionally keeps
+            // using the onset so the covering ribbon paints after both.
+            const targetT = gemInFront && targetTrailEnds
+                && Number.isFinite(targetTrailEnds[i])
+                ? Math.max(yieldStarts[i], targetTrailEnds[i])
+                : yieldStarts[i];
+            const targetWorldZ = Math.min(0, -(targetT - now) * speed);
             if (worldZ === null) worldZ = targetWorldZ;
             else worldZ = gemInFront
                 ? Math.min(worldZ, targetWorldZ)
                 : Math.max(worldZ, targetWorldZ);
         }
         return worldZ === null ? fallbackWorldZ : worldZ;
+    }
+
+    // Keep equal-depth trail chains deterministic without crossing the next
+    // named render layer (1 / RENDER_ORDER_LAYER_STACK.length). The trail body
+    // itself adds 0.0005, so this step must be larger than that sub-layer.
+    const TRAIL_YIELD_STRING_ORDER_STEP = 0.002;
+    function hwyTrailPriorityStringOffset(stringIndex, stringCount, inverted, gemInFront) {
+        if (!Number.isInteger(stringIndex) || !Number.isInteger(stringCount)
+            || stringCount <= 1 || stringIndex < 0 || stringIndex >= stringCount) return 0;
+        const visuallyLowerRank = inverted
+            ? stringCount - 1 - stringIndex
+            : stringIndex;
+        const priorityRank = gemInFront
+            ? visuallyLowerRank
+            : stringCount - 1 - visuallyLowerRank;
+        return priorityRank * TRAIL_YIELD_STRING_ORDER_STEP;
     }
 
     /** Chart-static fret index; rebuilt only when arrangement arrays change. */
@@ -1192,9 +1225,28 @@
      * reverses that relationship. Returns a count so the per-frame path never
      * allocates an array.
      */
-    function hwyFillTrailYieldTimes(events, sourceT, sourceString, now, susEnd, inverted, outStarts, outEnds, initialCount = 0, visibleEnd = susEnd, settings = TRAIL_YIELD_DEFAULTS, eventMatches = null, onMatch = null) {
+    function hwyFillTrailYieldTimes(
+        events,
+        sourceT,
+        sourceString,
+        now,
+        susEnd,
+        inverted,
+        outStarts,
+        outEnds,
+        initialCount = 0,
+        visibleEnd = susEnd,
+        settings = TRAIL_YIELD_DEFAULTS,
+        eventMatches = null,
+        onMatch = null,
+        outTargetTrailEnds = null,
+    ) {
         const cfg = settings || TRAIL_YIELD_DEFAULTS;
-        const capacity = Math.min(outStarts.length, outEnds.length);
+        const capacity = Math.min(
+            outStarts.length,
+            outEnds.length,
+            outTargetTrailEnds ? outTargetTrailEnds.length : Infinity,
+        );
         let count = Math.max(0, Math.min(capacity, initialCount | 0));
         if (!events || events.length === 0 || count >= capacity) return count;
         const tLo = sourceT + NEXT_ON_STRING_T_EPS;
@@ -1224,6 +1276,9 @@
             if (event.t <= sourceT + NEXT_ON_STRING_T_EPS
                 || event.t > susEnd + endpointLookahead + 1e-6) continue;
             const yieldEnd = Math.min(susEnd, Math.max(event.t, event.end));
+            const targetTrailEnd = Number.isFinite(event.end)
+                ? Math.max(event.t, event.end)
+                : event.t;
             if (yieldEnd + cfg.holdAfter + cfg.recoverDuration < now) continue;
             const visuallyBelow = inverted
                 ? event.s < sourceString
@@ -1243,12 +1298,21 @@
             }
             if (duplicate >= 0) {
                 outEnds[duplicate] = Math.max(outEnds[duplicate], yieldEnd);
+                if (outTargetTrailEnds) {
+                    outTargetTrailEnds[duplicate] = Math.max(
+                        outTargetTrailEnds[duplicate], targetTrailEnd,
+                    );
+                }
                 if (onMatch) onMatch(event);
                 continue;
             }
             if (count >= capacity) break;
             outStarts[count] = event.t;
-            outEnds[count++] = yieldEnd;
+            outEnds[count] = yieldEnd;
+            if (outTargetTrailEnds) {
+                outTargetTrailEnds[count] = targetTrailEnd;
+            }
+            count++;
             if (onMatch) onMatch(event);
         }
         return count;
@@ -5046,6 +5110,7 @@
         const TRAIL_YIELD_TARGET_CAPACITY = MAX_RENDER_STRINGS * 16;
         const _trailYieldStartsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
         const _trailYieldEndsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
+        const _trailYieldTargetTrailEndsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
         // Standalone open notes render two separated rails. Keep independent
         // windows so only the rail physically covering a later gem yields.
         const _trailYieldOpenStartsScratch = [
@@ -5053,6 +5118,10 @@
             new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
         ];
         const _trailYieldOpenEndsScratch = [
+            new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
+            new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
+        ];
+        const _trailYieldOpenTargetTrailEndsScratch = [
             new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
             new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
         ];
@@ -14756,7 +14825,7 @@
 
         /** Collect one strand's qualifying targets through the shared matcher. */
         function collectTrailYieldTargetsForStrand(
-            n, now, susEnd, visibleEnd, starts, ends, strandBaseX,
+            n, now, susEnd, visibleEnd, starts, ends, targetTrailEnds, strandBaseX,
         ) {
             const ctx = _trailYieldMatchContext;
             ctx.strandBaseX = strandBaseX;
@@ -14781,6 +14850,7 @@
                     starts, ends, count, visibleEnd, trailYieldSettings,
                     trailYieldEventMatchesRenderedFootprint,
                     trailYieldMarkTarget,
+                    targetTrailEnds,
                 );
             }
             return count;
@@ -15469,9 +15539,11 @@
                                 for (let si = 0; si < offsets.length; si++) {
                                     const starts = _trailYieldOpenStartsScratch[si];
                                     const ends = _trailYieldOpenEndsScratch[si];
+                                    const targetTrailEnds = _trailYieldOpenTargetTrailEndsScratch[si];
                                     const strandCount = collectTrailYieldTargetsForStrand(
                                         n, now, susEnd, visibleYieldEnd,
-                                        starts, ends, xBase + offsets[si],
+                                        starts, ends, targetTrailEnds,
+                                        xBase + offsets[si],
                                     );
                                     _trailYieldOpenCountsScratch[si] = strandCount;
                                     yieldCount += strandCount;
@@ -15480,6 +15552,7 @@
                                 yieldCount = collectTrailYieldTargetsForStrand(
                                     n, now, susEnd, visibleYieldEnd,
                                     _trailYieldStartsScratch, _trailYieldEndsScratch,
+                                    _trailYieldTargetTrailEndsScratch,
                                     xBase,
                                 );
                             }
@@ -15533,6 +15606,9 @@
                                 const strandYieldEnds = n.f === 0
                                     ? _trailYieldOpenEndsScratch[si]
                                     : _trailYieldEndsScratch;
+                                const strandTargetTrailEnds = n.f === 0
+                                    ? _trailYieldOpenTargetTrailEndsScratch[si]
+                                    : _trailYieldTargetTrailEndsScratch;
                                 const strandYieldCount = trailYieldSettings.enabled
                                     ? (n.f === 0 ? _trailYieldOpenCountsScratch[si] : yieldCount)
                                     : 0;
@@ -15540,10 +15616,16 @@
                                     -_ribDt * TS, now,
                                     strandYieldStarts, strandYieldCount,
                                     trailYieldSettings.gemInFront, TS,
+                                    strandTargetTrailEnds,
                                 );
                                 const ribbonRenderOrder = renderOrderForLayerAtZ(
                                     ribbonOrderZ, 'SUSTAIN_TRAIL',
-                                );
+                                ) + (strandYieldCount > 0
+                                    ? hwyTrailPriorityStringOffset(
+                                        n.s, nStr, _invertedCached,
+                                        trailYieldSettings.gemInFront,
+                                    )
+                                    : 0);
                                 const olMesh = pSusRibbonOl.get();
                                 olMesh.renderOrder = ribbonRenderOrder;
                                 olMesh.scale.set(1, 1, 1);

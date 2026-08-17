@@ -21,7 +21,7 @@ function loadHelpers() {
         'const NFRETS = 24; const NEXT_ON_STRING_T_EPS = 0.06;\n'
         + block
         + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyTrailOverlapsGemX, hwyTrailYieldAmountAt,'
-        + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailYieldGemLayer,'
+        + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailPriorityStringOffset, hwyTrailYieldGemLayer,'
         + ' TRAIL_YIELD_DEFAULTS })',
     );
 }
@@ -323,6 +323,77 @@ test('yielding ribbon strands choose the target-depth extreme for each priority 
     );
 });
 
+test('target sustain ends are retained separately from clipped notch geometry', () => {
+    const starts = new Float64Array(2);
+    const ends = new Float64Array(2);
+    const targetTrailEnds = new Float64Array(2);
+    const count = helpers.hwyFillTrailYieldTimes(
+        [
+            { t: 4, s: 2, end: 8 },
+            { t: 4, s: 3, end: 10 },
+        ],
+        0, 1, 1, 5, false, starts, ends,
+        0, 5, helpers.TRAIL_YIELD_DEFAULTS, null, null,
+        targetTrailEnds,
+    );
+    assert.equal(count, 1);
+    assert.equal(ends[0], 5, 'the width notch must stop with its covering trail');
+    assert.equal(
+        targetTrailEnds[0], 10,
+        'ordering must retain the complete longest attached trail in a chord wave',
+    );
+});
+
+test('front priority consistently includes attached trails for single and repeated targets', () => {
+    const speed = 230;
+
+    const singleStarts = new Float64Array([16]);
+    const singleEnds = new Float64Array([19]);
+    const singleSourceZ = helpers.hwyTrailPriorityWorldZ(
+        -1, 14, singleStarts, 1, true, speed, singleEnds,
+    );
+    const singleTargetMidZ = -(17.5 - 14) * speed;
+    assert.ok(
+        singleSourceZ < singleTargetMidZ,
+        'the covering trail paints before a long target trail, not merely its gem',
+    );
+
+    const repeatedStarts = new Float64Array([25.5, 27, 28.5, 30]);
+    const repeatedEnds = new Float64Array([25.7, 27.2, 28.7, 30.2]);
+    const repeatedSourceZ = helpers.hwyTrailPriorityWorldZ(
+        -1, 24, repeatedStarts, 4, true, speed, repeatedEnds,
+    );
+    for (let i = 0; i < repeatedStarts.length; i++) {
+        const targetMid = (repeatedStarts[i] + repeatedEnds[i]) * 0.5;
+        const targetMidZ = -(targetMid - 24) * speed;
+        assert.ok(
+            repeatedSourceZ < targetMidZ,
+            `target trail ${i} should paint after its covering trail`,
+        );
+    }
+
+    const trailPriorityZ = helpers.hwyTrailPriorityWorldZ(
+        -1, 24, repeatedStarts, 4, false, speed, repeatedEnds,
+    );
+    for (let i = 0; i < repeatedStarts.length; i++) {
+        const targetMid = (repeatedStarts[i] + repeatedEnds[i]) * 0.5;
+        const targetMidZ = -(targetMid - 24) * speed;
+        assert.ok(
+            trailPriorityZ > targetMidZ,
+            `target trail ${i} should remain behind when front priority is off`,
+        );
+    }
+});
+
+test('equal-depth trail cascades follow visual string order in both orientations', () => {
+    const offset = helpers.hwyTrailPriorityStringOffset;
+    assert.ok(offset(2, 6, false, true) > offset(1, 6, false, true));
+    assert.ok(offset(2, 6, true, true) < offset(1, 6, true, true));
+    assert.ok(offset(2, 6, false, false) < offset(1, 6, false, false));
+    assert.ok(offset(2, 6, true, false) > offset(1, 6, true, false));
+    assert.equal(offset(-1, 6, false, true), 0);
+});
+
 test('a narrowed trail endpoint uses its upcoming gem depth in both priority modes', () => {
     const endpointTarget = new Float64Array([10.1]);
     for (const gemInFront of [false, true]) {
@@ -545,8 +616,8 @@ test('rendering and eligibility share one time-sampled footprint model', () => {
     assert.match(src, /function\s+collectTrailYieldTargetsForStrand\(/);
     assert.match(src, /_trailYieldEventsByFret\[f\][\s\S]{0,350}?trailYieldEventMatchesRenderedFootprint/);
     assert.match(src, /for\s*\(let f = 0; f <= NFRETS/);
-    assert.match(src, /collectTrailYieldTargetsForStrand\([\s\S]{0,220}?xBase\s*\+\s*offsets\[si\],/);
-    assert.match(src, /collectTrailYieldTargetsForStrand\([\s\S]{0,220}?xBase,/);
+    assert.match(src, /collectTrailYieldTargetsForStrand\([\s\S]{0,350}?xBase\s*\+\s*offsets\[si\],/);
+    assert.match(src, /collectTrailYieldTargetsForStrand\([\s\S]{0,350}?xBase,/);
 });
 
 test('3D settings expose one shared width and separate passing-note and endpoint timing', () => {
