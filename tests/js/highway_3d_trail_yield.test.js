@@ -21,7 +21,8 @@ function loadHelpers() {
         'const NFRETS = 24; const NEXT_ON_STRING_T_EPS = 0.06;\n'
         + block
         + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyTrailOverlapsGemX, hwyTrailYieldAmountAt,'
-        + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, TRAIL_YIELD_DEFAULTS })',
+        + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailYieldGemLayer,'
+        + ' TRAIL_YIELD_DEFAULTS })',
     );
 }
 
@@ -192,6 +193,56 @@ test('only covered notes on visually lower strings create yield windows', () => 
         1,
         'inverted highways reverse which string is visually lower',
     );
+});
+
+test('gem-front preference changes only qualifying trail-yield targets', () => {
+    const layer = helpers.hwyTrailYieldGemLayer;
+    assert.equal(layer(false, true, 'normal', 'behind'), 'behind');
+    assert.equal(layer(true, true, 'normal', 'behind'), 'normal');
+    assert.equal(layer(false, false, 'normal', 'behind'), 'normal');
+    assert.equal(layer(true, false, 'normal', 'behind'), 'normal');
+});
+
+test('accepted normal and inverted targets are reported for scoped gem ordering', () => {
+    const starts = new Float64Array(4);
+    const ends = new Float64Array(4);
+    const accepted = [];
+    const events = [
+        { t: 1, s: 0, end: 1 },
+        { t: 1.1, s: 2, end: 1.1 },
+    ];
+    assert.equal(
+        helpers.hwyFillTrailYieldTimes(
+            events, 0, 1, 0, 2, false, starts, ends, 0, 2,
+            helpers.TRAIL_YIELD_DEFAULTS, null,
+            event => accepted.push(event.s),
+        ),
+        1,
+    );
+    assert.deepEqual(accepted, [2], 'normal mode reports only the visually lower target');
+
+    accepted.length = 0;
+    assert.equal(
+        helpers.hwyFillTrailYieldTimes(
+            events, 0, 1, 0, 2, true, starts, ends, 0, 2,
+            helpers.TRAIL_YIELD_DEFAULTS, null,
+            event => accepted.push(event.s),
+        ),
+        1,
+    );
+    assert.deepEqual(accepted, [0], 'inverted mode reverses the reported target direction');
+
+    accepted.length = 0;
+    assert.equal(
+        helpers.hwyFillTrailYieldTimes(
+            [{ t: 2.2, s: 2, end: 2.2 }],
+            0, 1, 0, 2, false, starts, ends, 0, 2,
+            helpers.TRAIL_YIELD_DEFAULTS, null,
+            event => accepted.push(event.s),
+        ),
+        1,
+    );
+    assert.deepEqual(accepted, [2], 'a narrowed endpoint reports the same scoped target');
 });
 
 test('a near-adjacent lower gem tapers the terminal trail face', () => {
@@ -409,8 +460,20 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
     const src = fs.readFileSync(SCREEN_JS, 'utf8');
     assert.equal(helpers.TRAIL_YIELD_DEFAULTS.gemInFront, false);
     assert.match(src, /const\s+ribbonSusTrail\s*=\s*yieldCount\s*>\s*0\s*\|\|/);
-    assert.match(src, /trailYieldSettings\.gemInFront\s*\?\s*'NOTE_OUTLINE'\s*:\s*'NOTE_OUTLINE_BEHIND_TRAIL'/);
-    assert.match(src, /trailYieldSettings\.gemInFront\s*\?\s*'NOTE_CORE'\s*:\s*'NOTE_CORE_BEHIND_TRAIL'/);
+    assert.match(src, /const\s+isTrailYieldTarget\s*=\s*!!\(trailYieldGemEvent[\s\S]{0,140}?_trailYieldTargetFrame\s*===\s*_trailYieldFrameId\)/);
+    assert.match(src, /hwyTrailYieldGemLayer\([\s\S]{0,140}?'NOTE_OUTLINE',\s*'NOTE_OUTLINE_BEHIND_TRAIL'/);
+    assert.match(src, /hwyTrailYieldGemLayer\([\s\S]{0,140}?'NOTE_CORE',\s*'NOTE_CORE_BEHIND_TRAIL'/);
+    assert.doesNotMatch(src, /trailYieldSettings\.gemInFront\s*\?\s*'NOTE_(?:OUTLINE|CORE)'/);
+    assert.match(src, /hwyFillTrailYieldTimes\([\s\S]{0,420}?trailYieldEventMatchesRenderedFootprint,\s*trailYieldMarkTarget,/);
+    const registerGemStart = src.indexOf('        function trailYieldRegisterGem(');
+    const registerGemEnd = src.indexOf('        function trailYieldSweepMayReachFret(', registerGemStart);
+    assert.notEqual(registerGemStart, -1);
+    assert.notEqual(registerGemEnd, -1);
+    assert.match(
+        src.slice(registerGemStart, registerGemEnd),
+        /trailYieldApplyBehindLayers/,
+        'a gem emitted before or after its source trail must converge on the same scoped layer',
+    );
     assert.match(src, /hwyTrailPriorityWorldZ\([\s\S]{0,180}?strandYieldStarts,\s*strandYieldCount,[\s\S]{0,100}?trailYieldSettings\.gemInFront,\s*TS/);
     const behindLayer = src.indexOf("'NOTE_CORE_BEHIND_TRAIL'");
     const trailLayer = src.indexOf("'SUSTAIN_TRAIL'");

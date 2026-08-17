@@ -1057,6 +1057,16 @@
             <= (Math.max(0, trailWidth) + Math.max(0, gemWidth)) * 0.5;
     }
 
+    /**
+     * Resolve one gem layer without changing ordinary highway ordering.
+     * The preference belongs to a trail/gem relationship, not every gem: only
+     * a target accepted by the yield matcher may move behind its covering
+     * trail when front priority is disabled.
+     */
+    function hwyTrailYieldGemLayer(gemInFront, qualifyingTarget, normalLayer, behindLayer) {
+        return qualifyingTarget && !gemInFront ? behindLayer : normalLayer;
+    }
+
     /** Shared eligibility rule after source/target geometry has been resolved. */
     function hwyTrailFootprintsCanOcclude(
         visuallyBelow,
@@ -1182,7 +1192,7 @@
      * reverses that relationship. Returns a count so the per-frame path never
      * allocates an array.
      */
-    function hwyFillTrailYieldTimes(events, sourceT, sourceString, now, susEnd, inverted, outStarts, outEnds, initialCount = 0, visibleEnd = susEnd, settings = TRAIL_YIELD_DEFAULTS, eventMatches = null) {
+    function hwyFillTrailYieldTimes(events, sourceT, sourceString, now, susEnd, inverted, outStarts, outEnds, initialCount = 0, visibleEnd = susEnd, settings = TRAIL_YIELD_DEFAULTS, eventMatches = null, onMatch = null) {
         const cfg = settings || TRAIL_YIELD_DEFAULTS;
         const capacity = Math.min(outStarts.length, outEnds.length);
         let count = Math.max(0, Math.min(capacity, initialCount | 0));
@@ -1233,11 +1243,13 @@
             }
             if (duplicate >= 0) {
                 outEnds[duplicate] = Math.max(outEnds[duplicate], yieldEnd);
+                if (onMatch) onMatch(event);
                 continue;
             }
             if (count >= capacity) break;
             outStarts[count] = event.t;
             outEnds[count++] = yieldEnd;
+            if (onMatch) onMatch(event);
         }
         return count;
     }
@@ -5025,6 +5037,12 @@
         let _trailYieldNotesRef = null;
         let _trailYieldChordsRef = null;
         let _trailYieldNStr = 0;
+        // Qualifying target gems may be encountered before or after their
+        // covering source trail because standalone notes and chord members use
+        // separate render loops. A frame id plus reusable records lets either
+        // order converge before Three.js draws, without chart scans or frame
+        // allocations. Non-qualifying gems never enter this path.
+        let _trailYieldFrameId = 0;
         const TRAIL_YIELD_TARGET_CAPACITY = MAX_RENDER_STRINGS * 16;
         const _trailYieldStartsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
         const _trailYieldEndsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
@@ -11212,6 +11230,7 @@
 
         function update(bundle) {
             pbBeg(0);
+            _trailYieldFrameId++;
             // [verdict glow] Apply the level-driven verdict brightness captured
             // last frame (1-frame lag is imperceptible), then reset for this
             // frame's capture in the gem path below. vg = 1 when no provider
@@ -14636,6 +14655,93 @@
             );
         }
 
+        /** Find the indexed event represented by a drawNote call. */
+        function trailYieldEventForNote(n) {
+            const events = _trailYieldEventsByFret[n.f];
+            if (!events || events.length === 0) return null;
+            let lo = 0, hi = events.length;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (events[mid].t < n.t - 1e-6) lo = mid + 1;
+                else hi = mid;
+            }
+            for (let i = lo; i < events.length; i++) {
+                const event = events[i];
+                if (event.t > n.t + 1e-6) break;
+                if (event.s === n.s) return event;
+            }
+            return null;
+        }
+
+        function trailYieldApplyBehindLayerRecord(worldZ, outline, core, face) {
+            outline.renderOrder = renderOrderForLayerAtZ(
+                worldZ, 'NOTE_OUTLINE_BEHIND_TRAIL',
+            );
+            core.renderOrder = renderOrderForLayerAtZ(
+                worldZ, 'NOTE_CORE_BEHIND_TRAIL',
+            );
+            if (face) face.renderOrder = renderOrderForLayerAtZ(
+                worldZ, 'NOTE_FACE_BEHIND_TRAIL',
+            );
+        }
+
+        function trailYieldApplyBehindLayers(event) {
+            if (!event || event._trailYieldGemFrame !== _trailYieldFrameId) return;
+            const count = event._trailYieldGemRecordCount || 0;
+            if (count === 0) return;
+            trailYieldApplyBehindLayerRecord(
+                event._trailYieldGemWorldZ,
+                event._trailYieldGemOutline,
+                event._trailYieldGemCore,
+                event._trailYieldGemFace,
+            );
+            const extras = event._trailYieldGemExtraRecords;
+            for (let i = 1; i < count; i++) {
+                const record = extras[i - 1];
+                trailYieldApplyBehindLayerRecord(
+                    record.worldZ, record.outline, record.core, record.face,
+                );
+            }
+        }
+
+        /** Called only after hwyFillTrailYieldTimes accepts the relationship. */
+        function trailYieldMarkTarget(event) {
+            if (trailYieldSettings.gemInFront) return;
+            event._trailYieldTargetFrame = _trailYieldFrameId;
+            trailYieldApplyBehindLayers(event);
+        }
+
+        function trailYieldRegisterGem(event, worldZ, outline, core, face) {
+            if (!event) return;
+            if (event._trailYieldGemFrame !== _trailYieldFrameId) {
+                event._trailYieldGemFrame = _trailYieldFrameId;
+                event._trailYieldGemRecordCount = 0;
+            }
+            const index = event._trailYieldGemRecordCount++;
+            if (index === 0) {
+                // One rendered gem per indexed event is the normal path. Keep
+                // its mesh references directly on the reusable event so this
+                // feature adds no per-note or per-frame object allocation.
+                event._trailYieldGemWorldZ = worldZ;
+                event._trailYieldGemOutline = outline;
+                event._trailYieldGemCore = core;
+                event._trailYieldGemFace = face;
+            } else {
+                // A standalone arpeggio note can duplicate a chord member.
+                // Allocate records only for that uncommon second emission.
+                const extras = event._trailYieldGemExtraRecords
+                    || (event._trailYieldGemExtraRecords = []);
+                const record = extras[index - 1] || (extras[index - 1] = {});
+                record.worldZ = worldZ;
+                record.outline = outline;
+                record.core = core;
+                record.face = face;
+            }
+            if (event._trailYieldTargetFrame === _trailYieldFrameId) {
+                trailYieldApplyBehindLayers(event);
+            }
+        }
+
         /**
          * Conservative fret-bucket test for a strand's complete X sweep. The
          * exact footprint predicate still runs at each candidate onset; this
@@ -14674,6 +14780,7 @@
                     n.t, n.s, now, susEnd, _invertedCached,
                     starts, ends, count, visibleEnd, trailYieldSettings,
                     trailYieldEventMatchesRenderedFootprint,
+                    trailYieldMarkTarget,
                 );
             }
             return count;
@@ -15207,12 +15314,24 @@
                 // each frame (a recycled mesh may carry a gradient geometry from a
                 // prior core use). Outline always uses the plain box.
                 outline.geometry = gNote;
-                const noteOutlineLayer = trailYieldSettings.gemInFront
-                    ? 'NOTE_OUTLINE' : 'NOTE_OUTLINE_BEHIND_TRAIL';
-                const noteCoreLayer = trailYieldSettings.gemInFront
-                    ? 'NOTE_CORE' : 'NOTE_CORE_BEHIND_TRAIL';
-                const noteFaceLayer = trailYieldSettings.gemInFront
-                    ? 'TECHNIQUE_MARKER' : 'NOTE_FACE_BEHIND_TRAIL';
+                const trailYieldGemEvent = trailYieldSettings.enabled
+                    && !trailYieldSettings.gemInFront
+                    ? trailYieldEventForNote(n)
+                    : null;
+                const isTrailYieldTarget = !!(trailYieldGemEvent
+                    && trailYieldGemEvent._trailYieldTargetFrame === _trailYieldFrameId);
+                const noteOutlineLayer = hwyTrailYieldGemLayer(
+                    trailYieldSettings.gemInFront, isTrailYieldTarget,
+                    'NOTE_OUTLINE', 'NOTE_OUTLINE_BEHIND_TRAIL',
+                );
+                const noteCoreLayer = hwyTrailYieldGemLayer(
+                    trailYieldSettings.gemInFront, isTrailYieldTarget,
+                    'NOTE_CORE', 'NOTE_CORE_BEHIND_TRAIL',
+                );
+                const noteFaceLayer = hwyTrailYieldGemLayer(
+                    trailYieldSettings.gemInFront, isTrailYieldTarget,
+                    'TECHNIQUE_MARKER', 'NOTE_FACE_BEHIND_TRAIL',
+                );
                 outline.renderOrder = renderOrderForLayerAtZ(noteZ, noteOutlineLayer);
                 outline.position.set(x, y + techniqueYNow, noteZ);
                 outline.rotation.z = approachRot;
@@ -15231,8 +15350,10 @@
                 // Material array: groups 0-3 (±X ±Y) get the verdict colour;
                 // groups 4-5 (+Z front / -Z back) are transparent so the large
                 // front face shows only the core body's string colour beneath.
+                let noteFaceMesh = null;
                 if (_ndFaceMat) {
                     const edges = pNoteEdge.get();
+                    noteFaceMesh = edges;
                     edges.material = _ndFaceMat;
                     edges.renderOrder = renderOrderForLayerAtZ(noteZ, noteFaceLayer);
                     edges.position.set(x, y + techniqueYNow, noteZ + 0.001);
@@ -15268,6 +15389,9 @@
                     core.scale.set(rimXY, rimXY, 2.5 * rimZ);
                 }
                 if (_hitPunch !== 1) core.scale.multiplyScalar(_hitPunch);   // #3 hit scale-punch
+                trailYieldRegisterGem(
+                    trailYieldGemEvent, noteZ, outline, core, noteFaceMesh,
+                );
                 // Fret digits on fretted (n.f > 0) flying notes deliberately
                 // omitted: the showFretOnNote setting and its UI helper text
                 // promise digits on the fretboard ghost only, never on the

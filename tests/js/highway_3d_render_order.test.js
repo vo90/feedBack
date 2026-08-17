@@ -417,22 +417,22 @@ test('sus-trail ribbon renderOrder uses target-aware depth on the named trail la
 // Note gem ordering (outline < core, both driven by named depth layers)
 // ---------------------------------------------------------------------------
 
-test('note gem outline switches between the named layers around sustain trails', () => {
+test('only a qualifying trail-yield target can move its outline behind a trail', () => {
     assert.match(
         src(),
-        /const\s+noteOutlineLayer\s*=\s*trailYieldSettings\.gemInFront\s*\?\s*'NOTE_OUTLINE'\s*:\s*'NOTE_OUTLINE_BEHIND_TRAIL'\s*;/,
-        'note gem outline must select its named layer from the front-priority setting',
+        /const\s+noteOutlineLayer\s*=\s*hwyTrailYieldGemLayer\([\s\S]{0,180}?'NOTE_OUTLINE'\s*,\s*'NOTE_OUTLINE_BEHIND_TRAIL'\s*,?\s*\)\s*;/,
+        'note gem outline must scope its alternate layer to a qualifying yield target',
     );
     assert.match(src(), /outline\.renderOrder\s*=\s*renderOrderForLayerAtZ\(\s*noteZ\s*,\s*noteOutlineLayer\s*\)\s*;/);
     assert.ok(layerIndex('NOTE_OUTLINE_BEHIND_TRAIL') < layerIndex('SUSTAIN_TRAIL'));
     assert.ok(layerIndex('NOTE_OUTLINE') > layerIndex('FRET_COLUMN'));
 });
 
-test('note gem core switches between the named layers around sustain trails', () => {
+test('only a qualifying trail-yield target can move its core behind a trail', () => {
     assert.match(
         src(),
-        /const\s+noteCoreLayer\s*=\s*trailYieldSettings\.gemInFront\s*\?\s*'NOTE_CORE'\s*:\s*'NOTE_CORE_BEHIND_TRAIL'\s*;/,
-        'note gem core must select its named layer from the front-priority setting',
+        /const\s+noteCoreLayer\s*=\s*hwyTrailYieldGemLayer\([\s\S]{0,180}?'NOTE_CORE'\s*,\s*'NOTE_CORE_BEHIND_TRAIL'\s*,?\s*\)\s*;/,
+        'note gem core must scope its alternate layer to a qualifying yield target',
     );
     assert.match(src(), /core\.renderOrder\s*=\s*renderOrderForLayerAtZ\(\s*noteZ\s*,\s*noteCoreLayer\s*\)\s*;/);
     assert.ok(layerIndex('NOTE_CORE_BEHIND_TRAIL') > layerIndex('NOTE_OUTLINE_BEHIND_TRAIL'));
