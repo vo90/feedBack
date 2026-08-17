@@ -84,30 +84,30 @@ test('front-priority settings expose exactly the three supported visual modes', 
     );
 });
 
-test('trail relationships cannot invert the physical string hierarchy', () => {
+test('trail visibility relationships cannot invert the physical string hierarchy', () => {
     const normalize = helpers.hwyTrailOcclusionFlagsForPair;
     const gem = helpers.TRAIL_OCCLUSION_GEM;
     const trail = helpers.TRAIL_OCCLUSION_TRAIL;
 
     assert.equal(
-        normalize(4, 3, false, gem | trail), gem,
-        'a normal-view bend toward the visually higher string may cover its gem but not its trail',
+        normalize(4, 3, false, gem | trail), 0,
+        'a normal-view bend toward a visually higher string cannot create a relationship',
     );
     assert.equal(
         normalize(3, 4, false, trail), trail,
         'the opposing normal-view physical edge retains trail ordering',
     );
     assert.equal(
-        normalize(1, 2, true, gem | trail), gem,
-        'the mirrored bend/vibrato case removes the reverse trail edge when inverted',
+        normalize(1, 2, true, gem | trail), 0,
+        'the mirrored bend/vibrato case is also rejected when inverted',
     );
     assert.equal(
         normalize(2, 1, true, trail), trail,
         'the opposing inverted physical edge retains trail ordering',
     );
     assert.equal(
-        normalize(2, 2, false, gem | trail), gem,
-        'same-string relationships can never create a trail-order edge',
+        normalize(2, 2, false, gem | trail), 0,
+        'same-string relationships cannot create gem or trail priority edges',
     );
 });
 
@@ -132,17 +132,15 @@ test('per-fret onset indexes are sorted, bounded, and merge duplicate members', 
     assert.ok(events[1].chordMeta, 'duplicate standalone/chord metadata is retained');
 });
 
-test('one footprint rule covers stationary and technique-shifted trails', () => {
+test('one footprint rule requires a visually lower target and overlapping X geometry', () => {
     const canOcclude = helpers.hwyTrailFootprintsCanOcclude;
-    assert.equal(canOcclude(true, false, false, 10, 2, 11, 2), true);
-    assert.equal(canOcclude(true, false, false, 10, 2, 13, 2), false);
+    assert.equal(canOcclude(true, 10, 2, 11, 2), true);
+    assert.equal(canOcclude(true, 10, 2, 13, 2), false);
     assert.equal(
-        canOcclude(false, true, false, 10, 2, 11, 2, 20, 2, 21, 2),
-        true,
-        'bend/vibrato movement may reveal a physically covered opposite lane',
+        canOcclude(false, 10, 2, 11, 2),
+        false,
+        'bend/vibrato Y motion cannot make a visually higher target qualify',
     );
-    assert.equal(canOcclude(false, true, true, 10, 2, 11, 2, 20, 2, 21, 2), false);
-    assert.equal(canOcclude(false, true, false, 10, 2, 11, 2, 20, 2, 24, 2), false);
 });
 
 test('slides qualify at their rendered fret rather than their starting fret', () => {
@@ -153,13 +151,13 @@ test('slides qualify at their rendered fret rather than their starting fret', ()
     assert.ok(trailX > 40 && trailX < 50);
     assert.equal(
         helpers.hwyTrailFootprintsCanOcclude(
-            true, false, false, trailX, 4.65, trailX, 5.5,
+            true, trailX, 4.65, trailX, 5.5,
         ),
         true,
     );
     assert.equal(
         helpers.hwyTrailFootprintsCanOcclude(
-            true, false, false, trailX, 4.65, 30, 5.5,
+            true, trailX, 4.65, 30, 5.5,
         ),
         false,
         'the old starting-fret match must not survive after the slide moves away',
@@ -180,13 +178,13 @@ test('tremolo can reach an adjacent high-fret footprint without becoming a multi
     assert.ok(offset > 0 && offset < trailW * 0.5);
     assert.equal(
         helpers.hwyTrailFootprintsCanOcclude(
-            true, false, false, 0, trailW, 6, 5.5,
+            true, 0, trailW, 6, 5.5,
         ),
         false,
     );
     assert.equal(
         helpers.hwyTrailFootprintsCanOcclude(
-            true, false, false, offset, trailW, 6, 5.5,
+            true, offset, trailW, 6, 5.5,
         ),
         true,
     );
@@ -194,8 +192,8 @@ test('tremolo can reach an adjacent high-fret footprint without becoming a multi
 
 test('wide open targets use footprint overlap instead of a fret-zero special case', () => {
     const canOcclude = helpers.hwyTrailFootprintsCanOcclude;
-    assert.equal(canOcclude(true, false, false, 20, 4.65, 50, 5.5), false);
-    assert.equal(canOcclude(true, false, false, 20, 4.65, 50, 80), true);
+    assert.equal(canOcclude(true, 20, 4.65, 50, 5.5), false);
+    assert.equal(canOcclude(true, 20, 4.65, 50, 80), true);
 });
 
 test('candidate filters can apply the shared footprint rule beyond a fret bucket', () => {
@@ -336,6 +334,51 @@ test('a moving source qualifies when it crosses the lower target sustain after o
     assert.equal(
         sweepOverlaps(0, 0, 2, 1, 3, 2), true,
         'the bounded tremolo reach participates without time sampling',
+    );
+});
+
+test('moving-Y techniques cannot reverse taper eligibility in normal or inverted views', () => {
+    const starts = new Float64Array(4);
+    const ends = new Float64Array(4);
+    const matchesSameFret = (_event, visuallyBelow) => (
+        helpers.hwyTrailFootprintsCanOcclude(visuallyBelow, 10, 2, 10, 2)
+    );
+
+    assert.equal(
+        helpers.hwyFillTrailYieldTimes(
+            [{ t: 1, s: 3, f: 7, end: 2 }],
+            0, 4, 0, 3, false, starts, ends,
+            0, 3, helpers.TRAIL_YIELD_DEFAULTS, matchesSameFret,
+        ),
+        0,
+        'normal: green-string bend cannot yield for an orange higher-string target',
+    );
+    assert.equal(
+        helpers.hwyFillTrailYieldTimes(
+            [{ t: 1, s: 5, f: 7, end: 2 }],
+            0, 4, 0, 3, false, starts, ends,
+            0, 3, helpers.TRAIL_YIELD_DEFAULTS, matchesSameFret,
+        ),
+        1,
+        'normal: the same source still yields for a purple lower-string target',
+    );
+    assert.equal(
+        helpers.hwyFillTrailYieldTimes(
+            [{ t: 1, s: 2, f: 7, end: 2 }],
+            0, 1, 0, 3, true, starts, ends,
+            0, 3, helpers.TRAIL_YIELD_DEFAULTS, matchesSameFret,
+        ),
+        0,
+        'inverted: the mirrored higher-string target remains ineligible',
+    );
+    assert.equal(
+        helpers.hwyFillTrailYieldTimes(
+            [{ t: 1, s: 0, f: 7, end: 2 }],
+            0, 1, 0, 3, true, starts, ends,
+            0, 3, helpers.TRAIL_YIELD_DEFAULTS, matchesSameFret,
+        ),
+        1,
+        'inverted: the mirrored lower-string target remains eligible',
     );
 });
 
@@ -717,7 +760,7 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
     assert.match(
         src,
         /trailOcclusionRegisterRelationships\(\s*trailYieldTargetEvent,\s*strandMatchedEvents,\s*null,\s*strandMatchedEventCount,\s*ribbonRenderOrder,\s*TRAIL_OCCLUSION_GEM/,
-        'exact footprint matching controls the gem while physical string ordering owns trail relationships',
+        'exact lower-string footprint matching controls the gem while physical ordering owns trails',
     );
     assert.match(
         src,
@@ -784,6 +827,8 @@ test('rendering and eligibility share one rendered footprint model', () => {
     assert.match(centerBody, /tremoloOffsetWorldX\(/);
 
     const matcherBody = src.slice(matcherDecl, src.indexOf('\n        }', matcherDecl) + 10);
+    assert.match(matcherBody, /if\s*\(!visuallyBelow\)\s*return false/);
+    assert.doesNotMatch(matcherBody, /techniqueMovesY|techniqueYOffsetWorld/);
     assert.match(matcherBody, /Math\.min\(event\.t,\s*ctx\.susEnd\)/);
     assert.match(matcherBody, /sustainTrailCenterXAt\(/);
     assert.match(matcherBody, /trailYieldOpenTargetXBounds\(/);

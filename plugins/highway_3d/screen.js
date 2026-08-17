@@ -1082,25 +1082,16 @@
         return qualifyingTarget && !gemInFront ? behindLayer : normalLayer;
     }
 
-    /** Shared eligibility rule after source/target geometry has been resolved. */
+    /** Shared eligibility rule after source/target X geometry has been resolved. */
     function hwyTrailFootprintsCanOcclude(
         visuallyBelow,
-        techniqueMovesY,
-        sameString,
         trailX,
         trailWidth,
         gemX,
         gemWidth,
-        trailY = 0,
-        trailHeight = 0,
-        gemY = 0,
-        gemHeight = 0,
     ) {
-        if (!visuallyBelow && (!techniqueMovesY || sameString)) return false;
-        if (!hwyTrailOverlapsGemX(trailX, trailWidth, gemX, gemWidth)) return false;
-        return visuallyBelow || hwyTrailOverlapsGemX(
-            trailY, trailHeight, gemY, gemHeight,
-        );
+        return visuallyBelow
+            && hwyTrailOverlapsGemX(trailX, trailWidth, gemX, gemWidth);
     }
 
     /**
@@ -1251,11 +1242,11 @@
     const TRAIL_OCCLUSION_TRAIL = 2;
 
     /**
-     * Trail-to-trail constraints always follow the highway's physical string
-     * hierarchy. Exact bend/vibrato footprint matching may still cover a gem
-     * on the opposite adjacent lane, but it must not invert that hierarchy for
-     * the target's attached trail or it can form a contradictory A -> B -> A
-     * ordering cycle with the physical overlap pass.
+     * Every trail-visibility relationship follows the highway's physical string
+     * hierarchy. Bend/vibrato Y motion is a technique gesture, not permission
+     * to reverse which string owns the foreground. Rejecting reverse and
+     * same-string edges keeps each target gem and its attached trail consistent
+     * and guarantees an acyclic top-to-bottom ordering graph.
      */
     function hwyTrailOcclusionFlagsForPair(
         sourceString, targetString, inverted, flags,
@@ -1266,9 +1257,7 @@
             && (inverted
                 ? targetString < sourceString
                 : targetString > sourceString);
-        if (!targetIsVisuallyLower) {
-            normalizedFlags &= ~TRAIL_OCCLUSION_TRAIL;
-        }
+        if (!targetIsVisuallyLower) normalizedFlags = 0;
         return normalizedFlags;
     }
 
@@ -14856,9 +14845,7 @@
             slideSt: null,
             strandBaseX: 0,
             trailW: 0,
-            trailH: 0,
             susEnd: 0,
-            techniqueMovesY: false,
             matchedEvents: null,
             matchedEventCount: 0,
         };
@@ -14921,11 +14908,11 @@
             const ctx = _trailYieldMatchContext;
             const n = ctx.note;
             if (!n) return false;
-            // Reject impossible string relationships before resolving any
-            // geometry. The shared rule below repeats this guard so the pure
-            // helper remains correct and independently testable.
-            if (!visuallyBelow
-                && (!ctx.techniqueMovesY || event.s === n.s)) return false;
+            // Y motion from bend/vibrato is a technique gesture. Only targets
+            // on physically lower displayed strings participate in tapering or
+            // priority overrides, so a gem and its attached trail never split
+            // across contradictory string-order relationships.
+            if (!visuallyBelow) return false;
 
             // Post-end targets compare against the terminal trail face; motion
             // must not continue through the empty gap after the sustain ends.
@@ -14943,26 +14930,12 @@
                 targetW = NW * 1.1
                     * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
             }
-            const trailY = visuallyBelow
-                ? 0
-                : sY(n.s) + techniqueYOffsetWorld(n, sampleT);
-            const targetH = event.f === 0
-                ? NH * 0.1 * 1.5 * 1.1
-                    * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1)
-                : NH * 1.1
-                    * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
             const onsetMatches = hwyTrailFootprintsCanOcclude(
                 visuallyBelow,
-                ctx.techniqueMovesY,
-                event.s === n.s,
                 trailX,
                 ctx.trailW,
                 targetX,
                 targetW,
-                trailY,
-                ctx.trailH,
-                visuallyBelow ? 0 : sY(event.s),
-                targetH,
             );
             if (onsetMatches) return true;
 
@@ -16082,11 +16055,7 @@
                             ctx.note = n;
                             ctx.slideSt = slideSt;
                             ctx.trailW = tw + 0.4 * K;
-                            ctx.trailH = th + 0.4 * K;
                             ctx.susEnd = susEnd;
-                            ctx.techniqueMovesY = (Number(n.bn) > 0)
-                                || (Array.isArray(n.bnv) && n.bnv.length > 0)
-                                || hasTechniqueVibrato;
 
                             if (n.f === 0) {
                                 // Each open rail is an independent strand.
