@@ -22,6 +22,7 @@ function loadHelpers() {
         + block
         + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyTrailOverlapsGemX, hwyTrailSweepOverlapsGemX, hwyTrailYieldAmountAt,'
         + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailPriorityStringOffset, hwyTrailYieldGemLayer,'
+        + ' hwyTrailTargetBehindOrder,'
         + ' TRAIL_YIELD_DEFAULTS })',
     );
 }
@@ -413,6 +414,25 @@ test('equal-depth trail cascades follow visual string order in both orientations
     assert.equal(offset(-1, 6, false, true), 0);
 });
 
+test('an excluded attached trail stays completely behind its covering trail', () => {
+    const behindOrder = helpers.hwyTrailTargetBehindOrder;
+    const coveringOutlineOrder = 640.25;
+    const targetOutlineOrder = behindOrder(coveringOutlineOrder);
+    assert.ok(targetOutlineOrder < coveringOutlineOrder);
+    assert.ok(
+        targetOutlineOrder + 0.0005 < coveringOutlineOrder,
+        'the target body must not cross back above the covering outline',
+    );
+    assert.equal(
+        behindOrder(coveringOutlineOrder, 630), 630,
+        'a target already farther behind must keep its natural order',
+    );
+    assert.equal(
+        behindOrder(620, targetOutlineOrder), 619.999,
+        'multiple covering trails choose the constraint that stays behind all of them',
+    );
+});
+
 test('a narrowed trail endpoint uses its upcoming gem depth in both priority modes', () => {
     const endpointTarget = new Float64Array([10.1]);
     for (const gemInFront of [false, true]) {
@@ -576,6 +596,26 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
         src.slice(registerGemStart, registerGemEnd),
         /trailYieldApplyBehindLayers/,
         'a gem emitted before or after its source trail must converge on the same scoped layer',
+    );
+    assert.match(
+        src,
+        /function\s+trailYieldRegisterTargetTrail\([\s\S]{0,2400}?trailYieldApplyTargetTrailOrder/,
+        'an attached trail emitted before or after its source must converge on the same scoped order',
+    );
+    assert.match(
+        src,
+        /trailYieldSetMatchedTrailsBehind\([\s\S]{0,180}?strandMatchedEvents,[\s\S]{0,100}?ribbonRenderOrder/,
+        'child-off ordering must constrain only the events accepted by the shared matcher',
+    );
+    assert.match(
+        src,
+        /trailYieldRegisterTargetTrail\(\s*trailYieldTargetEvent,\s*trOut,\s*tr,/,
+        'straight attached trails must participate in the same rule',
+    );
+    assert.match(
+        src,
+        /trailYieldRegisterTargetTrail\(\s*trailYieldTargetEvent,\s*olMesh,\s*body,/,
+        'moving and yielding ribbon trails must participate in the same rule',
     );
     assert.match(src, /hwyTrailPriorityWorldZ\([\s\S]{0,180}?strandYieldStarts,\s*strandYieldCount,[\s\S]{0,100}?trailYieldSettings\.gemInFront,\s*TS/);
     const behindLayer = src.indexOf("'NOTE_CORE_BEHIND_TRAIL'");

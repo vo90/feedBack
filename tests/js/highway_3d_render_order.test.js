@@ -396,7 +396,7 @@ test('sus-trail strip renderOrder formula keeps trails strictly below chord fram
     // the same depth.
     assert.match(
         src(),
-        /const\s+trailRenderOrder\s*=\s*renderOrderForLayerAtZ\(\s*Math\.min\(\s*0\s*,\s*zCenter\s*\)\s*,\s*'SUSTAIN_TRAIL'\s*\)\s*;/,
+        /const\s+naturalRenderOrder\s*=\s*renderOrderForLayerAtZ\(\s*Math\.min\(\s*0\s*,\s*zCenter\s*\)\s*,\s*'SUSTAIN_TRAIL'\s*,?\s*\)[\s\S]{0,180}?const\s+trailRenderOrder\s*=\s*trailYieldConstrainTargetTrailOrder\(/,
         'sus-trail strip renderOrder must use renderOrderForLayerAtZ(min zCenter, SUSTAIN_TRAIL)',
     );
     assert.ok(layerIndex('SUSTAIN_TRAIL') < layerIndex('CHORD_FRAME'));
@@ -413,7 +413,7 @@ test('sus-trail ribbon renderOrder conditionally includes target trails on the n
     );
     assert.match(
         src(),
-        /const\s+ribbonRenderOrder\s*=\s*renderOrderForLayerAtZ\(\s*ribbonOrderZ\s*,\s*'SUSTAIN_TRAIL'\s*,?\s*\)[\s\S]{0,220}?hwyTrailPriorityStringOffset\(/,
+        /let\s+ribbonRenderOrder\s*=\s*renderOrderForLayerAtZ\(\s*ribbonOrderZ\s*,\s*'SUSTAIN_TRAIL'\s*,?\s*\)[\s\S]{0,220}?hwyTrailPriorityStringOffset\(/,
     );
 });
 

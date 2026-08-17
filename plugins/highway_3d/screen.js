@@ -1148,6 +1148,19 @@
     // named render layer (1 / RENDER_ORDER_LAYER_STACK.length). The trail body
     // itself adds 0.0005, so this step must be larger than that sub-layer.
     const TRAIL_YIELD_STRING_ORDER_STEP = 0.002;
+    // Keep both faces of an excluded target trail behind its covering trail.
+    // Trail bodies sit 0.0005 above their outlines, so this gap leaves the
+    // complete target ribbon on the requested side without crossing a named
+    // render layer (1 / RENDER_ORDER_LAYER_STACK.length).
+    const TRAIL_YIELD_TARGET_TRAIL_ORDER_GAP = 0.001;
+    function hwyTrailTargetBehindOrder(coveringRenderOrder, currentRenderOrder = Infinity) {
+        if (!Number.isFinite(coveringRenderOrder)) return currentRenderOrder;
+        const behindOrder = coveringRenderOrder - TRAIL_YIELD_TARGET_TRAIL_ORDER_GAP;
+        return Number.isFinite(currentRenderOrder)
+            ? Math.min(currentRenderOrder, behindOrder)
+            : behindOrder;
+    }
+
     function hwyTrailPriorityStringOffset(
         stringIndex, stringCount, inverted, targetTrailsInFront,
     ) {
@@ -5143,6 +5156,15 @@
             new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
         ];
         const _trailYieldOpenCountsScratch = new Uint8Array(2);
+        // Reused event references let a covering strand constrain only the
+        // attached trails it actually matches. No geometry split, new draw
+        // call, or per-frame allocation is needed.
+        const _trailYieldMatchedEventsScratch = new Array(TRAIL_YIELD_TARGET_CAPACITY);
+        const _trailYieldOpenMatchedEventsScratch = [
+            new Array(TRAIL_YIELD_TARGET_CAPACITY),
+            new Array(TRAIL_YIELD_TARGET_CAPACITY),
+        ];
+        const _trailYieldOpenMatchedCountsScratch = new Uint8Array(2);
 
         let _laneRailFlagsRefHs = null;
         let _laneRailFlagsRefTpl = null;
@@ -14638,6 +14660,8 @@
             trailH: 0,
             susEnd: 0,
             techniqueMovesY: false,
+            matchedEvents: null,
+            matchedEventCount: 0,
         };
         const _trailYieldTargetXBounds = new Float64Array(2);
 
@@ -14816,9 +14840,16 @@
 
         /** Called only after hwyFillTrailYieldTimes accepts the relationship. */
         function trailYieldMarkTarget(event) {
-            if (trailYieldSettings.gemInFront) return;
-            event._trailYieldTargetFrame = _trailYieldFrameId;
-            trailYieldApplyBehindLayers(event);
+            if (!trailYieldSettings.gemInFront) {
+                event._trailYieldTargetFrame = _trailYieldFrameId;
+                trailYieldApplyBehindLayers(event);
+                return;
+            }
+            if (trailYieldSettings.includeTrails) return;
+            const ctx = _trailYieldMatchContext;
+            const matchedEvents = ctx.matchedEvents;
+            if (!matchedEvents || ctx.matchedEventCount >= matchedEvents.length) return;
+            matchedEvents[ctx.matchedEventCount++] = event;
         }
 
         function trailYieldRegisterGem(event, worldZ, outline, core, face) {
@@ -14852,6 +14883,139 @@
             }
         }
 
+        function trailYieldApplyTargetTrailOrder(event) {
+            if (!event
+                || event._trailYieldTrailPriorityFrame !== _trailYieldFrameId
+                || event._trailYieldTrailMeshFrame !== _trailYieldFrameId) return;
+            const renderOrder = event._trailYieldTrailPriorityOrder;
+            const count = event._trailYieldTrailMeshCount || 0;
+            if (count === 0 || !Number.isFinite(renderOrder)) return;
+            event._trailYieldTrailOutline.renderOrder = renderOrder;
+            event._trailYieldTrailBody.renderOrder = renderOrder + 0.0005;
+            const extras = event._trailYieldTrailExtraMeshes;
+            for (let i = 1; i < count; i++) {
+                const record = extras[i - 1];
+                record.outline.renderOrder = renderOrder;
+                record.body.renderOrder = renderOrder + 0.0005;
+            }
+        }
+
+        /** Keep one qualifying attached trail behind every covering strand. */
+        function trailYieldSetTargetTrailBehind(event, coveringRenderOrder) {
+            if (!event || !Number.isFinite(coveringRenderOrder)) return;
+            const hasCurrentPriority
+                = event._trailYieldTrailPriorityFrame === _trailYieldFrameId;
+            let currentOrder = hasCurrentPriority
+                ? event._trailYieldTrailPriorityOrder
+                : Infinity;
+            if (event._trailYieldTrailMeshFrame === _trailYieldFrameId) {
+                currentOrder = Math.min(
+                    currentOrder, event._trailYieldTrailNaturalOrder,
+                );
+            }
+            const previousOrder = hasCurrentPriority
+                ? event._trailYieldTrailPriorityOrder
+                : Infinity;
+            if (!hasCurrentPriority) {
+                event._trailYieldTrailPriorityFrame = _trailYieldFrameId;
+            }
+            event._trailYieldTrailPriorityOrder = hwyTrailTargetBehindOrder(
+                coveringRenderOrder, currentOrder,
+            );
+            trailYieldApplyTargetTrailOrder(event);
+            if (event._trailYieldTrailPriorityOrder < previousOrder - 1e-9) {
+                trailYieldPropagateTargetTrailOrder(event);
+            }
+        }
+
+        function trailYieldPropagateTargetTrailOrder(event) {
+            if (!event
+                || event._trailYieldTrailChildrenFrame !== _trailYieldFrameId) return;
+            const children = event._trailYieldTrailChildren;
+            const count = event._trailYieldTrailChildCount || 0;
+            for (let i = 0; i < count; i++) {
+                trailYieldSetTargetTrailBehind(
+                    children[i], event._trailYieldTrailPriorityOrder,
+                );
+            }
+        }
+
+        function trailYieldSetMatchedTrailsBehind(
+            sourceEvent, events, count, coveringRenderOrder,
+        ) {
+            if (!events || count <= 0) return;
+            const boundedCount = Math.min(events.length, count | 0);
+            let children = null;
+            if (sourceEvent) {
+                if (sourceEvent._trailYieldTrailChildrenFrame !== _trailYieldFrameId) {
+                    sourceEvent._trailYieldTrailChildrenFrame = _trailYieldFrameId;
+                    sourceEvent._trailYieldTrailChildCount = 0;
+                }
+                children = sourceEvent._trailYieldTrailChildren
+                    || (sourceEvent._trailYieldTrailChildren = []);
+            }
+            for (let i = 0; i < boundedCount; i++) {
+                const targetEvent = events[i];
+                if (children) {
+                    let duplicate = false;
+                    for (let j = 0; j < sourceEvent._trailYieldTrailChildCount; j++) {
+                        if (children[j] === targetEvent) {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if (!duplicate) {
+                        children[sourceEvent._trailYieldTrailChildCount++] = targetEvent;
+                    }
+                }
+                trailYieldSetTargetTrailBehind(targetEvent, coveringRenderOrder);
+            }
+        }
+
+        function trailYieldConstrainTargetTrailOrder(event, naturalRenderOrder) {
+            if (!event
+                || event._trailYieldTrailPriorityFrame !== _trailYieldFrameId) {
+                return naturalRenderOrder;
+            }
+            return Math.min(naturalRenderOrder, event._trailYieldTrailPriorityOrder);
+        }
+
+        function trailYieldRegisterTargetTrail(event, outline, body) {
+            if (!event) return;
+            if (event._trailYieldTrailMeshFrame !== _trailYieldFrameId) {
+                event._trailYieldTrailMeshFrame = _trailYieldFrameId;
+                event._trailYieldTrailMeshCount = 0;
+                event._trailYieldTrailNaturalOrder = outline.renderOrder;
+            } else {
+                event._trailYieldTrailNaturalOrder = Math.min(
+                    event._trailYieldTrailNaturalOrder, outline.renderOrder,
+                );
+            }
+            const index = event._trailYieldTrailMeshCount++;
+            if (index === 0) {
+                event._trailYieldTrailOutline = outline;
+                event._trailYieldTrailBody = body;
+            } else {
+                // Standalone open notes have two rails; duplicate chart events
+                // can add another pooled pair. Reuse these uncommon records.
+                const extras = event._trailYieldTrailExtraMeshes
+                    || (event._trailYieldTrailExtraMeshes = []);
+                const record = extras[index - 1] || (extras[index - 1] = {});
+                record.outline = outline;
+                record.body = body;
+            }
+            if (event._trailYieldTrailPriorityFrame === _trailYieldFrameId) {
+                const previousOrder = event._trailYieldTrailPriorityOrder;
+                event._trailYieldTrailPriorityOrder = Math.min(
+                    previousOrder, event._trailYieldTrailNaturalOrder,
+                );
+                if (event._trailYieldTrailPriorityOrder < previousOrder - 1e-9) {
+                    trailYieldPropagateTargetTrailOrder(event);
+                }
+            }
+            trailYieldApplyTargetTrailOrder(event);
+        }
+
         /**
          * Conservative fret-bucket test for a strand's complete X sweep. The
          * exact footprint predicate still runs at each candidate onset; this
@@ -14866,12 +15030,15 @@
 
         /** Collect one strand's qualifying targets through the shared matcher. */
         function collectTrailYieldTargetsForStrand(
-            n, now, susEnd, visibleEnd, starts, ends, targetTrailEnds, strandBaseX,
+            n, now, susEnd, visibleEnd, starts, ends, targetTrailEnds,
+            matchedEvents, strandBaseX,
         ) {
             const ctx = _trailYieldMatchContext;
             const includeTargetTrails = trailYieldSettings.gemInFront
                 && trailYieldSettings.includeTrails;
             ctx.strandBaseX = strandBaseX;
+            ctx.matchedEvents = matchedEvents;
+            ctx.matchedEventCount = 0;
             const slideEndX = strandBaseX
                 + (_leftyCached ? -1 : 1)
                     * slideOffsetWorldX(n, n.t + (n.sus || 0), ctx.slideSt);
@@ -15290,6 +15457,15 @@
                 }
             }
 
+            // Only target gems/trails whose priority can change need an index
+            // lookup. With both front-priority options enabled, the covering
+            // ribbon alone already establishes the requested order.
+            const trailYieldTargetEvent = trailYieldSettings.enabled
+                && (!trailYieldSettings.gemInFront
+                    || !trailYieldSettings.includeTrails)
+                ? trailYieldEventForNote(n)
+                : null;
+
             if (!effSkipBody && !arpGhostOnlyMode && !_overLinger) {
 
                 // ── Outline (slightly larger, bright emissive) ────────────
@@ -15427,9 +15603,8 @@
                 // each frame (a recycled mesh may carry a gradient geometry from a
                 // prior core use). Outline always uses the plain box.
                 outline.geometry = gNote;
-                const trailYieldGemEvent = trailYieldSettings.enabled
-                    && !trailYieldSettings.gemInFront
-                    ? trailYieldEventForNote(n)
+                const trailYieldGemEvent = !trailYieldSettings.gemInFront
+                    ? trailYieldTargetEvent
                     : null;
                 const isTrailYieldTarget = !!(trailYieldGemEvent
                     && trailYieldGemEvent._trailYieldTargetFrame === _trailYieldFrameId);
@@ -15565,6 +15740,7 @@
                             ? [-(NW * 3 * openWScale), NW * 3 * openWScale]
                             : SINGLE_SUS_OFFSETS;
                         let yieldCount = 0;
+                        let matchedEventCount = 0;
                         const visibleYieldEnd = susStart + sliceDur;
                         if (trailYieldSettings.enabled) {
                             const ctx = _trailYieldMatchContext;
@@ -15583,12 +15759,15 @@
                                     const starts = _trailYieldOpenStartsScratch[si];
                                     const ends = _trailYieldOpenEndsScratch[si];
                                     const targetTrailEnds = _trailYieldOpenTargetTrailEndsScratch[si];
+                                    const matchedEvents = _trailYieldOpenMatchedEventsScratch[si];
                                     const strandCount = collectTrailYieldTargetsForStrand(
                                         n, now, susEnd, visibleYieldEnd,
-                                        starts, ends, targetTrailEnds,
+                                        starts, ends, targetTrailEnds, matchedEvents,
                                         xBase + offsets[si],
                                     );
                                     _trailYieldOpenCountsScratch[si] = strandCount;
+                                    _trailYieldOpenMatchedCountsScratch[si]
+                                        = ctx.matchedEventCount;
                                     yieldCount += strandCount;
                                 }
                             } else {
@@ -15596,8 +15775,10 @@
                                     n, now, susEnd, visibleYieldEnd,
                                     _trailYieldStartsScratch, _trailYieldEndsScratch,
                                     _trailYieldTargetTrailEndsScratch,
+                                    _trailYieldMatchedEventsScratch,
                                     xBase,
                                 );
+                                matchedEventCount = ctx.matchedEventCount;
                             }
                         }
                         const ribbonSusTrail = yieldCount > 0 || !!(
@@ -15618,7 +15799,12 @@
                             // Same depth-bucket scheme as chord frames, using the
                             // ordered sustain-trail layer so same-depth frames win
                             // while closer trail segments still beat farther frames.
-                            const trailRenderOrder = renderOrderForLayerAtZ(Math.min(0, zCenter), 'SUSTAIN_TRAIL');
+                            const naturalRenderOrder = renderOrderForLayerAtZ(
+                                Math.min(0, zCenter), 'SUSTAIN_TRAIL',
+                            );
+                            const trailRenderOrder = trailYieldConstrainTargetTrailOrder(
+                                trailYieldTargetEvent, naturalRenderOrder,
+                            );
                             for (let i = 0; i < offsets.length; i++) {
                                 const xOff = xCenter + offsets[i];
                                 const trOut = pSusOutline.get();
@@ -15631,6 +15817,9 @@
                                 tr.renderOrder = trailRenderOrder + 0.0005;
                                 tr.position.set(xOff, y, zCenter);
                                 tr.scale.set(tw, th, segLen);
+                                trailYieldRegisterTargetTrail(
+                                    trailYieldTargetEvent, trOut, tr,
+                                );
                             }
                         };
                         if (!ribbonSusTrail) {
@@ -15652,6 +15841,12 @@
                                 const strandTargetTrailEnds = n.f === 0
                                     ? _trailYieldOpenTargetTrailEndsScratch[si]
                                     : _trailYieldTargetTrailEndsScratch;
+                                const strandMatchedEvents = n.f === 0
+                                    ? _trailYieldOpenMatchedEventsScratch[si]
+                                    : _trailYieldMatchedEventsScratch;
+                                const strandMatchedEventCount = n.f === 0
+                                    ? _trailYieldOpenMatchedCountsScratch[si]
+                                    : matchedEventCount;
                                 const strandYieldCount = trailYieldSettings.enabled
                                     ? (n.f === 0 ? _trailYieldOpenCountsScratch[si] : yieldCount)
                                     : 0;
@@ -15663,7 +15858,7 @@
                                     trailYieldSettings.gemInFront, TS,
                                     includeTargetTrails ? strandTargetTrailEnds : null,
                                 );
-                                const ribbonRenderOrder = renderOrderForLayerAtZ(
+                                let ribbonRenderOrder = renderOrderForLayerAtZ(
                                     ribbonOrderZ, 'SUSTAIN_TRAIL',
                                 ) + (strandYieldCount > 0
                                     ? hwyTrailPriorityStringOffset(
@@ -15671,6 +15866,17 @@
                                         includeTargetTrails,
                                     )
                                     : 0);
+                                if (trailYieldSettings.gemInFront
+                                    && !trailYieldSettings.includeTrails) {
+                                    ribbonRenderOrder = trailYieldConstrainTargetTrailOrder(
+                                        trailYieldTargetEvent, ribbonRenderOrder,
+                                    );
+                                    trailYieldSetMatchedTrailsBehind(
+                                        trailYieldTargetEvent,
+                                        strandMatchedEvents, strandMatchedEventCount,
+                                        ribbonRenderOrder,
+                                    );
+                                }
                                 const olMesh = pSusRibbonOl.get();
                                 olMesh.renderOrder = ribbonRenderOrder;
                                 olMesh.scale.set(1, 1, 1);
@@ -15695,6 +15901,9 @@
                                     sliceDur, susStart, now, n, slideSt,
                                     strandYieldStarts, strandYieldEnds, strandYieldCount,
                                     susEnd, trailYieldSettings,
+                                );
+                                trailYieldRegisterTargetTrail(
+                                    trailYieldTargetEvent, olMesh, body,
                                 );
                             }
                         }
