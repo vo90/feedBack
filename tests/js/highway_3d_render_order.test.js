@@ -393,23 +393,28 @@ test('chord frame glow uses the layer after chord frame', () => {
 
 test('sus-trail strip renderOrder formula keeps trails strictly below chord frames at same Z', () => {
     // Sustain trails use the ordered layer immediately below chord frames at
-    // the same depth.
-    assert.match(
-        src(),
-        /const\s+naturalRenderOrder\s*=\s*renderOrderForLayerAtZ\(\s*Math\.min\(\s*0\s*,\s*zCenter\s*\)\s*,\s*'SUSTAIN_TRAIL'\s*,?\s*\)[\s\S]{0,180}?const\s+trailRenderOrder\s*=\s*trailYieldConstrainTargetTrailOrder\(/,
-        'sus-trail strip renderOrder must use renderOrderForLayerAtZ(min zCenter, SUSTAIN_TRAIL)',
-    );
+    // the resolved target depth. The segment midpoint remains the fallback
+    // when there is no lower-string relationship.
+    const source = src();
+    const stripStart = source.indexOf('const emitSusStrip =');
+    const stripEnd = source.indexOf('if (!ribbonSusTrail)', stripStart);
+    assert.ok(stripStart >= 0 && stripEnd > stripStart);
+    const strip = source.slice(stripStart, stripEnd);
+    assert.match(strip, /const\s+fallbackWorldZ\s*=\s*Math\.min\(\s*0\s*,\s*zCenter\s*\)/);
+    assert.match(strip, /const\s+priorityWorldZ\s*=\s*hwyTrailPriorityWorldZ\(/);
+    assert.match(strip, /const\s+naturalRenderOrder\s*=\s*renderOrderForLayerAtZ\(\s*priorityWorldZ\s*,\s*'SUSTAIN_TRAIL'/);
+    assert.match(strip, /const\s+trailRenderOrder\s*=\s*trailYieldConstrainTargetTrailOrder\(/);
     assert.ok(layerIndex('SUSTAIN_TRAIL') < layerIndex('CHORD_FRAME'));
 });
 
-test('sus-trail ribbon renderOrder conditionally includes target trails on the named layer', () => {
-    // The ribbon midpoint is the fallback. A yielding strand may promote that
-    // depth behind its actual obscured target and attached trail before using
-    // the sustain-trail layer.
+test('sus-trail ribbon merges shape and physical targets on the named layer', () => {
+    // Shape matches control tapering while the cross-fret physical set controls
+    // ordering. They are collected independently and merged without allocating
+    // a combined per-frame array.
     assert.match(
         src(),
-        /const\s+ribbonOrderZ\s*=\s*hwyTrailPriorityWorldZ\([\s\S]{0,500}?-\s*_ribDt\s*\*\s*TS[\s\S]{0,500}?includeTargetTrails\s*\?\s*strandTargetTrailEnds\s*:\s*null[\s\S]{0,80}?\)\s*;/,
-        'sus-trail ribbon depth must include attached trails only when requested',
+        /const\s+yieldOrderZ\s*=\s*hwyTrailPriorityWorldZ\([\s\S]{0,500}?includeTargetTrails\s*\?\s*strandTargetTrailEnds\s*:\s*null[\s\S]{0,300}?const\s+occlusionOrderZ\s*=\s*hwyTrailPriorityWorldZ\([\s\S]{0,500}?includeTargetTrails\s*\?\s*_trailOcclusionEndsScratch\s*:\s*null[\s\S]{0,300}?const\s+ribbonOrderZ\s*=\s*hwyMergeTrailPriorityWorldZ\(/,
+        'sus-trail ribbon depth must merge exact taper targets with all physically lower targets',
     );
     assert.match(
         src(),
@@ -421,22 +426,22 @@ test('sus-trail ribbon renderOrder conditionally includes target trails on the n
 // Note gem ordering (outline < core, both driven by named depth layers)
 // ---------------------------------------------------------------------------
 
-test('only a qualifying trail-yield target can move its outline behind a trail', () => {
+test('an exact footprint target can select the behind-trail outline before finalization', () => {
     assert.match(
         src(),
         /const\s+noteOutlineLayer\s*=\s*hwyTrailYieldGemLayer\([\s\S]{0,180}?'NOTE_OUTLINE'\s*,\s*'NOTE_OUTLINE_BEHIND_TRAIL'\s*,?\s*\)\s*;/,
-        'note gem outline must scope its alternate layer to a qualifying yield target',
+        'the immediate fallback layer must stay scoped to an accepted footprint target',
     );
     assert.match(src(), /outline\.renderOrder\s*=\s*renderOrderForLayerAtZ\(\s*noteZ\s*,\s*noteOutlineLayer\s*\)\s*;/);
     assert.ok(layerIndex('NOTE_OUTLINE_BEHIND_TRAIL') < layerIndex('SUSTAIN_TRAIL'));
     assert.ok(layerIndex('NOTE_OUTLINE') > layerIndex('FRET_COLUMN'));
 });
 
-test('only a qualifying trail-yield target can move its core behind a trail', () => {
+test('an exact footprint target can select the behind-trail core before finalization', () => {
     assert.match(
         src(),
         /const\s+noteCoreLayer\s*=\s*hwyTrailYieldGemLayer\([\s\S]{0,180}?'NOTE_CORE'\s*,\s*'NOTE_CORE_BEHIND_TRAIL'\s*,?\s*\)\s*;/,
-        'note gem core must scope its alternate layer to a qualifying yield target',
+        'the immediate fallback layer must stay scoped to an accepted footprint target',
     );
     assert.match(src(), /core\.renderOrder\s*=\s*renderOrderForLayerAtZ\(\s*noteZ\s*,\s*noteCoreLayer\s*\)\s*;/);
     assert.ok(layerIndex('NOTE_CORE_BEHIND_TRAIL') > layerIndex('NOTE_OUTLINE_BEHIND_TRAIL'));

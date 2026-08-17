@@ -22,8 +22,8 @@ function loadHelpers() {
         + block
         + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyTrailOverlapsGemX, hwyTrailSweepOverlapsGemX, hwyTrailYieldAmountAt,'
         + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailPriorityStringOffset, hwyTrailYieldGemLayer,'
-        + ' hwyTrailTargetBehindOrder,'
-        + ' TRAIL_YIELD_DEFAULTS })',
+        + ' hwyTrailTargetBehindOrder, hwyBuildTrailOcclusionIndex, hwyFillTrailOcclusionTargets, hwyMergeTrailPriorityWorldZ, hwyTrailOcclusionFrontMask,'
+        + ' TRAIL_OCCLUSION_GEM, TRAIL_OCCLUSION_TRAIL, TRAIL_YIELD_DEFAULTS })',
     );
 }
 
@@ -66,6 +66,22 @@ test('reviewed trail-visibility defaults match the showcase settings', () => {
     assert.equal(helpers.TRAIL_YIELD_DEFAULTS.recoverDuration, 0.05);
     assert.equal(helpers.TRAIL_YIELD_DEFAULTS.endLeadTime, 0.50);
     assert.equal(helpers.TRAIL_YIELD_DEFAULTS.endTaperDuration, 0.05);
+});
+
+test('front-priority settings expose exactly the three supported visual modes', () => {
+    const frontMask = helpers.hwyTrailOcclusionFrontMask;
+    assert.equal(frontMask(false, false), 0, 'standard: gem and trail stay physically below');
+    assert.equal(frontMask(false, true), 0, 'the child setting cannot bypass its parent');
+    assert.equal(
+        frontMask(true, false),
+        helpers.TRAIL_OCCLUSION_GEM,
+        'gem-only: promote the gem but retain physical trail stacking',
+    );
+    assert.equal(
+        frontMask(true, true),
+        helpers.TRAIL_OCCLUSION_GEM | helpers.TRAIL_OCCLUSION_TRAIL,
+        'gem+trail: promote both parts of the lower note',
+    );
 });
 
 test('per-fret onset indexes are sorted, bounded, and merge duplicate members', () => {
@@ -209,6 +225,75 @@ test('only covered notes on visually lower strings create yield windows', () => 
     );
 });
 
+test('physical-order index reuses canonical events and bounds older active trails', () => {
+    const byFret = helpers.hwyBuildTrailYieldEvents([
+        { t: 4, s: 2, f: 12, sus: 1 },
+        { t: 1, s: 2, f: 5, sus: 8 },
+        { t: 3, s: 1, f: 7, sus: 1 },
+    ], [], 6);
+    const byString = helpers.hwyBuildTrailOcclusionIndex(byFret, 6);
+    assert.equal(byString[2].events[0], byFret[5][0]);
+    assert.equal(byString[2].events[1], byFret[12][0]);
+    assert.deepEqual(Array.from(byString[2].prefixMaxEnd), [9, 9]);
+});
+
+test('cross-fret physical ordering distinguishes covered gems from overlapping trails', () => {
+    const byFret = helpers.hwyBuildTrailYieldEvents([
+        { t: 0, s: 1, f: 7, sus: 5 },       // source
+        { t: 1, s: 2, f: 15, sus: 0 },      // later lower gem, different fret
+        { t: -1, s: 3, f: 3, sus: 3 },      // older lower trail
+        { t: 0, s: 4, f: 19, sus: 2 },      // simultaneous lower trail
+        { t: 1, s: 0, f: 7, sus: 2 },       // physically above control
+    ], [], 6);
+    const index = helpers.hwyBuildTrailOcclusionIndex(byFret, 6);
+    const events = new Array(8);
+    const flags = new Uint8Array(8);
+    const starts = new Float64Array(8);
+    const ends = new Float64Array(8);
+    const count = helpers.hwyFillTrailOcclusionTargets(
+        index, 0, 5, 1, 0, 5, false,
+        events, flags, starts, ends,
+    );
+    assert.equal(count, 3);
+    assert.deepEqual(Array.from(events.slice(0, count), event => event.s), [2, 3, 4]);
+    assert.deepEqual(Array.from(flags.slice(0, count)), [
+        helpers.TRAIL_OCCLUSION_GEM,
+        helpers.TRAIL_OCCLUSION_TRAIL,
+        helpers.TRAIL_OCCLUSION_TRAIL,
+    ]);
+    assert.deepEqual(Array.from(starts.slice(0, count)), [1, 0, 0]);
+    assert.deepEqual(Array.from(ends.slice(0, count)), [1, 2, 2]);
+});
+
+test('physical-order collection reverses with inversion and stays in the visible window', () => {
+    const byFret = helpers.hwyBuildTrailYieldEvents([
+        { t: 0, s: 4, f: 7, sus: 8 },
+        { t: 1, s: 3, f: 3, sus: 2 },
+        { t: 2, s: 5, f: 12, sus: 2 },
+        { t: 6, s: 2, f: 19, sus: 2 },
+    ], [], 6);
+    const index = helpers.hwyBuildTrailOcclusionIndex(byFret, 6);
+    const events = new Array(8);
+    const flags = new Uint8Array(8);
+    const starts = new Float64Array(8);
+    const ends = new Float64Array(8);
+    const count = helpers.hwyFillTrailOcclusionTargets(
+        index, 0, 8, 4, 0, 4, true,
+        events, flags, starts, ends,
+    );
+    assert.equal(count, 1);
+    assert.equal(events[0].s, 3, 'inverted view treats the lower string index as visually lower');
+    assert.equal(flags[0], helpers.TRAIL_OCCLUSION_GEM | helpers.TRAIL_OCCLUSION_TRAIL);
+});
+
+test('independent shape and physical target depths merge in the selected direction', () => {
+    const merge = helpers.hwyMergeTrailPriorityWorldZ;
+    assert.equal(merge(-50, -100, 1, -200, 1, true), -200);
+    assert.equal(merge(-50, -100, 1, -200, 1, false), -100);
+    assert.equal(merge(-50, -100, 0, -200, 1, true), -200);
+    assert.equal(merge(-50, -100, 0, -200, 0, false), -50);
+});
+
 test('a moving source qualifies when it crosses the lower target sustain after onset', () => {
     const overlaps = helpers.hwyTrailOverlapsGemX;
     const sweepOverlaps = helpers.hwyTrailSweepOverlapsGemX;
@@ -227,7 +312,7 @@ test('a moving source qualifies when it crosses the lower target sustain after o
     );
 });
 
-test('gem-front preference changes only qualifying trail-yield targets', () => {
+test('the immediate gem layer fallback changes only exact footprint targets', () => {
     const layer = helpers.hwyTrailYieldGemLayer;
     assert.equal(layer(false, true, 'normal', 'behind'), 'behind');
     assert.equal(layer(true, true, 'normal', 'behind'), 'normal');
@@ -604,8 +689,13 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
     );
     assert.match(
         src,
-        /trailYieldSetMatchedTrailsBehind\([\s\S]{0,180}?strandMatchedEvents,[\s\S]{0,100}?ribbonRenderOrder/,
-        'child-off ordering must constrain only the events accepted by the shared matcher',
+        /trailOcclusionRegisterRelationships\(\s*trailYieldTargetEvent,\s*strandMatchedEvents,\s*null,\s*strandMatchedEventCount,\s*ribbonRenderOrder,\s*TRAIL_OCCLUSION_GEM\s*\|\s*TRAIL_OCCLUSION_TRAIL/,
+        'exact footprint matches must join the same final relationship resolver as cross-fret targets',
+    );
+    assert.match(
+        src,
+        /trailOcclusionFinalizeFrame\(\);[\s\S]{0,240}?Finalise InstancedMesh batches/,
+        'relationships must resolve once after every note and trail mesh has registered',
     );
     assert.match(
         src,

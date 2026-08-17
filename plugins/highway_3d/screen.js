@@ -1247,6 +1247,162 @@
         return byFret;
     }
 
+    const TRAIL_OCCLUSION_GEM = 1;
+    const TRAIL_OCCLUSION_TRAIL = 2;
+
+    /** The child trail can only be promoted when its parent gem is promoted. */
+    function hwyTrailOcclusionFrontMask(gemInFront, includeTrails) {
+        return gemInFront
+            ? TRAIL_OCCLUSION_GEM
+                | (includeTrails ? TRAIL_OCCLUSION_TRAIL : 0)
+            : 0;
+    }
+
+    /**
+     * Re-index the canonical yield events by string for physical stacking.
+     * Fret/footprint matching still decides where a trail narrows; this index
+     * only finds lower-string gems and trails whose chart-time ranges overlap
+     * a rendered upper-string sustain. Event objects are deliberately shared
+     * with the fret index so mesh registration and relationship state converge
+     * on one record regardless of which render loop encounters it first.
+     */
+    function hwyBuildTrailOcclusionIndex(eventsByFret, stringCount) {
+        const byString = new Array(Math.max(0, stringCount | 0));
+        for (let s = 0; s < byString.length; s++) byString[s] = [];
+        if (eventsByFret) {
+            for (let f = 0; f < eventsByFret.length; f++) {
+                const events = eventsByFret[f];
+                if (!events) continue;
+                for (let i = 0; i < events.length; i++) {
+                    const event = events[i];
+                    if (event && event.s >= 0 && event.s < byString.length) {
+                        byString[event.s].push(event);
+                    }
+                }
+            }
+        }
+        const index = new Array(byString.length);
+        for (let s = 0; s < byString.length; s++) {
+            const events = byString[s];
+            events.sort((a, b) => a.t - b.t || a.f - b.f);
+            const prefixMaxEnd = new Float64Array(events.length);
+            let maxEnd = -Infinity;
+            for (let i = 0; i < events.length; i++) {
+                maxEnd = Math.max(maxEnd, events[i].end);
+                prefixMaxEnd[i] = maxEnd;
+            }
+            index[s] = { events, prefixMaxEnd };
+        }
+        return index;
+    }
+
+    /**
+     * Collect physically lower events within the source trail's visible time
+     * interval. Unlike the narrowing matcher this intentionally ignores fret/X:
+     * ordering has no visible effect while projections are separate, but is
+     * already correct if a side camera later makes them overlap.
+     */
+    function hwyFillTrailOcclusionTargets(
+        indexByString,
+        sourceT,
+        sourceEnd,
+        sourceString,
+        now,
+        visibleEnd,
+        inverted,
+        outEvents,
+        outFlags,
+        outStarts,
+        outEnds,
+    ) {
+        const capacity = Math.min(
+            outEvents?.length || 0,
+            outFlags?.length || 0,
+            outStarts?.length || 0,
+            outEnds?.length || 0,
+        );
+        if (!indexByString || capacity <= 0
+            || !Number.isFinite(sourceT) || !Number.isFinite(sourceEnd)
+            || sourceEnd <= sourceT + 0.01) return 0;
+        const visibleStart = Math.max(sourceT, now);
+        const boundedVisibleEnd = Math.min(sourceEnd, visibleEnd);
+        if (!(boundedVisibleEnd > visibleStart + 1e-6)) return 0;
+
+        let count = 0;
+        for (let targetString = 0;
+            targetString < indexByString.length && count < capacity;
+            targetString++) {
+            const visuallyBelow = inverted
+                ? targetString < sourceString
+                : targetString > sourceString;
+            if (!visuallyBelow) continue;
+            const bucket = indexByString[targetString];
+            const events = bucket?.events;
+            const prefixMaxEnd = bucket?.prefixMaxEnd;
+            if (!events || events.length === 0) continue;
+
+            // Events starting at/after the visible source end cannot overlap.
+            let lo = 0, hi = events.length;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (events[mid].t < boundedVisibleEnd - 1e-6) lo = mid + 1;
+                else hi = mid;
+            }
+            const scanEnd = lo;
+            // Prefix maxima let a later-starting upper trail find an older,
+            // still-ringing lower trail without scanning from chart start.
+            lo = 0; hi = scanEnd;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (prefixMaxEnd[mid] <= visibleStart + 1e-6) lo = mid + 1;
+                else hi = mid;
+            }
+
+            for (let i = lo; i < scanEnd && count < capacity; i++) {
+                const event = events[i];
+                // Simultaneous chord members do not become "upcoming hidden"
+                // gems, but their sustained trails still need physical order.
+                const gemCovered = event.t > sourceT + 1e-6
+                    && event.t < boundedVisibleEnd - 1e-6
+                    && (event.t >= now - 0.15 || event.end > now + 1e-6);
+                const trailCovered = event.end > event.t + 0.01
+                    && event.end > visibleStart + 1e-6
+                    && event.t < boundedVisibleEnd - 1e-6;
+                if (!gemCovered && !trailCovered) continue;
+                const relationStart = gemCovered
+                    ? Math.max(now, event.t)
+                    : Math.max(now, sourceT, event.t);
+                outEvents[count] = event;
+                outFlags[count] = (gemCovered ? TRAIL_OCCLUSION_GEM : 0)
+                    | (trailCovered ? TRAIL_OCCLUSION_TRAIL : 0);
+                outStarts[count] = relationStart;
+                outEnds[count] = trailCovered
+                    ? Math.max(relationStart, Math.min(
+                        sourceEnd, event.end, boundedVisibleEnd,
+                    ))
+                    : relationStart;
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** Combine two independently collected target sets without concatenating. */
+    function hwyMergeTrailPriorityWorldZ(
+        fallbackWorldZ,
+        firstWorldZ,
+        firstCount,
+        secondWorldZ,
+        secondCount,
+        targetsInFront,
+    ) {
+        if (firstCount <= 0) return secondCount > 0 ? secondWorldZ : fallbackWorldZ;
+        if (secondCount <= 0) return firstWorldZ;
+        return targetsInFront
+            ? Math.min(firstWorldZ, secondWorldZ)
+            : Math.max(firstWorldZ, secondWorldZ);
+    }
+
     /**
      * Fill `out` with nearby lower-string onsets covered by this sustain, plus
      * near-adjacent onsets that need its terminal face to yield.
@@ -5128,6 +5284,7 @@
         // arrangement; drawNote scans only conservative footprint buckets and
         // bounded chart-time windows into fixed scratch buffers.
         let _trailYieldEventsByFret = [];
+        let _trailOcclusionEventsByString = [];
         let _trailYieldNotesRef = null;
         let _trailYieldChordsRef = null;
         let _trailYieldNStr = 0;
@@ -5165,6 +5322,16 @@
             new Array(TRAIL_YIELD_TARGET_CAPACITY),
         ];
         const _trailYieldOpenMatchedCountsScratch = new Uint8Array(2);
+        // Cross-fret ordering uses the same bounded candidate budget but keeps
+        // its own outputs so footprint/narrowing windows remain untouched.
+        const _trailOcclusionEventsScratch = new Array(TRAIL_YIELD_TARGET_CAPACITY);
+        const _trailOcclusionFlagsScratch = new Uint8Array(TRAIL_YIELD_TARGET_CAPACITY);
+        const _trailOcclusionStartsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
+        const _trailOcclusionEndsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
+        // Sources with ordering relationships are finalized top-string first
+        // after every drawNote/chord loop has registered its pooled meshes.
+        const _trailOcclusionSources = [];
+        let _trailOcclusionSourceCount = 0;
 
         let _laneRailFlagsRefHs = null;
         let _laneRailFlagsRefTpl = null;
@@ -10594,6 +10761,7 @@
             _trailYieldNotesRef = null;
             _trailYieldChordsRef = null;
             _trailYieldNStr = 0;
+            _trailOcclusionEventsByString = [];
         }
         function mergeChordShape(ch, chordNotes, templates) {
             if (_chordShapeCache.has(ch)) return _chordShapeCache.get(ch);
@@ -11341,6 +11509,7 @@
         function update(bundle) {
             pbBeg(0);
             _trailYieldFrameId++;
+            _trailOcclusionSourceCount = 0;
             // [verdict glow] Apply the level-driven verdict brightness captured
             // last frame (1-frame lag is imperceptible), then reset for this
             // frame's capture in the gem path below. vg = 1 when no provider
@@ -11636,6 +11805,9 @@
                 || _trailYieldChordsRef !== chords
                 || _trailYieldNStr !== nStr) {
                 _trailYieldEventsByFret = hwyBuildTrailYieldEvents(notes, chords, nStr);
+                _trailOcclusionEventsByString = hwyBuildTrailOcclusionIndex(
+                    _trailYieldEventsByFret, nStr,
+                );
                 _trailYieldNotesRef = notes;
                 _trailYieldChordsRef = chords;
                 _trailYieldNStr = nStr;
@@ -14475,6 +14647,11 @@
                     _diagPrevOpacity = Math.max(0, _diagPrevStartOpacity * (1 - fadedT / DIAG_CROSSFADE_S));
                 }
             }
+            // All pooled note/trail meshes are now registered. Resolve the
+            // cross-fret physical hierarchy before Three.js consumes their
+            // final renderOrder values.
+            trailOcclusionFinalizeFrame();
+
             // ── Finalise InstancedMesh batches ────────────────────────────────
             // Flush all 6 IMs: set visible instance count and mark buffers dirty.
             // Must run after all drawNote() / chord-loop writes are done.
@@ -14807,35 +14984,69 @@
             return null;
         }
 
-        function trailYieldApplyBehindLayerRecord(worldZ, outline, core, face) {
-            outline.renderOrder = renderOrderForLayerAtZ(
+        function trailYieldApplyBehindLayerRecord(
+            worldZ, outline, core, face, coveringRenderOrder = Infinity,
+        ) {
+            const outlineOrder = renderOrderForLayerAtZ(
                 worldZ, 'NOTE_OUTLINE_BEHIND_TRAIL',
             );
-            core.renderOrder = renderOrderForLayerAtZ(
+            const coreOrder = renderOrderForLayerAtZ(
                 worldZ, 'NOTE_CORE_BEHIND_TRAIL',
             );
-            if (face) face.renderOrder = renderOrderForLayerAtZ(
+            const faceOrder = renderOrderForLayerAtZ(
                 worldZ, 'NOTE_FACE_BEHIND_TRAIL',
             );
+            // A cross-fret covering ribbon can use a target-aligned order that
+            // differs from the gem's natural Z bucket. Constrain all gem faces
+            // below that exact ribbon while retaining their internal order.
+            outline.renderOrder = Number.isFinite(coveringRenderOrder)
+                ? Math.min(outlineOrder, coveringRenderOrder - 0.003)
+                : outlineOrder;
+            core.renderOrder = Number.isFinite(coveringRenderOrder)
+                ? Math.min(coreOrder, coveringRenderOrder - 0.002)
+                : coreOrder;
+            if (face) face.renderOrder = Number.isFinite(coveringRenderOrder)
+                ? Math.min(faceOrder, coveringRenderOrder - 0.001)
+                : faceOrder;
         }
 
         function trailYieldApplyBehindLayers(event) {
             if (!event || event._trailYieldGemFrame !== _trailYieldFrameId) return;
             const count = event._trailYieldGemRecordCount || 0;
             if (count === 0) return;
+            const coveringRenderOrder
+                = event._trailYieldGemPriorityFrame === _trailYieldFrameId
+                    ? event._trailYieldGemPriorityOrder
+                    : Infinity;
             trailYieldApplyBehindLayerRecord(
                 event._trailYieldGemWorldZ,
                 event._trailYieldGemOutline,
                 event._trailYieldGemCore,
                 event._trailYieldGemFace,
+                coveringRenderOrder,
             );
             const extras = event._trailYieldGemExtraRecords;
             for (let i = 1; i < count; i++) {
                 const record = extras[i - 1];
                 trailYieldApplyBehindLayerRecord(
                     record.worldZ, record.outline, record.core, record.face,
+                    coveringRenderOrder,
                 );
             }
+        }
+
+        function trailYieldSetTargetGemBehind(event, coveringRenderOrder) {
+            if (!event || !Number.isFinite(coveringRenderOrder)) return;
+            if (event._trailYieldGemPriorityFrame !== _trailYieldFrameId) {
+                event._trailYieldGemPriorityFrame = _trailYieldFrameId;
+                event._trailYieldGemPriorityOrder = coveringRenderOrder;
+            } else {
+                event._trailYieldGemPriorityOrder = Math.min(
+                    event._trailYieldGemPriorityOrder, coveringRenderOrder,
+                );
+            }
+            event._trailYieldTargetFrame = _trailYieldFrameId;
+            trailYieldApplyBehindLayers(event);
         }
 
         /** Called only after hwyFillTrailYieldTimes accepts the relationship. */
@@ -14843,9 +15054,7 @@
             if (!trailYieldSettings.gemInFront) {
                 event._trailYieldTargetFrame = _trailYieldFrameId;
                 trailYieldApplyBehindLayers(event);
-                return;
             }
-            if (trailYieldSettings.includeTrails) return;
             const ctx = _trailYieldMatchContext;
             const matchedEvents = ctx.matchedEvents;
             if (!matchedEvents || ctx.matchedEventCount >= matchedEvents.length) return;
@@ -14940,35 +15149,126 @@
             }
         }
 
-        function trailYieldSetMatchedTrailsBehind(
-            sourceEvent, events, count, coveringRenderOrder,
+        function trailYieldLinkTargetTrailBehind(
+            sourceEvent, targetEvent, coveringRenderOrder,
         ) {
-            if (!events || count <= 0) return;
-            const boundedCount = Math.min(events.length, count | 0);
-            let children = null;
+            if (!targetEvent || !Number.isFinite(coveringRenderOrder)) return;
+            let effectiveCoveringOrder = coveringRenderOrder;
             if (sourceEvent) {
+                if (sourceEvent._trailYieldTrailPriorityFrame === _trailYieldFrameId) {
+                    effectiveCoveringOrder = Math.min(
+                        effectiveCoveringOrder,
+                        sourceEvent._trailYieldTrailPriorityOrder,
+                    );
+                }
                 if (sourceEvent._trailYieldTrailChildrenFrame !== _trailYieldFrameId) {
                     sourceEvent._trailYieldTrailChildrenFrame = _trailYieldFrameId;
                     sourceEvent._trailYieldTrailChildCount = 0;
                 }
-                children = sourceEvent._trailYieldTrailChildren
+                const children = sourceEvent._trailYieldTrailChildren
                     || (sourceEvent._trailYieldTrailChildren = []);
-            }
-            for (let i = 0; i < boundedCount; i++) {
-                const targetEvent = events[i];
-                if (children) {
-                    let duplicate = false;
-                    for (let j = 0; j < sourceEvent._trailYieldTrailChildCount; j++) {
-                        if (children[j] === targetEvent) {
-                            duplicate = true;
-                            break;
-                        }
-                    }
-                    if (!duplicate) {
-                        children[sourceEvent._trailYieldTrailChildCount++] = targetEvent;
+                let duplicate = false;
+                for (let j = 0; j < sourceEvent._trailYieldTrailChildCount; j++) {
+                    if (children[j] === targetEvent) {
+                        duplicate = true;
+                        break;
                     }
                 }
-                trailYieldSetTargetTrailBehind(targetEvent, coveringRenderOrder);
+                if (!duplicate) {
+                    children[sourceEvent._trailYieldTrailChildCount++] = targetEvent;
+                }
+            }
+            trailYieldSetTargetTrailBehind(targetEvent, effectiveCoveringOrder);
+        }
+
+        function trailOcclusionRegisterRelationships(
+            sourceEvent, events, flags, count, coveringRenderOrder,
+            defaultFlags = 0,
+        ) {
+            if (!sourceEvent || !events || count <= 0
+                || !Number.isFinite(coveringRenderOrder)) return;
+            if (sourceEvent._trailOcclusionFrame !== _trailYieldFrameId) {
+                sourceEvent._trailOcclusionFrame = _trailYieldFrameId;
+                sourceEvent._trailOcclusionRelationCount = 0;
+                _trailOcclusionSources[_trailOcclusionSourceCount++] = sourceEvent;
+            }
+            const targets = sourceEvent._trailOcclusionTargets
+                || (sourceEvent._trailOcclusionTargets = []);
+            const relationFlags = sourceEvent._trailOcclusionFlags
+                || (sourceEvent._trailOcclusionFlags = []);
+            const coveringOrders = sourceEvent._trailOcclusionOrders
+                || (sourceEvent._trailOcclusionOrders = []);
+            const boundedCount = Math.min(events.length, count | 0);
+            for (let i = 0; i < boundedCount; i++) {
+                const target = events[i];
+                if (!target || target === sourceEvent) continue;
+                let relationshipFlags = defaultFlags;
+                if (flags) relationshipFlags |= flags[i] || 0;
+                if (relationshipFlags === 0) continue;
+                let index = -1;
+                for (let j = 0; j < sourceEvent._trailOcclusionRelationCount; j++) {
+                    if (targets[j] === target) {
+                        index = j;
+                        break;
+                    }
+                }
+                if (index < 0) {
+                    index = sourceEvent._trailOcclusionRelationCount++;
+                    targets[index] = target;
+                    relationFlags[index] = relationshipFlags;
+                    coveringOrders[index] = coveringRenderOrder;
+                } else {
+                    relationFlags[index] |= relationshipFlags;
+                    // Target meshes must stay behind every strand belonging to
+                    // the covering event, including both standalone-open rails.
+                    coveringOrders[index] = Math.min(
+                        coveringOrders[index], coveringRenderOrder,
+                    );
+                }
+            }
+        }
+
+        function trailOcclusionFinalizeFrame() {
+            if (!trailYieldSettings.enabled || _trailOcclusionSourceCount <= 0) return;
+            const frontMask = hwyTrailOcclusionFrontMask(
+                trailYieldSettings.gemInFront,
+                trailYieldSettings.includeTrails,
+            );
+            // Relationships are a DAG ordered by visual string height. Resolve
+            // top-to-bottom so a middle trail constrained by an upper trail has
+            // its final order before it constrains the next lower trail/gem.
+            for (let visualRank = 0; visualRank < nStr; visualRank++) {
+                for (let i = 0; i < _trailOcclusionSourceCount; i++) {
+                    const source = _trailOcclusionSources[i];
+                    const sourceRank = _invertedCached
+                        ? nStr - 1 - source.s
+                        : source.s;
+                    if (sourceRank !== visualRank) continue;
+                    const targets = source._trailOcclusionTargets;
+                    const flags = source._trailOcclusionFlags;
+                    const orders = source._trailOcclusionOrders;
+                    const count = source._trailOcclusionRelationCount || 0;
+                    for (let j = 0; j < count; j++) {
+                        const target = targets[j];
+                        let coveringOrder = orders[j];
+                        if (source._trailYieldTrailPriorityFrame === _trailYieldFrameId) {
+                            coveringOrder = Math.min(
+                                coveringOrder,
+                                source._trailYieldTrailPriorityOrder,
+                            );
+                        }
+                        if (!(frontMask & TRAIL_OCCLUSION_GEM)
+                            && (flags[j] & TRAIL_OCCLUSION_GEM)) {
+                            trailYieldSetTargetGemBehind(target, coveringOrder);
+                        }
+                        if (!(frontMask & TRAIL_OCCLUSION_TRAIL)
+                            && (flags[j] & TRAIL_OCCLUSION_TRAIL)) {
+                            trailYieldLinkTargetTrailBehind(
+                                source, target, coveringOrder,
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -15457,12 +15757,10 @@
                 }
             }
 
-            // Only target gems/trails whose priority can change need an index
-            // lookup. With both front-priority options enabled, the covering
-            // ribbon alone already establishes the requested order.
+            // All three priority modes share the same canonical event record:
+            // sources need it for cross-fret relationships, while targets use
+            // it to converge pooled gem/trail meshes before frame finalization.
             const trailYieldTargetEvent = trailYieldSettings.enabled
-                && (!trailYieldSettings.gemInFront
-                    || !trailYieldSettings.includeTrails)
                 ? trailYieldEventForNote(n)
                 : null;
 
@@ -15603,10 +15901,9 @@
                 // each frame (a recycled mesh may carry a gradient geometry from a
                 // prior core use). Outline always uses the plain box.
                 outline.geometry = gNote;
-                const trailYieldGemEvent = !trailYieldSettings.gemInFront
-                    ? trailYieldTargetEvent
-                    : null;
+                const trailYieldGemEvent = trailYieldTargetEvent;
                 const isTrailYieldTarget = !!(trailYieldGemEvent
+                    && !trailYieldSettings.gemInFront
                     && trailYieldGemEvent._trailYieldTargetFrame === _trailYieldFrameId);
                 const noteOutlineLayer = hwyTrailYieldGemLayer(
                     trailYieldSettings.gemInFront, isTrailYieldTarget,
@@ -15742,6 +16039,18 @@
                         let yieldCount = 0;
                         let matchedEventCount = 0;
                         const visibleYieldEnd = susStart + sliceDur;
+                        let occlusionCount = 0;
+                        if (trailYieldSettings.enabled && trailYieldTargetEvent) {
+                            occlusionCount = hwyFillTrailOcclusionTargets(
+                                _trailOcclusionEventsByString,
+                                n.t, susEnd, n.s, now, visibleYieldEnd,
+                                _invertedCached,
+                                _trailOcclusionEventsScratch,
+                                _trailOcclusionFlagsScratch,
+                                _trailOcclusionStartsScratch,
+                                _trailOcclusionEndsScratch,
+                            );
+                        }
                         if (trailYieldSettings.enabled) {
                             const ctx = _trailYieldMatchContext;
                             ctx.note = n;
@@ -15799,9 +16108,23 @@
                             // Same depth-bucket scheme as chord frames, using the
                             // ordered sustain-trail layer so same-depth frames win
                             // while closer trail segments still beat farther frames.
-                            const naturalRenderOrder = renderOrderForLayerAtZ(
-                                Math.min(0, zCenter), 'SUSTAIN_TRAIL',
+                            const fallbackWorldZ = Math.min(0, zCenter);
+                            const includeTargetTrails = trailYieldSettings.gemInFront
+                                && trailYieldSettings.includeTrails;
+                            const priorityWorldZ = hwyTrailPriorityWorldZ(
+                                fallbackWorldZ, now,
+                                _trailOcclusionStartsScratch, occlusionCount,
+                                trailYieldSettings.gemInFront, TS,
+                                includeTargetTrails ? _trailOcclusionEndsScratch : null,
                             );
+                            const naturalRenderOrder = renderOrderForLayerAtZ(
+                                priorityWorldZ, 'SUSTAIN_TRAIL',
+                            ) + (occlusionCount > 0
+                                ? hwyTrailPriorityStringOffset(
+                                    n.s, nStr, _invertedCached,
+                                    includeTargetTrails,
+                                )
+                                : 0);
                             const trailRenderOrder = trailYieldConstrainTargetTrailOrder(
                                 trailYieldTargetEvent, naturalRenderOrder,
                             );
@@ -15821,6 +16144,13 @@
                                     trailYieldTargetEvent, trOut, tr,
                                 );
                             }
+                            trailOcclusionRegisterRelationships(
+                                trailYieldTargetEvent,
+                                _trailOcclusionEventsScratch,
+                                _trailOcclusionFlagsScratch,
+                                occlusionCount,
+                                trailRenderOrder,
+                            );
                         };
                         if (!ribbonSusTrail) {
                             const len = sliceDur * TS;
@@ -15852,29 +16182,36 @@
                                     : 0;
                                 const includeTargetTrails = trailYieldSettings.gemInFront
                                     && trailYieldSettings.includeTrails;
-                                const ribbonOrderZ = hwyTrailPriorityWorldZ(
-                                    -_ribDt * TS, now,
+                                const fallbackWorldZ = -_ribDt * TS;
+                                const yieldOrderZ = hwyTrailPriorityWorldZ(
+                                    fallbackWorldZ, now,
                                     strandYieldStarts, strandYieldCount,
                                     trailYieldSettings.gemInFront, TS,
                                     includeTargetTrails ? strandTargetTrailEnds : null,
                                 );
+                                const occlusionOrderZ = hwyTrailPriorityWorldZ(
+                                    fallbackWorldZ, now,
+                                    _trailOcclusionStartsScratch, occlusionCount,
+                                    trailYieldSettings.gemInFront, TS,
+                                    includeTargetTrails ? _trailOcclusionEndsScratch : null,
+                                );
+                                const ribbonOrderZ = hwyMergeTrailPriorityWorldZ(
+                                    fallbackWorldZ,
+                                    yieldOrderZ, strandYieldCount,
+                                    occlusionOrderZ, occlusionCount,
+                                    trailYieldSettings.gemInFront,
+                                );
                                 let ribbonRenderOrder = renderOrderForLayerAtZ(
                                     ribbonOrderZ, 'SUSTAIN_TRAIL',
-                                ) + (strandYieldCount > 0
+                                ) + (strandYieldCount > 0 || occlusionCount > 0
                                     ? hwyTrailPriorityStringOffset(
                                         n.s, nStr, _invertedCached,
                                         includeTargetTrails,
                                     )
                                     : 0);
-                                if (trailYieldSettings.gemInFront
-                                    && !trailYieldSettings.includeTrails) {
+                                if (!includeTargetTrails) {
                                     ribbonRenderOrder = trailYieldConstrainTargetTrailOrder(
                                         trailYieldTargetEvent, ribbonRenderOrder,
-                                    );
-                                    trailYieldSetMatchedTrailsBehind(
-                                        trailYieldTargetEvent,
-                                        strandMatchedEvents, strandMatchedEventCount,
-                                        ribbonRenderOrder,
                                     );
                                 }
                                 const olMesh = pSusRibbonOl.get();
@@ -15904,6 +16241,21 @@
                                 );
                                 trailYieldRegisterTargetTrail(
                                     trailYieldTargetEvent, olMesh, body,
+                                );
+                                trailOcclusionRegisterRelationships(
+                                    trailYieldTargetEvent,
+                                    _trailOcclusionEventsScratch,
+                                    _trailOcclusionFlagsScratch,
+                                    occlusionCount,
+                                    ribbonRenderOrder,
+                                );
+                                trailOcclusionRegisterRelationships(
+                                    trailYieldTargetEvent,
+                                    strandMatchedEvents,
+                                    null,
+                                    strandMatchedEventCount,
+                                    ribbonRenderOrder,
+                                    TRAIL_OCCLUSION_GEM | TRAIL_OCCLUSION_TRAIL,
                                 );
                             }
                         }
@@ -17106,6 +17458,7 @@
             _slideTargetNotesRef = null;
             _slideTargetChordsRef = null;
             _trailYieldEventsByFret = [];
+            _trailOcclusionEventsByString = [];
             _trailYieldNotesRef = null;
             _trailYieldChordsRef = null;
             _trailYieldNStr = 0;
