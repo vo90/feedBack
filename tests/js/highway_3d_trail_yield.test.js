@@ -22,7 +22,7 @@ function loadHelpers() {
         + block
         + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyTrailOverlapsGemX, hwyTrailSweepOverlapsGemX, hwyTrailYieldAmountAt,'
         + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailPriorityStringOffset, hwyTrailYieldGemLayer,'
-        + ' hwyTrailTargetBehindOrder, hwyBuildTrailOcclusionIndex, hwyFillTrailOcclusionTargets, hwyMergeTrailPriorityWorldZ, hwyTrailOcclusionFrontMask,'
+        + ' hwyTrailTargetBehindOrder, hwyBuildTrailOcclusionIndex, hwyFillTrailOcclusionTargets, hwyMergeTrailPriorityWorldZ, hwyTrailOcclusionFrontMask, hwyTrailOcclusionFlagsForPair,'
         + ' TRAIL_OCCLUSION_GEM, TRAIL_OCCLUSION_TRAIL, TRAIL_YIELD_DEFAULTS })',
     );
 }
@@ -81,6 +81,33 @@ test('front-priority settings expose exactly the three supported visual modes', 
         frontMask(true, true),
         helpers.TRAIL_OCCLUSION_GEM | helpers.TRAIL_OCCLUSION_TRAIL,
         'gem+trail: promote both parts of the lower note',
+    );
+});
+
+test('trail relationships cannot invert the physical string hierarchy', () => {
+    const normalize = helpers.hwyTrailOcclusionFlagsForPair;
+    const gem = helpers.TRAIL_OCCLUSION_GEM;
+    const trail = helpers.TRAIL_OCCLUSION_TRAIL;
+
+    assert.equal(
+        normalize(4, 3, false, gem | trail), gem,
+        'a normal-view bend toward the visually higher string may cover its gem but not its trail',
+    );
+    assert.equal(
+        normalize(3, 4, false, trail), trail,
+        'the opposing normal-view physical edge retains trail ordering',
+    );
+    assert.equal(
+        normalize(1, 2, true, gem | trail), gem,
+        'the mirrored bend/vibrato case removes the reverse trail edge when inverted',
+    );
+    assert.equal(
+        normalize(2, 1, true, trail), trail,
+        'the opposing inverted physical edge retains trail ordering',
+    );
+    assert.equal(
+        normalize(2, 2, false, gem | trail), gem,
+        'same-string relationships can never create a trail-order edge',
     );
 });
 
@@ -689,8 +716,13 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
     );
     assert.match(
         src,
-        /trailOcclusionRegisterRelationships\(\s*trailYieldTargetEvent,\s*strandMatchedEvents,\s*null,\s*strandMatchedEventCount,\s*ribbonRenderOrder,\s*TRAIL_OCCLUSION_GEM\s*\|\s*TRAIL_OCCLUSION_TRAIL/,
-        'exact footprint matches must join the same final relationship resolver as cross-fret targets',
+        /trailOcclusionRegisterRelationships\(\s*trailYieldTargetEvent,\s*strandMatchedEvents,\s*null,\s*strandMatchedEventCount,\s*ribbonRenderOrder,\s*TRAIL_OCCLUSION_GEM/,
+        'exact footprint matching controls the gem while physical string ordering owns trail relationships',
+    );
+    assert.match(
+        src,
+        /relationshipFlags\s*=\s*hwyTrailOcclusionFlagsForPair\(\s*sourceEvent\.s,\s*target\.s,\s*_invertedCached,\s*relationshipFlags/,
+        'relationship registration must enforce the physical trail-order invariant centrally',
     );
     assert.match(
         src,

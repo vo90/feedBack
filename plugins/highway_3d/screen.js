@@ -1250,6 +1250,28 @@
     const TRAIL_OCCLUSION_GEM = 1;
     const TRAIL_OCCLUSION_TRAIL = 2;
 
+    /**
+     * Trail-to-trail constraints always follow the highway's physical string
+     * hierarchy. Exact bend/vibrato footprint matching may still cover a gem
+     * on the opposite adjacent lane, but it must not invert that hierarchy for
+     * the target's attached trail or it can form a contradictory A -> B -> A
+     * ordering cycle with the physical overlap pass.
+     */
+    function hwyTrailOcclusionFlagsForPair(
+        sourceString, targetString, inverted, flags,
+    ) {
+        let normalizedFlags = flags | 0;
+        const targetIsVisuallyLower = Number.isInteger(sourceString)
+            && Number.isInteger(targetString)
+            && (inverted
+                ? targetString < sourceString
+                : targetString > sourceString);
+        if (!targetIsVisuallyLower) {
+            normalizedFlags &= ~TRAIL_OCCLUSION_TRAIL;
+        }
+        return normalizedFlags;
+    }
+
     /** The child trail can only be promoted when its parent gem is promoted. */
     function hwyTrailOcclusionFrontMask(gemInFront, includeTrails) {
         return gemInFront
@@ -15204,6 +15226,10 @@
                 if (!target || target === sourceEvent) continue;
                 let relationshipFlags = defaultFlags;
                 if (flags) relationshipFlags |= flags[i] || 0;
+                relationshipFlags = hwyTrailOcclusionFlagsForPair(
+                    sourceEvent.s, target.s, _invertedCached,
+                    relationshipFlags,
+                );
                 if (relationshipFlags === 0) continue;
                 let index = -1;
                 for (let j = 0; j < sourceEvent._trailOcclusionRelationCount; j++) {
@@ -16255,7 +16281,7 @@
                                     null,
                                     strandMatchedEventCount,
                                     ribbonRenderOrder,
-                                    TRAIL_OCCLUSION_GEM | TRAIL_OCCLUSION_TRAIL,
+                                    TRAIL_OCCLUSION_GEM,
                                 );
                             }
                         }
