@@ -1363,6 +1363,11 @@
 
     const TRAIL_OCCLUSION_GEM = 1;
     const TRAIL_OCCLUSION_TRAIL = 2;
+    // Physical trail overlap is broader than the optional "include trails"
+    // preference: an older lower trail must still stay below a newly arriving
+    // upper trail. Only a trail attached to a genuinely later target gem may
+    // opt into the mode-3 front override.
+    const TRAIL_OCCLUSION_TRAIL_FRONT = 4;
 
     /**
      * Every trail-visibility relationship follows the highway's physical string
@@ -1390,6 +1395,20 @@
             ? TRAIL_OCCLUSION_GEM
                 | (includeTrails ? TRAIL_OCCLUSION_TRAIL : 0)
             : 0;
+    }
+
+    /** True when physical stacking still owns this target trail relationship. */
+    function hwyTrailOcclusionTrailShouldStayBehind(frontMask, relationshipFlags) {
+        return !!(relationshipFlags & TRAIL_OCCLUSION_TRAIL)
+            && (!(frontMask & TRAIL_OCCLUSION_TRAIL)
+                || !(relationshipFlags & TRAIL_OCCLUSION_TRAIL_FRONT));
+    }
+
+    /** True when mode 3 explicitly puts a later target's attached trail in front. */
+    function hwyTrailOcclusionTrailShouldMoveInFront(frontMask, relationshipFlags) {
+        return !!(frontMask & TRAIL_OCCLUSION_TRAIL)
+            && !!(relationshipFlags & TRAIL_OCCLUSION_TRAIL)
+            && !!(relationshipFlags & TRAIL_OCCLUSION_TRAIL_FRONT);
     }
 
     /**
@@ -1503,12 +1522,15 @@
                     && event.end > visibleStart + 1e-6
                     && event.t < boundedVisibleEnd - 1e-6;
                 if (!gemCovered && !trailCovered) continue;
+                const laterTargetTrail = trailCovered
+                    && event.t > sourceT + 1e-6;
                 const relationStart = gemCovered
                     ? Math.max(now, event.t)
                     : Math.max(now, sourceT, event.t);
                 outEvents[count] = event;
                 outFlags[count] = (gemCovered ? TRAIL_OCCLUSION_GEM : 0)
-                    | (trailCovered ? TRAIL_OCCLUSION_TRAIL : 0);
+                    | (trailCovered ? TRAIL_OCCLUSION_TRAIL : 0)
+                    | (laterTargetTrail ? TRAIL_OCCLUSION_TRAIL_FRONT : 0);
                 outStarts[count] = relationStart;
                 outEnds[count] = trailCovered
                     ? Math.max(relationStart, Math.min(
@@ -1582,12 +1604,20 @@
         const endpointLookahead = Number.isFinite(cfg.endLeadTime)
             ? Math.max(0, cfg.endLeadTime)
             : TRAIL_YIELD_DEFAULTS.endLeadTime;
-        // Scan beyond susEnd only once the endpoint itself is in the rendered
-        // slice. Long off-screen sustains therefore retain the old cheap bound.
-        const endIsVisible = finiteVisibleEnd >= susEnd - 1e-6;
+        // Geometry only needs endpoint candidates once the endpoint enters the
+        // rendered slice. Mode 3 also supplies target-trail endpoints for whole-
+        // ribbon ordering, however, and that order must be stable from the first
+        // visible frame: discovering a future attached trail later would reorder
+        // the complete transparent ribbon and make it pop in. The fixed output
+        // capacity keeps the early priority scan bounded; taper geometry remains
+        // local because hwyTrailYieldAmountAt still samples the real chart times.
+        const priorityNeedsFullSource = !!outTargetTrailEnds;
+        const endpointScanEnd = priorityNeedsFullSource ? susEnd : finiteVisibleEnd;
+        const endIsVisible = priorityNeedsFullSource
+            || finiteVisibleEnd >= susEnd - 1e-6;
         const tHi = Math.min(
             susEnd + endpointLookahead,
-            finiteVisibleEnd + (endIsVisible ? endpointLookahead : 0),
+            endpointScanEnd + (endIsVisible ? endpointLookahead : 0),
         );
         for (let i = lo; i < events.length; i++) {
             const event = events[i];
@@ -15394,6 +15424,33 @@
             trailYieldSetTargetTrailBehind(targetEvent, effectiveCoveringOrder);
         }
 
+        function trailYieldCurrentTrailOrder(event) {
+            if (!event) return Infinity;
+            let order = Infinity;
+            if (event._trailYieldTrailMeshFrame === _trailYieldFrameId) {
+                order = Math.min(order, event._trailYieldTrailNaturalOrder);
+            }
+            if (event._trailOrderBaselineFrame === _trailYieldFrameId) {
+                order = Math.min(order, event._trailOrderBaselineOrder);
+            }
+            if (event._trailYieldTrailPriorityFrame === _trailYieldFrameId) {
+                order = Math.min(order, event._trailYieldTrailPriorityOrder);
+            }
+            return order;
+        }
+
+        /**
+         * Mode 3 reverses this one relationship: a genuinely later target and
+         * its attached trail paint over the earlier covering trail. Express it
+         * with the same behind-edge primitive so any later constraint on the
+         * target propagates to the source and chained sustains stay stable.
+         */
+        function trailYieldLinkTargetTrailInFront(sourceEvent, targetEvent) {
+            const targetOrder = trailYieldCurrentTrailOrder(targetEvent);
+            if (!Number.isFinite(targetOrder)) return;
+            trailYieldLinkTargetTrailBehind(targetEvent, sourceEvent, targetOrder);
+        }
+
         function trailOcclusionRegisterRelationships(
             sourceEvent, events, flags, count, coveringRenderOrder,
             defaultFlags = 0,
@@ -15639,11 +15696,16 @@
                             && (flags[j] & TRAIL_OCCLUSION_GEM)) {
                             trailYieldSetTargetGemBehind(target, coveringOrder);
                         }
-                        if (!(frontMask & TRAIL_OCCLUSION_TRAIL)
-                            && (flags[j] & TRAIL_OCCLUSION_TRAIL)) {
+                        if (hwyTrailOcclusionTrailShouldStayBehind(
+                            frontMask, flags[j],
+                        )) {
                             trailYieldLinkTargetTrailBehind(
                                 source, target, coveringOrder,
                             );
+                        } else if (hwyTrailOcclusionTrailShouldMoveInFront(
+                            frontMask, flags[j],
+                        )) {
+                            trailYieldLinkTargetTrailInFront(source, target);
                         }
                     }
                 }
@@ -15833,6 +15895,9 @@
             let count = 0;
             // Fret zero is always considered because an open gem spans the
             // active lane; fretted buckets use this cheap conservative sweep.
+            // Mode 3 needs the complete qualifying set for stable whole-ribbon
+            // ordering. Other modes retain the cheaper visible-slice scan.
+            const matchingVisibleEnd = includeTargetTrails ? susEnd : visibleEnd;
             for (let f = 0; f <= NFRETS && count < starts.length; f++) {
                 if (f > 0 && !trailYieldSweepMayReachFret(
                     sweepCenter, sweepWidth, f,
@@ -15840,7 +15905,7 @@
                 count = hwyFillTrailYieldTimes(
                     _trailYieldEventsByFret[f],
                     n.t, n.s, now, susEnd, _invertedCached,
-                    starts, ends, count, visibleEnd, trailYieldSettings,
+                    starts, ends, count, matchingVisibleEnd, trailYieldSettings,
                     trailYieldEventMatchesRenderedFootprint,
                     trailYieldMarkTarget,
                     includeTargetTrails ? targetTrailEnds : null,
@@ -16530,11 +16595,22 @@
                         let yieldCount = 0;
                         let matchedEventCount = 0;
                         const visibleYieldEnd = susStart + sliceDur;
+                        const includeTargetTrails = trailYieldSettings.gemInFront
+                            && trailYieldSettings.includeTrails;
+                        // Mode 3 sorts each transparent ribbon as one mesh. Find
+                        // its complete bounded set of physical trail relations as
+                        // soon as the ribbon appears so renderOrder cannot change
+                        // merely because a future crossing entered the 3 s slice.
+                        // The crossing sampler below still receives
+                        // visibleYieldEnd, so narrowing remains local.
+                        const occlusionVisibleEnd = includeTargetTrails
+                            ? susEnd
+                            : visibleYieldEnd;
                         let occlusionCount = 0;
                         if (trailYieldSettings.enabled && trailYieldTargetEvent) {
                             occlusionCount = hwyFillTrailOcclusionTargets(
                                 _trailOcclusionEventsByString,
-                                n.t, susEnd, n.s, now, visibleYieldEnd,
+                                n.t, susEnd, n.s, now, occlusionVisibleEnd,
                                 _invertedCached,
                                 _trailOcclusionEventsScratch,
                                 _trailOcclusionFlagsScratch,
@@ -16598,8 +16674,6 @@
                             // ordered sustain-trail layer so same-depth frames win
                             // while closer trail segments still beat farther frames.
                             const fallbackWorldZ = Math.min(0, zCenter);
-                            const includeTargetTrails = trailYieldSettings.gemInFront
-                                && trailYieldSettings.includeTrails;
                             const priorityWorldZ = hwyTrailPriorityWorldZ(
                                 fallbackWorldZ, now,
                                 _trailOcclusionStartsScratch, occlusionCount,
@@ -16673,8 +16747,6 @@
                                 const strandYieldCount = trailYieldSettings.enabled
                                     ? (n.f === 0 ? _trailYieldOpenCountsScratch[si] : yieldCount)
                                     : 0;
-                                const includeTargetTrails = trailYieldSettings.gemInFront
-                                    && trailYieldSettings.includeTrails;
                                 const fallbackWorldZ = -_ribDt * TS;
                                 const yieldOrderZ = hwyTrailPriorityWorldZ(
                                     fallbackWorldZ, now,

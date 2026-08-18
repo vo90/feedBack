@@ -22,8 +22,8 @@ function loadHelpers() {
         + block
         + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyFillTrailCrossingWindows, hwyTrailOverlapsGemX, hwyTrailYieldAmountAt,'
         + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailPriorityStringOffset, hwyTrailYieldGemLayer,'
-        + ' hwyTrailTargetBehindOrder, hwyBuildTrailOcclusionIndex, hwyFillTrailOcclusionTargets, hwyMergeTrailPriorityWorldZ, hwyTrailOcclusionFrontMask, hwyTrailOcclusionFlagsForPair,'
-        + ' TRAIL_OCCLUSION_GEM, TRAIL_OCCLUSION_TRAIL, TRAIL_YIELD_DEFAULTS })',
+        + ' hwyTrailTargetBehindOrder, hwyBuildTrailOcclusionIndex, hwyFillTrailOcclusionTargets, hwyMergeTrailPriorityWorldZ, hwyTrailOcclusionFrontMask, hwyTrailOcclusionFlagsForPair, hwyTrailOcclusionTrailShouldStayBehind, hwyTrailOcclusionTrailShouldMoveInFront,'
+        + ' TRAIL_OCCLUSION_GEM, TRAIL_OCCLUSION_TRAIL, TRAIL_OCCLUSION_TRAIL_FRONT, TRAIL_YIELD_DEFAULTS })',
     );
 }
 
@@ -293,6 +293,144 @@ test('cross-fret physical ordering distinguishes covered gems from overlapping t
     assert.deepEqual(Array.from(ends.slice(0, count)), [1, 2, 2]);
 });
 
+test('mode 3 promotes only trails attached to genuinely later lower targets', () => {
+    const source = { t: 158, s: 3, f: 7, sus: 1.5 };
+    const olderLowerTrail = { t: 156, s: 4, f: 7, sus: 7 };
+    const laterLowerTrail = { t: 158.5, s: 5, f: 7, sus: 2 };
+    const byFret = helpers.hwyBuildTrailYieldEvents(
+        [source, olderLowerTrail, laterLowerTrail], [], 6,
+    );
+    const index = helpers.hwyBuildTrailOcclusionIndex(byFret, 6);
+    const events = new Array(4);
+    const flags = new Uint8Array(4);
+    const starts = new Float64Array(4);
+    const ends = new Float64Array(4);
+    const count = helpers.hwyFillTrailOcclusionTargets(
+        index, source.t, source.t + source.sus, source.s, 157, 160, false,
+        events, flags, starts, ends,
+    );
+    assert.equal(count, 2);
+    assert.equal(events[0].s, 4, 'the older green trail remains a physical-order target');
+    assert.equal(flags[0], helpers.TRAIL_OCCLUSION_TRAIL);
+    assert.equal(events[1].s, 5, 'the later purple trail is an upcoming target');
+    assert.equal(
+        flags[1],
+        helpers.TRAIL_OCCLUSION_GEM
+            | helpers.TRAIL_OCCLUSION_TRAIL
+            | helpers.TRAIL_OCCLUSION_TRAIL_FRONT,
+    );
+
+    const mode2 = helpers.hwyTrailOcclusionFrontMask(true, false);
+    const mode3 = helpers.hwyTrailOcclusionFrontMask(true, true);
+    assert.equal(
+        helpers.hwyTrailOcclusionTrailShouldStayBehind(mode3, flags[0]),
+        true,
+        'mode 3 must not pull an older physically lower trail over the new upper trail',
+    );
+    assert.equal(
+        helpers.hwyTrailOcclusionTrailShouldStayBehind(mode2, flags[1]),
+        true,
+        'gem-only mode retains physical trail stacking for a later target',
+    );
+    assert.equal(
+        helpers.hwyTrailOcclusionTrailShouldStayBehind(mode3, flags[1]),
+        false,
+        'mode 3 may promote the trail attached to a genuinely upcoming lower gem',
+    );
+    assert.equal(
+        helpers.hwyTrailOcclusionTrailShouldMoveInFront(mode3, flags[1]),
+        true,
+        'mode 3 must positively order the later attached trail in front',
+    );
+    assert.equal(
+        helpers.hwyTrailOcclusionTrailShouldMoveInFront(mode2, flags[1]),
+        false,
+        'gem-only mode must not move the attached trail in front',
+    );
+    assert.equal(
+        helpers.hwyTrailOcclusionTrailShouldMoveInFront(mode3, flags[0]),
+        false,
+        'an older lower trail must retain physical stacking in mode 3',
+    );
+});
+
+test('the sustained-target showcase relationship is stable in all three modes', () => {
+    const source = { t: 14, s: 1, f: 9, sus: 7 };
+    const target = { t: 16, s: 2, f: 9, sus: 3 };
+    const index = helpers.hwyBuildTrailOcclusionIndex(
+        helpers.hwyBuildTrailYieldEvents([source, target], [], 6),
+        6,
+    );
+    const events = new Array(2);
+    const flags = new Uint8Array(2);
+    const starts = new Float64Array(2);
+    const ends = new Float64Array(2);
+    const count = helpers.hwyFillTrailOcclusionTargets(
+        index, source.t, source.t + source.sus, source.s,
+        14, source.t + source.sus, false,
+        events, flags, starts, ends,
+    );
+    assert.equal(count, 1);
+    assert.equal(events[0].t, 16);
+    assert.equal(
+        flags[0],
+        helpers.TRAIL_OCCLUSION_GEM
+            | helpers.TRAIL_OCCLUSION_TRAIL
+            | helpers.TRAIL_OCCLUSION_TRAIL_FRONT,
+    );
+
+    const standard = helpers.hwyTrailOcclusionFrontMask(false, false);
+    const gemOnly = helpers.hwyTrailOcclusionFrontMask(true, false);
+    const gemAndTrail = helpers.hwyTrailOcclusionFrontMask(true, true);
+    assert.equal(helpers.hwyTrailOcclusionTrailShouldStayBehind(standard, flags[0]), true);
+    assert.equal(helpers.hwyTrailOcclusionTrailShouldStayBehind(gemOnly, flags[0]), true);
+    assert.equal(helpers.hwyTrailOcclusionTrailShouldStayBehind(gemAndTrail, flags[0]), false);
+    assert.equal(
+        helpers.hwyTrailOcclusionTrailShouldMoveInFront(gemAndTrail, flags[0]),
+        true,
+    );
+
+    const targetOrder = 510.25;
+    const sourceNaturalOrder = 560.5;
+    const sourceFrontFixedOrder = helpers.hwyTrailTargetBehindOrder(
+        targetOrder, sourceNaturalOrder,
+    );
+    assert.ok(
+        sourceFrontFixedOrder + 0.0005 < targetOrder,
+        'both source faces must paint before the later target trail',
+    );
+});
+
+test('older-trail physical stacking and later-target promotion mirror when inverted', () => {
+    const source = { t: 20, s: 2, f: 9, sus: 2 };
+    const olderLowerTrail = { t: 18, s: 1, f: 7, sus: 6 };
+    const laterLowerTrail = { t: 21, s: 0, f: 12, sus: 2 };
+    const index = helpers.hwyBuildTrailOcclusionIndex(
+        helpers.hwyBuildTrailYieldEvents(
+            [source, olderLowerTrail, laterLowerTrail], [], 6,
+        ),
+        6,
+    );
+    const events = new Array(4);
+    const flags = new Uint8Array(4);
+    const starts = new Float64Array(4);
+    const ends = new Float64Array(4);
+    const count = helpers.hwyFillTrailOcclusionTargets(
+        index, source.t, source.t + source.sus, source.s, 19, 23, true,
+        events, flags, starts, ends,
+    );
+    assert.equal(count, 2);
+    assert.equal(events[0].s, 0);
+    assert.equal(events[1].s, 1);
+    assert.equal(
+        flags[0],
+        helpers.TRAIL_OCCLUSION_GEM
+            | helpers.TRAIL_OCCLUSION_TRAIL
+            | helpers.TRAIL_OCCLUSION_TRAIL_FRONT,
+    );
+    assert.equal(flags[1], helpers.TRAIL_OCCLUSION_TRAIL);
+});
+
 test('physical-order collection reverses with inversion and stays in the visible window', () => {
     const byFret = helpers.hwyBuildTrailYieldEvents([
         { t: 0, s: 4, f: 7, sus: 8 },
@@ -311,7 +449,12 @@ test('physical-order collection reverses with inversion and stays in the visible
     );
     assert.equal(count, 1);
     assert.equal(events[0].s, 3, 'inverted view treats the lower string index as visually lower');
-    assert.equal(flags[0], helpers.TRAIL_OCCLUSION_GEM | helpers.TRAIL_OCCLUSION_TRAIL);
+    assert.equal(
+        flags[0],
+        helpers.TRAIL_OCCLUSION_GEM
+            | helpers.TRAIL_OCCLUSION_TRAIL
+            | helpers.TRAIL_OCCLUSION_TRAIL_FRONT,
+    );
 });
 
 test('independent shape and physical target depths merge in the selected direction', () => {
@@ -872,6 +1015,16 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
     );
     assert.match(
         src,
+        /function\s+trailYieldLinkTargetTrailInFront\(sourceEvent, targetEvent\)[\s\S]{0,500}?trailYieldLinkTargetTrailBehind\(targetEvent, sourceEvent, targetOrder\)/,
+        'mode 3 must encode front priority as the reversed edge in the shared propagation graph',
+    );
+    assert.match(
+        src,
+        /hwyTrailOcclusionTrailShouldMoveInFront\([\s\S]{0,180}?trailYieldLinkTargetTrailInFront\(source, target\)/,
+        'the later target relationship must be actively resolved rather than merely left unconstrained',
+    );
+    assert.match(
+        src,
         /relationshipFlags\s*=\s*hwyTrailOcclusionFlagsForPair\(\s*sourceEvent\.s,\s*target\.s,\s*_invertedCached,\s*relationshipFlags/,
         'relationship registration must enforce the physical trail-order invariant centrally',
     );
@@ -891,6 +1044,16 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
         'moving and yielding ribbon trails must participate in the same rule',
     );
     assert.match(src, /hwyTrailPriorityWorldZ\([\s\S]{0,180}?strandYieldStarts,\s*strandYieldCount,[\s\S]{0,100}?trailYieldSettings\.gemInFront,\s*TS/);
+    assert.match(
+        src,
+        /const\s+matchingVisibleEnd\s*=\s*includeTargetTrails\s*\?\s*susEnd\s*:\s*visibleEnd[\s\S]{0,500}?hwyFillTrailYieldTimes\([\s\S]{0,260}?matchingVisibleEnd/,
+        'mode 3 must know future endpoint priorities before their taper enters view',
+    );
+    assert.match(
+        src,
+        /const\s+occlusionVisibleEnd\s*=\s*includeTargetTrails\s*\?\s*susEnd\s*:\s*visibleYieldEnd[\s\S]{0,420}?hwyFillTrailOcclusionTargets\([\s\S]{0,180}?occlusionVisibleEnd/,
+        'mode 3 must keep trail-crossing order stable across the visible horizon',
+    );
     const behindLayer = src.indexOf("'NOTE_CORE_BEHIND_TRAIL'");
     const trailLayer = src.indexOf("'SUSTAIN_TRAIL'");
     const frontLayer = src.indexOf("'NOTE_CORE'", trailLayer);
@@ -917,6 +1080,38 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
         src.slice(ribbonStart, ribbonEnd),
         /\.material\s*=|\.opacity\s*=|\.color\s*\./,
         'the taper must modify geometry only, never trail color or opacity',
+    );
+});
+
+test('mode-3 endpoint priority is stable before the endpoint enters the visible slice', () => {
+    const endpointEvent = [{ t: 10.5, s: 2, end: 12 }];
+    const starts = new Float64Array(2);
+    const ends = new Float64Array(2);
+    const targetTrailEnds = new Float64Array(2);
+
+    assert.equal(
+        helpers.hwyFillTrailYieldTimes(
+            endpointEvent, 0, 1, 0, 10, false, starts, ends,
+            0, 4, helpers.TRAIL_YIELD_DEFAULTS,
+        ),
+        0,
+        'geometry-only modes keep the endpoint scan local',
+    );
+    const count = helpers.hwyFillTrailYieldTimes(
+        endpointEvent, 0, 1, 0, 10, false, starts, ends,
+        0, 4, helpers.TRAIL_YIELD_DEFAULTS, null, null,
+        targetTrailEnds,
+    );
+    assert.equal(count, 1, 'attached-trail ordering is known on the first visible frame');
+    assert.equal(starts[0], 10.5);
+    assert.equal(ends[0], 10, 'the endpoint notch still stops at the source trail end');
+    assert.equal(targetTrailEnds[0], 12, 'ordering retains the complete target trail');
+    assert.equal(
+        helpers.hwyTrailYieldAmountAt(
+            4, starts, ends, count, 10, helpers.TRAIL_YIELD_DEFAULTS,
+        ),
+        0,
+        'early relationship discovery must not taper visible geometry early',
     );
 });
 
