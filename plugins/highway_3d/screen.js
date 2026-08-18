@@ -1058,18 +1058,91 @@
             <= (Math.max(0, trailWidth) + Math.max(0, gemWidth)) * 0.5;
     }
 
-    /** True when any part of a strand's bounded X sweep reaches a gem footprint. */
-    function hwyTrailSweepOverlapsGemX(
-        trailStartX, trailEndX, trailWidth, lateralReach, gemX, gemWidth,
+    const TRAIL_CROSSING_BOUNDARY_REFINEMENTS = 6;
+    const TRAIL_CROSSING_TIME_EPS = 1e-5;
+
+    /** Add one raw trail-overlap interval, coalescing only touching geometry. */
+    function hwyAppendTrailCrossingWindow(
+        start, end, outStarts, outEnds, count, mergeFrom = 0,
     ) {
-        if (!Number.isFinite(trailStartX) || !Number.isFinite(trailEndX)
-            || !Number.isFinite(lateralReach)) return false;
-        const reach = Math.max(0, lateralReach);
-        const lo = Math.min(trailStartX, trailEndX) - reach;
-        const hi = Math.max(trailStartX, trailEndX) + reach;
-        return hwyTrailOverlapsGemX(
-            (lo + hi) * 0.5, hi - lo + Math.max(0, trailWidth), gemX, gemWidth,
-        );
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return count;
+        const capacity = Math.min(outStarts?.length || 0, outEnds?.length || 0);
+        if (capacity <= 0) return 0;
+        let mergedStart = start;
+        let mergedEnd = end;
+        const firstMerge = Math.max(0, Math.min(count, mergeFrom | 0));
+        for (let i = firstMerge; i < count; i++) {
+            if (mergedEnd < outStarts[i] - TRAIL_CROSSING_TIME_EPS
+                || mergedStart > outEnds[i] + TRAIL_CROSSING_TIME_EPS) continue;
+            mergedStart = Math.min(mergedStart, outStarts[i]);
+            mergedEnd = Math.max(mergedEnd, outEnds[i]);
+            outStarts[i] = outStarts[count - 1];
+            outEnds[i] = outEnds[count - 1];
+            count--;
+            i--;
+        }
+        if (count >= capacity) return count;
+        outStarts[count] = mergedStart;
+        outEnds[count] = mergedEnd;
+        return count + 1;
+    }
+
+    /**
+     * Resolve every rendered-footprint overlap within a bounded chart-time
+     * interval. The fixed step is chosen by the caller from the same path
+     * frequencies/sampling density used by the ribbon renderer; transitions
+     * are refined to keep the notch anchored at the crossing rather than the
+     * lower note's onset. No arrays or closures are allocated in this helper.
+     */
+    function hwyFillTrailCrossingWindows(
+        start, end, sampleStep, overlapsAt,
+        outStarts, outEnds, initialCount = 0, mergeFrom = initialCount,
+    ) {
+        const capacity = Math.min(outStarts?.length || 0, outEnds?.length || 0);
+        let count = Math.max(0, Math.min(capacity, initialCount | 0));
+        if (!(end > start) || typeof overlapsAt !== 'function' || count >= capacity) {
+            return count;
+        }
+        const span = end - start;
+        const step = Number.isFinite(sampleStep) && sampleStep > 0
+            ? sampleStep
+            : span;
+        const samples = Math.max(1, Math.ceil(span / step));
+        let previousT = start;
+        let previousOverlap = !!overlapsAt(previousT);
+        let activeStart = previousOverlap ? start : NaN;
+        for (let i = 1; i <= samples; i++) {
+            const currentT = i === samples ? end : Math.min(end, start + i * step);
+            const currentOverlap = !!overlapsAt(currentT);
+            if (currentOverlap !== previousOverlap) {
+                let lo = previousT;
+                let hi = currentT;
+                const stateAtLo = previousOverlap;
+                for (let refine = 0; refine < TRAIL_CROSSING_BOUNDARY_REFINEMENTS; refine++) {
+                    const mid = (lo + hi) * 0.5;
+                    if (!!overlapsAt(mid) === stateAtLo) lo = mid;
+                    else hi = mid;
+                }
+                const boundary = (lo + hi) * 0.5;
+                if (currentOverlap) {
+                    activeStart = boundary;
+                } else {
+                    count = hwyAppendTrailCrossingWindow(
+                        activeStart, boundary, outStarts, outEnds, count, mergeFrom,
+                    );
+                    if (count >= capacity) return count;
+                    activeStart = NaN;
+                }
+            }
+            previousT = currentT;
+            previousOverlap = currentOverlap;
+        }
+        if (previousOverlap && count < capacity) {
+            count = hwyAppendTrailCrossingWindow(
+                activeStart, end, outStarts, outEnds, count, mergeFrom,
+            );
+        }
+        return count;
     }
 
     /**
@@ -1169,7 +1242,9 @@
     /** Chart-static fret index; rebuilt only when arrangement arrays change. */
     function hwyBuildTrailYieldEvents(notes, chords, stringCount) {
         const byFret = new Array(NFRETS + 1);
-        const add = (t, s, f, sustain, accent = false, chordMeta = null) => {
+        const add = (
+            t, s, f, sustain, accent = false, chordMeta = null, pathNote = null,
+        ) => {
             if (!Number.isFinite(t) || !Number.isInteger(s) || s < 0 || s >= stringCount) return;
             if (!Number.isInteger(f) || f < 0 || f > NFRETS) return;
             const duration = Number.isFinite(sustain) ? Math.max(0, sustain) : 0;
@@ -1178,12 +1253,18 @@
                 accent: !!accent,
                 standalone: chordMeta === null,
                 chordMeta,
+                // The event is also the allocation-free path descriptor used
+                // for trail-to-trail crossings. Keep only fields that affect X.
+                sl: Number.isFinite(pathNote?.sl) ? pathNote.sl : -1,
+                slu: Number.isFinite(pathNote?.slu) ? pathNote.slu : -1,
+                tr: !!pathNote?.tr,
+                sus: duration,
             });
         };
         if (notes) {
             for (let i = 0; i < notes.length; i++) {
                 const n = notes[i];
-                add(n?.t, n?.s, n?.f, n?.sus, n?.ac);
+                add(n?.t, n?.s, n?.f, n?.sus, n?.ac, null, n);
             }
         }
         if (chords) {
@@ -1209,7 +1290,7 @@
                 };
                 for (let ni = 0; ni < ch.notes.length; ni++) {
                     const n = ch.notes[ni];
-                    add(ch.t, n?.s, n?.f, n?.sus, n?.ac, chordMeta);
+                    add(ch.t, n?.s, n?.f, n?.sus, n?.ac, chordMeta, n);
                 }
             }
         }
@@ -1229,6 +1310,10 @@
                     prev.accent = prev.accent || cur.accent;
                     prev.standalone = prev.standalone || cur.standalone;
                     if (!prev.chordMeta && cur.chordMeta) prev.chordMeta = cur.chordMeta;
+                    if (!(prev.sl >= 0) && cur.sl >= 0) prev.sl = cur.sl;
+                    if (!(prev.slu >= 0) && cur.slu >= 0) prev.slu = cur.slu;
+                    prev.tr = prev.tr || cur.tr;
+                    prev.sus = Math.max(prev.sus, cur.sus);
                     continue;
                 }
                 events[write++] = cur;
@@ -14848,8 +14933,14 @@
             susEnd: 0,
             matchedEvents: null,
             matchedEventCount: 0,
+            crossingTarget: null,
+            crossingTargetSlideSt: null,
+            crossingTargetBaseX: 0,
+            crossingTargetW: 0,
         };
         const _trailYieldTargetXBounds = new Float64Array(2);
+        const _trailCrossingTargetBases = new Float64Array(2);
+        let _trailCrossingTargetBaseCount = 0;
 
         function trailYieldAddTargetXBounds(center, width, bounds) {
             const halfW = Math.max(0, width) * 0.5;
@@ -14904,6 +14995,55 @@
             return Number.isFinite(bounds[0]) && Number.isFinite(bounds[1]);
         }
 
+        /** Resolve the one fretted strand or two standalone-open rail centres. */
+        function trailCrossingTargetStrands(event) {
+            _trailCrossingTargetBaseCount = 0;
+            if (!event || event.end <= event.t + 0.01) return 0;
+            const ctx = _trailYieldMatchContext;
+            if (event.f > 0) {
+                _trailCrossingTargetBases[0] = xFretMid(event.f);
+                _trailCrossingTargetBaseCount = 1;
+                ctx.crossingTargetW = NW * 0.85 + 0.4 * K;
+                return 1;
+            }
+            // Chord-member open strings deliberately do not emit sustain rails.
+            if (!event.standalone) return 0;
+            const anchor = anchorLaneBoundsAt(_drawAnchors, event.t);
+            const baseX = anchor
+                ? (xFret(anchor.dMin) + xFret(anchor.dMax)) * 0.5
+                : curX;
+            const openWScale = Math.max(
+                0.22,
+                (openNoteLaneBoxW(event.t) * 0.96) / (40 * K),
+            );
+            const offset = NW * 3 * openWScale;
+            _trailCrossingTargetBases[0] = baseX - offset;
+            _trailCrossingTargetBases[1] = baseX + offset;
+            _trailCrossingTargetBaseCount = 2;
+            ctx.crossingTargetW = NW * 0.85 * openWScale + 0.4 * K;
+            return 2;
+        }
+
+        /** Stable callback for the allocation-free crossing-window resolver. */
+        function trailCrossingFootprintsOverlapAt(chartTime) {
+            const ctx = _trailYieldMatchContext;
+            const target = ctx.crossingTarget;
+            if (!ctx.note || !target) return false;
+            const sourceX = sustainTrailCenterXAt(
+                ctx.note, ctx.strandBaseX, chartTime, ctx.slideSt, ctx.trailW,
+            );
+            const targetX = sustainTrailCenterXAt(
+                target,
+                ctx.crossingTargetBaseX,
+                chartTime,
+                ctx.crossingTargetSlideSt,
+                ctx.crossingTargetW,
+            );
+            return hwyTrailOverlapsGemX(
+                sourceX, ctx.trailW, targetX, ctx.crossingTargetW,
+            );
+        }
+
         function trailYieldEventMatchesRenderedFootprint(event, visuallyBelow) {
             const ctx = _trailYieldMatchContext;
             const n = ctx.note;
@@ -14937,28 +15077,10 @@
                 targetX,
                 targetW,
             );
-            if (onsetMatches) return true;
-
-            // A moving source can miss the gem at its onset, then cross the
-            // target's attached sustain before either trail ends. Include that
-            // bounded X sweep so the gem and its trail receive one consistent
-            // priority. Slides are monotonic; tremolo's complete lateral reach
-            // is known analytically, so this stays constant-time and allocation-free.
-            if (!trailYieldSettings.gemInFront
-                || !trailYieldSettings.includeTrails) return false;
-            const targetTrailEnd = Math.min(ctx.susEnd, event.end);
-            // drawNote uses the same 0.01 s cutoff for emitting a sustain.
-            if (!visuallyBelow || targetTrailEnd <= event.t + 0.01) return false;
-            const slideDir = _leftyCached ? -1 : 1;
-            const sweepStartX = ctx.strandBaseX
-                + slideDir * slideOffsetWorldX(n, event.t, ctx.slideSt);
-            const sweepEndX = ctx.strandBaseX
-                + slideDir * slideOffsetWorldX(n, targetTrailEnd, ctx.slideSt);
-            const tremoloReach = n.tr ? ctx.trailW * 0.375 : 0;
-            return hwyTrailSweepOverlapsGemX(
-                sweepStartX, sweepEndX, ctx.trailW, tremoloReach,
-                targetX, targetW,
-            );
+            // Trail-to-trail intersections are collected separately at their
+            // real crossing times. Keeping this predicate onset-only prevents
+            // a later crossing from incorrectly anchoring a notch at event.t.
+            return onsetMatches;
         }
 
         /** Find the indexed event represented by a drawNote call. */
@@ -15327,10 +15449,114 @@
             );
         }
 
+        /**
+         * Append real trail-to-trail X-overlap intervals for one rendered
+         * source strand. Physical string order and temporal candidate lookup
+         * come from the existing occlusion index; this pass only resolves the
+         * local geometry and is deliberately independent of front-priority UI.
+         */
+        function collectTrailCrossingWindowsForStrand(
+            n, now, susEnd, visibleEnd,
+            starts, ends, targetTrailEnds,
+            initialCount, crossingMergeFrom, occlusionCount,
+        ) {
+            const ctx = _trailYieldMatchContext;
+            let count = initialCount;
+            const capacity = Math.min(starts.length, ends.length);
+            const candidateCount = Math.min(
+                Math.max(0, occlusionCount | 0),
+                _trailOcclusionEventsScratch.length,
+                _trailOcclusionFlagsScratch.length,
+            );
+            for (let i = 0;
+                i < candidateCount && count < capacity;
+                i++) {
+                if (!(_trailOcclusionFlagsScratch[i] & TRAIL_OCCLUSION_TRAIL)) continue;
+                const target = _trailOcclusionEventsScratch[i];
+                if (!target || target.end <= target.t + 0.01) continue;
+                const overlapStart = Math.max(n.t, target.t, now);
+                const overlapEnd = Math.min(susEnd, target.end, visibleEnd);
+                if (!(overlapEnd > overlapStart + TRAIL_CROSSING_TIME_EPS)) continue;
+
+                ctx.crossingTarget = target;
+                ctx.crossingTargetSlideSt = slideTrailEnd(target);
+                const targetStrandCount = trailCrossingTargetStrands(target);
+                if (targetStrandCount === 0) continue;
+                const span = overlapEnd - overlapStart;
+                const sourceMovesX = !!(ctx.slideSt || n.tr);
+                const targetMovesX = !!(ctx.crossingTargetSlideSt || target.tr);
+                const ribbonStep = span / SLIDE_RIBBON_SAMPLES;
+                const hasTremolo = !!(n.tr || target.tr);
+                const sampleStep = hasTremolo
+                    ? Math.min(ribbonStep, TREMOLO_BUMP_S / 8)
+                    : ribbonStep;
+                for (let strand = 0;
+                    strand < targetStrandCount && count < capacity;
+                    strand++) {
+                    ctx.crossingTargetBaseX = _trailCrossingTargetBases[strand];
+                    if (!sourceMovesX && !targetMovesX) {
+                        if (trailCrossingFootprintsOverlapAt(overlapStart)) {
+                            count = hwyAppendTrailCrossingWindow(
+                                overlapStart, overlapEnd,
+                                starts, ends, count, crossingMergeFrom,
+                            );
+                        }
+                        continue;
+                    }
+                    // Slides are monotonic and tremolo has a fixed bounded
+                    // lateral reach. Reject disjoint complete sweeps before
+                    // entering the denser transition sampler.
+                    const sourceStartX = sustainTrailCenterXAt(
+                        n, ctx.strandBaseX, overlapStart, ctx.slideSt, ctx.trailW,
+                    );
+                    const sourceEndX = sustainTrailCenterXAt(
+                        n, ctx.strandBaseX, overlapEnd, ctx.slideSt, ctx.trailW,
+                    );
+                    const sourceReach = n.tr ? ctx.trailW * 0.375 : 0;
+                    const targetStartX = sustainTrailCenterXAt(
+                        target, ctx.crossingTargetBaseX, overlapStart,
+                        ctx.crossingTargetSlideSt, ctx.crossingTargetW,
+                    );
+                    const targetEndX = sustainTrailCenterXAt(
+                        target, ctx.crossingTargetBaseX, overlapEnd,
+                        ctx.crossingTargetSlideSt, ctx.crossingTargetW,
+                    );
+                    const targetReach = target.tr ? ctx.crossingTargetW * 0.375 : 0;
+                    const sourceLo = Math.min(sourceStartX, sourceEndX)
+                        - sourceReach - ctx.trailW * 0.5;
+                    const sourceHi = Math.max(sourceStartX, sourceEndX)
+                        + sourceReach + ctx.trailW * 0.5;
+                    const targetLo = Math.min(targetStartX, targetEndX)
+                        - targetReach - ctx.crossingTargetW * 0.5;
+                    const targetHi = Math.max(targetStartX, targetEndX)
+                        + targetReach + ctx.crossingTargetW * 0.5;
+                    if (sourceHi < targetLo || targetHi < sourceLo) continue;
+                    count = hwyFillTrailCrossingWindows(
+                        overlapStart,
+                        overlapEnd,
+                        sampleStep,
+                        trailCrossingFootprintsOverlapAt,
+                        starts,
+                        ends,
+                        count,
+                        crossingMergeFrom,
+                    );
+                }
+            }
+            if (targetTrailEnds) {
+                for (let i = crossingMergeFrom; i < count; i++) {
+                    targetTrailEnds[i] = ends[i];
+                }
+            }
+            ctx.crossingTarget = null;
+            ctx.crossingTargetSlideSt = null;
+            return count;
+        }
+
         /** Collect one strand's qualifying targets through the shared matcher. */
         function collectTrailYieldTargetsForStrand(
             n, now, susEnd, visibleEnd, starts, ends, targetTrailEnds,
-            matchedEvents, strandBaseX,
+            matchedEvents, strandBaseX, occlusionCount,
         ) {
             const ctx = _trailYieldMatchContext;
             const includeTargetTrails = trailYieldSettings.gemInFront
@@ -15362,7 +15588,12 @@
                     includeTargetTrails ? targetTrailEnds : null,
                 );
             }
-            return count;
+            const crossingMergeFrom = count;
+            return collectTrailCrossingWindowsForStrand(
+                n, now, susEnd, visibleEnd,
+                starts, ends, targetTrailEnds,
+                count, crossingMergeFrom, occlusionCount,
+            );
         }
 
         /* ── Note renderer ───────────────────────────────────────────────── */
@@ -16068,6 +16299,7 @@
                                         n, now, susEnd, visibleYieldEnd,
                                         starts, ends, targetTrailEnds, matchedEvents,
                                         xBase + offsets[si],
+                                        occlusionCount,
                                     );
                                     _trailYieldOpenCountsScratch[si] = strandCount;
                                     _trailYieldOpenMatchedCountsScratch[si]
@@ -16081,6 +16313,7 @@
                                     _trailYieldTargetTrailEndsScratch,
                                     _trailYieldMatchedEventsScratch,
                                     xBase,
+                                    occlusionCount,
                                 );
                                 matchedEventCount = ctx.matchedEventCount;
                             }

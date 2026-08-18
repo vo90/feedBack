@@ -20,7 +20,7 @@ function loadHelpers() {
     return vm.runInNewContext(
         'const NFRETS = 24; const NEXT_ON_STRING_T_EPS = 0.06;\n'
         + block
-        + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyTrailOverlapsGemX, hwyTrailSweepOverlapsGemX, hwyTrailYieldAmountAt,'
+        + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyFillTrailCrossingWindows, hwyTrailOverlapsGemX, hwyTrailYieldAmountAt,'
         + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailPriorityStringOffset, hwyTrailYieldGemLayer,'
         + ' hwyTrailTargetBehindOrder, hwyBuildTrailOcclusionIndex, hwyFillTrailOcclusionTargets, hwyMergeTrailPriorityWorldZ, hwyTrailOcclusionFrontMask, hwyTrailOcclusionFlagsForPair,'
         + ' TRAIL_OCCLUSION_GEM, TRAIL_OCCLUSION_TRAIL, TRAIL_YIELD_DEFAULTS })',
@@ -113,7 +113,7 @@ test('trail visibility relationships cannot invert the physical string hierarchy
 
 test('per-fret onset indexes are sorted, bounded, and merge duplicate members', () => {
     const notes = [
-        { t: 3, s: 2, f: 3, sus: 2 },
+        { t: 3, s: 2, f: 3, sus: 2, sl: 9, tr: true },
         { t: 4, s: 8, f: 3, sus: 1 },
         { t: 5, s: 1, f: 25, sus: 1 },
     ];
@@ -130,6 +130,9 @@ test('per-fret onset indexes are sorted, bounded, and merge duplicate members', 
     assert.equal(events[0].chordMeta.size, 1);
     assert.equal(events[1].standalone, true);
     assert.ok(events[1].chordMeta, 'duplicate standalone/chord metadata is retained');
+    assert.equal(events[1].sl, 9, 'the indexed event retains its rendered slide path');
+    assert.equal(events[1].tr, true, 'the indexed event retains repeated lateral motion');
+    assert.equal(events[1].sus, 4, 'deduplication retains the complete sustain path');
 });
 
 test('one footprint rule requires a visually lower target and overlapping X geometry', () => {
@@ -319,21 +322,108 @@ test('independent shape and physical target depths merge in the selected directi
     assert.equal(merge(-50, -100, 0, -200, 0, false), -50);
 });
 
-test('a moving source qualifies when it crosses the lower target sustain after onset', () => {
-    const overlaps = helpers.hwyTrailOverlapsGemX;
-    const sweepOverlaps = helpers.hwyTrailSweepOverlapsGemX;
-    assert.equal(overlaps(0, 2, 3, 2), false, 'the onset itself is clear');
-    assert.equal(
-        sweepOverlaps(0, 2, 2, 0, 3, 2), true,
-        'a later crossing over the target trail qualifies',
+test('moving-trail crossings are timed at their rendered overlap, not gem onset', () => {
+    const starts = new Float64Array(8);
+    const ends = new Float64Array(8);
+    const count = helpers.hwyFillTrailCrossingWindows(
+        0, 1, 0.025,
+        t => Math.abs(t - 0.6) <= 0.1,
+        starts, ends,
     );
-    assert.equal(
-        sweepOverlaps(0, -2, 2, 0, 3, 2), false,
-        'a nearby trail moving away does not become a false target',
+    assert.equal(count, 1);
+    assert.ok(Math.abs(starts[0] - 0.5) < 0.002, `entry=${starts[0]}`);
+    assert.ok(Math.abs(ends[0] - 0.7) < 0.002, `exit=${ends[0]}`);
+    assert.notEqual(starts[0], 0, 'the lower gem onset is not reused as the crossing time');
+});
+
+test('an oscillating trail produces separate windows when crossings have room to recover', () => {
+    const starts = new Float64Array(8);
+    const ends = new Float64Array(8);
+    const count = helpers.hwyFillTrailCrossingWindows(
+        0, 2, 0.01,
+        t => Math.abs(Math.sin(Math.PI * 2 * t)) <= 0.16,
+        starts, ends,
     );
+    assert.ok(count >= 4, `expected repeated crossings, got ${count}`);
+    for (let i = 1; i < count; i++) {
+        assert.ok(starts[i] > ends[i - 1], 'separate intersections retain a widening gap');
+    }
+});
+
+test('crossing resolution keeps path sampling bounded for a full visible slice', () => {
+    const starts = new Float64Array(96);
+    const ends = new Float64Array(96);
+    let calls = 0;
+    helpers.hwyFillTrailCrossingWindows(
+        0, 3, 0.0075,
+        t => {
+            calls++;
+            return Math.sin(t * Math.PI * 20) > 0.8;
+        },
+        starts, ends,
+    );
+    // 401 base samples plus six binary refinements for each transition.
+    // Keep generous headroom so this pins bounded work, not an exact loop
+    // implementation or a wall-clock threshold that can flake in CI.
+    assert.ok(calls < 1300, `unexpected crossing callback count: ${calls}`);
+});
+
+test('closely spaced crossings share one continuous taper effect without changing settings', () => {
+    const starts = new Float64Array([1.0, 1.18]);
+    const ends = new Float64Array([1.04, 1.22]);
+    const cfg = {
+        ...helpers.TRAIL_YIELD_DEFAULTS,
+        leadTime: 0.20,
+        taperDuration: 0.05,
+        holdAfter: 0.05,
+        recoverDuration: 0.10,
+    };
     assert.equal(
-        sweepOverlaps(0, 0, 2, 1, 3, 2), true,
-        'the bounded tremolo reach participates without time sampling',
+        helpers.hwyTrailYieldAmountAt(1.10, starts, ends, 2, 3, cfg),
+        1,
+        'the next taper begins before the previous crossing can recover',
+    );
+});
+
+test('moving upper, moving lower, and mirrored paths resolve the same crossing time', () => {
+    const { slideTrailEnd, slideOffsetWorldX } = loadSlideOffsetHelpers();
+    const moving = { t: 0, f: 3, sus: 2, sl: 9 };
+    const slideSt = slideTrailEnd(moving);
+    const collect = (movingUpper, mirror) => {
+        const starts = new Float64Array(4);
+        const ends = new Float64Array(4);
+        const sign = mirror ? -1 : 1;
+        const count = helpers.hwyFillTrailCrossingWindows(
+            0, 2, 0.02,
+            t => {
+                const movingX = sign * (30 + slideOffsetWorldX(moving, t, slideSt));
+                const straightX = sign * 60;
+                return movingUpper
+                    ? helpers.hwyTrailOverlapsGemX(movingX, 4, straightX, 4)
+                    : helpers.hwyTrailOverlapsGemX(straightX, 4, movingX, 4);
+            },
+            starts, ends,
+        );
+        return { count, start: starts[0], end: ends[0] };
+    };
+    const upperMoves = collect(true, false);
+    const lowerMoves = collect(false, false);
+    const mirrored = collect(true, true);
+    assert.equal(upperMoves.count, 1);
+    assert.equal(lowerMoves.count, upperMoves.count);
+    assert.ok(Math.abs(lowerMoves.start - upperMoves.start) < 1e-9);
+    assert.ok(Math.abs(mirrored.start - upperMoves.start) < 1e-9);
+    assert.ok(Math.abs(mirrored.end - upperMoves.end) < 1e-9);
+});
+
+test('crossing resolution ignores paths without a shared sustain interval', () => {
+    const starts = new Float64Array(2);
+    const ends = new Float64Array(2);
+    assert.equal(
+        helpers.hwyFillTrailCrossingWindows(
+            2, 2, 0.01, () => true, starts, ends,
+        ),
+        0,
     );
 });
 
@@ -833,14 +923,8 @@ test('rendering and eligibility share one rendered footprint model', () => {
     assert.match(matcherBody, /sustainTrailCenterXAt\(/);
     assert.match(matcherBody, /trailYieldOpenTargetXBounds\(/);
     assert.match(matcherBody, /hwyTrailFootprintsCanOcclude\(/);
-    assert.match(matcherBody, /Math\.min\(ctx\.susEnd,\s*event\.end\)/);
-    assert.match(matcherBody, /slideOffsetWorldX\(n,\s*targetTrailEnd,\s*ctx\.slideSt\)/);
-    assert.match(matcherBody, /hwyTrailSweepOverlapsGemX\(/);
-    assert.match(
-        matcherBody,
-        /if\s*\(!trailYieldSettings\.gemInFront[\s\S]{0,100}?\|\|\s*!trailYieldSettings\.includeTrails\)\s*return false;[\s\S]{0,900}?hwyTrailSweepOverlapsGemX\(/,
-        'trail-only crossings must not promote an otherwise unobscured gem',
-    );
+    assert.doesNotMatch(matcherBody, /trailYieldSettings\.(?:gemInFront|includeTrails)/);
+    assert.match(matcherBody, /Keeping this predicate onset-only/);
 
     const rendererBody = src.slice(rendererDecl, src.indexOf('        function noteHasVibrato(', rendererDecl));
     assert.match(rendererBody, /sustainTrailCenterXAt\(/);
@@ -849,6 +933,13 @@ test('rendering and eligibility share one rendered footprint model', () => {
     assert.match(src, /slideOffsetWorldX\(n,\s*n\.t\s*\+\s*\(n\.sus\s*\|\|\s*0\),\s*ctx\.slideSt\)/);
     assert.match(src, /const\s+tremoloReach\s*=\s*n\.tr\s*\?\s*ctx\.trailW\s*\*\s*0\.375\s*:\s*0/);
     assert.match(src, /function\s+collectTrailYieldTargetsForStrand\(/);
+    assert.match(src, /function\s+collectTrailCrossingWindowsForStrand\(/);
+    const crossingDecl = src.indexOf('        function collectTrailCrossingWindowsForStrand(');
+    const crossingEnd = src.indexOf('        /** Collect one strand', crossingDecl);
+    const crossingBody = src.slice(crossingDecl, crossingEnd);
+    assert.match(crossingBody, /hwyFillTrailCrossingWindows\(/);
+    assert.match(crossingBody, /TRAIL_OCCLUSION_TRAIL/);
+    assert.doesNotMatch(crossingBody, /trailYieldSettings\.(?:gemInFront|includeTrails)/);
     assert.match(src, /_trailYieldEventsByFret\[f\][\s\S]{0,350}?trailYieldEventMatchesRenderedFootprint/);
     assert.match(src, /for\s*\(let f = 0; f <= NFRETS/);
     assert.match(src, /collectTrailYieldTargetsForStrand\([\s\S]{0,350}?xBase\s*\+\s*offsets\[si\],/);
