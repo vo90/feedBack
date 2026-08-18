@@ -678,6 +678,24 @@ test('an excluded attached trail stays completely behind its covering trail', ()
     );
 });
 
+test('a demoted gem stays above its own attached trail while both stay behind the cover', () => {
+    const behindOrder = helpers.hwyTrailTargetBehindOrder;
+    const coveringOutlineOrder = 640.25;
+    const gemOutlineOrder = coveringOutlineOrder - 0.003;
+    const externallyConstrainedTrail = behindOrder(coveringOutlineOrder);
+    const ownTrailOutlineOrder = behindOrder(
+        gemOutlineOrder, externallyConstrainedTrail,
+    );
+    const ownTrailBodyOrder = ownTrailOutlineOrder + 0.0005;
+
+    assert.ok(coveringOutlineOrder > gemOutlineOrder);
+    assert.ok(
+        gemOutlineOrder > ownTrailBodyOrder,
+        'the complete attached trail must remain behind the lowest gem layer',
+    );
+    assert.ok(ownTrailBodyOrder > ownTrailOutlineOrder);
+});
+
 test('a narrowed trail endpoint uses its upcoming gem depth in both priority modes', () => {
     const endpointTarget = new Float64Array([10.1]);
     for (const gemInFront of [false, true]) {
@@ -899,6 +917,56 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
         src.slice(ribbonStart, ribbonEnd),
         /\.material\s*=|\.opacity\s*=|\.color\s*\./,
         'the taper must modify geometry only, never trail color or opacity',
+    );
+});
+
+test('demoted gem and attached-trail registration converge on one internal order', () => {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8');
+    const constrainStart = src.indexOf(
+        '        function trailYieldConstrainOwnTrailBehindGem(',
+    );
+    const constrainEnd = src.indexOf(
+        '        /** Keep one qualifying attached trail behind every covering strand. */',
+        constrainStart,
+    );
+    assert.notEqual(constrainStart, -1);
+    assert.notEqual(constrainEnd, -1);
+    const constrainBody = src.slice(constrainStart, constrainEnd);
+
+    assert.match(
+        constrainBody,
+        /trailYieldSettings\.gemInFront[\s\S]{0,220}?_trailYieldTargetFrame[\s\S]{0,180}?_trailYieldGemFrame[\s\S]{0,180}?_trailYieldTrailMeshFrame/,
+        'only a standard-mode target with both visuals registered needs the extra constraint',
+    );
+    assert.doesNotMatch(
+        constrainBody,
+        /_trailYieldTrailPriorityFrame/,
+        'endpoint-gap targets must work even without an overlapping external trail constraint',
+    );
+    assert.match(
+        constrainBody,
+        /_trailYieldGemExtraRecords[\s\S]{0,300}?Math\.min\(gemFloorOrder,\s*outlineOrder\)/,
+        'duplicate chord/arpeggio gems must share the lowest safe order',
+    );
+    assert.match(
+        constrainBody,
+        /trailYieldSetTargetTrailBehind\(event,\s*gemFloorOrder\)/,
+        'the own-gem cap must reuse the propagated target-trail priority state',
+    );
+
+    const behindStart = src.indexOf('        function trailYieldApplyBehindLayers(');
+    const behindEnd = src.indexOf('        function trailYieldSetTargetGemBehind(', behindStart);
+    const registerStart = src.indexOf('        function trailYieldRegisterTargetTrail(');
+    const registerEnd = src.indexOf('        /**', registerStart);
+    assert.match(
+        src.slice(behindStart, behindEnd),
+        /trailYieldConstrainOwnTrailBehindGem\(event\)/,
+        'a gem demoted after its trail was emitted must immediately repair the internal order',
+    );
+    assert.match(
+        src.slice(registerStart, registerEnd),
+        /trailYieldConstrainOwnTrailBehindGem\(event\)[\s\S]{0,100}?trailYieldApplyTargetTrailOrder\(event\)/,
+        'straight, ribbon, open, and duplicate trails emitted later must converge too',
     );
 });
 

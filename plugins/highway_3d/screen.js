@@ -1025,6 +1025,44 @@
         return depthRenderOrder + layerIndex / RENDER_ORDER_LAYER_STACK.length;
     }
 
+    /** Inclusive one-dimensional footprint overlap (centres + full sizes). */
+    function hwyFootprintsOverlap1D(centerA, sizeA, centerB, sizeB) {
+        if (!Number.isFinite(centerA) || !Number.isFinite(sizeA)
+            || !Number.isFinite(centerB) || !Number.isFinite(sizeB)) return false;
+        return Math.abs(centerA - centerB)
+            <= (Math.max(0, sizeA) + Math.max(0, sizeB)) * 0.5;
+    }
+
+    /**
+     * Conservative visible-footprint test for one trail slice and gem. String
+     * rows can cross in screen space as their depths differ, so different-row
+     * pairs require X overlap only. A same-row moving path must also overlap Y.
+     */
+    function hwyTrailFootprintCanCoverGem(
+        sameString,
+        trailX,
+        trailWidth,
+        trailY,
+        trailHeight,
+        gemX,
+        gemWidth,
+        gemY,
+        gemHeight,
+    ) {
+        if (!hwyFootprintsOverlap1D(trailX, trailWidth, gemX, gemWidth)) return false;
+        return !sameString
+            || hwyFootprintsOverlap1D(trailY, trailHeight, gemY, gemHeight);
+    }
+
+    /** Keep both transparent trail faces below the lowest upcoming gem face. */
+    function hwyTrailBehindGemOrder(currentTrailOrder, gemOutlineOrder) {
+        if (!Number.isFinite(gemOutlineOrder)) return currentTrailOrder;
+        const behindOrder = gemOutlineOrder - 0.001;
+        return Number.isFinite(currentTrailOrder)
+            ? Math.min(currentTrailOrder, behindOrder)
+            : behindOrder;
+    }
+
     /** Match `nextNoteByString` onset to this note (float + chart rounding; avoids ghost / glow flicker). */
     const NEXT_ON_STRING_T_EPS = 0.06;
     // Sustain-trail reveal: when a later gem sits behind a rendered strand,
@@ -5424,6 +5462,16 @@
         const _trailOcclusionFlagsScratch = new Uint8Array(TRAIL_YIELD_TARGET_CAPACITY);
         const _trailOcclusionStartsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
         const _trailOcclusionEndsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
+        // A transparent sustain is sorted as one mesh even though it spans a
+        // large depth interval. Record only gems and strands actually emitted
+        // this frame, then repair their ordinary order in the same finalizer as
+        // the optional lower-note overrides. Records grow only at a new high
+        // water mark and are reused on the steady frame path.
+        const _trailOrderGems = [];
+        const _trailOrderStrands = [];
+        let _trailOrderGemCount = 0;
+        let _trailOrderStrandCount = 0;
+        const _trailOrderBoundsScratch = new Float64Array(4);
         // Sources with ordering relationships are finalized top-string first
         // after every drawNote/chord loop has registered its pooled meshes.
         const _trailOcclusionSources = [];
@@ -11606,6 +11654,8 @@
             pbBeg(0);
             _trailYieldFrameId++;
             _trailOcclusionSourceCount = 0;
+            _trailOrderGemCount = 0;
+            _trailOrderStrandCount = 0;
             // [verdict glow] Apply the level-driven verdict brightness captured
             // last frame (1-frame lag is imperceptible), then reset for this
             // frame's capture in the gem path below. vg = 1 when no provider
@@ -15150,6 +15200,7 @@
                     coveringRenderOrder,
                 );
             }
+            trailYieldConstrainOwnTrailBehindGem(event);
         }
 
         function trailYieldSetTargetGemBehind(event, coveringRenderOrder) {
@@ -15216,14 +15267,48 @@
             const renderOrder = event._trailYieldTrailPriorityOrder;
             const count = event._trailYieldTrailMeshCount || 0;
             if (count === 0 || !Number.isFinite(renderOrder)) return;
-            event._trailYieldTrailOutline.renderOrder = renderOrder;
-            event._trailYieldTrailBody.renderOrder = renderOrder + 0.0005;
+            const firstOrder = Math.min(
+                event._trailYieldTrailOutline.renderOrder, renderOrder,
+            );
+            event._trailYieldTrailOutline.renderOrder = firstOrder;
+            event._trailYieldTrailBody.renderOrder = firstOrder + 0.0005;
             const extras = event._trailYieldTrailExtraMeshes;
             for (let i = 1; i < count; i++) {
                 const record = extras[i - 1];
-                record.outline.renderOrder = renderOrder;
-                record.body.renderOrder = renderOrder + 0.0005;
+                const recordOrder = Math.min(record.outline.renderOrder, renderOrder);
+                record.outline.renderOrder = recordOrder;
+                record.body.renderOrder = recordOrder + 0.0005;
             }
+        }
+
+        /**
+         * A demoted gem and its attached trail are one visual unit. Keep the
+         * complete attached ribbon below the lowest gem face while both remain
+         * behind their covering trail. This is event-scoped: globally moving the
+         * behind-gem layers above SUSTAIN_TRAIL would also move the gem above the
+         * covering ribbon that caused the demotion.
+         */
+        function trailYieldConstrainOwnTrailBehindGem(event) {
+            if (trailYieldSettings.gemInFront || !event
+                || event._trailYieldTargetFrame !== _trailYieldFrameId
+                || event._trailYieldGemFrame !== _trailYieldFrameId
+                || event._trailYieldTrailMeshFrame !== _trailYieldFrameId) return;
+            const count = event._trailYieldGemRecordCount || 0;
+            if (count === 0) return;
+
+            const firstOutline = event._trailYieldGemOutline;
+            let gemFloorOrder = Number.isFinite(firstOutline?.renderOrder)
+                ? firstOutline.renderOrder
+                : Infinity;
+            const extras = event._trailYieldGemExtraRecords;
+            for (let i = 1; i < count; i++) {
+                const outlineOrder = extras?.[i - 1]?.outline?.renderOrder;
+                if (Number.isFinite(outlineOrder)) {
+                    gemFloorOrder = Math.min(gemFloorOrder, outlineOrder);
+                }
+            }
+            if (!Number.isFinite(gemFloorOrder)) return;
+            trailYieldSetTargetTrailBehind(event, gemFloorOrder);
         }
 
         /** Keep one qualifying attached trail behind every covering strand. */
@@ -15237,6 +15322,11 @@
             if (event._trailYieldTrailMeshFrame === _trailYieldFrameId) {
                 currentOrder = Math.min(
                     currentOrder, event._trailYieldTrailNaturalOrder,
+                );
+            }
+            if (event._trailOrderBaselineFrame === _trailYieldFrameId) {
+                currentOrder = Math.min(
+                    currentOrder, event._trailOrderBaselineOrder,
                 );
             }
             const previousOrder = hasCurrentPriority
@@ -15272,6 +15362,12 @@
             if (!targetEvent || !Number.isFinite(coveringRenderOrder)) return;
             let effectiveCoveringOrder = coveringRenderOrder;
             if (sourceEvent) {
+                if (sourceEvent._trailOrderBaselineFrame === _trailYieldFrameId) {
+                    effectiveCoveringOrder = Math.min(
+                        effectiveCoveringOrder,
+                        sourceEvent._trailOrderBaselineOrder,
+                    );
+                }
                 if (sourceEvent._trailYieldTrailPriorityFrame === _trailYieldFrameId) {
                     effectiveCoveringOrder = Math.min(
                         effectiveCoveringOrder,
@@ -15349,7 +15445,162 @@
             }
         }
 
+        function trailOrderRegisterUpcomingGem(n, dt, event, outline, core) {
+            if (!(dt > 0) || !outline || !core) return;
+            let gem = _trailOrderGems[_trailOrderGemCount];
+            if (!gem) {
+                gem = {};
+                _trailOrderGems[_trailOrderGemCount] = gem;
+            }
+            _trailOrderGemCount++;
+
+            // The approach rotation is already present on the pooled mesh.
+            // Resolve its XY axis-aligned footprint without Box3/Vector churn.
+            const width = NW * outline.scale.x;
+            const height = NH * outline.scale.y;
+            const cos = Math.abs(Math.cos(outline.rotation.z));
+            const sin = Math.abs(Math.sin(outline.rotation.z));
+            gem.x = outline.position.x;
+            gem.y = outline.position.y;
+            gem.z = outline.position.z;
+            gem.zHalf = ND * outline.scale.z * 0.5;
+            gem.width = width * cos + height * sin;
+            gem.height = width * sin + height * cos;
+            gem.string = n.s;
+            gem.event = event;
+            gem.outline = outline;
+            gem.core = core;
+        }
+
+        function trailOrderRegisterStrand(
+            outline, body, event, sourceString,
+            straightX, straightY, straightWidth, straightHeight, geometry,
+        ) {
+            if (!outline || !body) return;
+            let strand = _trailOrderStrands[_trailOrderStrandCount];
+            if (!strand) {
+                strand = {};
+                _trailOrderStrands[_trailOrderStrandCount] = strand;
+            }
+            _trailOrderStrandCount++;
+            strand.outline = outline;
+            strand.body = body;
+            strand.event = event;
+            strand.string = sourceString;
+            strand.x = straightX;
+            strand.y = straightY;
+            strand.width = straightWidth;
+            strand.height = straightHeight;
+            strand.geometry = geometry;
+
+            if (geometry) {
+                const positions = geometry.attributes.position.array;
+                const last = SLIDE_RIBBON_SAMPLES * 12;
+                strand.nearZ = Math.max(positions[2], positions[last + 2]);
+                strand.farZ = Math.min(positions[2], positions[last + 2]);
+            } else {
+                const halfLength = body.scale.z * 0.5;
+                strand.nearZ = body.position.z + halfLength;
+                strand.farZ = body.position.z - halfLength;
+            }
+        }
+
+        /** Fill [x, y, width, height] for one visible strand at one gem depth. */
+        function trailOrderStrandBoundsAtZ(strand, worldZ, out) {
+            const geometry = strand.geometry;
+            if (!geometry) {
+                out[0] = strand.x;
+                out[1] = strand.y;
+                out[2] = strand.width;
+                out[3] = strand.height;
+                return;
+            }
+            const positions = geometry.attributes.position.array;
+            const span = strand.nearZ - strand.farZ;
+            const u = span > 1e-9
+                ? Math.max(0, Math.min(1, (strand.nearZ - worldZ) / span))
+                : 0;
+            const offset = Math.round(u * SLIDE_RIBBON_SAMPLES) * 12;
+            let minX = positions[offset], maxX = positions[offset];
+            let minY = positions[offset + 1], maxY = positions[offset + 1];
+            for (let vertex = 3; vertex < 12; vertex += 3) {
+                const x = positions[offset + vertex];
+                const y = positions[offset + vertex + 1];
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+            out[0] = (minX + maxX) * 0.5;
+            out[1] = (minY + maxY) * 0.5;
+            out[2] = maxX - minX;
+            out[3] = maxY - minY;
+        }
+
+        function trailOrderRecordEventBaseline(event, order) {
+            if (!event || !Number.isFinite(order)) return;
+            if (event._trailOrderBaselineFrame !== _trailYieldFrameId) {
+                event._trailOrderBaselineFrame = _trailYieldFrameId;
+                event._trailOrderBaselineOrder = order;
+            } else {
+                event._trailOrderBaselineOrder = Math.min(
+                    event._trailOrderBaselineOrder, order,
+                );
+            }
+            if (event._trailYieldTrailMeshFrame === _trailYieldFrameId) {
+                event._trailYieldTrailNaturalOrder = Math.min(
+                    event._trailYieldTrailNaturalOrder, order,
+                );
+            }
+            if (event._trailYieldTrailPriorityFrame === _trailYieldFrameId) {
+                const previousOrder = event._trailYieldTrailPriorityOrder;
+                event._trailYieldTrailPriorityOrder = Math.min(previousOrder, order);
+                trailYieldApplyTargetTrailOrder(event);
+                if (event._trailYieldTrailPriorityOrder < previousOrder - 1e-9) {
+                    trailYieldPropagateTargetTrailOrder(event);
+                }
+            }
+        }
+
+        /**
+         * Repair ordinary whole-mesh midpoint sorting before lower-note feature
+         * overrides run. This is deliberately direction-neutral: normal higher
+         * gems and optional lower targets begin from the same stable baseline.
+         */
+        function trailOrderResolveUpcomingGems() {
+            const bounds = _trailOrderBoundsScratch;
+            for (let trailIndex = 0; trailIndex < _trailOrderStrandCount; trailIndex++) {
+                const strand = _trailOrderStrands[trailIndex];
+                const initialOrder = strand.outline.renderOrder;
+                let order = initialOrder;
+                for (let gemIndex = 0; gemIndex < _trailOrderGemCount; gemIndex++) {
+                    const gem = _trailOrderGems[gemIndex];
+                    if (gem.z + gem.zHalf < strand.farZ
+                        || gem.z - gem.zHalf > strand.nearZ) continue;
+                    // If the complete trail already paints first, this gem is
+                    // stable and must not pull the mesh into a farther bucket.
+                    if (order + 0.0005 < gem.outline.renderOrder) continue;
+
+                    trailOrderStrandBoundsAtZ(strand, gem.z, bounds);
+                    if (!hwyTrailFootprintCanCoverGem(
+                        gem.string === strand.string,
+                        bounds[0], bounds[2], bounds[1], bounds[3],
+                        gem.x, gem.width, gem.y, gem.height,
+                    )) continue;
+                    order = hwyTrailBehindGemOrder(
+                        order, gem.outline.renderOrder,
+                    );
+                }
+                if (order < initialOrder - 1e-9) {
+                    strand.outline.renderOrder = order;
+                    strand.body.renderOrder = order + 0.0005;
+                    trailOrderRecordEventBaseline(strand.event, order);
+                }
+            }
+        }
+
         function trailOcclusionFinalizeFrame() {
+            trailOrderResolveUpcomingGems();
             if (!trailYieldSettings.enabled || _trailOcclusionSourceCount <= 0) return;
             const frontMask = hwyTrailOcclusionFrontMask(
                 trailYieldSettings.gemInFront,
@@ -15372,6 +15623,12 @@
                     for (let j = 0; j < count; j++) {
                         const target = targets[j];
                         let coveringOrder = orders[j];
+                        if (source._trailOrderBaselineFrame === _trailYieldFrameId) {
+                            coveringOrder = Math.min(
+                                coveringOrder,
+                                source._trailOrderBaselineOrder,
+                            );
+                        }
                         if (source._trailYieldTrailPriorityFrame === _trailYieldFrameId) {
                             coveringOrder = Math.min(
                                 coveringOrder,
@@ -15434,6 +15691,7 @@
                     trailYieldPropagateTargetTrailOrder(event);
                 }
             }
+            trailYieldConstrainOwnTrailBehindGem(event);
             trailYieldApplyTargetTrailOrder(event);
         }
 
@@ -16207,6 +16465,9 @@
                 trailYieldRegisterGem(
                     trailYieldGemEvent, noteZ, outline, core, noteFaceMesh,
                 );
+                trailOrderRegisterUpcomingGem(
+                    n, dt, trailYieldGemEvent, outline, core,
+                );
                 // Fret digits on fretted (n.f > 0) flying notes deliberately
                 // omitted: the showFretOnNote setting and its UI helper text
                 // promise digits on the fretboard ghost only, never on the
@@ -16371,6 +16632,10 @@
                                 trailYieldRegisterTargetTrail(
                                     trailYieldTargetEvent, trOut, tr,
                                 );
+                                trailOrderRegisterStrand(
+                                    trOut, tr, trailYieldTargetEvent, s,
+                                    xOff, y, tw + 0.4 * K, th + 0.4 * K, null,
+                                );
                             }
                             trailOcclusionRegisterRelationships(
                                 trailYieldTargetEvent,
@@ -16469,6 +16734,10 @@
                                 );
                                 trailYieldRegisterTargetTrail(
                                     trailYieldTargetEvent, olMesh, body,
+                                );
+                                trailOrderRegisterStrand(
+                                    olMesh, body, trailYieldTargetEvent, s,
+                                    0, 0, 0, 0, olMesh.geometry,
                                 );
                                 trailOcclusionRegisterRelationships(
                                     trailYieldTargetEvent,
