@@ -22,7 +22,7 @@ function loadHelpers() {
         + block
         + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyFillTrailCrossingWindows, hwyTrailOverlapsGemX, hwyTrailYieldAmountAt,'
         + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailPriorityStringOffset, hwyTrailYieldGemLayer,'
-        + ' hwyTrailTargetBehindOrder, hwyBuildTrailOcclusionIndex, hwyFillTrailOcclusionTargets, hwyMergeTrailPriorityWorldZ, hwyTrailOcclusionFrontMask, hwyTrailOcclusionFlagsForPair, hwyTrailOcclusionTrailShouldStayBehind, hwyTrailOcclusionTrailShouldMoveInFront,'
+        + ' hwyTrailTargetBehindOrder, hwyBuildTrailOcclusionIndex, hwyFillTrailOcclusionTargets, hwyMergeTrailPriorityWorldZ, hwyTrailOcclusionFrontMask, hwyTrailVisibilityFrontMask, hwyTrailOcclusionFlagsForPair, hwyTrailOcclusionTrailShouldStayBehind, hwyTrailOcclusionTrailShouldMoveInFront,'
         + ' TRAIL_OCCLUSION_GEM, TRAIL_OCCLUSION_TRAIL, TRAIL_OCCLUSION_TRAIL_FRONT, TRAIL_YIELD_DEFAULTS })',
     );
 }
@@ -68,19 +68,37 @@ test('reviewed trail-visibility defaults match the showcase settings', () => {
     assert.equal(helpers.TRAIL_YIELD_DEFAULTS.endTaperDuration, 0.05);
 });
 
-test('front-priority settings expose exactly the three supported visual modes', () => {
-    const frontMask = helpers.hwyTrailOcclusionFrontMask;
-    assert.equal(frontMask(false, false), 0, 'standard: gem and trail stay physically below');
-    assert.equal(frontMask(false, true), 0, 'the child setting cannot bypass its parent');
+test('the four visibility modes share physical order and expose only intended promotions', () => {
+    const frontMask = helpers.hwyTrailVisibilityFrontMask;
     assert.equal(
-        frontMask(true, false),
-        helpers.TRAIL_OCCLUSION_GEM,
-        'gem-only: promote the gem but retain physical trail stacking',
+        frontMask(false, false, false),
+        0,
+        'mode 0: physical order remains active while geometry is disabled',
     );
     assert.equal(
-        frontMask(true, true),
+        frontMask(false, true, true),
+        0,
+        'disabled narrowing also disables persisted foreground preferences',
+    );
+    assert.equal(
+        frontMask(true, false, false),
+        0,
+        'mode 1: narrowing does not alter physical gem or trail order',
+    );
+    assert.equal(
+        frontMask(true, false, true),
+        0,
+        'the child trail preference cannot bypass its gem parent',
+    );
+    assert.equal(
+        frontMask(true, true, false),
+        helpers.TRAIL_OCCLUSION_GEM,
+        'mode 2: promote the gem but retain physical trail stacking',
+    );
+    assert.equal(
+        frontMask(true, true, true),
         helpers.TRAIL_OCCLUSION_GEM | helpers.TRAIL_OCCLUSION_TRAIL,
-        'gem+trail: promote both parts of the lower note',
+        'mode 3: promote both parts of the lower note',
     );
 });
 
@@ -354,7 +372,7 @@ test('mode 3 promotes only trails attached to genuinely later lower targets', ()
     );
 });
 
-test('the sustained-target showcase relationship is stable in all three modes', () => {
+test('the sustained-target showcase relationship is stable in all four modes', () => {
     const source = { t: 14, s: 1, f: 9, sus: 7 };
     const target = { t: 16, s: 2, f: 9, sus: 3 };
     const index = helpers.hwyBuildTrailOcclusionIndex(
@@ -379,9 +397,12 @@ test('the sustained-target showcase relationship is stable in all three modes', 
             | helpers.TRAIL_OCCLUSION_TRAIL_FRONT,
     );
 
-    const standard = helpers.hwyTrailOcclusionFrontMask(false, false);
-    const gemOnly = helpers.hwyTrailOcclusionFrontMask(true, false);
-    const gemAndTrail = helpers.hwyTrailOcclusionFrontMask(true, true);
+    const mode0 = helpers.hwyTrailVisibilityFrontMask(false, true, true);
+    const standard = helpers.hwyTrailVisibilityFrontMask(true, false, false);
+    const gemOnly = helpers.hwyTrailVisibilityFrontMask(true, true, false);
+    const gemAndTrail = helpers.hwyTrailVisibilityFrontMask(true, true, true);
+    assert.equal(mode0, standard, 'modes 0 and 1 share physical render priority');
+    assert.equal(helpers.hwyTrailOcclusionTrailShouldStayBehind(mode0, flags[0]), true);
     assert.equal(helpers.hwyTrailOcclusionTrailShouldStayBehind(standard, flags[0]), true);
     assert.equal(helpers.hwyTrailOcclusionTrailShouldStayBehind(gemOnly, flags[0]), true);
     assert.equal(helpers.hwyTrailOcclusionTrailShouldStayBehind(gemAndTrail, flags[0]), false);
@@ -1043,7 +1064,7 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
         /trailYieldRegisterTargetTrail\(\s*trailYieldTargetEvent,\s*olMesh,\s*body,/,
         'moving and yielding ribbon trails must participate in the same rule',
     );
-    assert.match(src, /hwyTrailPriorityWorldZ\([\s\S]{0,180}?strandYieldStarts,\s*strandYieldCount,[\s\S]{0,100}?trailYieldSettings\.gemInFront,\s*TS/);
+    assert.match(src, /hwyTrailPriorityWorldZ\([\s\S]{0,180}?strandYieldStarts,\s*strandYieldCount,[\s\S]{0,100}?trailYieldGemInFront,\s*TS/);
     assert.match(
         src,
         /const\s+matchingVisibleEnd\s*=\s*includeTargetTrails\s*\?\s*susEnd\s*:\s*visibleEnd[\s\S]{0,500}?hwyFillTrailYieldTimes\([\s\S]{0,260}?matchingVisibleEnd/,
@@ -1290,8 +1311,14 @@ test('3D settings expose one shared width and separate passing-note and endpoint
     );
     assert.match(
         src,
-        /const\s+includeTargetTrails\s*=\s*trailYieldSettings\.gemInFront\s*&&\s*trailYieldSettings\.includeTrails/,
+        /const\s+trailVisibilityFrontMask\s*=\s*hwyTrailVisibilityFrontMask\(\s*trailYieldSettings\.enabled,\s*trailYieldSettings\.gemInFront,\s*trailYieldSettings\.includeTrails/,
+        'foreground preferences must be reduced to one effective per-note mode',
     );
+    assert.match(
+        src,
+        /const\s+trailYieldIncludeTrails\s*=\s*!!\(\s*trailVisibilityFrontMask\s*&\s*TRAIL_OCCLUSION_TRAIL\s*\)/,
+    );
+    assert.match(src, /const\s+includeTargetTrails\s*=\s*trailYieldIncludeTrails/);
     assert.match(
         src,
         /includeTargetTrails\s*\?\s*strandTargetTrailEnds\s*:\s*null/,

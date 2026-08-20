@@ -82,19 +82,43 @@ test('visible footprint matching is direction-neutral across string rows', () =>
     );
 });
 
-test('ordinary correction runs before the optional lower-note mode overrides', () => {
+test('ordinary and physical corrections share one finalizer in every mode', () => {
     const finalizer = extractFn('trailOcclusionFinalizeFrame');
     const baselineCall = finalizer.indexOf('trailOrderResolveUpcomingGems()');
-    const disabledReturn = finalizer.indexOf('!trailYieldSettings.enabled');
-    const frontMask = finalizer.indexOf('hwyTrailOcclusionFrontMask(');
+    const sourceReturn = finalizer.indexOf('_trailOcclusionSourceCount <= 0');
+    const frontMask = finalizer.indexOf('hwyTrailVisibilityFrontMask(');
     assert.ok(baselineCall >= 0, 'the shared finalizer must run ordinary ordering');
     assert.ok(
-        baselineCall < disabledReturn,
-        'ordinary no-pop ordering must also work when trail narrowing is disabled',
+        baselineCall < sourceReturn && sourceReturn < frontMask,
+        'ordinary repair must precede the shared physical relationship pass',
     );
-    assert.ok(
-        disabledReturn < frontMask,
-        'the three lower-note modes remain a second, feature-scoped override',
+    assert.doesNotMatch(
+        finalizer,
+        /!trailYieldSettings\.enabled/,
+        'disabling geometry must not bypass physical ordering',
+    );
+});
+
+test('mode 0 keeps relationships active but bypasses every narrowing geometry path', () => {
+    assert.match(
+        source,
+        /const\s+trailYieldTargetEvent\s*=\s*trailYieldEventForNote\(n\)/,
+        'canonical event lookup must remain active when narrowing is disabled',
+    );
+    assert.match(
+        source,
+        /if\s*\(trailYieldTargetEvent\)\s*\{\s*occlusionCount\s*=\s*hwyFillTrailOcclusionTargets\(/,
+        'physical relationships must be collected independently of geometry',
+    );
+    assert.match(
+        source,
+        /if\s*\(trailYieldSettings\.enabled\)\s*\{\s*const\s+ctx\s*=\s*_trailYieldMatchContext/,
+        'fret matching and taper-window collection stay behind the geometry toggle',
+    );
+    assert.match(
+        source,
+        /const\s+strandYieldCount\s*=\s*trailYieldSettings\.enabled\s*\?\s*\(n\.f\s*===\s*0\s*\?\s*_trailYieldOpenCountsScratch\[si\]\s*:\s*yieldCount\)\s*:\s*0/,
+        'moving ribbons receive no narrowing windows in mode 0',
     );
 });
 
@@ -138,6 +162,20 @@ test('the shared resolver is allocation-free and changes ordering only', () => {
     assert.doesNotMatch(resolver, /\.scale\.|\.position\.|\.material\s*=|\.geometry\s*=/);
 });
 
+test('mode-0 physical collection and finalization stay allocation-free per frame', () => {
+    const collector = extractFn('hwyFillTrailOcclusionTargets');
+    const finalizer = extractFn('trailOcclusionFinalizeFrame');
+    const allocationPattern = /\bnew\s+|\.push\(|\.map\(|\.filter\(|\.slice\(/;
+
+    assert.doesNotMatch(collector, allocationPattern);
+    assert.doesNotMatch(finalizer, allocationPattern);
+    assert.match(
+        source,
+        /const\s+_trailOcclusionEventsScratch\s*=\s*new\s+Array\(/,
+        'the collector must reuse scratch storage allocated outside the frame loop',
+    );
+});
+
 test('normal and inverted lower-note modes keep their existing physical scope', () => {
     assert.match(
         source,
@@ -145,7 +183,7 @@ test('normal and inverted lower-note modes keep their existing physical scope', 
     );
     assert.match(
         source,
-        /const\s+frontMask\s*=\s*hwyTrailOcclusionFrontMask\(\s*trailYieldSettings\.gemInFront,\s*trailYieldSettings\.includeTrails/,
+        /const\s+frontMask\s*=\s*hwyTrailVisibilityFrontMask\(\s*trailYieldSettings\.enabled,\s*trailYieldSettings\.gemInFront,\s*trailYieldSettings\.includeTrails/,
     );
     assert.match(
         source,

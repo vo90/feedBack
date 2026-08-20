@@ -1397,6 +1397,19 @@
             : 0;
     }
 
+    /**
+     * Physical stacking is always active. The trail-yield toggle controls
+     * geometry only, so disabling it must also disable the two optional
+     * foreground promotions without bypassing the shared ordering pass.
+     */
+    function hwyTrailVisibilityFrontMask(
+        narrowingEnabled, gemInFront, includeTrails,
+    ) {
+        return narrowingEnabled
+            ? hwyTrailOcclusionFrontMask(gemInFront, includeTrails)
+            : 0;
+    }
+
     /** True when physical stacking still owns this target trail relationship. */
     function hwyTrailOcclusionTrailShouldStayBehind(frontMask, relationshipFlags) {
         return !!(relationshipFlags & TRAIL_OCCLUSION_TRAIL)
@@ -15249,7 +15262,7 @@
 
         /** Called only after hwyFillTrailYieldTimes accepts the relationship. */
         function trailYieldMarkTarget(event) {
-            if (!trailYieldSettings.gemInFront) {
+            if (!(trailYieldSettings.enabled && trailYieldSettings.gemInFront)) {
                 event._trailYieldTargetFrame = _trailYieldFrameId;
                 trailYieldApplyBehindLayers(event);
             }
@@ -15319,7 +15332,7 @@
          * covering ribbon that caused the demotion.
          */
         function trailYieldConstrainOwnTrailBehindGem(event) {
-            if (trailYieldSettings.gemInFront || !event
+            if ((trailYieldSettings.enabled && trailYieldSettings.gemInFront) || !event
                 || event._trailYieldTargetFrame !== _trailYieldFrameId
                 || event._trailYieldGemFrame !== _trailYieldFrameId
                 || event._trailYieldTrailMeshFrame !== _trailYieldFrameId) return;
@@ -15658,8 +15671,9 @@
 
         function trailOcclusionFinalizeFrame() {
             trailOrderResolveUpcomingGems();
-            if (!trailYieldSettings.enabled || _trailOcclusionSourceCount <= 0) return;
-            const frontMask = hwyTrailOcclusionFrontMask(
+            if (_trailOcclusionSourceCount <= 0) return;
+            const frontMask = hwyTrailVisibilityFrontMask(
+                trailYieldSettings.enabled,
                 trailYieldSettings.gemInFront,
                 trailYieldSettings.includeTrails,
             );
@@ -15879,8 +15893,12 @@
             matchedEvents, strandBaseX, occlusionCount,
         ) {
             const ctx = _trailYieldMatchContext;
-            const includeTargetTrails = trailYieldSettings.gemInFront
-                && trailYieldSettings.includeTrails;
+            const frontMask = hwyTrailVisibilityFrontMask(
+                trailYieldSettings.enabled,
+                trailYieldSettings.gemInFront,
+                trailYieldSettings.includeTrails,
+            );
+            const includeTargetTrails = !!(frontMask & TRAIL_OCCLUSION_TRAIL);
             ctx.strandBaseX = strandBaseX;
             ctx.matchedEvents = matchedEvents;
             ctx.matchedEventCount = 0;
@@ -16310,12 +16328,21 @@
                 }
             }
 
-            // All three priority modes share the same canonical event record:
-            // sources need it for cross-fret relationships, while targets use
-            // it to converge pooled gem/trail meshes before frame finalization.
-            const trailYieldTargetEvent = trailYieldSettings.enabled
-                ? trailYieldEventForNote(n)
-                : null;
+            // All four visibility modes share one canonical event record.
+            // Physical ordering remains active when narrowing is disabled;
+            // only the geometry matcher and width sampler are optional.
+            const trailVisibilityFrontMask = hwyTrailVisibilityFrontMask(
+                trailYieldSettings.enabled,
+                trailYieldSettings.gemInFront,
+                trailYieldSettings.includeTrails,
+            );
+            const trailYieldGemInFront = !!(
+                trailVisibilityFrontMask & TRAIL_OCCLUSION_GEM
+            );
+            const trailYieldIncludeTrails = !!(
+                trailVisibilityFrontMask & TRAIL_OCCLUSION_TRAIL
+            );
+            const trailYieldTargetEvent = trailYieldEventForNote(n);
 
             if (!effSkipBody && !arpGhostOnlyMode && !_overLinger) {
 
@@ -16456,18 +16483,18 @@
                 outline.geometry = gNote;
                 const trailYieldGemEvent = trailYieldTargetEvent;
                 const isTrailYieldTarget = !!(trailYieldGemEvent
-                    && !trailYieldSettings.gemInFront
+                    && !trailYieldGemInFront
                     && trailYieldGemEvent._trailYieldTargetFrame === _trailYieldFrameId);
                 const noteOutlineLayer = hwyTrailYieldGemLayer(
-                    trailYieldSettings.gemInFront, isTrailYieldTarget,
+                    trailYieldGemInFront, isTrailYieldTarget,
                     'NOTE_OUTLINE', 'NOTE_OUTLINE_BEHIND_TRAIL',
                 );
                 const noteCoreLayer = hwyTrailYieldGemLayer(
-                    trailYieldSettings.gemInFront, isTrailYieldTarget,
+                    trailYieldGemInFront, isTrailYieldTarget,
                     'NOTE_CORE', 'NOTE_CORE_BEHIND_TRAIL',
                 );
                 const noteFaceLayer = hwyTrailYieldGemLayer(
-                    trailYieldSettings.gemInFront, isTrailYieldTarget,
+                    trailYieldGemInFront, isTrailYieldTarget,
                     'TECHNIQUE_MARKER', 'NOTE_FACE_BEHIND_TRAIL',
                 );
                 outline.renderOrder = renderOrderForLayerAtZ(noteZ, noteOutlineLayer);
@@ -16595,8 +16622,7 @@
                         let yieldCount = 0;
                         let matchedEventCount = 0;
                         const visibleYieldEnd = susStart + sliceDur;
-                        const includeTargetTrails = trailYieldSettings.gemInFront
-                            && trailYieldSettings.includeTrails;
+                        const includeTargetTrails = trailYieldIncludeTrails;
                         // Mode 3 sorts each transparent ribbon as one mesh. Find
                         // its complete bounded set of physical trail relations as
                         // soon as the ribbon appears so renderOrder cannot change
@@ -16607,7 +16633,7 @@
                             ? susEnd
                             : visibleYieldEnd;
                         let occlusionCount = 0;
-                        if (trailYieldSettings.enabled && trailYieldTargetEvent) {
+                        if (trailYieldTargetEvent) {
                             occlusionCount = hwyFillTrailOcclusionTargets(
                                 _trailOcclusionEventsByString,
                                 n.t, susEnd, n.s, now, occlusionVisibleEnd,
@@ -16677,7 +16703,7 @@
                             const priorityWorldZ = hwyTrailPriorityWorldZ(
                                 fallbackWorldZ, now,
                                 _trailOcclusionStartsScratch, occlusionCount,
-                                trailYieldSettings.gemInFront, TS,
+                                trailYieldGemInFront, TS,
                                 includeTargetTrails ? _trailOcclusionEndsScratch : null,
                             );
                             const naturalRenderOrder = renderOrderForLayerAtZ(
@@ -16751,20 +16777,20 @@
                                 const yieldOrderZ = hwyTrailPriorityWorldZ(
                                     fallbackWorldZ, now,
                                     strandYieldStarts, strandYieldCount,
-                                    trailYieldSettings.gemInFront, TS,
+                                    trailYieldGemInFront, TS,
                                     includeTargetTrails ? strandTargetTrailEnds : null,
                                 );
                                 const occlusionOrderZ = hwyTrailPriorityWorldZ(
                                     fallbackWorldZ, now,
                                     _trailOcclusionStartsScratch, occlusionCount,
-                                    trailYieldSettings.gemInFront, TS,
+                                    trailYieldGemInFront, TS,
                                     includeTargetTrails ? _trailOcclusionEndsScratch : null,
                                 );
                                 const ribbonOrderZ = hwyMergeTrailPriorityWorldZ(
                                     fallbackWorldZ,
                                     yieldOrderZ, strandYieldCount,
                                     occlusionOrderZ, occlusionCount,
-                                    trailYieldSettings.gemInFront,
+                                    trailYieldGemInFront,
                                 );
                                 let ribbonRenderOrder = renderOrderForLayerAtZ(
                                     ribbonOrderZ, 'SUSTAIN_TRAIL',
