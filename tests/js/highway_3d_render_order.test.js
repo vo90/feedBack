@@ -402,7 +402,12 @@ test('sus-trail strip renderOrder formula keeps trails strictly below chord fram
     const strip = source.slice(stripStart, stripEnd);
     assert.match(strip, /const\s+fallbackWorldZ\s*=\s*Math\.min\(\s*0\s*,\s*zCenter\s*\)/);
     assert.match(strip, /const\s+priorityWorldZ\s*=\s*hwyTrailPriorityWorldZ\(/);
-    assert.match(strip, /const\s+naturalRenderOrder\s*=\s*renderOrderForLayerAtZ\(\s*priorityWorldZ\s*,\s*'SUSTAIN_TRAIL'/);
+    assert.match(
+        strip,
+        /const\s+stablePriorityWorldZ\s*=\s*hasMode3Priority\s*\?\s*Math\.min\(\s*priorityWorldZ\s*,\s*mode3PriorityWorldZ\s*\)\s*:\s*priorityWorldZ\s*;/,
+        'mode 3 must merge the complete future priority with local taper targets',
+    );
+    assert.match(strip, /const\s+naturalRenderOrder\s*=\s*renderOrderForLayerAtZ\(\s*stablePriorityWorldZ\s*,\s*'SUSTAIN_TRAIL'/);
     assert.match(strip, /const\s+trailRenderOrder\s*=\s*trailYieldConstrainTargetTrailOrder\(/);
     assert.ok(layerIndex('SUSTAIN_TRAIL') < layerIndex('CHORD_FRAME'));
 });
@@ -418,7 +423,8 @@ test('sus-trail ribbon merges shape and physical targets on the named layer', ()
     );
     assert.match(
         src(),
-        /let\s+ribbonRenderOrder\s*=\s*renderOrderForLayerAtZ\(\s*ribbonOrderZ\s*,\s*'SUSTAIN_TRAIL'\s*,?\s*\)[\s\S]{0,220}?hwyTrailPriorityStringOffset\(/,
+        /let\s+ribbonRenderOrder\s*=\s*renderOrderForLayerAtZ\(\s*hasMode3Priority\s*\?\s*Math\.min\(\s*ribbonOrderZ\s*,\s*mode3PriorityWorldZ\s*\)\s*:\s*ribbonOrderZ\s*,\s*'SUSTAIN_TRAIL'\s*,?\s*\)[\s\S]{0,260}?hwyTrailPriorityStringOffset\(/,
+        'ribbons must use the complete future priority while keeping taper geometry local',
     );
 });
 

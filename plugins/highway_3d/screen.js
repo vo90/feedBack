@@ -1065,12 +1065,15 @@
 
     /** Match `nextNoteByString` onset to this note (float + chart rounding; avoids ghost / glow flicker). */
     const NEXT_ON_STRING_T_EPS = 0.06;
-    // Sustain-trail reveal: when a later gem sits behind a rendered strand,
-    // taper only the part of the older trail surrounding that gem. This is a
-    // chart-space shape, not a live animation: the notch is already present
-    // when that section of trail first enters the viewport.
-    // Defaults clear the next instruction gently, then restore the ringing
-    // trail quickly; advanced settings can tune each part independently.
+    // Trail visibility has two deliberately separate layers:
+    //   1. Physical ordering is always active and stabilizes transparent trail
+    //      meshes against every visible upcoming gem (mode 0 included).
+    //   2. Optional trail yielding locally narrows an older, visually higher
+    //      trail around a later lower target. Its two foreground preferences
+    //      create modes 1-3 without changing which relationships qualify.
+    // Geometry windows are chart-space shapes, not live animations: a notch is
+    // already present when that section first enters the viewport. The legacy
+    // `trailYield` prefix below refers to this complete visibility subsystem.
     const TRAIL_YIELD_DEFAULTS = Object.freeze({
         enabled: true,
         gemInFront: false,
@@ -1090,10 +1093,7 @@
 
     /** True when a rendered sustain strand and gem overlap horizontally. */
     function hwyTrailOverlapsGemX(trailX, trailWidth, gemX, gemWidth) {
-        if (!Number.isFinite(trailX) || !Number.isFinite(trailWidth)
-            || !Number.isFinite(gemX) || !Number.isFinite(gemWidth)) return false;
-        return Math.abs(trailX - gemX)
-            <= (Math.max(0, trailWidth) + Math.max(0, gemWidth)) * 0.5;
+        return hwyFootprintsOverlap1D(trailX, trailWidth, gemX, gemWidth);
     }
 
     const TRAIL_CROSSING_BOUNDARY_REFINEMENTS = 6;
@@ -1119,7 +1119,28 @@
             count--;
             i--;
         }
-        if (count >= capacity) return count;
+        if (count >= capacity) {
+            // Pathological charts can produce more disjoint crossing windows
+            // than their onset-density estimate. Preserve visibility by
+            // widening the nearest existing interval instead of dropping the
+            // new crossing. This fallback is allocation-free and can only
+            // over-narrow a tiny gap; it can never hide a required notch.
+            const fallbackFirst = firstMerge < count ? firstMerge : 0;
+            let nearest = fallbackFirst;
+            let nearestGap = Infinity;
+            for (let i = fallbackFirst; i < count; i++) {
+                const gap = mergedEnd < outStarts[i]
+                    ? outStarts[i] - mergedEnd
+                    : mergedStart - outEnds[i];
+                if (gap < nearestGap) {
+                    nearestGap = gap;
+                    nearest = i;
+                }
+            }
+            outStarts[nearest] = Math.min(outStarts[nearest], mergedStart);
+            outEnds[nearest] = Math.max(outEnds[nearest], mergedEnd);
+            return count;
+        }
         outStarts[count] = mergedStart;
         outEnds[count] = mergedEnd;
         return count + 1;
@@ -1138,7 +1159,7 @@
     ) {
         const capacity = Math.min(outStarts?.length || 0, outEnds?.length || 0);
         let count = Math.max(0, Math.min(capacity, initialCount | 0));
-        if (!(end > start) || typeof overlapsAt !== 'function' || count >= capacity) {
+        if (!(end > start) || typeof overlapsAt !== 'function' || capacity <= 0) {
             return count;
         }
         const span = end - start;
@@ -1168,14 +1189,13 @@
                     count = hwyAppendTrailCrossingWindow(
                         activeStart, boundary, outStarts, outEnds, count, mergeFrom,
                     );
-                    if (count >= capacity) return count;
                     activeStart = NaN;
                 }
             }
             previousT = currentT;
             previousOverlap = currentOverlap;
         }
-        if (previousOverlap && count < capacity) {
+        if (previousOverlap) {
             count = hwyAppendTrailCrossingWindow(
                 activeStart, end, outStarts, outEnds, count, mergeFrom,
             );
@@ -1359,6 +1379,60 @@
             events.length = write;
         }
         return byFret;
+    }
+
+    /**
+     * Size reusable visibility buffers for the densest rendered chart window.
+     * This runs only when the arrangement changes. Active sustains and upcoming
+     * onsets are counted separately, then combined so frame-time collectors do
+     * not silently depend on an arbitrary fixed candidate limit.
+     */
+    function hwyTrailVisibilityScratchCapacity(
+        eventsByFret, visibleSeconds, minimumCapacity = 128,
+    ) {
+        const starts = [];
+        const ends = [];
+        if (eventsByFret) {
+            for (let f = 0; f < eventsByFret.length; f++) {
+                const events = eventsByFret[f];
+                if (!events) continue;
+                for (let i = 0; i < events.length; i++) {
+                    const event = events[i];
+                    if (!Number.isFinite(event?.t)) continue;
+                    starts.push(event.t);
+                    ends.push(Number.isFinite(event.end)
+                        ? Math.max(event.t, event.end)
+                        : event.t);
+                }
+            }
+        }
+        const minimum = Math.max(1, minimumCapacity | 0);
+        if (starts.length === 0) return minimum;
+        starts.sort((a, b) => a - b);
+        ends.sort((a, b) => a - b);
+
+        const span = Number.isFinite(visibleSeconds)
+            ? Math.max(0, visibleSeconds)
+            : 0;
+        let first = 0;
+        let maxUpcoming = 0;
+        for (let last = 0; last < starts.length; last++) {
+            while (starts[last] - starts[first] > span + 1e-6) first++;
+            maxUpcoming = Math.max(maxUpcoming, last - first + 1);
+        }
+
+        let endIndex = 0;
+        let active = 0;
+        let maxActive = 0;
+        for (let i = 0; i < starts.length; i++) {
+            while (endIndex < ends.length && ends[endIndex] < starts[i] - 1e-6) {
+                active--;
+                endIndex++;
+            }
+            active++;
+            maxActive = Math.max(maxActive, active);
+        }
+        return Math.max(minimum, maxUpcoming + maxActive + MAX_RENDER_STRINGS);
     }
 
     const TRAIL_OCCLUSION_GEM = 1;
@@ -1556,6 +1630,56 @@
         return count;
     }
 
+    /**
+     * Farthest lower-string target extent for mode-3 whole-ribbon stability.
+     * This query intentionally returns one scalar instead of materializing the
+     * complete future relationship set. Visible relationships are still
+     * collected separately, so distant chart events cannot exhaust a frame
+     * scratch buffer or make taper sampling scan the full remaining sustain.
+     */
+    function hwyTrailOcclusionFarthestTargetTime(
+        indexByString, sourceT, sourceEnd, sourceString, inverted,
+    ) {
+        if (!indexByString || !Number.isFinite(sourceT)
+            || !Number.isFinite(sourceEnd) || sourceEnd <= sourceT + 0.01) {
+            return -Infinity;
+        }
+        let farthest = -Infinity;
+        for (let targetString = 0; targetString < indexByString.length; targetString++) {
+            const visuallyBelow = inverted
+                ? targetString < sourceString
+                : targetString > sourceString;
+            if (!visuallyBelow) continue;
+            const bucket = indexByString[targetString];
+            const events = bucket?.events;
+            const prefixMaxEnd = bucket?.prefixMaxEnd;
+            if (!events || events.length === 0) continue;
+
+            let lo = 0, hi = events.length;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (events[mid].t < sourceEnd - 1e-6) lo = mid + 1;
+                else hi = mid;
+            }
+            const scanEnd = lo;
+            lo = 0; hi = scanEnd;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (prefixMaxEnd[mid] <= sourceT + 1e-6) lo = mid + 1;
+                else hi = mid;
+            }
+            for (let i = lo; i < scanEnd; i++) {
+                const event = events[i];
+                if (event.end <= sourceT + 1e-6) continue;
+                farthest = Math.max(
+                    farthest,
+                    Math.min(sourceEnd, Math.max(event.t, event.end)),
+                );
+            }
+        }
+        return farthest;
+    }
+
     /** Combine two independently collected target sets without concatenating. */
     function hwyMergeTrailPriorityWorldZ(
         fallbackWorldZ,
@@ -1594,6 +1718,8 @@
         eventMatches = null,
         onMatch = null,
         outTargetTrailEnds = null,
+        outPriorityTimes = null,
+        priorityIndex = 0,
     ) {
         const cfg = settings || TRAIL_YIELD_DEFAULTS;
         const capacity = Math.min(
@@ -1602,7 +1728,8 @@
             outTargetTrailEnds ? outTargetTrailEnds.length : Infinity,
         );
         let count = Math.max(0, Math.min(capacity, initialCount | 0));
-        if (!events || events.length === 0 || count >= capacity) return count;
+        if (!events || events.length === 0
+            || (count >= capacity && !outPriorityTimes)) return count;
         const tLo = sourceT + NEXT_ON_STRING_T_EPS;
         let lo = 0, hi = events.length;
         while (lo < hi) {
@@ -1618,20 +1745,16 @@
             ? Math.max(0, cfg.endLeadTime)
             : TRAIL_YIELD_DEFAULTS.endLeadTime;
         // Geometry only needs endpoint candidates once the endpoint enters the
-        // rendered slice. Mode 3 also supplies target-trail endpoints for whole-
-        // ribbon ordering, however, and that order must be stable from the first
-        // visible frame: discovering a future attached trail later would reorder
-        // the complete transparent ribbon and make it pop in. The fixed output
-        // capacity keeps the early priority scan bounded; taper geometry remains
-        // local because hwyTrailYieldAmountAt still samples the real chart times.
-        const priorityNeedsFullSource = !!outTargetTrailEnds;
-        const endpointScanEnd = priorityNeedsFullSource ? susEnd : finiteVisibleEnd;
-        const endIsVisible = priorityNeedsFullSource
-            || finiteVisibleEnd >= susEnd - 1e-6;
-        const tHi = Math.min(
+        // rendered slice. Mode 3 can additionally retain one farthest matched
+        // target time without materializing all future taper windows.
+        const localEndIsVisible = finiteVisibleEnd >= susEnd - 1e-6;
+        const localTHi = Math.min(
             susEnd + endpointLookahead,
-            endpointScanEnd + (endIsVisible ? endpointLookahead : 0),
+            finiteVisibleEnd + (localEndIsVisible ? endpointLookahead : 0),
         );
+        const tHi = outPriorityTimes
+            ? susEnd + endpointLookahead
+            : localTHi;
         for (let i = lo; i < events.length; i++) {
             const event = events[i];
             if (event.t > tHi) break;
@@ -1648,6 +1771,15 @@
             if (eventMatches) {
                 if (!eventMatches(event, visuallyBelow)) continue;
             } else if (!visuallyBelow) continue;
+            if (outPriorityTimes) {
+                outPriorityTimes[priorityIndex] = Math.max(
+                    Number.isFinite(outPriorityTimes[priorityIndex])
+                        ? outPriorityTimes[priorityIndex]
+                        : -Infinity,
+                    targetTrailEnd,
+                );
+            }
+            if (event.t > localTHi + 1e-6) continue;
             // One notch reveals every member of a same-time chord wave. Scan
             // the tiny fixed output because open-note rails append candidates
             // from more than one fret bucket and those buckets interleave.
@@ -1668,7 +1800,13 @@
                 if (onMatch) onMatch(event);
                 continue;
             }
-            if (count >= capacity) break;
+            if (count >= capacity) {
+                // A full geometry buffer must not truncate the independent
+                // mode-3 priority query. Keep scanning matched future events,
+                // but do not materialize another local taper window.
+                if (outPriorityTimes) continue;
+                break;
+            }
             outStarts[count] = event.t;
             outEnds[count] = yieldEnd;
             if (outTargetTrailEnds) {
@@ -1788,14 +1926,9 @@
     // Shorter, flatter notes (joel style)
     const NW = 5 * K, NH = 3 * K, ND = 0.25 * K;
     // Sustain-trail X offset for fretted notes. Module-scoped + frozen
-    // so the hot path's `offsets.length` loop sees a stable singleton
-    // reference. The standalone-open-string path builds a fresh pair
-    // each call because its offset magnitude depends on the per-note
-    // `openWScale` (set in drawNote at line 7367 from the open-string
-    // body's lane width), so a module-scoped constant can't capture
-    // it; the allocation is the same one the prior code did via
-    // `const baseOff = NW * 3 * openWScale` plus the inline `[-, +]`
-    // literal in the chord-member branch — just consolidated.
+    // so the hot path's `offsets.length` loop sees a stable singleton.
+    // Standalone open strings use a per-renderer two-value scratch pair
+    // because their offset magnitude depends on the note's lane width.
     const SINGLE_SUS_OFFSETS = Object.freeze([0]);
     const BEND_HALFSTEP_WORLD_Y = S_GAP * 0.8;
     const VIBRATO_HALF_WAVE_S = 0.08;
@@ -5471,40 +5604,48 @@
         // order converge before Three.js draws, without chart scans or frame
         // allocations. Non-qualifying gems never enter this path.
         let _trailYieldFrameId = 0;
-        const TRAIL_YIELD_TARGET_CAPACITY = MAX_RENDER_STRINGS * 16;
-        const _trailYieldStartsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
-        const _trailYieldEndsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
-        const _trailYieldTargetTrailEndsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
+        const TRAIL_VISIBILITY_MIN_SCRATCH_CAPACITY = MAX_RENDER_STRINGS * 16;
+        let _trailVisibilityScratchCapacity = TRAIL_VISIBILITY_MIN_SCRATCH_CAPACITY;
+        let _trailYieldStartsScratch = new Float64Array(_trailVisibilityScratchCapacity);
+        let _trailYieldEndsScratch = new Float64Array(_trailVisibilityScratchCapacity);
+        let _trailYieldTargetTrailEndsScratch = new Float64Array(
+            _trailVisibilityScratchCapacity,
+        );
         // Standalone open notes render two separated rails. Keep independent
         // windows so only the rail physically covering a later gem yields.
-        const _trailYieldOpenStartsScratch = [
-            new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
-            new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
+        let _trailYieldOpenStartsScratch = [
+            new Float64Array(_trailVisibilityScratchCapacity),
+            new Float64Array(_trailVisibilityScratchCapacity),
         ];
-        const _trailYieldOpenEndsScratch = [
-            new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
-            new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
+        let _trailYieldOpenEndsScratch = [
+            new Float64Array(_trailVisibilityScratchCapacity),
+            new Float64Array(_trailVisibilityScratchCapacity),
         ];
-        const _trailYieldOpenTargetTrailEndsScratch = [
-            new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
-            new Float64Array(TRAIL_YIELD_TARGET_CAPACITY),
+        let _trailYieldOpenTargetTrailEndsScratch = [
+            new Float64Array(_trailVisibilityScratchCapacity),
+            new Float64Array(_trailVisibilityScratchCapacity),
         ];
-        const _trailYieldOpenCountsScratch = new Uint8Array(2);
+        // Mode 3 needs only the farthest compatible target extent, not one
+        // taper record per target outside the visible geometry slice.
+        const _trailYieldPriorityTimesScratch = new Float64Array(1);
+        const _trailYieldOpenPriorityTimesScratch = new Float64Array(2);
+        const _trailYieldOpenCountsScratch = new Uint32Array(2);
+        const _trailYieldOpenOffsetsScratch = new Float64Array(2);
         // Reused event references let a covering strand constrain only the
         // attached trails it actually matches. No geometry split, new draw
         // call, or per-frame allocation is needed.
-        const _trailYieldMatchedEventsScratch = new Array(TRAIL_YIELD_TARGET_CAPACITY);
-        const _trailYieldOpenMatchedEventsScratch = [
-            new Array(TRAIL_YIELD_TARGET_CAPACITY),
-            new Array(TRAIL_YIELD_TARGET_CAPACITY),
+        let _trailYieldMatchedEventsScratch = new Array(_trailVisibilityScratchCapacity);
+        let _trailYieldOpenMatchedEventsScratch = [
+            new Array(_trailVisibilityScratchCapacity),
+            new Array(_trailVisibilityScratchCapacity),
         ];
-        const _trailYieldOpenMatchedCountsScratch = new Uint8Array(2);
+        const _trailYieldOpenMatchedCountsScratch = new Uint32Array(2);
         // Cross-fret ordering uses the same bounded candidate budget but keeps
         // its own outputs so footprint/narrowing windows remain untouched.
-        const _trailOcclusionEventsScratch = new Array(TRAIL_YIELD_TARGET_CAPACITY);
-        const _trailOcclusionFlagsScratch = new Uint8Array(TRAIL_YIELD_TARGET_CAPACITY);
-        const _trailOcclusionStartsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
-        const _trailOcclusionEndsScratch = new Float64Array(TRAIL_YIELD_TARGET_CAPACITY);
+        let _trailOcclusionEventsScratch = new Array(_trailVisibilityScratchCapacity);
+        let _trailOcclusionFlagsScratch = new Uint8Array(_trailVisibilityScratchCapacity);
+        let _trailOcclusionStartsScratch = new Float64Array(_trailVisibilityScratchCapacity);
+        let _trailOcclusionEndsScratch = new Float64Array(_trailVisibilityScratchCapacity);
         // A transparent sustain is sorted as one mesh even though it spans a
         // large depth interval. Record only gems and strands actually emitted
         // this frame, then repair their ordinary order in the same finalizer as
@@ -5514,11 +5655,88 @@
         const _trailOrderStrands = [];
         let _trailOrderGemCount = 0;
         let _trailOrderStrandCount = 0;
+        // The ordinary transparent-mesh repair only compares a strand with
+        // gems in its depth span. Reusable depth buckets avoid the previous
+        // all-strands × all-gems scan without changing any ordering decision.
+        const TRAIL_ORDER_DEPTH_BUCKET_COUNT = 32;
+        const _trailOrderGemBuckets = Array.from(
+            { length: TRAIL_ORDER_DEPTH_BUCKET_COUNT }, () => [],
+        );
+        const _trailOrderGemBucketCounts = new Uint32Array(
+            TRAIL_ORDER_DEPTH_BUCKET_COUNT,
+        );
         const _trailOrderBoundsScratch = new Float64Array(4);
         // Sources with ordering relationships are finalized top-string first
         // after every drawNote/chord loop has registered its pooled meshes.
         const _trailOcclusionSources = [];
         let _trailOcclusionSourceCount = 0;
+        // Effective foreground policy for this frame. Physical ordering does
+        // not depend on it; only the optional mode-2/3 promotions do.
+        let _trailVisibilityFrontMask = 0;
+
+        function trailVisibilityResizeScratch(capacity) {
+            const nextCapacity = Math.max(
+                TRAIL_VISIBILITY_MIN_SCRATCH_CAPACITY,
+                capacity | 0,
+            );
+            if (nextCapacity === _trailVisibilityScratchCapacity) return;
+            _trailVisibilityScratchCapacity = nextCapacity;
+            _trailYieldStartsScratch = new Float64Array(nextCapacity);
+            _trailYieldEndsScratch = new Float64Array(nextCapacity);
+            _trailYieldTargetTrailEndsScratch = new Float64Array(nextCapacity);
+            _trailYieldOpenStartsScratch = [
+                new Float64Array(nextCapacity), new Float64Array(nextCapacity),
+            ];
+            _trailYieldOpenEndsScratch = [
+                new Float64Array(nextCapacity), new Float64Array(nextCapacity),
+            ];
+            _trailYieldOpenTargetTrailEndsScratch = [
+                new Float64Array(nextCapacity), new Float64Array(nextCapacity),
+            ];
+            _trailYieldMatchedEventsScratch = new Array(nextCapacity);
+            _trailYieldOpenMatchedEventsScratch = [
+                new Array(nextCapacity), new Array(nextCapacity),
+            ];
+            _trailOcclusionEventsScratch = new Array(nextCapacity);
+            _trailOcclusionFlagsScratch = new Uint8Array(nextCapacity);
+            _trailOcclusionStartsScratch = new Float64Array(nextCapacity);
+            _trailOcclusionEndsScratch = new Float64Array(nextCapacity);
+        }
+
+        /**
+         * Drop chart-owned references only at arrangement boundaries. The
+         * steady frame path continues to reuse its high-water records and
+         * fixed scratch buffers without allocating or clearing them.
+         */
+        function trailVisibilityReleaseChartReferences() {
+            _trailYieldEventsByFret = [];
+            _trailOcclusionEventsByString = [];
+            _trailYieldNotesRef = null;
+            _trailYieldChordsRef = null;
+            _trailYieldNStr = 0;
+            _trailYieldMatchedEventsScratch.fill(null);
+            _trailYieldOpenMatchedEventsScratch[0].fill(null);
+            _trailYieldOpenMatchedEventsScratch[1].fill(null);
+            _trailOcclusionEventsScratch.fill(null);
+            _trailOrderGems.length = 0;
+            _trailOrderStrands.length = 0;
+            for (let i = 0; i < _trailOrderGemBuckets.length; i++) {
+                _trailOrderGemBuckets[i].length = 0;
+            }
+            _trailOrderGemBucketCounts.fill(0);
+            _trailOcclusionSources.length = 0;
+            _trailOrderGemCount = 0;
+            _trailOrderStrandCount = 0;
+            _trailOcclusionSourceCount = 0;
+        }
+
+        function trailOrderDepthBucket(worldZ) {
+            const depth = Math.max(0, Math.min(AHEAD * TS, -worldZ));
+            return Math.min(
+                TRAIL_ORDER_DEPTH_BUCKET_COUNT - 1,
+                Math.floor(depth / (AHEAD * TS) * TRAIL_ORDER_DEPTH_BUCKET_COUNT),
+            );
+        }
 
         let _laneRailFlagsRefHs = null;
         let _laneRailFlagsRefTpl = null;
@@ -10945,10 +11163,7 @@
             // recompute or string-6+ template notes stay dropped from synth
             // chords after the count grows.
             _mergeCacheResult = null;
-            _trailYieldNotesRef = null;
-            _trailYieldChordsRef = null;
-            _trailYieldNStr = 0;
-            _trailOcclusionEventsByString = [];
+            trailVisibilityReleaseChartReferences();
         }
         function mergeChordShape(ch, chordNotes, templates) {
             if (_chordShapeCache.has(ch)) return _chordShapeCache.get(ch);
@@ -11696,9 +11911,15 @@
         function update(bundle) {
             pbBeg(0);
             _trailYieldFrameId++;
+            _trailVisibilityFrontMask = hwyTrailVisibilityFrontMask(
+                trailYieldSettings.enabled,
+                trailYieldSettings.gemInFront,
+                trailYieldSettings.includeTrails,
+            );
             _trailOcclusionSourceCount = 0;
             _trailOrderGemCount = 0;
             _trailOrderStrandCount = 0;
+            _trailOrderGemBucketCounts.fill(0);
             // [verdict glow] Apply the level-driven verdict brightness captured
             // last frame (1-frame lag is imperceptible), then reset for this
             // frame's capture in the gem path below. vg = 1 when no provider
@@ -11993,10 +12214,20 @@
             if (_trailYieldNotesRef !== notes
                 || _trailYieldChordsRef !== chords
                 || _trailYieldNStr !== nStr) {
+                trailVisibilityReleaseChartReferences();
                 _trailYieldEventsByFret = hwyBuildTrailYieldEvents(notes, chords, nStr);
                 _trailOcclusionEventsByString = hwyBuildTrailOcclusionIndex(
                     _trailYieldEventsByFret, nStr,
                 );
+                trailVisibilityResizeScratch(hwyTrailVisibilityScratchCapacity(
+                    _trailYieldEventsByFret,
+                    AHEAD + Math.max(
+                        1,
+                        trailYieldSettings.leadTime,
+                        trailYieldSettings.endLeadTime,
+                    ),
+                    TRAIL_VISIBILITY_MIN_SCRATCH_CAPACITY,
+                ));
                 _trailYieldNotesRef = notes;
                 _trailYieldChordsRef = chords;
                 _trailYieldNStr = nStr;
@@ -14876,14 +15107,26 @@
          * for slides, bends, vibrato and tremolo — smooth contour vs stacked
          * BoxGeometry segments.
          */
-        function slideRibbonUpdatePositions(geom, strandBaseX, tw, th, y, sliceDur, susStart, now, n, slideSt, yieldStarts = null, yieldEnds = null, yieldCount = 0, trailEnd = Infinity, yieldSettings = TRAIL_YIELD_DEFAULTS) {
-            const pa = geom.attributes.position.array;
+        function slideRibbonUpdatePair(
+            outlineGeom, bodyGeom, strandBaseX,
+            outlineTw, outlineTh, bodyTw, bodyTh,
+            y, sliceDur, susStart, now, n, slideSt,
+            yieldStarts = null, yieldEnds = null, yieldCount = 0,
+            trailEnd = Infinity, yieldSettings = TRAIL_YIELD_DEFAULTS,
+        ) {
+            const outlinePositions = outlineGeom.attributes.position.array;
+            const bodyPositions = bodyGeom.attributes.position.array;
             const S = SLIDE_RIBBON_SAMPLES;
             let v = 0;
             for (let k = 0; k <= S; k++) {
                 const Tk = susStart + (k / S) * sliceDur;
                 const zk = dZ(Tk - now);
-                const xc = sustainTrailCenterXAt(n, strandBaseX, Tk, slideSt, tw);
+                const outlineX = sustainTrailCenterXAt(
+                    n, strandBaseX, Tk, slideSt, outlineTw,
+                );
+                const bodyX = sustainTrailCenterXAt(
+                    n, strandBaseX, Tk, slideSt, bodyTw,
+                );
                 const yc = y + techniqueYOffsetWorld(n, Tk);
                 const yieldAmount = yieldCount > 0
                     ? hwyTrailYieldAmountAt(
@@ -14891,14 +15134,33 @@
                     )
                     : 0;
                 const yieldScale = 1 - (1 - yieldSettings.minScale) * yieldAmount;
-                const halfW = tw * yieldScale * 0.5;
-                const halfH = th * yieldScale * 0.5;
-                pa[v++] = xc - halfW; pa[v++] = yc - halfH; pa[v++] = zk;
-                pa[v++] = xc + halfW; pa[v++] = yc - halfH; pa[v++] = zk;
-                pa[v++] = xc + halfW; pa[v++] = yc + halfH; pa[v++] = zk;
-                pa[v++] = xc - halfW; pa[v++] = yc + halfH; pa[v++] = zk;
+                const outlineHalfW = outlineTw * yieldScale * 0.5;
+                const outlineHalfH = outlineTh * yieldScale * 0.5;
+                const bodyHalfW = bodyTw * yieldScale * 0.5;
+                const bodyHalfH = bodyTh * yieldScale * 0.5;
+                outlinePositions[v] = outlineX - outlineHalfW;
+                bodyPositions[v++] = bodyX - bodyHalfW;
+                outlinePositions[v] = yc - outlineHalfH;
+                bodyPositions[v++] = yc - bodyHalfH;
+                outlinePositions[v] = bodyPositions[v++] = zk;
+                outlinePositions[v] = outlineX + outlineHalfW;
+                bodyPositions[v++] = bodyX + bodyHalfW;
+                outlinePositions[v] = yc - outlineHalfH;
+                bodyPositions[v++] = yc - bodyHalfH;
+                outlinePositions[v] = bodyPositions[v++] = zk;
+                outlinePositions[v] = outlineX + outlineHalfW;
+                bodyPositions[v++] = bodyX + bodyHalfW;
+                outlinePositions[v] = yc + outlineHalfH;
+                bodyPositions[v++] = yc + bodyHalfH;
+                outlinePositions[v] = bodyPositions[v++] = zk;
+                outlinePositions[v] = outlineX - outlineHalfW;
+                bodyPositions[v++] = bodyX - bodyHalfW;
+                outlinePositions[v] = yc + outlineHalfH;
+                bodyPositions[v++] = yc + bodyHalfH;
+                outlinePositions[v] = bodyPositions[v++] = zk;
             }
-            geom.attributes.position.needsUpdate = true;
+            outlineGeom.attributes.position.needsUpdate = true;
+            bodyGeom.attributes.position.needsUpdate = true;
             // Normals are pre-baked at geometry creation (see mkSlideRibbonGeo);
             // axis-aligned cross-section means they don't need per-frame recompute.
         }
@@ -15192,6 +15454,28 @@
                 if (event.s === n.s) return event;
             }
             return null;
+        }
+
+        /** Cache the chart-static mode-3 depth extent for each orientation. */
+        function trailVisibilityMode3PriorityTime(event, sourceEnd) {
+            if (!event || !Number.isFinite(sourceEnd)) return -Infinity;
+            const endKey = _invertedCached
+                ? '_trailVisibilityPriorityEndInverted'
+                : '_trailVisibilityPriorityEndNormal';
+            const timeKey = _invertedCached
+                ? '_trailVisibilityPriorityTimeInverted'
+                : '_trailVisibilityPriorityTimeNormal';
+            if (event[endKey] !== sourceEnd) {
+                event[endKey] = sourceEnd;
+                event[timeKey] = hwyTrailOcclusionFarthestTargetTime(
+                    _trailOcclusionEventsByString,
+                    event.t,
+                    sourceEnd,
+                    event.s,
+                    _invertedCached,
+                );
+            }
+            return event[timeKey];
         }
 
         function trailYieldApplyBehindLayerRecord(
@@ -15540,6 +15824,14 @@
             gem.event = event;
             gem.outline = outline;
             gem.core = core;
+            const nearBucket = trailOrderDepthBucket(gem.z + gem.zHalf);
+            const farBucket = trailOrderDepthBucket(gem.z - gem.zHalf);
+            for (let bucketIndex = Math.min(nearBucket, farBucket);
+                bucketIndex <= Math.max(nearBucket, farBucket);
+                bucketIndex++) {
+                const bucketCount = _trailOrderGemBucketCounts[bucketIndex]++;
+                _trailOrderGemBuckets[bucketIndex][bucketCount] = gem;
+            }
         }
 
         function trailOrderRegisterStrand(
@@ -15643,23 +15935,31 @@
                 const strand = _trailOrderStrands[trailIndex];
                 const initialOrder = strand.outline.renderOrder;
                 let order = initialOrder;
-                for (let gemIndex = 0; gemIndex < _trailOrderGemCount; gemIndex++) {
-                    const gem = _trailOrderGems[gemIndex];
-                    if (gem.z + gem.zHalf < strand.farZ
-                        || gem.z - gem.zHalf > strand.nearZ) continue;
-                    // If the complete trail already paints first, this gem is
-                    // stable and must not pull the mesh into a farther bucket.
-                    if (order + 0.0005 < gem.outline.renderOrder) continue;
+                const firstBucket = trailOrderDepthBucket(strand.nearZ);
+                const lastBucket = trailOrderDepthBucket(strand.farZ);
+                for (let bucketIndex = Math.min(firstBucket, lastBucket);
+                    bucketIndex <= Math.max(firstBucket, lastBucket);
+                    bucketIndex++) {
+                    const bucket = _trailOrderGemBuckets[bucketIndex];
+                    const bucketCount = _trailOrderGemBucketCounts[bucketIndex];
+                    for (let gemIndex = 0; gemIndex < bucketCount; gemIndex++) {
+                        const gem = bucket[gemIndex];
+                        if (gem.z + gem.zHalf < strand.farZ
+                            || gem.z - gem.zHalf > strand.nearZ) continue;
+                        // If the complete trail already paints first, this gem is
+                        // stable and must not pull the mesh into a farther bucket.
+                        if (order + 0.0005 < gem.outline.renderOrder) continue;
 
-                    trailOrderStrandBoundsAtZ(strand, gem.z, bounds);
-                    if (!hwyTrailFootprintCanCoverGem(
-                        gem.string === strand.string,
-                        bounds[0], bounds[2], bounds[1], bounds[3],
-                        gem.x, gem.width, gem.y, gem.height,
-                    )) continue;
-                    order = hwyTrailBehindGemOrder(
-                        order, gem.outline.renderOrder,
-                    );
+                        trailOrderStrandBoundsAtZ(strand, gem.z, bounds);
+                        if (!hwyTrailFootprintCanCoverGem(
+                            gem.string === strand.string,
+                            bounds[0], bounds[2], bounds[1], bounds[3],
+                            gem.x, gem.width, gem.y, gem.height,
+                        )) continue;
+                        order = hwyTrailBehindGemOrder(
+                            order, gem.outline.renderOrder,
+                        );
+                    }
                 }
                 if (order < initialOrder - 1e-9) {
                     strand.outline.renderOrder = order;
@@ -15672,11 +15972,7 @@
         function trailOcclusionFinalizeFrame() {
             trailOrderResolveUpcomingGems();
             if (_trailOcclusionSourceCount <= 0) return;
-            const frontMask = hwyTrailVisibilityFrontMask(
-                trailYieldSettings.enabled,
-                trailYieldSettings.gemInFront,
-                trailYieldSettings.includeTrails,
-            );
+            const frontMask = _trailVisibilityFrontMask;
             // Relationships are a DAG ordered by visual string height. Resolve
             // top-to-bottom so a middle trail constrained by an upper trail has
             // its final order before it constrains the next lower trail/gem.
@@ -15802,9 +16098,7 @@
                 _trailOcclusionEventsScratch.length,
                 _trailOcclusionFlagsScratch.length,
             );
-            for (let i = 0;
-                i < candidateCount && count < capacity;
-                i++) {
+            for (let i = 0; i < candidateCount; i++) {
                 if (!(_trailOcclusionFlagsScratch[i] & TRAIL_OCCLUSION_TRAIL)) continue;
                 const target = _trailOcclusionEventsScratch[i];
                 if (!target || target.end <= target.t + 0.01) continue;
@@ -15824,9 +16118,7 @@
                 const sampleStep = hasTremolo
                     ? Math.min(ribbonStep, TREMOLO_BUMP_S / 8)
                     : ribbonStep;
-                for (let strand = 0;
-                    strand < targetStrandCount && count < capacity;
-                    strand++) {
+                for (let strand = 0; strand < targetStrandCount; strand++) {
                     ctx.crossingTargetBaseX = _trailCrossingTargetBases[strand];
                     if (!sourceMovesX && !targetMovesX) {
                         if (trailCrossingFootprintsOverlapAt(overlapStart)) {
@@ -15891,14 +16183,12 @@
         function collectTrailYieldTargetsForStrand(
             n, now, susEnd, visibleEnd, starts, ends, targetTrailEnds,
             matchedEvents, strandBaseX, occlusionCount,
+            priorityTimes = null, priorityIndex = 0,
         ) {
             const ctx = _trailYieldMatchContext;
-            const frontMask = hwyTrailVisibilityFrontMask(
-                trailYieldSettings.enabled,
-                trailYieldSettings.gemInFront,
-                trailYieldSettings.includeTrails,
+            const includeTargetTrails = !!(
+                _trailVisibilityFrontMask & TRAIL_OCCLUSION_TRAIL
             );
-            const includeTargetTrails = !!(frontMask & TRAIL_OCCLUSION_TRAIL);
             ctx.strandBaseX = strandBaseX;
             ctx.matchedEvents = matchedEvents;
             ctx.matchedEventCount = 0;
@@ -15911,12 +16201,16 @@
             const sweepWidth = Math.abs(slideEndX - strandBaseX)
                 + ctx.trailW + tremoloReach * 2;
             let count = 0;
+            if (priorityTimes) priorityTimes[priorityIndex] = -Infinity;
             // Fret zero is always considered because an open gem spans the
             // active lane; fretted buckets use this cheap conservative sweep.
-            // Mode 3 needs the complete qualifying set for stable whole-ribbon
-            // ordering. Other modes retain the cheaper visible-slice scan.
-            const matchingVisibleEnd = includeTargetTrails ? susEnd : visibleEnd;
-            for (let f = 0; f <= NFRETS && count < starts.length; f++) {
+            // Geometry is always local to the rendered slice. Mode-3 whole-
+            // ribbon stability comes from one separately cached depth extent,
+            // so future targets never inflate this taper-window scan.
+            const matchingVisibleEnd = visibleEnd;
+            for (let f = 0;
+                f <= NFRETS && (count < starts.length || priorityTimes);
+                f++) {
                 if (f > 0 && !trailYieldSweepMayReachFret(
                     sweepCenter, sweepWidth, f,
                 )) continue;
@@ -15927,6 +16221,8 @@
                     trailYieldEventMatchesRenderedFootprint,
                     trailYieldMarkTarget,
                     includeTargetTrails ? targetTrailEnds : null,
+                    priorityTimes,
+                    priorityIndex,
                 );
             }
             const crossingMergeFrom = count;
@@ -16331,16 +16627,11 @@
             // All four visibility modes share one canonical event record.
             // Physical ordering remains active when narrowing is disabled;
             // only the geometry matcher and width sampler are optional.
-            const trailVisibilityFrontMask = hwyTrailVisibilityFrontMask(
-                trailYieldSettings.enabled,
-                trailYieldSettings.gemInFront,
-                trailYieldSettings.includeTrails,
-            );
             const trailYieldGemInFront = !!(
-                trailVisibilityFrontMask & TRAIL_OCCLUSION_GEM
+                _trailVisibilityFrontMask & TRAIL_OCCLUSION_GEM
             );
             const trailYieldIncludeTrails = !!(
-                trailVisibilityFrontMask & TRAIL_OCCLUSION_TRAIL
+                _trailVisibilityFrontMask & TRAIL_OCCLUSION_TRAIL
             );
             const trailYieldTargetEvent = trailYieldEventForNote(n);
 
@@ -16616,22 +16907,27 @@
                         // to 1 when there's no openChordBoxWidth), so
                         // openTrailOff >= NW * 3 * 0.22 = 3.3 * K.
                         // No degenerate-small-offset fallback needed.
-                        const offsets = (n.f === 0)
-                            ? [-(NW * 3 * openWScale), NW * 3 * openWScale]
-                            : SINGLE_SUS_OFFSETS;
+                        let offsets = SINGLE_SUS_OFFSETS;
+                        if (n.f === 0) {
+                            const openTrailOffset = NW * 3 * openWScale;
+                            _trailYieldOpenOffsetsScratch[0] = -openTrailOffset;
+                            _trailYieldOpenOffsetsScratch[1] = openTrailOffset;
+                            offsets = _trailYieldOpenOffsetsScratch;
+                        }
                         let yieldCount = 0;
                         let matchedEventCount = 0;
                         const visibleYieldEnd = susStart + sliceDur;
                         const includeTargetTrails = trailYieldIncludeTrails;
-                        // Mode 3 sorts each transparent ribbon as one mesh. Find
-                        // its complete bounded set of physical trail relations as
-                        // soon as the ribbon appears so renderOrder cannot change
-                        // merely because a future crossing entered the 3 s slice.
-                        // The crossing sampler below still receives
-                        // visibleYieldEnd, so narrowing remains local.
-                        const occlusionVisibleEnd = includeTargetTrails
-                            ? susEnd
-                            : visibleYieldEnd;
+                        // Only visible relationships need mesh-to-mesh edges.
+                        // Mode 3 receives its complete future depth as one
+                        // cached scalar, keeping both ordering and tapering
+                        // stable without retaining every distant event.
+                        let mode3PriorityTime = includeTargetTrails
+                            ? trailVisibilityMode3PriorityTime(
+                                trailYieldTargetEvent, susEnd,
+                            )
+                            : -Infinity;
+                        const occlusionVisibleEnd = visibleYieldEnd;
                         let occlusionCount = 0;
                         if (trailYieldTargetEvent) {
                             occlusionCount = hwyFillTrailOcclusionTargets(
@@ -16663,6 +16959,10 @@
                                         starts, ends, targetTrailEnds, matchedEvents,
                                         xBase + offsets[si],
                                         occlusionCount,
+                                        includeTargetTrails
+                                            ? _trailYieldOpenPriorityTimesScratch
+                                            : null,
+                                        si,
                                     );
                                     _trailYieldOpenCountsScratch[si] = strandCount;
                                     _trailYieldOpenMatchedCountsScratch[si]
@@ -16677,10 +16977,33 @@
                                     _trailYieldMatchedEventsScratch,
                                     xBase,
                                     occlusionCount,
+                                    includeTargetTrails
+                                        ? _trailYieldPriorityTimesScratch
+                                        : null,
                                 );
                                 matchedEventCount = ctx.matchedEventCount;
                             }
                         }
+                        if (includeTargetTrails) {
+                            if (n.f === 0) {
+                                for (let si = 0; si < offsets.length; si++) {
+                                    mode3PriorityTime = Math.max(
+                                        mode3PriorityTime,
+                                        _trailYieldOpenPriorityTimesScratch[si],
+                                    );
+                                }
+                            } else {
+                                mode3PriorityTime = Math.max(
+                                    mode3PriorityTime,
+                                    _trailYieldPriorityTimesScratch[0],
+                                );
+                            }
+                        }
+                        const hasMode3Priority = Number.isFinite(mode3PriorityTime)
+                            && mode3PriorityTime > now + 1e-6;
+                        const mode3PriorityWorldZ = hasMode3Priority
+                            ? Math.min(0, -(mode3PriorityTime - now) * TS)
+                            : null;
                         const ribbonSusTrail = yieldCount > 0 || !!(
                             (slideSt && n.f > 0 && (n.sus || 0) > 1e-4)
                             || (Number(n.bn) > 0)
@@ -16706,9 +17029,12 @@
                                 trailYieldGemInFront, TS,
                                 includeTargetTrails ? _trailOcclusionEndsScratch : null,
                             );
+                            const stablePriorityWorldZ = hasMode3Priority
+                                ? Math.min(priorityWorldZ, mode3PriorityWorldZ)
+                                : priorityWorldZ;
                             const naturalRenderOrder = renderOrderForLayerAtZ(
-                                priorityWorldZ, 'SUSTAIN_TRAIL',
-                            ) + (occlusionCount > 0
+                                stablePriorityWorldZ, 'SUSTAIN_TRAIL',
+                            ) + (occlusionCount > 0 || hasMode3Priority
                                 ? hwyTrailPriorityStringOffset(
                                     n.s, nStr, _invertedCached,
                                     includeTargetTrails,
@@ -16793,8 +17119,12 @@
                                     trailYieldGemInFront,
                                 );
                                 let ribbonRenderOrder = renderOrderForLayerAtZ(
-                                    ribbonOrderZ, 'SUSTAIN_TRAIL',
+                                    hasMode3Priority
+                                        ? Math.min(ribbonOrderZ, mode3PriorityWorldZ)
+                                        : ribbonOrderZ,
+                                    'SUSTAIN_TRAIL',
                                 ) + (strandYieldCount > 0 || occlusionCount > 0
+                                    || hasMode3Priority
                                     ? hwyTrailPriorityStringOffset(
                                         n.s, nStr, _invertedCached,
                                         includeTargetTrails,
@@ -16811,21 +17141,16 @@
                                 olMesh.rotation.set(0, 0, 0);
                                 olMesh.position.set(0, 0, 0);
                                 olMesh.material = _susOlMat;
-                                slideRibbonUpdatePositions(
-                                    olMesh.geometry, strandX,
-                                    tw + 0.4 * K, th + 0.4 * K,
-                                    y, sliceDur, susStart, now, n, slideSt,
-                                    strandYieldStarts, strandYieldEnds, strandYieldCount,
-                                    susEnd, trailYieldSettings,
-                                );
                                 const body = pSusRibbon.get();
                                 body.renderOrder = ribbonRenderOrder + 0.0005;
                                 body.scale.set(1, 1, 1);
                                 body.rotation.set(0, 0, 0);
                                 body.position.set(0, 0, 0);
                                 body.material = _ndState ? mGlow[s] : mSus[s];
-                                slideRibbonUpdatePositions(
-                                    body.geometry, strandX, tw, th, y,
+                                slideRibbonUpdatePair(
+                                    olMesh.geometry, body.geometry, strandX,
+                                    tw + 0.4 * K, th + 0.4 * K,
+                                    tw, th, y,
                                     sliceDur, susStart, now, n, slideSt,
                                     strandYieldStarts, strandYieldEnds, strandYieldCount,
                                     susEnd, trailYieldSettings,
@@ -18052,11 +18377,7 @@
             _slideTargetSet = null;
             _slideTargetNotesRef = null;
             _slideTargetChordsRef = null;
-            _trailYieldEventsByFret = [];
-            _trailOcclusionEventsByString = [];
-            _trailYieldNotesRef = null;
-            _trailYieldChordsRef = null;
-            _trailYieldNStr = 0;
+            trailVisibilityReleaseChartReferences();
         }
 
         function canvasSize(canvas) {

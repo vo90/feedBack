@@ -86,7 +86,7 @@ test('ordinary and physical corrections share one finalizer in every mode', () =
     const finalizer = extractFn('trailOcclusionFinalizeFrame');
     const baselineCall = finalizer.indexOf('trailOrderResolveUpcomingGems()');
     const sourceReturn = finalizer.indexOf('_trailOcclusionSourceCount <= 0');
-    const frontMask = finalizer.indexOf('hwyTrailVisibilityFrontMask(');
+    const frontMask = finalizer.indexOf('_trailVisibilityFrontMask');
     assert.ok(baselineCall >= 0, 'the shared finalizer must run ordinary ordering');
     assert.ok(
         baselineCall < sourceReturn && sourceReturn < frontMask,
@@ -147,7 +147,7 @@ test('only emitted upcoming gems and visible sustain strands enter the resolver'
     );
     assert.match(
         source,
-        /slideRibbonUpdatePositions\(\s*body\.geometry[\s\S]{0,600}?trailOrderRegisterStrand\(\s*olMesh, body/,
+        /slideRibbonUpdatePair\(\s*olMesh\.geometry, body\.geometry[\s\S]{0,600}?trailOrderRegisterStrand\(\s*olMesh, body/,
         'slides, bends, vibrato, and tremolo ribbons use the same resolver',
     );
 });
@@ -162,6 +162,19 @@ test('the shared resolver is allocation-free and changes ordering only', () => {
     assert.doesNotMatch(resolver, /\.scale\.|\.position\.|\.material\s*=|\.geometry\s*=/);
 });
 
+test('ordinary ordering uses reusable depth buckets instead of an all-pairs scan', () => {
+    const resolver = extractFn('trailOrderResolveUpcomingGems');
+    assert.match(source, /const\s+TRAIL_ORDER_DEPTH_BUCKET_COUNT\s*=\s*32/);
+    assert.match(source, /_trailOrderGemBucketCounts\.fill\(0\)/);
+    assert.match(resolver, /trailOrderDepthBucket\(strand\.nearZ\)/);
+    assert.match(resolver, /_trailOrderGemBuckets\[bucketIndex\]/);
+    assert.doesNotMatch(
+        resolver,
+        /gemIndex\s*<\s*_trailOrderGemCount/,
+        'each strand should visit only gem buckets in its visible depth span',
+    );
+});
+
 test('mode-0 physical collection and finalization stay allocation-free per frame', () => {
     const collector = extractFn('hwyFillTrailOcclusionTargets');
     const finalizer = extractFn('trailOcclusionFinalizeFrame');
@@ -171,7 +184,7 @@ test('mode-0 physical collection and finalization stay allocation-free per frame
     assert.doesNotMatch(finalizer, allocationPattern);
     assert.match(
         source,
-        /const\s+_trailOcclusionEventsScratch\s*=\s*new\s+Array\(/,
+        /let\s+_trailOcclusionEventsScratch\s*=\s*new\s+Array\(/,
         'the collector must reuse scratch storage allocated outside the frame loop',
     );
 });
@@ -183,11 +196,27 @@ test('normal and inverted lower-note modes keep their existing physical scope', 
     );
     assert.match(
         source,
-        /const\s+frontMask\s*=\s*hwyTrailVisibilityFrontMask\(\s*trailYieldSettings\.enabled,\s*trailYieldSettings\.gemInFront,\s*trailYieldSettings\.includeTrails/,
+        /const\s+frontMask\s*=\s*_trailVisibilityFrontMask/,
     );
     assert.match(
         source,
         /const\s+sourceRank\s*=\s*_invertedCached\s*\?\s*nStr\s*-\s*1\s*-\s*source\.s\s*:\s*source\.s/,
         'the feature override must preserve its acyclic visual string order in both layouts',
+    );
+});
+
+test('chart changes and teardown release trail-visibility high-water references', () => {
+    const release = extractFn('trailVisibilityReleaseChartReferences');
+    assert.match(release, /_trailYieldMatchedEventsScratch\.fill\(null\)/);
+    assert.match(release, /_trailOcclusionEventsScratch\.fill\(null\)/);
+    assert.match(release, /_trailOrderGems\.length\s*=\s*0/);
+    assert.match(release, /_trailOrderStrands\.length\s*=\s*0/);
+    assert.match(release, /_trailOcclusionSources\.length\s*=\s*0/);
+
+    const calls = source.match(/trailVisibilityReleaseChartReferences\(\)/g) || [];
+    assert.ok(calls.length >= 3, 'definition, arrangement rebuild, and teardown must all exist');
+    assert.match(
+        source,
+        /trailVisibilityReleaseChartReferences\(\);\s*_trailYieldEventsByFret\s*=\s*hwyBuildTrailYieldEvents/,
     );
 });

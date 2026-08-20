@@ -12,17 +12,17 @@ const SCREEN_JS = path.join(__dirname, '..', '..', 'plugins', 'highway_3d', 'scr
 
 function loadHelpers() {
     const src = fs.readFileSync(SCREEN_JS, 'utf8');
-    const start = src.indexOf('    const TRAIL_YIELD_DEFAULTS');
+    const start = src.indexOf('    function hwyFootprintsOverlap1D(');
     const end = src.indexOf('    /** Fixed pre-impact ramp window', start);
     assert.notEqual(start, -1, 'trail-yield helper block start not found');
     assert.notEqual(end, -1, 'trail-yield helper block end not found');
     const block = src.slice(start, end);
     return vm.runInNewContext(
-        'const NFRETS = 24; const NEXT_ON_STRING_T_EPS = 0.06;\n'
+        'const NFRETS = 24; const MAX_RENDER_STRINGS = 8;\n'
         + block
         + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyFillTrailCrossingWindows, hwyTrailOverlapsGemX, hwyTrailYieldAmountAt,'
         + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailPriorityStringOffset, hwyTrailYieldGemLayer,'
-        + ' hwyTrailTargetBehindOrder, hwyBuildTrailOcclusionIndex, hwyFillTrailOcclusionTargets, hwyMergeTrailPriorityWorldZ, hwyTrailOcclusionFrontMask, hwyTrailVisibilityFrontMask, hwyTrailOcclusionFlagsForPair, hwyTrailOcclusionTrailShouldStayBehind, hwyTrailOcclusionTrailShouldMoveInFront,'
+        + ' hwyTrailTargetBehindOrder, hwyBuildTrailOcclusionIndex, hwyFillTrailOcclusionTargets, hwyTrailOcclusionFarthestTargetTime, hwyTrailVisibilityScratchCapacity, hwyMergeTrailPriorityWorldZ, hwyTrailOcclusionFrontMask, hwyTrailVisibilityFrontMask, hwyTrailOcclusionFlagsForPair, hwyTrailOcclusionTrailShouldStayBehind, hwyTrailOcclusionTrailShouldMoveInFront,'
         + ' TRAIL_OCCLUSION_GEM, TRAIL_OCCLUSION_TRAIL, TRAIL_OCCLUSION_TRAIL_FRONT, TRAIL_YIELD_DEFAULTS })',
     );
 }
@@ -283,6 +283,36 @@ test('physical-order index reuses canonical events and bounds older active trail
     assert.deepEqual(Array.from(byString[2].prefixMaxEnd), [9, 9]);
 });
 
+test('scratch capacity follows chart density instead of a fixed 128-target ceiling', () => {
+    const dense = [];
+    for (let i = 0; i < 220; i++) {
+        dense.push({ t: i * 0.005, s: i % 6, f: 7, sus: 0.4 });
+    }
+    const byFret = helpers.hwyBuildTrailYieldEvents(dense, [], 6);
+    const capacity = helpers.hwyTrailVisibilityScratchCapacity(byFret, 3.5, 128);
+    assert.ok(capacity > 128, 'dense authored windows must grow chart-owned scratch storage');
+    assert.ok(capacity >= 220, 'the densest visible onset wave must fit without truncation');
+});
+
+test('mode-3 future priority is one scalar and is independent of output capacity', () => {
+    const source = { t: 0, s: 1, f: 7, sus: 20 };
+    const targets = [];
+    for (let i = 0; i < 180; i++) {
+        targets.push({ t: 0.1 + i * 0.05, s: 2, f: 7, sus: 4 });
+    }
+    const byFret = helpers.hwyBuildTrailYieldEvents([source, ...targets], [], 6);
+    const index = helpers.hwyBuildTrailOcclusionIndex(byFret, 6);
+    assert.equal(
+        helpers.hwyTrailOcclusionFarthestTargetTime(index, 0, 20, 1, false),
+        13.05,
+    );
+    assert.equal(
+        helpers.hwyTrailOcclusionFarthestTargetTime(index, 0, 20, 1, true),
+        -Infinity,
+        'inversion must mirror which strings are visually lower',
+    );
+});
+
 test('cross-fret physical ordering distinguishes covered gems from overlapping trails', () => {
     const byFret = helpers.hwyBuildTrailYieldEvents([
         { t: 0, s: 1, f: 7, sus: 5 },       // source
@@ -530,6 +560,41 @@ test('crossing resolution keeps path sampling bounded for a full visible slice',
     // Keep generous headroom so this pins bounded work, not an exact loop
     // implementation or a wall-clock threshold that can flake in CI.
     assert.ok(calls < 1300, `unexpected crossing callback count: ${calls}`);
+});
+
+test('crossing overflow conservatively merges instead of dropping visibility', () => {
+    const starts = new Float64Array([0, 2]);
+    const ends = new Float64Array([1, 3]);
+    const count = helpers.hwyFillTrailCrossingWindows(
+        4, 5, 0.1, () => true, starts, ends, 2, 0,
+    );
+    assert.equal(count, 2);
+    assert.ok(
+        (starts[0] <= 4 && ends[0] >= 5) || (starts[1] <= 4 && ends[1] >= 5),
+        'a full scratch buffer may bridge a gap but must not lose the new crossing',
+    );
+});
+
+test('dense crossing collectors keep scanning after geometry storage fills', () => {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8');
+    const crossingStart = src.indexOf(
+        '        function collectTrailCrossingWindowsForStrand(',
+    );
+    const crossingEnd = src.indexOf(
+        '        /** Collect one strand', crossingStart,
+    );
+    const crossingCollector = src.slice(crossingStart, crossingEnd);
+    assert.doesNotMatch(crossingCollector, /candidateCount\s*&&\s*count\s*<\s*capacity/);
+    assert.doesNotMatch(crossingCollector, /targetStrandCount\s*&&\s*count\s*<\s*capacity/);
+
+    const targetStart = crossingEnd;
+    const targetEnd = src.indexOf('        /* ── Note renderer', targetStart);
+    const targetCollector = src.slice(targetStart, targetEnd);
+    assert.match(
+        targetCollector,
+        /count\s*<\s*starts\.length\s*\|\|\s*priorityTimes/,
+        'mode-3 scalar priority must keep scanning after local taper storage fills',
+    );
 });
 
 test('closely spaced crossings share one continuous taper effect without changing settings', () => {
@@ -1065,15 +1130,17 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
         'moving and yielding ribbon trails must participate in the same rule',
     );
     assert.match(src, /hwyTrailPriorityWorldZ\([\s\S]{0,180}?strandYieldStarts,\s*strandYieldCount,[\s\S]{0,100}?trailYieldGemInFront,\s*TS/);
+    assert.match(src, /const\s+matchingVisibleEnd\s*=\s*visibleEnd/);
     assert.match(
         src,
-        /const\s+matchingVisibleEnd\s*=\s*includeTargetTrails\s*\?\s*susEnd\s*:\s*visibleEnd[\s\S]{0,500}?hwyFillTrailYieldTimes\([\s\S]{0,260}?matchingVisibleEnd/,
-        'mode 3 must know future endpoint priorities before their taper enters view',
+        /hwyFillTrailYieldTimes\([\s\S]{0,420}?priorityTimes,\s*priorityIndex/,
+        'mode 3 must retain one future endpoint depth without materializing its taper',
     );
+    assert.match(src, /const\s+occlusionVisibleEnd\s*=\s*visibleYieldEnd/);
     assert.match(
         src,
-        /const\s+occlusionVisibleEnd\s*=\s*includeTargetTrails\s*\?\s*susEnd\s*:\s*visibleYieldEnd[\s\S]{0,420}?hwyFillTrailOcclusionTargets\([\s\S]{0,180}?occlusionVisibleEnd/,
-        'mode 3 must keep trail-crossing order stable across the visible horizon',
+        /trailVisibilityMode3PriorityTime\([\s\S]{0,120}?trailYieldTargetEvent,\s*susEnd/,
+        'mode 3 must keep physical future priority independent of visible relationships',
     );
     const behindLayer = src.indexOf("'NOTE_CORE_BEHIND_TRAIL'");
     const trailLayer = src.indexOf("'SUSTAIN_TRAIL'");
@@ -1093,7 +1160,7 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
     for (const pattern of depthIndependentTrailMaterials) {
         assert.match(src, pattern, 'trail verdict materials must obey the render stack');
     }
-    const ribbonStart = src.indexOf('        function slideRibbonUpdatePositions(');
+    const ribbonStart = src.indexOf('        function slideRibbonUpdatePair(');
     const ribbonEnd = src.indexOf('        function noteHasVibrato(', ribbonStart);
     assert.notEqual(ribbonStart, -1);
     assert.notEqual(ribbonEnd, -1);
@@ -1109,6 +1176,7 @@ test('mode-3 endpoint priority is stable before the endpoint enters the visible 
     const starts = new Float64Array(2);
     const ends = new Float64Array(2);
     const targetTrailEnds = new Float64Array(2);
+    const priorityTimes = new Float64Array(1);
 
     assert.equal(
         helpers.hwyFillTrailYieldTimes(
@@ -1121,12 +1189,10 @@ test('mode-3 endpoint priority is stable before the endpoint enters the visible 
     const count = helpers.hwyFillTrailYieldTimes(
         endpointEvent, 0, 1, 0, 10, false, starts, ends,
         0, 4, helpers.TRAIL_YIELD_DEFAULTS, null, null,
-        targetTrailEnds,
+        targetTrailEnds, priorityTimes,
     );
-    assert.equal(count, 1, 'attached-trail ordering is known on the first visible frame');
-    assert.equal(starts[0], 10.5);
-    assert.equal(ends[0], 10, 'the endpoint notch still stops at the source trail end');
-    assert.equal(targetTrailEnds[0], 12, 'ordering retains the complete target trail');
+    assert.equal(count, 0, 'future priorities do not materialize off-screen geometry');
+    assert.equal(priorityTimes[0], 12, 'ordering retains the complete target trail');
     assert.equal(
         helpers.hwyTrailYieldAmountAt(
             4, starts, ends, count, 10, helpers.TRAIL_YIELD_DEFAULTS,
@@ -1190,7 +1256,7 @@ test('rendering and eligibility share one rendered footprint model', () => {
     const src = fs.readFileSync(SCREEN_JS, 'utf8');
     const centerDecl = src.indexOf('        function sustainTrailCenterXAt(');
     const matcherDecl = src.indexOf('        function trailYieldEventMatchesRenderedFootprint(');
-    const rendererDecl = src.indexOf('        function slideRibbonUpdatePositions(');
+    const rendererDecl = src.indexOf('        function slideRibbonUpdatePair(');
     assert.notEqual(centerDecl, -1);
     assert.notEqual(matcherDecl, -1);
     assert.notEqual(rendererDecl, -1);
@@ -1311,12 +1377,12 @@ test('3D settings expose one shared width and separate passing-note and endpoint
     );
     assert.match(
         src,
-        /const\s+trailVisibilityFrontMask\s*=\s*hwyTrailVisibilityFrontMask\(\s*trailYieldSettings\.enabled,\s*trailYieldSettings\.gemInFront,\s*trailYieldSettings\.includeTrails/,
-        'foreground preferences must be reduced to one effective per-note mode',
+        /_trailVisibilityFrontMask\s*=\s*hwyTrailVisibilityFrontMask\(\s*trailYieldSettings\.enabled,\s*trailYieldSettings\.gemInFront,\s*trailYieldSettings\.includeTrails/,
+        'foreground preferences must be reduced to one effective frame policy',
     );
     assert.match(
         src,
-        /const\s+trailYieldIncludeTrails\s*=\s*!!\(\s*trailVisibilityFrontMask\s*&\s*TRAIL_OCCLUSION_TRAIL\s*\)/,
+        /const\s+trailYieldIncludeTrails\s*=\s*!!\(\s*_trailVisibilityFrontMask\s*&\s*TRAIL_OCCLUSION_TRAIL\s*\)/,
     );
     assert.match(src, /const\s+includeTargetTrails\s*=\s*trailYieldIncludeTrails/);
     assert.match(
