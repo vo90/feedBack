@@ -112,3 +112,24 @@ test('renderer caches the chart-static set and skips matching note events', () =
         'the sorted-loop cutoff must run before the deduplication continue',
     );
 });
+
+test('dedup lifecycle stays on merge-independent renderer anchors', () => {
+    const fretLabelCache = screenSrc.indexOf('let _fretLabelNotesRef = null;');
+    const dedupState = screenSrc.indexOf('let _coincidentRepeatNoteSet = null;');
+    const measureCache = screenSrc.indexOf('let _measureStarts = [];');
+    assert.ok(fretLabelCache < dedupState && dedupState < measureCache);
+
+    const reset = extractFn(screenSrc, '_resetStringDependentCaches');
+    assert.ok(
+        reset.indexOf('_coincidentRepeatNoteSet = null;')
+            < reset.indexOf('_filterValidNotesCache = new WeakMap();'),
+        'dedup state clears before the shared cache-reset tail',
+    );
+
+    const laneRailEnd = screenSrc.indexOf('laneRailBoundHi = _arpRailBoundHiScratch;');
+    const dedupPrepass = screenSrc.indexOf(
+        '// ── Coincident repeat-note deduplication', laneRailEnd,
+    );
+    const beatCache = screenSrc.indexOf('const beats = bundle.beats;', laneRailEnd);
+    assert.ok(laneRailEnd < dedupPrepass && dedupPrepass < beatCache);
+});

@@ -4778,6 +4778,13 @@
         // the same fret for the following measure, then allow it again).
         let _fretLabelAllowed = new Set();
         let _fretLabelNotesRef = null;
+
+        // Plain standalone notes that exactly duplicate a member of a compact
+        // repeat chord. Cached by chart-array identity; see the chart-static pre-pass.
+        let _coincidentRepeatNoteSet = null;
+        let _coincidentRepeatNotesRef = null;
+        let _coincidentRepeatChordsRef = null;
+
         // Cache of measure-start times (beats with measure !== -1), rebuilt when
         // the beats array changes. Drives the camera lookahead window
         // (CAM_LOOKAHEAD_MEASURES measures instead of a fixed number of seconds).
@@ -4799,12 +4806,6 @@
         let _slideTargetSet = null;
         let _slideTargetNotesRef = null;
         let _slideTargetChordsRef = null;
-
-        // Plain standalone notes that exactly duplicate a member of a compact
-        // repeat chord. Cached by chart-array identity; see the pre-pass below.
-        let _coincidentRepeatNoteSet = null;
-        let _coincidentRepeatNotesRef = null;
-        let _coincidentRepeatChordsRef = null;
 
         let _laneRailFlagsRefHs = null;
         let _laneRailFlagsRefTpl = null;
@@ -10177,6 +10178,11 @@
         // 7-string chart whose stringCount arrives in song_info) doesn't leave
         // string-6+ notes filtered out of cached chord shapes/signatures.
         function _resetStringDependentCaches() {
+            // Repeat-note dedup depends on chordShapeSignature(), which filters
+            // members through validString()/nStr too.
+            _coincidentRepeatNoteSet = null;
+            _coincidentRepeatNotesRef = null;
+            _coincidentRepeatChordsRef = null;
             _filterValidNotesCache = new WeakMap();
             _chordSigCache = new WeakMap();
             _chordShapeCache = new WeakMap();
@@ -10186,11 +10192,6 @@
             // recompute or string-6+ template notes stay dropped from synth
             // chords after the count grows.
             _mergeCacheResult = null;
-            // Repeat-note dedup depends on chordShapeSignature(), which filters
-            // members through validString()/nStr too.
-            _coincidentRepeatNoteSet = null;
-            _coincidentRepeatNotesRef = null;
-            _coincidentRepeatChordsRef = null;
         }
         function mergeChordShape(ch, chordNotes, templates) {
             if (_chordShapeCache.has(ch)) return _chordShapeCache.get(ch);
@@ -11228,21 +11229,6 @@
                 _slideTargetChordsRef = bundle.chords;
             }
 
-            // ── Coincident repeat-note deduplication (chart-static) ────────
-            // Some charts author a plain standalone note on the same onset,
-            // string and fret as a member of a repeated chord. The compact
-            // repeat frame suppresses its chord gems, but the independent note
-            // stream would still draw that one duplicate (especially obvious
-            // for wide open-string slabs). Preserve standalone events carrying
-            // any non-default metadata; those may express a real technique.
-            if (notes !== _coincidentRepeatNotesRef
-                || bundle.chords !== _coincidentRepeatChordsRef) {
-                _coincidentRepeatNoteSet = coincidentPlainRepeatNotes(
-                    notes, bundle.chords, chordShapeSignature);
-                _coincidentRepeatNotesRef = notes;
-                _coincidentRepeatChordsRef = bundle.chords;
-            }
-
             /** Arpeggio lane purple rails — authored-marker cache + bounds cache. */
             let laneRailArpHsFlags = null;
             let laneRailBoundLo = null;
@@ -11286,6 +11272,22 @@
                 laneRailBoundLo = _arpRailBoundLoScratch;
                 laneRailBoundHi = _arpRailBoundHiScratch;
             }
+
+            // ── Coincident repeat-note deduplication (chart-static) ────────
+            // Some charts author a plain standalone note on the same onset,
+            // string and fret as a member of a repeated chord. The compact
+            // repeat frame suppresses its chord gems, but the independent note
+            // stream would still draw that one duplicate (especially obvious
+            // for wide open-string slabs). Preserve standalone events carrying
+            // any non-default metadata; those may express a real technique.
+            if (notes !== _coincidentRepeatNotesRef
+                || bundle.chords !== _coincidentRepeatChordsRef) {
+                _coincidentRepeatNoteSet = coincidentPlainRepeatNotes(
+                    notes, bundle.chords, chordShapeSignature);
+                _coincidentRepeatNotesRef = notes;
+                _coincidentRepeatChordsRef = bundle.chords;
+            }
+
             const beats = bundle.beats;
             // Rebuild the fret-label visibility set whenever the chart changes.
             if (notes !== _fretLabelNotesRef) {
