@@ -10233,7 +10233,6 @@
             // recompute or string-6+ template notes stay dropped from synth
             // chords after the count grows.
             _mergeCacheResult = null;
-            _resetChordCullIndex();
         }
         function mergeChordShape(ch, chordNotes, templates) {
             if (_chordShapeCache.has(ch)) return _chordShapeCache.get(ch);
@@ -15993,6 +15992,7 @@
 
         /* ── Teardown ────────────────────────────────────────────────────── */
         function teardown() {
+            _resetChordCullIndex();
             // Background animations (#13). Drop the listener first so any
             // mid-teardown settings change doesn't try to rebuild a torn-
             // down scene; then dispose the active style's resources.
@@ -16211,7 +16211,6 @@
             _camBootstrapHolding = false;
             _camBootstrapMode = null;
             _songKey = null;
-            _resetChordCullIndex();
             _slideTargetSet = null;
             _slideTargetNotesRef = null;
             _slideTargetChordsRef = null;
@@ -16398,6 +16397,7 @@
                         // so extended-range notes (string 6+) aren't left
                         // filtered out of cached shapes.
                         _resetStringDependentCaches();
+                        _resetChordCullIndex();
                     }
                     if (leftyChanged) {
                         curX = -curX;

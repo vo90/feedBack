@@ -341,7 +341,11 @@ test('cull cache reuses, rebuilds, and resets at every ownership boundary', () =
         cleared: { index: null, chordsRef: null, stringCount: -1 },
         resetRebuilt: true,
     });
-    assert.match(extractFunction('_resetStringDependentCaches'), /_resetChordCullIndex\(\);/);
+    assert.match(
+        src,
+        /_resetStringDependentCaches\(\);\s*_resetChordCullIndex\(\);/,
+        'string-count changes reset the cull index after shared chord caches',
+    );
     assert.match(extractFunction('teardown'), /_resetChordCullIndex\(\);/);
     assert.match(src, /_ensureChordCullIndex\(chords, AHEAD, nStr\);/);
 });
