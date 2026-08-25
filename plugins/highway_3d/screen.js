@@ -2342,6 +2342,20 @@
         return { f0, f1 };
     }
 
+    // Chord gems occupy fret cells, while lane bounds use the surrounding
+    // fret-wire coordinates. Compare against the playable span so a note on
+    // the lower boundary wire is not mistaken for a note inside the lane.
+    function playedFretSpanCoversShape(anchorSpan, fMin, fMax) {
+        return !!anchorSpan && fMin >= anchorSpan.f0 && fMax <= anchorSpan.f1;
+    }
+
+    function chordFallbackLaneBounds(fMin, fMax) {
+        return laneBoundsFromAnchor({
+            fret: fMin,
+            width: Math.max(4, fMax - fMin + 1),
+        });
+    }
+
     function anchorPlayedFretSpanAt(anchorArr, t) {
         if (!anchorArr || !anchorArr.length) return null;
         return anchorPlayedFretInclusiveSpan(getChartAnchorAt(anchorArr, t));
@@ -15364,7 +15378,9 @@
         function trailYieldOpenTargetXBounds(event, bounds) {
             bounds[0] = Infinity;
             bounds[1] = -Infinity;
-            const anchor = anchorLaneBoundsAt(_drawAnchors, event.t);
+            const anchorDef = getChartAnchorAt(_drawAnchors, event.t);
+            const anchor = laneBoundsFromAnchor(anchorDef);
+            const anchorPlayed = anchorPlayedFretInclusiveSpan(anchorDef);
             const anchorCX = anchor
                 ? (xFret(anchor.dMin) + xFret(anchor.dMax)) * 0.5
                 : curX;
@@ -15388,16 +15404,17 @@
                 }
                 let laneW = openNoteLaneBoxW(event.t);
                 if (meta.size > 1) {
-                    const anchorCoversFrets = anchor && anyFretted
-                        ? meta.minF >= anchor.dMin && meta.maxF <= anchor.dMax
+                    const anchorCoversFrets = anyFretted
+                        ? playedFretSpanCoversShape(
+                            anchorPlayed, meta.minF, meta.maxF,
+                        )
                         : true;
                     if (anchor && anchorCoversFrets) {
                         laneW = Math.abs(xFret(anchor.dMax) - xFret(anchor.dMin));
                     } else if (anyFretted) {
-                        laneW = Math.abs(
-                            xFret(Math.max(meta.maxF, meta.minF + 2))
-                            - xFret(meta.minF - 1)
-                        ) + OPEN_NOTE_PAD_X * 2;
+                        const fallback = chordFallbackLaneBounds(meta.minF, meta.maxF);
+                        chordCX = (xFret(fallback.dMin) + xFret(fallback.dMax)) * 0.5;
+                        laneW = Math.abs(xFret(fallback.dMax) - xFret(fallback.dMin));
                     } else {
                         laneW += OPEN_NOTE_PAD_X * 2;
                     }
