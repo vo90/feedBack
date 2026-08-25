@@ -108,6 +108,7 @@ test('renderer caches the chart-static set and skips matching note events', () =
     );
     assert.match(
         screenSrc,
-        /const n = notes\[_ni\];\s*if \(_coincidentRepeatNoteSet\.has\(n\)\) continue;/,
+        /const n = notes\[_ni\];[\s\S]*?if \(n\.t > t1\) break;[\s\S]*?if \(_coincidentRepeatNoteSet\.has\(n\)\) continue;/,
+        'the sorted-loop cutoff must run before the deduplication continue',
     );
 });

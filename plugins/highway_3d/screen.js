@@ -11938,16 +11938,16 @@
                 const _noteRenderLo = lowerBoundT(notes, now - 30);
                 for (let _ni = _noteRenderLo; _ni < notes.length; _ni++) {
                     const n = notes[_ni];
+                    // Notes are time-sorted. Keep the upper-bound break ahead of
+                    // every per-note continue so a deduplicated future suffix
+                    // cannot turn this bounded render window into a chart scan.
+                    if (n.t > t1) break;
                     if (_coincidentRepeatNoteSet.has(n)) continue;
                     if (n.f > 0 && n.t > now && n.t < now + 2) activeFrets.add(n.f);
                     if (n.t > now) {
                         const dt = n.t - now;
                         if (dt < AHEAD) highwayIntensity = Math.max(highwayIntensity, 1 - dt / AHEAD);
                     }
-                    // Far-future notes are always skipped — arpGhostActive
-                    // timing handles when the ghost appears for upcoming arp notes.
-                    // Notes are time-sorted so everything beyond t1 can be skipped entirely.
-                    if (n.t > t1) break;
                     // Past-window arp notes are exempted from the back-window skip
                     // so their fretboard ghost + brackets persist until arpBounds.end.
                     // ndVerdictT0 extends the window when a note-detect provider is
