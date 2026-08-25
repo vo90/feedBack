@@ -1382,6 +1382,109 @@
     }
 
     /**
+     * Build a chart-static range-max index over chord render end times.
+     *
+     * Most chords are found through the normal onset lower-bound window. The
+     * index exists for the exceptional case: an older chord whose longest
+     * member still sustains into that window. Each leaf stores the same end
+     * used by the chord loop's `_chFilterSus` check; parent nodes store the
+     * maximum end in their range, allowing whole expired ranges to be skipped.
+     */
+    function _buildChordCullIndex(chords, ahead, stringCount) {
+        const count = Array.isArray(chords) ? chords.length : 0;
+        let leafBase = 1;
+        while (leafBase < count) leafBase <<= 1;
+
+        const maxEndTree = new Float64Array(leafBase * 2);
+        maxEndTree.fill(-Infinity);
+        const maxSustains = new Float64Array(count);
+
+        for (let i = 0; i < count; i++) {
+            const ch = chords[i];
+            const chordNotes = ch && Array.isArray(ch.notes) ? ch.notes : null;
+            let hasValidNote = false;
+            let maxSus = 0;
+            if (chordNotes) {
+                for (let j = 0; j < chordNotes.length; j++) {
+                    const cn = chordNotes[j];
+                    if (!Number.isInteger(cn.s) || cn.s < 0 || cn.s >= stringCount) continue;
+                    hasValidNote = true;
+                    if ((cn.sus || 0) > maxSus) maxSus = cn.sus;
+                }
+            }
+            maxSustains[i] = maxSus;
+            if (!hasValidNote) continue;
+
+            const cullEnd = ch.t + (maxSus > 0 ? maxSus : ahead);
+            if (!Number.isNaN(cullEnd)) maxEndTree[leafBase + i] = cullEnd;
+        }
+        for (let i = leafBase - 1; i > 0; i--) {
+            maxEndTree[i] = Math.max(maxEndTree[i << 1], maxEndTree[(i << 1) | 1]);
+        }
+        return { count, leafBase, maxEndTree, maxSustains };
+    }
+
+    /** Return the first indexed chord in [fromIndex, toIndex) whose end reaches cutoff. */
+    function _nextChordCullCandidate(index, fromIndex, toIndex, cutoff) {
+        const lo = Math.max(0, fromIndex);
+        const hi = Math.min(index.count, toIndex);
+        if (lo >= hi) return hi;
+        return _findChordCullCandidate(index, 1, 0, index.leafBase, lo, hi, cutoff);
+    }
+
+    function _findChordCullCandidate(index, node, nodeLo, nodeHi, queryLo, queryHi, cutoff) {
+        if (nodeHi <= queryLo || nodeLo >= queryHi || index.maxEndTree[node] < cutoff) {
+            return queryHi;
+        }
+        if (nodeHi - nodeLo === 1) return nodeLo;
+
+        const mid = (nodeLo + nodeHi) >>> 1;
+        const left = _findChordCullCandidate(
+            index, node << 1, nodeLo, mid, queryLo, queryHi, cutoff,
+        );
+        if (left < queryHi) return left;
+        return _findChordCullCandidate(
+            index, (node << 1) | 1, mid, nodeHi, queryLo, queryHi, cutoff,
+        );
+    }
+
+    /**
+     * Restore the two chord predecessor concepts after an indexed traversal gap.
+     * Label runs follow the nearest valid shape, including synthetic handshape
+     * onsets. Repeat styling follows the nearest authored chord only. Keeping
+     * those states separate mirrors the forward loop's update rules.
+     */
+    function _restoreChordPredecessorState(chords, currentIndex, maxGap, signatureOf, out) {
+        out.runSigPrev = null;
+        out.prevAnyChordTime = -Infinity;
+        out.prevChordSig = null;
+        out.prevChordTime = -Infinity;
+
+        const current = chords && chords[currentIndex];
+        if (!current || !Number.isFinite(current.t)) return out;
+
+        for (let pi = currentIndex - 1; pi >= 0; pi--) {
+            const previous = chords[pi];
+            if (!previous || !Number.isFinite(previous.t)) continue;
+            const gap = current.t - previous.t;
+            if (gap > maxGap) break;
+
+            const signature = signatureOf(previous);
+            if (signature === null) continue;
+            if (out.runSigPrev === null) {
+                out.runSigPrev = signature;
+                out.prevAnyChordTime = previous.t;
+            }
+            if (out.prevChordSig === null && !previous.h3dSynth && gap < maxGap) {
+                out.prevChordSig = signature;
+                out.prevChordTime = previous.t;
+            }
+            if (out.runSigPrev !== null && out.prevChordSig !== null) break;
+        }
+        return out;
+    }
+
+    /**
      * Return the chart time of the first fretted event that can still affect
      * the camera at `now`, or the next fretted onset after it.
      *
@@ -4785,6 +4888,29 @@
         let _mergeCacheChordsRef = null;
         let _mergeCacheHsRef = null;
         let _mergeCacheTplRef = null;
+        let _chordCullIndex = null;
+        let _chordCullIndexChordsRef = null;
+        let _chordCullIndexStringCount = -1;
+        const _chordPredecessorStateScratch = {
+            runSigPrev: null,
+            prevAnyChordTime: -Infinity,
+            prevChordSig: null,
+            prevChordTime: -Infinity,
+        };
+        function _resetChordCullIndex() {
+            _chordCullIndex = null;
+            _chordCullIndexChordsRef = null;
+            _chordCullIndexStringCount = -1;
+        }
+        function _ensureChordCullIndex(chords, ahead, stringCount) {
+            if (_chordCullIndexChordsRef !== chords
+                || _chordCullIndexStringCount !== stringCount) {
+                _chordCullIndex = _buildChordCullIndex(chords, ahead, stringCount);
+                _chordCullIndexChordsRef = chords;
+                _chordCullIndexStringCount = stringCount;
+            }
+            return _chordCullIndex;
+        }
 
         // Fret connector-label visibility cache: tracks which (time, fret)
         // pairs may show their indicator number per the measure-skip rule
@@ -11133,6 +11259,7 @@
                 _mergeCacheHsRef = bundle.handShapes;
                 _mergeCacheTplRef = bundle.chordTemplates;
             }
+            _ensureChordCullIndex(chords, AHEAD, nStr);
 
             let arpGhostHsInfer = null;
             const hsForArpGhost = bundle.handShapes;
@@ -12106,33 +12233,47 @@
                 let prevChordSig = null;
                 let prevChordTime = -1;
 
-                // Skip past chords that are too old to render. The per-chord filter
-                // (ch.t + _chFilterSus >= ndVerdictT0) passes the earliest chord when
-                // ch.t >= ndVerdictT0 - AHEAD (worst case: _chFilterSus = AHEAD for a
-                // chord with no explicit sustain). Binary search avoids iterating
-                // hundreds of past chords every frame in dense PM/FH sections.
-                const _chordsLoIdx = lowerBoundT(chords, ndVerdictT0 - AHEAD);
-                // Prime shape-run tracking from the chord immediately before the window
-                // so isRepeat and firstInShapeRun are correct on the first visible chord.
-                if (_chordsLoIdx > 0) {
-                    const _pc = chords[_chordsLoIdx - 1];
-                    if (_pc && _pc.notes) {
-                        const _ps = chordShapeSignature(_pc);
-                        if (_ps !== null) {
-                            runSigPrev = _ps;
-                            prevAnyChordTime = _pc.t;
-                            prevChordSig = _ps;
-                            prevChordTime = _pc.t;
-                        }
-                    }
-                }
-
-                for (let ci = _chordsLoIdx; ci < chords.length; ci++) {
+                // Keep the onset lower bound as the dense-chart fast path. A chord
+                // before it can only remain drawable through a sustain longer than
+                // AHEAD; use the range-max end index to jump directly between those
+                // exceptional carry-over chords instead of widening the linear scan
+                // to the longest sustain in the song.
+                const _chordsRecentLoIdx = lowerBoundT(chords, ndVerdictT0 - AHEAD);
+                const _chordsLoIdx = _nextChordCullCandidate(
+                    _chordCullIndex, 0, _chordsRecentLoIdx, ndVerdictT0,
+                );
+                // A sentinel below zero makes the first indexed candidate use the
+                // same restoration path as every later non-contiguous candidate.
+                let _chordsPrevVisitedIdx = -1;
+                for (let ci = _chordsLoIdx; ci < chords.length;
+                    ci = ci + 1 < _chordsRecentLoIdx
+                        ? _nextChordCullCandidate(
+                            _chordCullIndex, ci + 1, _chordsRecentLoIdx, ndVerdictT0,
+                        )
+                        : ci + 1) {
                     const ch = chords[ci];
                     // Chords are time-sorted — everything beyond t1 is outside the
                     // visible window and contributes nothing (activeFrets needs t<now+2,
                     // highwayIntensity needs dt<AHEAD, both < t1).
                     if (ch.t > t1) break;
+                    // The sustain index can jump over expired ranges before the normal
+                    // onset window. Restore both predecessor concepts so skipped authored
+                    // chords affect repeat styling while synthetic chords affect only the
+                    // label run, exactly as they do during contiguous traversal.
+                    if (ci > _chordsPrevVisitedIdx + 1) {
+                        _restoreChordPredecessorState(
+                            chords,
+                            ci,
+                            SHAPE_RUN_GAP_S,
+                            chordShapeSignature,
+                            _chordPredecessorStateScratch,
+                        );
+                        runSigPrev = _chordPredecessorStateScratch.runSigPrev;
+                        prevAnyChordTime = _chordPredecessorStateScratch.prevAnyChordTime;
+                        prevChordSig = _chordPredecessorStateScratch.prevChordSig;
+                        prevChordTime = _chordPredecessorStateScratch.prevChordTime;
+                    }
+                    _chordsPrevVisitedIdx = ci;
                     const runSig = chordShapeSignature(ch);
                     let firstInShapeRun;
                     if (runSig === null) {
@@ -12166,8 +12307,9 @@
                     if (ch.t > now && ch.t < now + 2)
                         for (const cn of chordNotes) { if (cn.f > 0) activeFrets.add(cn.f); }
 
-                    let maxSus = 0;
-                    for (const n of chordNotes) if ((n.sus || 0) > maxSus) maxSus = n.sus;
+                    // Computed once when the chart-static cull index is built;
+                    // avoid rescanning every member of every visible chord per frame.
+                    const maxSus = _chordCullIndex.maxSustains[ci];
                     // When maxSus=0 (no explicit sustain on chord notes, including
                     // all h3dSynth chords) use AHEAD as the filter window so the
                     // chord stays in the loop long enough for a handshape-derived
@@ -15977,6 +16119,7 @@
 
         /* ── Teardown ────────────────────────────────────────────────────── */
         function teardown() {
+            _resetChordCullIndex();
             // Background animations (#13). Drop the listener first so any
             // mid-teardown settings change doesn't try to rebuild a torn-
             // down scene; then dispose the active style's resources.
@@ -16384,6 +16527,7 @@
                         // so extended-range notes (string 6+) aren't left
                         // filtered out of cached shapes.
                         _resetStringDependentCaches();
+                        _resetChordCullIndex();
                     }
                     if (leftyChanged) {
                         curX = -curX;
