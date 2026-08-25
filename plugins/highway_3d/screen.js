@@ -1308,6 +1308,79 @@
         return lo;
     }
 
+    // Extends _noteKey with the fret while remaining a safe integer for any
+    // realistic chart. Used by chart-static cross-stream deduplication.
+    function _noteFretKey(t, s, f) { return _noteKey(t, s) * 64 + Number(f) + 1; }
+
+    // A coincident standalone note may carry technique/teaching information
+    // that is absent from its chord member. Only default wire fields are safe
+    // to discard; unknown future fields deliberately count as meaningful.
+    function _noteHasStandaloneVisualData(n) {
+        if (!n || typeof n !== 'object') return false;
+        for (const key of Object.keys(n)) {
+            if (key === 't' || key === 's' || key === 'f') continue;
+            const v = n[key];
+            if (v == null) continue;
+            switch (key) {
+                case 'sus': case 'bn': case 'bt':
+                    if (Number(v) === 0) continue;
+                    return true;
+                case 'sl': case 'slu': case 'rh': case 'pkd':
+                case 'fg': case 'ch': case 'sd':
+                    if (Number(v) < 0) continue;
+                    return true;
+                case 'ho': case 'po': case 'hm': case 'hp':
+                case 'pm': case 'mt': case 'vb': case 'tr':
+                case 'ac': case 'tp': case 'ln': case 'fhm':
+                case 'plk': case 'slp': case 'ig':
+                    if (v === false) continue;
+                    return true;
+                case 'bnv':
+                    if (Array.isArray(v) && v.length === 0) continue;
+                    return true;
+                default:
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    function coincidentPlainRepeatNotes(notes, chords, shapeSignature) {
+        const result = new Set();
+        if (!Array.isArray(notes) || !Array.isArray(chords)
+            || typeof shapeSignature !== 'function') return result;
+
+        const repeatedMembers = new Set();
+        let prevSig = null;
+        let prevTime = -Infinity;
+        for (const ch of chords) {
+            const sig = shapeSignature(ch);
+            const isRepeat = sig !== null && prevSig === sig
+                && Math.abs(ch.t - prevTime) < 0.5;
+            if (isRepeat && Array.isArray(ch.notes)) {
+                for (const cn of ch.notes) {
+                    repeatedMembers.add(_noteFretKey(ch.t, cn.s, cn.f));
+                }
+            }
+            if (!ch.h3dSynth && sig !== null) {
+                prevSig = sig;
+                prevTime = ch.t;
+            }
+        }
+
+        for (const n of notes) {
+            const key = _noteFretKey(n.t, n.s, n.f);
+            if (!_noteHasStandaloneVisualData(n) && repeatedMembers.has(key)) {
+                // Store the event itself, not only its musical coordinates. A
+                // chart can legally carry a plain duplicate and a distinct
+                // technique note at the same time/string/fret; only the plain
+                // event is redundant with the repeat chord.
+                result.add(n);
+            }
+        }
+        return result;
+    }
+
     /**
      * Return the chart time of the first fretted event that can still affect
      * the camera at `now`, or the next fretted onset after it.
@@ -4719,6 +4792,13 @@
         // the same fret for the following measure, then allow it again).
         let _fretLabelAllowed = new Set();
         let _fretLabelNotesRef = null;
+
+        // Plain standalone notes that exactly duplicate a member of a compact
+        // repeat chord. Cached by chart-array identity; see the chart-static pre-pass.
+        let _coincidentRepeatNoteSet = null;
+        let _coincidentRepeatNotesRef = null;
+        let _coincidentRepeatChordsRef = null;
+
         // Cache of measure-start times (beats with measure !== -1), rebuilt when
         // the beats array changes. Drives the camera lookahead window
         // (CAM_LOOKAHEAD_MEASURES measures instead of a fixed number of seconds).
@@ -10112,6 +10192,11 @@
         // 7-string chart whose stringCount arrives in song_info) doesn't leave
         // string-6+ notes filtered out of cached chord shapes/signatures.
         function _resetStringDependentCaches() {
+            // Repeat-note dedup depends on chordShapeSignature(), which filters
+            // members through validString()/nStr too.
+            _coincidentRepeatNoteSet = null;
+            _coincidentRepeatNotesRef = null;
+            _coincidentRepeatChordsRef = null;
             _filterValidNotesCache = new WeakMap();
             _chordSigCache = new WeakMap();
             _chordShapeCache = new WeakMap();
@@ -11201,6 +11286,22 @@
                 laneRailBoundLo = _arpRailBoundLoScratch;
                 laneRailBoundHi = _arpRailBoundHiScratch;
             }
+
+            // ── Coincident repeat-note deduplication (chart-static) ────────
+            // Some charts author a plain standalone note on the same onset,
+            // string and fret as a member of a repeated chord. The compact
+            // repeat frame suppresses its chord gems, but the independent note
+            // stream would still draw that one duplicate (especially obvious
+            // for wide open-string slabs). Preserve standalone events carrying
+            // any non-default metadata; those may express a real technique.
+            if (notes !== _coincidentRepeatNotesRef
+                || bundle.chords !== _coincidentRepeatChordsRef) {
+                _coincidentRepeatNoteSet = coincidentPlainRepeatNotes(
+                    notes, bundle.chords, chordShapeSignature);
+                _coincidentRepeatNotesRef = notes;
+                _coincidentRepeatChordsRef = bundle.chords;
+            }
+
             const beats = bundle.beats;
             // Rebuild the fret-label visibility set whenever the chart changes.
             if (notes !== _fretLabelNotesRef) {
@@ -11853,15 +11954,16 @@
                 const _noteRenderLo = lowerBoundT(notes, now - 30);
                 for (let _ni = _noteRenderLo; _ni < notes.length; _ni++) {
                     const n = notes[_ni];
+                    // Notes are time-sorted. Keep the upper-bound break ahead of
+                    // every per-note continue so a deduplicated future suffix
+                    // cannot turn this bounded render window into a chart scan.
+                    if (n.t > t1) break;
+                    if (_coincidentRepeatNoteSet.has(n)) continue;
                     if (n.f > 0 && n.t > now && n.t < now + 2) activeFrets.add(n.f);
                     if (n.t > now) {
                         const dt = n.t - now;
                         if (dt < AHEAD) highwayIntensity = Math.max(highwayIntensity, 1 - dt / AHEAD);
                     }
-                    // Far-future notes are always skipped — arpGhostActive
-                    // timing handles when the ghost appears for upcoming arp notes.
-                    // Notes are time-sorted so everything beyond t1 can be skipped entirely.
-                    if (n.t > t1) break;
                     // Past-window arp notes are exempted from the back-window skip
                     // so their fretboard ghost + brackets persist until arpBounds.end.
                     // ndVerdictT0 extends the window when a note-detect provider is
@@ -16086,6 +16188,9 @@
             _lookaheadHiNeckLatch = false;
             _measureStarts = []; _measureStartsRef = null;
             _clkAudioT = NaN; _clkPerf = NaN; _clkRate = 1; _frameNow = 0;
+            _coincidentRepeatNoteSet = null;
+            _coincidentRepeatNotesRef = null;
+            _coincidentRepeatChordsRef = null;
             prevLowFretBonus = 0;
             prevLockActive = false;
             _camSnapped = false;
