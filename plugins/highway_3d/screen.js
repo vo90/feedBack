@@ -1376,6 +1376,42 @@
     }
 
     /**
+     * Restore the two chord predecessor concepts after an indexed traversal gap.
+     * Label runs follow the nearest valid shape, including synthetic handshape
+     * onsets. Repeat styling follows the nearest authored chord only. Keeping
+     * those states separate mirrors the forward loop's update rules.
+     */
+    function _restoreChordPredecessorState(chords, currentIndex, maxGap, signatureOf, out) {
+        out.runSigPrev = null;
+        out.prevAnyChordTime = -Infinity;
+        out.prevChordSig = null;
+        out.prevChordTime = -Infinity;
+
+        const current = chords && chords[currentIndex];
+        if (!current || !Number.isFinite(current.t)) return out;
+
+        for (let pi = currentIndex - 1; pi >= 0; pi--) {
+            const previous = chords[pi];
+            if (!previous || !Number.isFinite(previous.t)) continue;
+            const gap = current.t - previous.t;
+            if (gap > maxGap) break;
+
+            const signature = signatureOf(previous);
+            if (signature === null) continue;
+            if (out.runSigPrev === null) {
+                out.runSigPrev = signature;
+                out.prevAnyChordTime = previous.t;
+            }
+            if (out.prevChordSig === null && !previous.h3dSynth && gap < maxGap) {
+                out.prevChordSig = signature;
+                out.prevChordTime = previous.t;
+            }
+            if (out.runSigPrev !== null && out.prevChordSig !== null) break;
+        }
+        return out;
+    }
+
+    /**
      * Return the chart time of the first fretted event that can still affect
      * the camera at `now`, or the next fretted onset after it.
      *
@@ -4768,6 +4804,26 @@
         let _chordCullIndex = null;
         let _chordCullIndexChordsRef = null;
         let _chordCullIndexStringCount = -1;
+        const _chordPredecessorStateScratch = {
+            runSigPrev: null,
+            prevAnyChordTime: -Infinity,
+            prevChordSig: null,
+            prevChordTime: -Infinity,
+        };
+        function _resetChordCullIndex() {
+            _chordCullIndex = null;
+            _chordCullIndexChordsRef = null;
+            _chordCullIndexStringCount = -1;
+        }
+        function _ensureChordCullIndex(chords, ahead, stringCount) {
+            if (_chordCullIndexChordsRef !== chords
+                || _chordCullIndexStringCount !== stringCount) {
+                _chordCullIndex = _buildChordCullIndex(chords, ahead, stringCount);
+                _chordCullIndexChordsRef = chords;
+                _chordCullIndexStringCount = stringCount;
+            }
+            return _chordCullIndex;
+        }
 
         // Fret connector-label visibility cache: tracks which (time, fret)
         // pairs may show their indicator number per the measure-skip rule
@@ -10177,6 +10233,7 @@
             // recompute or string-6+ template notes stay dropped from synth
             // chords after the count grows.
             _mergeCacheResult = null;
+            _resetChordCullIndex();
         }
         function mergeChordShape(ch, chordNotes, templates) {
             if (_chordShapeCache.has(ch)) return _chordShapeCache.get(ch);
@@ -11104,11 +11161,7 @@
                 _mergeCacheHsRef = bundle.handShapes;
                 _mergeCacheTplRef = bundle.chordTemplates;
             }
-            if (_chordCullIndexChordsRef !== chords || _chordCullIndexStringCount !== nStr) {
-                _chordCullIndex = _buildChordCullIndex(chords, AHEAD, nStr);
-                _chordCullIndexChordsRef = chords;
-                _chordCullIndexStringCount = nStr;
-            }
+            _ensureChordCullIndex(chords, AHEAD, nStr);
 
             let arpGhostHsInfer = null;
             const hsForArpGhost = bundle.handShapes;
@@ -12074,22 +12127,9 @@
                 const _chordsLoIdx = _nextChordCullCandidate(
                     _chordCullIndex, 0, _chordsRecentLoIdx, ndVerdictT0,
                 );
-                // Prime shape-run tracking from the chord immediately before the window
-                // so isRepeat and firstInShapeRun are correct on the first visible chord.
-                if (_chordsLoIdx > 0) {
-                    const _pc = chords[_chordsLoIdx - 1];
-                    if (_pc && _pc.notes) {
-                        const _ps = chordShapeSignature(_pc);
-                        if (_ps !== null) {
-                            runSigPrev = _ps;
-                            prevAnyChordTime = _pc.t;
-                            prevChordSig = _ps;
-                            prevChordTime = _pc.t;
-                        }
-                    }
-                }
-
-                let _chordsPrevVisitedIdx = _chordsLoIdx - 1;
+                // A sentinel below zero makes the first indexed candidate use the
+                // same restoration path as every later non-contiguous candidate.
+                let _chordsPrevVisitedIdx = -1;
                 for (let ci = _chordsLoIdx; ci < chords.length;
                     ci = ci + 1 < _chordsRecentLoIdx
                         ? _nextChordCullCandidate(
@@ -12102,21 +12142,21 @@
                     // highwayIntensity needs dt<AHEAD, both < t1).
                     if (ch.t > t1) break;
                     // The sustain index can jump over expired ranges before the normal
-                    // onset window. Restore the nearest shape-run predecessor within the
-                    // 0.5 s run horizon so label state matches a contiguous scan.
+                    // onset window. Restore both predecessor concepts so skipped authored
+                    // chords affect repeat styling while synthetic chords affect only the
+                    // label run, exactly as they do during contiguous traversal.
                     if (ci > _chordsPrevVisitedIdx + 1) {
-                        runSigPrev = null;
-                        prevAnyChordTime = -Infinity;
-                        for (let pi = ci - 1; pi >= 0; pi--) {
-                            const pc = chords[pi];
-                            if (ch.t - pc.t > SHAPE_RUN_GAP_S) break;
-                            const ps = chordShapeSignature(pc);
-                            if (ps !== null) {
-                                runSigPrev = ps;
-                                prevAnyChordTime = pc.t;
-                                break;
-                            }
-                        }
+                        _restoreChordPredecessorState(
+                            chords,
+                            ci,
+                            SHAPE_RUN_GAP_S,
+                            chordShapeSignature,
+                            _chordPredecessorStateScratch,
+                        );
+                        runSigPrev = _chordPredecessorStateScratch.runSigPrev;
+                        prevAnyChordTime = _chordPredecessorStateScratch.prevAnyChordTime;
+                        prevChordSig = _chordPredecessorStateScratch.prevChordSig;
+                        prevChordTime = _chordPredecessorStateScratch.prevChordTime;
                     }
                     _chordsPrevVisitedIdx = ci;
                     const runSig = chordShapeSignature(ch);
@@ -16171,6 +16211,7 @@
             _camBootstrapHolding = false;
             _camBootstrapMode = null;
             _songKey = null;
+            _resetChordCullIndex();
             _slideTargetSet = null;
             _slideTargetNotesRef = null;
             _slideTargetChordsRef = null;
