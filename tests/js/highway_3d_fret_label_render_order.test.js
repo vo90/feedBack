@@ -73,7 +73,7 @@ test('chord-loop fret labels render above same-depth gem symbols', () => {
 
 test('chord frame and note outline use named depth-layer helper calls', () => {
     assert.match(src(), /const\s+chordFrameRenderOrder\s*=\s*renderOrderForLayerAtZ\(\s*z\s*,\s*'CHORD_FRAME'\s*\)\s*;/);
-    assert.match(src(), /outline\.renderOrder\s*=\s*renderOrderForLayerAtZ\(\s*noteZ\s*,\s*'NOTE_OUTLINE'\s*\)\s*;/);
+    assert.match(src(), /outline\.renderOrder\s*=\s*renderOrderForLayerAtZ\(\s*noteZ\s*,\s*noteOutlineLayer\s*\)\s*;/);
 });
 
 test('no fixed low renderOrder assignments remain for affected label paths', () => {

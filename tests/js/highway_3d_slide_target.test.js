@@ -205,3 +205,34 @@ test('explicit suppression skips attack/drop-line but leaves the continuation tr
         'the sustain trail must remain outside the suppressed attack-body gate',
     );
 });
+
+test('LinkNext, repeat dedup, and trail caches coexist across the renderer lifecycle', () => {
+    const reset = extractFn(src, '_resetStringDependentCaches');
+    assert.match(
+        reset,
+        /_coincidentRepeatNoteSet\s*=\s*null;[\s\S]*?_coincidentRepeatChordsRef\s*=\s*null;[\s\S]*?trailVisibilityReleaseChartReferences\(\);/,
+        'string-dependent repeat and trail caches must both be invalidated',
+    );
+
+    const prepass = sourceBetween(
+        '// ── Linked-target gem-suppression pre-pass',
+        '/** Arpeggio lane purple rails',
+    );
+    const linkNextIndex = prepass.indexOf('_linkNextTargetSet = hwyLinkNextTargetNotes');
+    const coincidentIndex = prepass.indexOf(
+        '_coincidentRepeatNoteSet = coincidentPlainRepeatNotes',
+    );
+    const trailIndex = prepass.indexOf('if (_trailYieldNotesRef !== notes');
+    assert.ok(linkNextIndex >= 0, 'LinkNext cache rebuild must remain in the chart pre-pass');
+    assert.ok(coincidentIndex > linkNextIndex, 'repeat dedup must follow LinkNext selection');
+    assert.ok(trailIndex > coincidentIndex, 'trail indexing must coexist with both Dev caches');
+
+    const teardown = sourceBetween(
+        '_measureStarts = []; _measureStartsRef = null;',
+        'function canvasSize(canvas)',
+    );
+    assert.match(teardown, /_coincidentRepeatNoteSet\s*=\s*null/);
+    assert.match(teardown, /_linkNextTargetSet\s*=\s*null/);
+    assert.match(teardown, /trailVisibilityReleaseChartReferences\(\)/);
+    assert.doesNotMatch(src, /_slideTarget(?:Set|NotesRef|ChordsRef)/);
+});
