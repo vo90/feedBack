@@ -11534,6 +11534,19 @@
             return Math.max(0, b - a);
         }
 
+        // First authored chord onset after ``t``. Rows at the same onset are
+        // one event for inference ownership, so skip them within the same
+        // tolerance used to sort merged chord rows.
+        function nextStrictlyLaterChordTime(chordsArr, t) {
+            if (!chordsArr || chordsArr.length === 0 || !Number.isFinite(t)) return null;
+            const sameOnsetHi = t + 1e-6;
+            let i = lowerBoundT(chordsArr, sameOnsetHi);
+            while (i < chordsArr.length && Number(chordsArr[i]?.t) <= sameOnsetHi) i++;
+            if (i >= chordsArr.length) return null;
+            const nextT = Number(chordsArr[i]?.t);
+            return Number.isFinite(nextT) ? nextT : null;
+        }
+
         /**
          * When ``hd`` is missing/false, detect arpeggio from the **note** stream
          * using the **full voicing** (template ∪ chord notes). RS often stores the
@@ -11542,44 +11555,55 @@
          * @param {{ tLo: number, tHi: number } | null} [timeWin]
          *        When set (e.g. from ``<handShape>`` span), scan staggered picks
          *        across the whole held-shape window — RS often omits ``arp`` and ``hd``.
+         * @param {number | null} [stopBefore]
+         *        Exclusive upper boundary for fallback inference without a
+         *        matching hand-shape. Authored hand-shape windows ignore it.
          */
         // Cached per chord: result depends on (ch, shape, notesArr) and an
         // optional timeWin which itself is a function of the chord's matching
-        // <handShape>. Both inputs are chart-static, so the cache invalidates
+        // <handShape>. Those inputs are chart-static, so the cache invalidates
         // on (notesArr, hss) ref change — `hss` is threaded in purely as the
         // invalidation key for the chord-loop caller, which passes a stable
         // `ch` (reused across frames) and a timeWin that is null until
         // bundle.handShapes arrives over the WS; without the hss check the
         // null-timeWin result would stick once handShapes loaded late. shape
         // comes from mergeChordShape(ch) which is also chart-static, so it
-        // doesn't enter the invalidation key directly. The cache deliberately
-        // stores boolean results; a sentinel distinguishes "not computed"
-        // from "false".
+        // doesn't enter the invalidation key directly. A null-timeWin result
+        // also depends on the next authored chord boundary; store that scalar
+        // with the boolean so a changed boundary recomputes without globally
+        // invalidating inference for synthetic hand-shape callers.
         let _arpInferCache = new WeakMap();
         let _arpInferCacheNotesRef = null;
         let _arpInferCacheHssRef = null;
-        function inferArpeggioFromNotePattern(ch, shape, notesArr, timeWin, hss = null) {
+        function inferArpeggioFromNotePattern(ch, shape, notesArr, timeWin, hss = null, stopBefore = null) {
             if (!notesArr || notesArr.length === 0 || shape.size < 2) return false;
             if (_arpInferCacheNotesRef !== notesArr || _arpInferCacheHssRef !== hss) {
                 _arpInferCache = new WeakMap();
                 _arpInferCacheNotesRef = notesArr;
                 _arpInferCacheHssRef = hss;
             }
+            const effectiveStopBefore = !timeWin && Number.isFinite(stopBefore)
+                ? Number(stopBefore)
+                : null;
             const cached = _arpInferCache.get(ch);
-            if (cached !== undefined) return cached;
-            const result = _inferArpeggioFromNotePatternUncached(ch, shape, notesArr, timeWin);
-            _arpInferCache.set(ch, result);
+            if (cached !== undefined && cached.stopBefore === effectiveStopBefore) return cached.result;
+            const result = _inferArpeggioFromNotePatternUncached(
+                ch, shape, notesArr, timeWin, effectiveStopBefore);
+            _arpInferCache.set(ch, { stopBefore: effectiveStopBefore, result });
             return result;
         }
-        function _inferArpeggioFromNotePatternUncached(ch, shape, notesArr, timeWin) {
-            const tHi = timeWin ? timeWin.tHi : ch.t + 2.35;
+        function _inferArpeggioFromNotePatternUncached(ch, shape, notesArr, timeWin, stopBefore = null) {
+            const hasFallbackStop = !timeWin && Number.isFinite(stopBefore);
+            const tHi = timeWin
+                ? timeWin.tHi
+                : Math.min(ch.t + 2.35, hasFallbackStop ? stopBefore : Infinity);
             const tLo = timeWin ? timeWin.tLo : ch.t - 0.28;
             let i2 = lowerBoundT(notesArr, tLo - 0.02);
             const hitTimes = [];
             const hitStrings = new Set();
             for (; i2 < notesArr.length; i2++) {
                 const n = notesArr[i2];
-                if (n.t > tHi) break;
+                if (n.t > tHi || (hasFallbackStop && n.t >= stopBefore)) break;
                 if (n.t < tLo) continue;
                 if (!validString(n.s)) continue;
                 const ef = shape.get(n.s);
@@ -13560,7 +13584,8 @@
                     const inferredArpPattern = (!hsHintFrame.hs
                         || handShapeChartSpanSec(hsHintFrame.hs) >= ARP_INFER_MIN_HAND_SHAPE_SPAN_S)
                         && inferArpeggioFromNotePattern(
-                            ch, chShape, notes, hsTimeWinFrame, bundle.handShapes);
+                            ch, chShape, notes, hsTimeWinFrame, bundle.handShapes,
+                            hsTimeWinFrame ? null : nextStrictlyLaterChordTime(bundle.chords, ch.t));
                     // Only suppress the chord gems when standalone notes really
                     // cover the arpeggio shape; otherwise explicit/synth hand
                     // shapes can produce an empty lavender frame with no notes
