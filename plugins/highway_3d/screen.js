@@ -11305,7 +11305,12 @@
          * cannot resurrect stale entries. Empty-input case bypasses the cache
          * — it returns a fresh sentinel anyway and isn't hot enough to share.
          */
-        const _HINT_NONE = Object.freeze({ explicit: false, covered: false, hs: null });
+        const _HINT_NONE = Object.freeze({
+            explicit: false,
+            covered: false,
+            hs: null,
+            fallbackInferenceStopBefore: null,
+        });
         let _hintCache = new WeakMap();
         let _hintCacheHsRef = null;
         let _hintCacheTplRef = null;
@@ -11319,19 +11324,52 @@
             const cached = _hintCache.get(ch);
             if (cached !== undefined) return cached;
             const t = ch.t;
+            const tNum = Number(t);
             const cid = ch.id;
             let result = _HINT_NONE;
+            let fallbackCandidateCount = 0;
+            let fallbackInferenceStopBefore = null;
             for (let i = 0; i < hss.length; i++) {
                 const hs = hss[i];
                 const tLo = hsStart(hs);
                 const tHi = hsEnd(hs);
-                if (Number.isNaN(tLo) || Number.isNaN(tHi)) continue;
-                if (t + 1e-4 < tLo || t > tHi + 1e-4) continue;
                 const hsCid = hsChordIdNorm(hs);
-                if (hsCid !== cid && Number(hsCid) !== Number(cid)) continue;
-                const explicit = handShapeMarkedArpeggio(hs, chordTemplates);
-                result = { explicit, covered: true, hs };
-                break;
+                const sameId = hsCid === cid || Number(hsCid) === Number(cid);
+                if (!Number.isNaN(tLo) && !Number.isNaN(tHi)
+                    && !(t + 1e-4 < tLo || t > tHi + 1e-4)
+                    && sameId) {
+                    const explicit = handShapeMarkedArpeggio(hs, chordTemplates);
+                    result = {
+                        explicit,
+                        covered: true,
+                        hs,
+                        fallbackInferenceStopBefore: null,
+                    };
+                    break;
+                }
+
+                // Some legacy charts attach a stale/wrong chord id to a hand-shape
+                // that still starts at the real chord onset. Its shape and arp flags
+                // are untrustworthy, but a single well-formed raw end is useful as
+                // negative-only timing evidence for fallback inference. Ambiguous or
+                // malformed candidates deliberately provide no boundary.
+                if (hsCid == null || sameId
+                    || !Number.isFinite(tNum)
+                    || !Number.isFinite(tLo) || !Number.isFinite(tHi)
+                    || Math.abs(tLo - tNum) > 1e-4
+                    || tHi <= tLo || tHi <= tNum + 1e-6) {
+                    continue;
+                }
+                fallbackCandidateCount++;
+                fallbackInferenceStopBefore = tHi;
+            }
+            if (result === _HINT_NONE && fallbackCandidateCount === 1) {
+                result = {
+                    explicit: false,
+                    covered: false,
+                    hs: null,
+                    fallbackInferenceStopBefore,
+                };
             }
             _hintCache.set(ch, result);
             return result;
@@ -11555,9 +11593,11 @@
          * @param {{ tLo: number, tHi: number } | null} [timeWin]
          *        When set (e.g. from ``<handShape>`` span), scan staggered picks
          *        across the whole held-shape window — RS often omits ``arp`` and ``hd``.
-         * @param {number | null} [stopBefore]
-         *        Exclusive upper boundary for fallback inference without a
-         *        matching hand-shape. Authored hand-shape windows ignore it.
+         * @param {number | null} [nextStopBefore]
+         *        Exclusive next-authored-chord boundary for fallback inference.
+         * @param {number | null} [temporalStopBefore]
+         *        Optional exclusive temporal veto from a unique same-onset stale
+         *        hand-shape. Authored hand-shape windows ignore both boundaries.
          */
         // Cached per chord: result depends on (ch, shape, notesArr) and an
         // optional timeWin which itself is a function of the chord's matching
@@ -11569,27 +11609,72 @@
         // null-timeWin result would stick once handShapes loaded late. shape
         // comes from mergeChordShape(ch) which is also chart-static, so it
         // doesn't enter the invalidation key directly. A null-timeWin result
-        // also depends on the next authored chord boundary; store that scalar
-        // with the boolean so a changed boundary recomputes without globally
-        // invalidating inference for synthetic hand-shape callers.
+        // also depends on the next authored chord boundary and an optional
+        // negative-only stale-hand-shape boundary; store both scalars with the
+        // boolean so changed ownership recomputes without globally invalidating
+        // inference for synthetic hand-shape callers.
         let _arpInferCache = new WeakMap();
         let _arpInferCacheNotesRef = null;
         let _arpInferCacheHssRef = null;
-        function inferArpeggioFromNotePattern(ch, shape, notesArr, timeWin, hss = null, stopBefore = null) {
+        function inferArpeggioFromNotePattern(
+            ch, shape, notesArr, timeWin, hss = null,
+            nextStopBefore = null, temporalStopBefore = null,
+        ) {
             if (!notesArr || notesArr.length === 0 || shape.size < 2) return false;
             if (_arpInferCacheNotesRef !== notesArr || _arpInferCacheHssRef !== hss) {
                 _arpInferCache = new WeakMap();
                 _arpInferCacheNotesRef = notesArr;
                 _arpInferCacheHssRef = hss;
             }
-            const effectiveStopBefore = !timeWin && Number.isFinite(stopBefore)
-                ? Number(stopBefore)
+            const effectiveNextStopBefore = !timeWin && Number.isFinite(nextStopBefore)
+                ? Number(nextStopBefore)
+                : null;
+            const effectiveTemporalStopBefore = !timeWin && Number.isFinite(temporalStopBefore)
+                ? Number(temporalStopBefore)
                 : null;
             const cached = _arpInferCache.get(ch);
-            if (cached !== undefined && cached.stopBefore === effectiveStopBefore) return cached.result;
-            const result = _inferArpeggioFromNotePatternUncached(
-                ch, shape, notesArr, timeWin, effectiveStopBefore);
-            _arpInferCache.set(ch, { stopBefore: effectiveStopBefore, result });
+            if (cached !== undefined
+                && cached.nextStopBefore === effectiveNextStopBefore
+                && cached.temporalStopBefore === effectiveTemporalStopBefore) {
+                return cached.result;
+            }
+
+            // Authored hand-shape windows remain authoritative. Fallback timing
+            // boundaries are deliberately monotonic vetoes: shortening a window
+            // can remove excess hits and otherwise turn a multi-strum rejection
+            // into a new arpeggio inference. Require the legacy/no-boundary result
+            // first, then let each strictly narrower ownership window only turn it
+            // off. A boundary can therefore restore chord gems, never hide new ones.
+            let result = _inferArpeggioFromNotePatternUncached(
+                ch, shape, notesArr, timeWin, null);
+            if (!timeWin && result) {
+                const legacyHi = Number(ch.t) + 2.35;
+                const nextNarrowsLegacy = effectiveNextStopBefore !== null
+                    && Number.isFinite(legacyHi)
+                    && effectiveNextStopBefore <= legacyHi;
+                if (nextNarrowsLegacy) {
+                    result = _inferArpeggioFromNotePatternUncached(
+                        ch, shape, notesArr, null, effectiveNextStopBefore);
+                }
+
+                const activeStopBefore = nextNarrowsLegacy
+                    ? effectiveNextStopBefore
+                    : null;
+                const temporalNarrowsActive = effectiveTemporalStopBefore !== null
+                    && Number.isFinite(legacyHi)
+                    && (activeStopBefore !== null
+                        ? effectiveTemporalStopBefore < activeStopBefore
+                        : effectiveTemporalStopBefore <= legacyHi);
+                if (result && temporalNarrowsActive) {
+                    result = _inferArpeggioFromNotePatternUncached(
+                        ch, shape, notesArr, null, effectiveTemporalStopBefore);
+                }
+            }
+            _arpInferCache.set(ch, {
+                nextStopBefore: effectiveNextStopBefore,
+                temporalStopBefore: effectiveTemporalStopBefore,
+                result,
+            });
             return result;
         }
         function _inferArpeggioFromNotePatternUncached(ch, shape, notesArr, timeWin, stopBefore = null) {
@@ -13585,7 +13670,8 @@
                         || handShapeChartSpanSec(hsHintFrame.hs) >= ARP_INFER_MIN_HAND_SHAPE_SPAN_S)
                         && inferArpeggioFromNotePattern(
                             ch, chShape, notes, hsTimeWinFrame, bundle.handShapes,
-                            hsTimeWinFrame ? null : nextStrictlyLaterChordTime(bundle.chords, ch.t));
+                            hsTimeWinFrame ? null : nextStrictlyLaterChordTime(bundle.chords, ch.t),
+                            hsTimeWinFrame ? null : hsHintFrame.fallbackInferenceStopBefore);
                     // Only suppress the chord gems when standalone notes really
                     // cover the arpeggio shape; otherwise explicit/synth hand
                     // shapes can produce an empty lavender frame with no notes
