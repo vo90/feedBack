@@ -1653,6 +1653,16 @@ def load_plugins(app: FastAPI, context: dict, progress_cb=None, route_setup_fn=N
                 return _base(provider, *args, **kwargs)
 
             plugin_context["register_library_provider"] = _register_scoped_library_provider
+        if callable(plugin_context.get("resolve_directory_grant")):
+            _resolve_directory_grant = plugin_context["resolve_directory_grant"]
+
+            def _resolve_scoped_directory_grant(grant, purpose, *, consume=True, _pid=plugin_id, _base=_resolve_directory_grant):
+                # Owner is derived from the plugin being loaded, never from a
+                # caller-controlled argument.  Purpose remains explicit so a
+                # token minted for one workflow cannot be reused for another.
+                return _base(grant, _pid, purpose, consume=consume)
+
+            plugin_context["resolve_directory_grant"] = _resolve_scoped_directory_grant
 
         # Load routes using importlib to avoid module name collisions.
         # `route_ok` gates graduation: only a plugin that installs AND
@@ -1890,6 +1900,13 @@ def load_plugins(app: FastAPI, context: dict, progress_cb=None, route_setup_fn=N
                 return _base(provider, *args, **kwargs)
 
             ev_context["register_library_provider"] = _register_scoped_fallback_library_provider
+        if callable(ev_context.get("resolve_directory_grant")):
+            _ev_resolve_directory_grant = ev_context["resolve_directory_grant"]
+
+            def _resolve_scoped_fallback_directory_grant(grant, purpose, *, consume=True, _pid=evicted_id, _base=_ev_resolve_directory_grant):
+                return _base(grant, _pid, purpose, consume=consume)
+
+            ev_context["resolve_directory_grant"] = _resolve_scoped_fallback_directory_grant
         # Install the fallback copy's requirements. It was evicted before
         # the main load loop ran, so _install_requirements was never called
         # for it. A user copy that depends on extra packages would otherwise

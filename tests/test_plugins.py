@@ -149,6 +149,33 @@ def test_register_library_provider_context_is_scoped_to_plugin_id(tmp_path, rese
     assert not any(entry.get("capability") == "library" for entry in loaded["compatibility_shims"])
 
 
+def test_resolve_directory_grant_context_is_scoped_to_plugin_id(tmp_path, reset_plugin_state):
+    plugins = reset_plugin_state
+    captured = []
+    _make_plugin(
+        tmp_path, "directory_consumer",
+        routes_body=(
+            "def setup(app, ctx):\n"
+            "    ctx['resolve_directory_grant']('opaque-token', 'library-root', consume=False)\n"
+        ),
+    )
+
+    def resolve_directory_grant(grant, owner, purpose, *, consume=True):
+        captured.append((grant, owner, purpose, consume))
+        return None
+
+    _run_load_plugins(
+        plugins,
+        type("FakeApp", (), {})(),
+        tmp_path,
+        context={"resolve_directory_grant": resolve_directory_grant},
+    )
+
+    assert captured == [(
+        "opaque-token", "directory_consumer", "library-root", False,
+    )]
+
+
 def test_load_sibling_caches_repeat_calls(tmp_path, reset_plugin_state):
     """Two `load_sibling('util')` calls within the same plugin return
     the identical module object — no double exec_module."""
