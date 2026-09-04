@@ -41,7 +41,6 @@ BASE_CONTEXT_KEYS = {
     "library_providers",
     "register_library_provider",
     "unregister_library_provider",
-    "resolve_directory_grant",
     "register_tuning_provider",
     "unregister_tuning_provider",
     "get_sloppak_cache_dir",
@@ -131,9 +130,9 @@ def test_context_values_reach_a_REAL_plugin_by_identity(tmp_path, reset_plugin_s
     true, and blind to everything plugins/__init__.py does. It has to go through the REAL
     loader, because the real loader is exactly what copies and re-binds the context.
 
-    (That is not hypothetical: `register_library_provider` and
-    `resolve_directory_grant` are deliberately wrapped by the loader, per-plugin, to force
-    owner attribution. Pinned below so the intentional exceptions remain explicit.)
+    (That is not hypothetical: `register_library_provider` IS deliberately wrapped by the
+    loader, per-plugin, to force owner attribution. Pinned below so the one intentional
+    exception can't quietly become two.)
     """
     from fastapi import FastAPI
 
@@ -166,9 +165,6 @@ def test_context_values_reach_a_REAL_plugin_by_identity(tmp_path, reset_plugin_s
     def sentinel_register_library_provider(provider, *a, **kw):
         return None
 
-    def sentinel_resolve_directory_grant(grant, owner, purpose, *, consume=True):
-        return None
-
     sink = []
     context = {
         "_probe_sink": sink,
@@ -176,7 +172,6 @@ def test_context_values_reach_a_REAL_plugin_by_identity(tmp_path, reset_plugin_s
         "extract_meta": sentinel_extract,
         "config_dir": tmp_path,
         "register_library_provider": sentinel_register_library_provider,
-        "resolve_directory_grant": sentinel_resolve_directory_grant,
     }
 
     app = FastAPI()
@@ -201,13 +196,10 @@ def test_context_values_reach_a_REAL_plugin_by_identity(tmp_path, reset_plugin_s
     assert callable(seen["load_sibling"])
     assert seen["log"].name == "feedBack.plugin.ctxprobe"
 
-    # DELIBERATE WRAPPERS. Both capabilities are scoped per-plugin so a plugin cannot
-    # forge owner attribution and impersonate another.
+    # THE ONE DELIBERATE WRAPPER. register_library_provider is scoped per-plugin so a
+    # plugin cannot forge owner attribution and impersonate another. Pinned so that the
+    # single intentional exception to identity cannot quietly become two.
     assert seen["register_library_provider"] is not sentinel_register_library_provider, (
         "register_library_provider is supposed to be wrapped per-plugin for owner "
         "attribution — if that wrapper is gone, a plugin can impersonate another"
-    )
-    assert seen["resolve_directory_grant"] is not sentinel_resolve_directory_grant, (
-        "resolve_directory_grant must be wrapped so a plugin cannot redeem another "
-        "plugin's native directory grant"
     )

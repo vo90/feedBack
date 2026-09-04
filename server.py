@@ -46,12 +46,10 @@ from dlc_paths import _get_dlc_dir, _resolve_dlc_path
 import appstate
 import builtin_content
 import demo_mode
-import directory_grants
 import scan
 import tailwind_rebuild
 # Extracted route modules. They import `appstate`, never `server` — one-way graph.
 from routers import audio_effects, artist_aliases, loops, playlists, ws_highway, ws_sync, chart, wanted, library_extras, shop, progression, profile, stats, version, diagnostics
-from routers import directory_grants as directory_grants_router
 from routers import tunings as tunings_router
 import enrichment
 from routers import art as art_router
@@ -84,11 +82,6 @@ import xml.etree.ElementTree as ET
 from fastapi import Request
 
 app = FastAPI(title="FeedBack")
-
-# Private, authenticated loopback seam used only by the managed Desktop to
-# mint opaque grants for native directory selections.  It is registered even
-# when no Desktop secret exists; in browser/server-only runs it fails closed.
-app.include_router(directory_grants_router.router)
 
 # Demo mode lives in lib/demo_mode.py now. The guard is a middleware, so it needs the app —
 # server.py owns it and hands it over rather than making lib/ reach for a global.
@@ -717,10 +710,6 @@ async def startup_events():
         "library_providers": library_providers,
         "register_library_provider": register_library_provider,
         "unregister_library_provider": unregister_library_provider,
-        # The loader replaces this base callable with an owner-scoped wrapper
-        # for each plugin.  A plugin sees (grant, purpose, *, consume=True) and
-        # cannot forge another plugin's owner id.
-        "resolve_directory_grant": directory_grants.resolve_directory_grant,
         "register_tuning_provider": register_tuning_provider,
         "unregister_tuning_provider": unregister_tuning_provider,
         "get_sloppak_cache_dir": lambda: SLOPPAK_CACHE_DIR,
