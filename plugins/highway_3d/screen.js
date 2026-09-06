@@ -4871,7 +4871,7 @@
         let _timingFx           = BG_DEFAULTS.timingFx;
         let _streakFx           = BG_DEFAULTS.streakFx;
         let _bloom              = BG_DEFAULTS.bloom;
-        let _composer = null, _bloomPass = null, _bloomLoad = null, _bloomW = 0, _bloomH = 0;
+        let _composer = null, _bloomPass = null, _bloomLoad = null, _bloomW = 0, _bloomH = 0, _bloomPixelRatio = 0;
         let _sparkPts = null, _sparkPos = null, _sparkCol = null, _sparkVel = null, _sparkLife = null;
         const _SPARK_N = 256;
         const _sparkSeen = new Map();     // note-key -> expiry; one burst per hit
@@ -9280,6 +9280,22 @@
         // #4 Bloom: lazy-load the vendored postprocessing addons and build an
         // EffectComposer (RenderPass -> UnrealBloomPass -> OutputPass/ACES). Returns
         // the composer once ready, or null (caller falls back to a direct render).
+        function _bloomResize(w, h) {
+            if (!_composer || !ren || !(w > 0 && h > 0)) return;
+            const ratio = ren.getPixelRatio();
+            // EffectComposer captures the renderer's ratio at construction.
+            // Adaptive quality can change it without changing the CSS box.
+            if (ratio !== _bloomPixelRatio) {
+                _composer.setPixelRatio(ratio);
+                _bloomPixelRatio = ratio;
+            }
+            w = w | 0; h = h | 0;
+            if (w !== _bloomW || h !== _bloomH) {
+                _composer.setSize(w, h);
+                _bloomW = w; _bloomH = h;
+            }
+        }
+
         function _bloomEnsure() {
             if (_composer) return _composer;
             if (_bloomLoad || !ren || !scene || !cam) return null;
@@ -9303,8 +9319,9 @@
                     _bloomPass = new UB.UnrealBloomPass(new T.Vector2(w, h), 0.65, 0.5, 0.82); // strength, radius, threshold (high → only emissive blooms)
                     comp.addPass(_bloomPass);
                     comp.addPass(new OP.OutputPass());
-                    comp.setSize(w, h);
-                    _bloomW = w; _bloomH = h; _composer = comp;
+                    _bloomW = _bloomH = _bloomPixelRatio = 0;
+                    _composer = comp;
+                    _bloomResize(w, h);
                 } catch (e) { console.warn('[3D-Hwy] bloom init failed', e); _composer = null; }
             }).catch((e) => console.warn('[3D-Hwy] bloom modules failed', e));
             return null;
@@ -16420,9 +16437,7 @@
                     const comp = (_bloom && !_ssActive()) ? _bloomEnsure() : null;
                     if (comp) {
                         const bsz = canvasSize(highwayCanvas);
-                        if (bsz && bsz.w > 0 && bsz.h > 0 && (bsz.w !== _bloomW || bsz.h !== _bloomH)) {
-                            comp.setSize(bsz.w | 0, bsz.h | 0); _bloomW = bsz.w | 0; _bloomH = bsz.h | 0;
-                        }
+                        if (bsz) _bloomResize(bsz.w, bsz.h);
                         if (ren.toneMapping !== T.ACESFilmicToneMapping) ren.toneMapping = T.ACESFilmicToneMapping;
                         pbBeg(6); comp.render(); pbEnd(6);
                     } else {
