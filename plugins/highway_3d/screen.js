@@ -15064,11 +15064,12 @@
                     l.material = _spriteMat2MeshMat(l, bendSm);
                     const cs = NH * 2.4;
                     l.scale.set(cs, cs, 1);
-                    l.position.set(x, y + techniqueYNow + NH * 1.1, noteZ + K);
-                    l.rotation.z = approachRot;
+                    const bendDir = bendVisualDirY(s);
+                    l.position.set(x, y + techniqueYNow + bendDir * NH * 1.1, noteZ + K);
+                    l.rotation.z = approachRot + (bendDir < 0 ? Math.PI : 0);
                     l.renderOrder = techniqueMarkerRenderOrder;
-                    // Reserve stack space above the chevron.
-                    yo = Math.max(yo, y + techniqueYNow + NH * 2.5);
+                    // Only an upward bend occupies the upper label stack.
+                    if (bendDir > 0) yo = Math.max(yo, y + techniqueYNow + NH * 2.5);
                 }
                 if (n.ho || n.po || n.tp) {
                     if (n.ho || n.po) {
