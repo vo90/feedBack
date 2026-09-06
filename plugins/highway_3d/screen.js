@@ -2138,10 +2138,11 @@
      *
      * `linkNext` is per note (including chord members), so build one onset
      * stream per string across both representations. Only the immediately
-     * following onset can be the destination. A same-fret destination is a
-     * held continuation; a changed-fret destination is suppressed only when
-     * it matches the source's authored slide target. That distinction keeps
-     * real HO/PO attacks visible in partial-chord transitions.
+     * following onset can be the destination. An authored slide must reach
+     * its target fret; otherwise only a same-fret hold is a continuation.
+     * Positive sustains bound the link's lifetime, allowing the usual onset
+     * tolerance. Zero/omitted sustains retain authored-link compatibility.
+     * These checks keep later attacks and partial-chord HO/PO gems visible.
      */
     function hwyLinkNextTargetNotes(notes, chords, onsetTolerance = 1e-6) {
         const targets = new Set();
@@ -2191,6 +2192,10 @@
                 for (let i = groupStart; i < groupEnd; i++) {
                     const source = lane[i].note;
                     if (source.ln !== true) continue;
+                    // A dangling link must not claim an unrelated later attack.
+                    // Overlapping holds remain eligible; only expired links end.
+                    if (Number.isFinite(source.sus) && source.sus > 0
+                        && nextTime > lane[i].time + source.sus + NEXT_ON_STRING_T_EPS) continue;
                     const slideTarget = Number.isFinite(source.sl) && source.sl >= 0
                         ? source.sl
                         : Number.isFinite(source.slu) && source.slu >= 0
@@ -2198,8 +2203,7 @@
                             : -1;
                     for (let j = groupEnd; j < nextEnd; j++) {
                         const destination = lane[j].note;
-                        if (destination.f === source.f
-                            || (slideTarget >= 0 && destination.f === slideTarget)) {
+                        if (destination.f === (slideTarget >= 0 ? slideTarget : source.f)) {
                             targets.add(destination);
                         }
                     }
