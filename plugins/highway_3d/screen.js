@@ -14212,6 +14212,16 @@
             return Math.sin(elapsed * Math.PI / VIBRATO_HALF_WAVE_S);
         }
 
+        function prebendOffsetWorld(n) {
+            if (!(n?.sus > 0) || !Array.isArray(n.bnv)) return 0;
+            const first = n.bnv[0];
+            // Only an authored positive value at onset proves a prebend.
+            // A later target or scalar peak must still approach unbent.
+            if (!first || !Number.isFinite(first.t) || first.t < 0 || first.t > 1e-6
+                || !Number.isFinite(first.v) || !(first.v > 0)) return 0;
+            return bendVisualDirY(n.s) * BEND_HALFSTEP_WORLD_Y * first.v;
+        }
+
         function techniqueYOffsetWorld(n, chartTime) {
             if (!(n?.sus > 0)) return 0;
             const bendSemi = bendSemisAtTime(n, chartTime);
@@ -14396,7 +14406,8 @@
             // sliding on to a further fret) keeps following.
             const effSkipBody = skipBody && dt > 0;
             const hasTechniqueVibrato = noteHasVibrato(n);
-            const techniqueYNow = sustained ? techniqueYOffsetWorld(n, now) : 0;
+            const techniqueYNow = sustained ? techniqueYOffsetWorld(n, now)
+                : now <= n.t ? prebendOffsetWorld(n) : 0;
             const noteZ = sustained ? 0 : Math.min(0, dZ(dt));
             // Per-note Z-based renderOrder: far notes get a low value (render
             // first, get overdrawn by close geometry), close notes get a high
