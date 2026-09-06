@@ -35,7 +35,8 @@ function sourceBetween(startText, endText) {
 }
 
 const hwyFirstRelevantFrettedTime = new Function(
-    '"use strict";'
+    '"use strict"; const NFRETS = 24;'
+    + extractFn(src, 'isPlayableFret')
     + extractFn(src, 'hwyFirstRelevantFrettedTime')
     + '\nreturn hwyFirstRelevantFrettedTime;',
 )();

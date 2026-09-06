@@ -1308,6 +1308,25 @@
         return lo;
     }
 
+    function isPlayableFret(f) {
+        return Number.isInteger(f) && f >= 0 && f <= NFRETS;
+    }
+
+    // Some imported muted chord members retain the source's unpitched 127
+    // sentinel. Keep the strike, using the open/muted slab in its anchor lane;
+    // never interpret the sentinel as a fret or clamp it to a playable pitch.
+    function isUnpitchedMute(n) {
+        return n.f === 127 && !!n.mt;
+    }
+
+    function isRenderableNote(n) {
+        return isPlayableFret(n.f) || isUnpitchedMute(n);
+    }
+
+    function usesUnfrettedPosition(n) {
+        return n.f === 0 || isUnpitchedMute(n);
+    }
+
     /**
      * Return the chart time of the first fretted event that can still affect
      * the camera at `now`, or the next fretted onset after it.
@@ -1328,7 +1347,7 @@
         let first = Infinity;
 
         const validFretted = n => n
-            && n.f > 0
+            && isPlayableFret(n.f) && n.f > 0
             && Number.isInteger(n.s)
             && n.s >= 0
             && n.s < nStrings;
@@ -5240,13 +5259,22 @@
             if (cached !== undefined) return cached;
             let filtered = notes;
             for (let i = 0; i < notes.length; i++) {
-                if (!validString(notes[i].s)) {
-                    filtered = notes.filter(cn => validString(cn.s));
+                if (!validString(notes[i].s) || !isRenderableNote(notes[i])) {
+                    filtered = notes.filter(cn => validString(cn.s) && isRenderableNote(cn));
                     break;
                 }
             }
             _filterValidNotesCache.set(notes, filtered);
             return filtered;
+        }
+
+        const _diagramFretsCache = new WeakMap();
+        function diagramFrets(frets) {
+            if (_diagramFretsCache.has(frets)) return _diagramFretsCache.get(frets);
+            const display = frets.every(f => f === -1 || isPlayableFret(f))
+                ? frets : frets.map(f => isPlayableFret(f) ? f : -1);
+            _diagramFretsCache.set(frets, display);
+            return display;
         }
 
         /**
@@ -9764,7 +9792,7 @@
                 }
             }
             const consider = f => {
-                if (!(f > 0)) return;
+                if (!isPlayableFret(f) || !(f > 0)) return;
                 minF = Math.min(minF, f);
                 maxF = Math.max(maxF, f);
                 any = true;
@@ -9774,7 +9802,7 @@
                 for (; i < notes.length; i++) {
                     const n = notes[i];
                     if (n.t > tEnd) break;
-                    if (!validString(n.s)) continue;
+                    if (!validString(n.s) || !isRenderableNote(n)) continue;
                     consider(n.f);
                 }
             }
@@ -9785,7 +9813,7 @@
                     if (ch.t > tEnd) break;
                     if (!ch.notes) continue;
                     for (const cn of ch.notes) {
-                        if (!validString(cn.s)) continue;
+                        if (!validString(cn.s) || !isRenderableNote(cn)) continue;
                         consider(cn.f);
                     }
                 }
@@ -10007,7 +10035,7 @@
             const out = [];
             for (let si = 0; si < tmpl.frets.length; si++) {
                 const f = tmpl.frets[si];
-                if (f >= 0 && validString(si)) out.push({ s: si, f, sus: 0 });
+                if (isPlayableFret(f) && validString(si)) out.push({ s: si, f, sus: 0 });
             }
             return out;
         }
@@ -10141,14 +10169,15 @@
                 for (let si = 0; si < tmpl.frets.length; si++) {
                     if (!validString(si)) continue;
                     const f = tmpl.frets[si];
-                    if (f >= 0) shape.set(si, f);
+                    if (isPlayableFret(f)) shape.set(si, f);
                 }
             }
-            for (let i = 0; i < chordNotes.length; i++) {
-                const cn = chordNotes[i];
+            const members = ch?.notes || chordNotes;
+            for (let i = 0; i < members.length; i++) {
+                const cn = members[i];
                 if (!validString(cn.s)) continue;
-                if (cn.f < 0) shape.delete(cn.s);
-                else shape.set(cn.s, cn.f);
+                if (!isRenderableNote(cn)) shape.delete(cn.s);
+                else shape.set(cn.s, usesUnfrettedPosition(cn) ? 0 : cn.f);
             }
             _chordShapeCache.set(ch, shape);
             return shape;
@@ -10237,7 +10266,7 @@
                 const n = notesArr[i2];
                 if (n.t > tHi) break;
                 if (n.t < tLo) continue;
-                if (!validString(n.s)) continue;
+                if (!validString(n.s) || !isRenderableNote(n)) continue;
                 const ef = shape.get(n.s);
                 if (ef === undefined || ef !== n.f) continue;
                 hitTimes.push(n.t);
@@ -10394,7 +10423,7 @@
                                     if (_cn.t < tw.tLo) continue;
                                     if (!validString(_cn.s)) continue;
                                     if (shape.get(_cn.s) !== _cn.f) continue;
-                                    if (_cn.f > 0 && !_fSeen.has(_cn.s)) {
+                                    if (isPlayableFret(_cn.f) && _cn.f > 0 && !_fSeen.has(_cn.s)) {
                                         _frettedCount++;
                                         _fSeen.add(_cn.s);
                                         if (_onsetNote === null) _onsetNote = _cn;
@@ -10536,7 +10565,7 @@
                     for (let i = 0; i < notesArr.length; i++) {
                         const n = notesArr[i];
                         if (n.t + 1e-4 < shapeLo - 0.18 || n.t > shapeHi + 0.45) continue;
-                        if (!validString(n.s)) continue;
+                        if (!validString(n.s) || !isRenderableNote(n)) continue;
                         const tf = tmpl.frets[n.s];
                         if (typeof tf !== 'number' || tf < 0 || n.f !== tf) continue;
                         if (tFirst === null || n.t < tFirst) tFirst = n.t;
@@ -10700,7 +10729,7 @@
             if (notesArr) {
                 for (let _i = 0; _i < notesArr.length; _i++) {
                     const _n = notesArr[_i];
-                    if (_n.f > 0) events.push({ t: _n.t, f: _n.f });
+                    if (isPlayableFret(_n.f) && _n.f > 0) events.push({ t: _n.t, f: _n.f });
                 }
             }
             // Chord events intentionally excluded: regular chord notes don't show
@@ -11314,13 +11343,13 @@
                 const _fsLo = lowerBoundT(notes, now - 30);
                 for (let _ni = _fsLo; _ni < notes.length; _ni++) {
                     const n = notes[_ni];
-                    if (!validString(n.s)) continue;
+                    if (!validString(n.s) || !isRenderableNote(n)) continue;
                     const dt = n.t - now;
                     if (dt > 2.0) break;
                     const susEnd = n.t + (n.sus || 0);
                     if (dt > 0 && dt < 0.6)
                         noteState.stringAnticipation[n.s] = Math.max(noteState.stringAnticipation[n.s], 1 - dt / 0.6);
-                    if (n.f > 0) {
+                    if (isPlayableFret(n.f) && n.f > 0) {
                         if (now >= n.t && now <= susEnd) noteState.fretHeat[n.f] = 1;
                         else if (n.t > now) noteState.fretHeat[n.f] = Math.max(noteState.fretHeat[n.f], Math.max(0, 1 - dt / 2));
                     }
@@ -11349,7 +11378,7 @@
                     for (const cn of chordNotes) {
                         if (dt > 0 && dt < 0.6)
                             noteState.stringAnticipation[cn.s] = Math.max(noteState.stringAnticipation[cn.s], 1 - dt / 0.6);
-                        if (cn.f > 0) {
+                        if (isPlayableFret(cn.f) && cn.f > 0) {
                             if (now >= ch.t && now <= susEnd) { noteState.fretHeat[cn.f] = 1; continue; }
                             if (ch.t > now) noteState.fretHeat[cn.f] = Math.max(noteState.fretHeat[cn.f], Math.max(0, 1 - dt / 2));
                         }
@@ -11379,9 +11408,9 @@
                 for (let _ni = _nnLo; _ni < notes.length; _ni++) {
                     const n = notes[_ni];
                     if (n.t > now + 2) break;
-                    if (!validString(n.s)) continue;
+                    if (!validString(n.s) || !isRenderableNote(n)) continue;
                     if (!nextNoteByString[n.s] || n.t < nextNoteByString[n.s].t) nextNoteByString[n.s] = n;
-                    if (n.f > 0) fretLastActiveTime[n.f] = now;
+                    if (isPlayableFret(n.f) && n.f > 0) fretLastActiveTime[n.f] = now;
                 }
             }
             if (chords) {
@@ -11393,7 +11422,7 @@
                     if (ch.t > now + 2) break;
                     if (!ch.notes || ch.t <= now) continue;
                     for (const cn of ch.notes) {
-                        if (!validString(cn.s)) continue;
+                        if (!validString(cn.s) || !isRenderableNote(cn)) continue;
                         if (!nextNoteByString[cn.s] || ch.t < nextNoteByString[cn.s].t) {
                             // Reuse per-string scratch object — avoids `{ ...cn, t }` spread allocation.
                             const _sd = _scrNextNoteByStringData[cn.s];
@@ -11401,7 +11430,7 @@
                             _sd.t = ch.t;
                             nextNoteByString[cn.s] = _sd;
                         }
-                        if (cn.f > 0) fretLastActiveTime[cn.f] = now;
+                        if (isPlayableFret(cn.f) && cn.f > 0) fretLastActiveTime[cn.f] = now;
                     }
                 }
             }
@@ -11538,7 +11567,7 @@
                 const _sgLo = lowerBoundT(notes, now);
                 for (let _ni = _sgLo; _ni < notes.length; _ni++) {
                     const n = notes[_ni];
-                    if (!validString(n.s) || n.f <= 0) continue;
+                    if (!validString(n.s) || !isPlayableFret(n.f) || n.f <= 0) continue;
                     const dt = n.t - now;
                     if (dt >= PROJ_WIN_MERGE) break;
                     const nn = nextNoteByString[n.s];
@@ -11556,7 +11585,7 @@
                     if (dt >= PROJ_WIN_MERGE) break;
                     const chordNotes = filterValidNotes(ch.notes);
                     for (const cn of chordNotes) {
-                        if (cn.f <= 0) continue;
+                        if (!isPlayableFret(cn.f) || cn.f <= 0) continue;
                         const nn = nextNoteByString[cn.s];
                         if (!nn || Math.abs(nn.t - ch.t) > NEXT_ON_STRING_T_EPS) continue;
                         const blend = 1 - dt / PROJ_WIN_MERGE;
@@ -11781,9 +11810,9 @@
                     for (const n of notes) {
                         if (n.t + (n.sus || 0) < bootstrapT0) continue;
                         if (n.t > bootstrapT1) break;
-                        if (!validString(n.s)) continue;
-                        const nInWin = n.f > 0 && n.t >= bootstrapT0;
-                        const nSusNow = n.f > 0 && n.t < bootstrapT0
+                        if (!validString(n.s) || !isRenderableNote(n)) continue;
+                        const nInWin = isPlayableFret(n.f) && n.f > 0 && n.t >= bootstrapT0;
+                        const nSusNow = isPlayableFret(n.f) && n.f > 0 && n.t < bootstrapT0
                             && n.t + (n.sus || 0) >= bootstrapNow;
                         if (nInWin || nSusNow) {
                             const w = Math.exp(-Math.abs(n.t - bootstrapNow) / camTau);
@@ -11810,7 +11839,7 @@
                         for (const cn of chNotes) {
                             const cnOk = chOnsetInWin
                                 || (chSusNow && ch.t + (cn.sus || 0) >= bootstrapNow);
-                            if (cn.f > 0 && cnOk) {
+                            if (isPlayableFret(cn.f) && cn.f > 0 && cnOk) {
                                 preWX += xFretMid(cn.f) * chW;
                                 preWSum += chW;
                                 if (cn.f < preDistMin) preDistMin = cn.f;
@@ -11861,7 +11890,7 @@
                 const _noteRenderLo = lowerBoundT(notes, now - 30);
                 for (let _ni = _noteRenderLo; _ni < notes.length; _ni++) {
                     const n = notes[_ni];
-                    if (n.f > 0 && n.t > now && n.t < now + 2) activeFrets.add(n.f);
+                    if (isPlayableFret(n.f) && n.f > 0 && n.t > now && n.t < now + 2) activeFrets.add(n.f);
                     if (n.t > now) {
                         const dt = n.t - now;
                         if (dt < AHEAD) highwayIntensity = Math.max(highwayIntensity, 1 - dt / AHEAD);
@@ -11876,7 +11905,7 @@
                     // attached so async verdicts still land while drawable.
                     const _inArpPersist = _arpPersistKeys.has(_noteKey(n.t, n.s));
                     if (!_inArpPersist && n.t + (n.sus || 0) < ndVerdictT0) continue;
-                    if (!validString(n.s)) continue;
+                    if (!validString(n.s) || !isRenderableNote(n)) continue;
                     // Suppress the gem for linkNext slide-target notes (skipBody=true).
                     // The sustain/slide trail still renders because it now lives outside
                     // the !skipBody gate in drawNote().
@@ -11887,11 +11916,11 @@
                     // window expired).  Each note now owns its label for its full flight.
                     const skipLabel = false;
                     let singleOpenX;
-                    if (n.f === 0) {
+                    if (usesUnfrettedPosition(n)) {
                         const ab = anchorLaneBoundsAt(anchors, n.t);
                         if (ab) singleOpenX = (xFret(ab.dMin) + xFret(ab.dMax)) / 2;
                     }
-                    const singleOpenLaneW = n.f === 0 ? openNoteLaneBoxW(n.t) : undefined;
+                    const singleOpenLaneW = usesUnfrettedPosition(n) ? openNoteLaneBoxW(n.t) : undefined;
                     const arGhostCid = arpeggioChordIdForNoteWithInferCache(
                         n,
                         bundle.handShapes,
@@ -11926,10 +11955,10 @@
                                 // handshape START time (not n.t, not now) so the bracket
                                 // position stays fixed throughout the arpeggio even when
                                 // the chart anchor changes mid-pattern.
-                                const _arpBrktAncB = n.f === 0
+                                const _arpBrktAncB = usesUnfrettedPosition(n)
                                     ? anchorLaneBoundsAt(anchors, _arpBounds.start)
                                     : null;
-                                const _bx = n.f === 0
+                                const _bx = usesUnfrettedPosition(n)
                                     ? (_arpBrktAncB
                                         ? (xFret(_arpBrktAncB.dMin) + xFret(_arpBrktAncB.dMax)) / 2
                                         : (singleOpenX !== undefined ? singleOpenX : curX))
@@ -11942,7 +11971,7 @@
                                     }
                                     return singleOpenLaneW != null ? Math.max(0.22, singleOpenLaneW * 0.96 / (40 * K)) * 20 * K : null;
                                 })();
-                                drawArpBrackets(_bx, sY(n.s), _arpBounds.start - now, _arpBounds.end, now, n.s, n.f === 0, _openHalfW);
+                                drawArpBrackets(_bx, sY(n.s), _arpBounds.start - now, _arpBounds.end, now, n.s, usesUnfrettedPosition(n), _openHalfW);
                                 // Record that this (chordId:occurrenceStart, string) pair has brackets
                                 // so the chord loop doesn't draw a second set on the same string.
                                 // Key includes the arp occurrence start time so two separate arp
@@ -11963,7 +11992,7 @@
                     if (!(cameraMode === 'lookahead')) {
                     const nInWin = n.t >= camT0 && n.t <= camT1;
                     const nSusActive = n.t < camT0 && n.t + (n.sus || 0) >= now;
-                    if (n.f > 0 && (nInWin || nSusActive)) {
+                    if (isPlayableFret(n.f) && n.f > 0 && (nInWin || nSusActive)) {
                         // Symmetric decay around now: previously this
                         // clamped n.t - now at 0, giving every past-
                         // onset note weight 1. That was a tolerable
@@ -12054,7 +12083,7 @@
                         prevAnyChordTime = ch.t;
                     }
                     if (!ch.notes) continue;
-                    // Filter chord notes to in-range strings once. All
+                    // Filter unsupported strings/frets once, retaining muted strikes. All
                     // chord-level aggregations (maxSus, repeat-chord
                     // signature, open-string centroid, frame-box bounds,
                     // active-fret highlights, camera-window dist) read
@@ -12070,7 +12099,7 @@
                         if (dt < AHEAD) highwayIntensity = Math.max(highwayIntensity, 1 - dt / AHEAD);
                     }
                     if (ch.t > now && ch.t < now + 2)
-                        for (const cn of chordNotes) { if (cn.f > 0) activeFrets.add(cn.f); }
+                        for (const cn of chordNotes) { if (isPlayableFret(cn.f) && cn.f > 0) activeFrets.add(cn.f); }
 
                     let maxSus = 0;
                     for (const n of chordNotes) if ((n.sus || 0) > maxSus) maxSus = n.sus;
@@ -12125,7 +12154,7 @@
                     else {
                         let cxL = Infinity, cxR = -Infinity, fretted = 0;
                         for (const cn of chordNotes) {
-                            if (cn.f > 0) {
+                            if (isPlayableFret(cn.f) && cn.f > 0) {
                                 const fx = xFretMid(cn.f);
                                 if (fx < cxL) cxL = fx;
                                 if (fx > cxR) cxR = fx;
@@ -12455,11 +12484,11 @@
                             drawNote(
                                 _scrChordNote,
                                 now,
-                                cn.f === 0 ? chordCX : undefined,
+                                usesUnfrettedPosition(cn) ? chordCX : undefined,
                                 skipLabel,
                                 (isRepeat && !chordLinksSlide) || suppressSynthChord,
                                 chordTailHoldS,
-                                cn.f === 0 ? laneWForOpenStrings : undefined,
+                                usesUnfrettedPosition(cn) ? laneWForOpenStrings : undefined,
                                 true,
                                 ch.id,
                                 chordSusTrailMatchArpFrame,
@@ -12477,7 +12506,7 @@
                             // over-pullback for mixed-sustain chords).
                             if (!(cameraMode === 'lookahead')) {
                             const cnSustainOk = chOnsetInWin || (chSusActive && ch.t + (cn.sus || 0) >= now);
-                            if (cn.f > 0 && cnSustainOk) {
+                            if (isPlayableFret(cn.f) && cn.f > 0 && cnSustainOk) {
                                 camWX += xFretMid(cn.f) * chW;
                                 camWSum += chW;
                                 if (cn.f < camDistMin) camDistMin = cn.f;
@@ -12530,15 +12559,15 @@
                                 return laneWForOpenStrings;
                             })();
                             for (const cn of chordNotes) {
-                                if (!validString(cn.s)) continue;
+                                if (!validString(cn.s) || !isRenderableNote(cn)) continue;
                                 if (_nsBrackets && _nsBrackets.has(cn.s)) continue;
-                                const _bx = cn.f === 0
+                                const _bx = usesUnfrettedPosition(cn)
                                     ? _arpChBrktOpenX
                                     : xFretMid(cn.f);
-                                const _openHalfW = (cn.f === 0 && _arpChBrktOpenW != null)
+                                const _openHalfW = (usesUnfrettedPosition(cn) && _arpChBrktOpenW != null)
                                     ? Math.max(0.22, _arpChBrktOpenW * 0.96 / (40 * K)) * 20 * K
                                     : null;
-                                drawArpBrackets(_bx, sY(cn.s), _arpBracketDt, _arpEnd, now, cn.s, cn.f === 0, _openHalfW);
+                                drawArpBrackets(_bx, sY(cn.s), _arpBracketDt, _arpEnd, now, cn.s, usesUnfrettedPosition(cn), _openHalfW);
                             }
                         }
                     }
@@ -13697,7 +13726,7 @@
                             for (let i = startI; i < notes.length; i++) {
                                 const n = notes[i];
                                 if (n.t > wT1) break;
-                                if (!validString(n.s) || n.f <= 0) continue;
+                                if (!validString(n.s) || !isPlayableFret(n.f) || n.f <= 0) continue;
                                 if (n.f <= 12) hasLow = true; else hasHigh = true;
                                 if (hasLow && hasHigh) break;
                             }
@@ -13709,7 +13738,7 @@
                                 if (ch.t > wT1) break outer;
                                 if (!ch.notes) continue;
                                 for (const cn of ch.notes) {
-                                    if (!validString(cn.s) || cn.f <= 0) continue;
+                                    if (!validString(cn.s) || !isPlayableFret(cn.f) || cn.f <= 0) continue;
                                     if (cn.f <= 12) hasLow = true; else hasHigh = true;
                                     if (hasLow && hasHigh) break outer;
                                 }
@@ -13885,7 +13914,7 @@
                         const lbl = chordTemplateLabel(tmpl);
                         // Last valid chord (highest t ≤ now) naturally wins since array is sorted.
                         if (lbl && tmpl?.frets) {
-                            newChord = { name: lbl, frets: tmpl.frets, t: ch.t, t0: ch.t, chDt, nStr };
+                            newChord = { name: lbl, frets: diagramFrets(tmpl.frets), t: ch.t, t0: ch.t, chDt, nStr };
                         }
                     }
                 }
@@ -13935,7 +13964,7 @@
                                     const tmpl = bundle.chordTemplates?.[ch.id];
                                     const lbl = chordTemplateLabel(tmpl);
                                     if (lbl && tmpl?.frets) {
-                                        histPrev = { name: lbl, frets: tmpl.frets, t: ch.t, t0: ch.t, nStr };
+                                        histPrev = { name: lbl, frets: diagramFrets(tmpl.frets), t: ch.t, t0: ch.t, nStr };
                                     }
                                 }
                             }
@@ -14200,7 +14229,7 @@
             const fr = _drawChordTemplates?.[cid]?.frets;
             if (!Array.isArray(fr) || stringIdx < 0 || stringIdx >= fr.length) return noteFret;
             const tf = fr[stringIdx];
-            if (typeof tf !== 'number' || tf < 0) return noteFret;
+            if (!isPlayableFret(tf)) return noteFret;
             return tf;
         }
         // Chart-format-style ghost digit: finger position (1=index … 4=pinky) from
@@ -14265,7 +14294,11 @@
             // Belt + suspenders: callers already gate via validString(),
             // but drawNote is also entered through { ...cn } chord-note
             // spreads, so re-check here before indexing material arrays.
-            if (!validString(s)) return;
+            if (!validString(s) || !isRenderableNote(n)) return;
+            // Preserve source fret/identity for note-detect matching. Only this
+            // local drawing view treats an unpitched muted strike as a slab.
+            const sourceNote = n;
+            if (isUnpitchedMute(n)) n = { ...n, f: 0 };
             const nxFrame = _drawNextByString && _drawNextByString[s];
             const dt = n.t - now;
             const ghostHold = fromChord ? linger : GHOST_HOLD_AFTER_ONSET;
@@ -14331,7 +14364,7 @@
                 if (hasSus) _susVerdictLatch.delete(Math.round(n.t * 1e4) * 10 + n.s);
                 if (!_ndHasProvider || dt < -NOTEDETECT_GEM_VERDICT_WINDOW) return;
                 let _ndProbe = null;
-                try { _ndProbe = _ndGetNoteState(n, n.t); } catch (e) { _ndProbe = null; }
+                try { _ndProbe = _ndGetNoteState(sourceNote, sourceNote.t); } catch (e) { _ndProbe = null; }
                 _ndProbed = true;
                 _ndProbedState = _ndProbe;
                 const _probeSt = (_ndProbe && typeof _ndProbe === 'object') ? _ndProbe.state : _ndProbe;
@@ -14412,7 +14445,7 @@
                 if (_ndProbed) {
                     _raw = _ndProbedState;
                 } else {
-                    try { _raw = _ndGetNoteState(n, n.t); } catch (e) { _raw = null; }
+                    try { _raw = _ndGetNoteState(sourceNote, sourceNote.t); } catch (e) { _raw = null; }
                 }
                 if (_raw) {
                     _ndCsIsObj = typeof _raw === 'object';
@@ -14456,14 +14489,14 @@
                 if (!_lv_cur) {
                     for (let _mi = 0; _mi < _ndHitMarks.length; _mi++) {
                         const _mm = _ndHitMarks[_mi];
-                        if (_mm.s === n.s && _mm.f === n.f && Math.abs(_mm.noteTime - n.t) < _ND_TIME_EPS) {
+                        if (_mm.s === n.s && _mm.f === sourceNote.f && Math.abs(_mm.noteTime - n.t) < _ND_TIME_EPS) {
                             _lv_cur = 'hit'; _lv_good = true; break;
                         }
                     }
                     if (!_lv_cur) {
                         for (let _mi = 0; _mi < _ndMissMarks.length; _mi++) {
                             const _mm = _ndMissMarks[_mi];
-                            if (_mm.s === n.s && _mm.f === n.f && Math.abs(_mm.noteTime - n.t) < _ND_TIME_EPS) {
+                            if (_mm.s === n.s && _mm.f === sourceNote.f && Math.abs(_mm.noteTime - n.t) < _ND_TIME_EPS) {
                                 _lv_cur = 'miss'; _lv_good = false; break;
                             }
                         }
@@ -14599,7 +14632,7 @@
                 if (_ndHitMarks.length) {
                     for (let i = 0; i < _ndHitMarks.length; i++) {
                         const m = _ndHitMarks[i];
-                        if (m.s === n.s && m.f === n.f && Math.abs(m.noteTime - n.t) < _ND_TIME_EPS) {
+                        if (m.s === n.s && m.f === sourceNote.f && Math.abs(m.noteTime - n.t) < _ND_TIME_EPS) {
                             _ndOutline = mHitBright[s] ?? mGlow[s]; _ndFaceMat = mHitBrightArrays[s] ?? null; _ndMatchedMark = m; _ndHadHitMark = true; break;
                         }
                     }
@@ -14607,7 +14640,7 @@
                 if (!_ndHadHitMark && _ndMissMarks.length) {
                     for (let i = 0; i < _ndMissMarks.length; i++) {
                         const m = _ndMissMarks[i];
-                        if (m.s === n.s && m.f === n.f && Math.abs(m.noteTime - n.t) < _ND_TIME_EPS) {
+                        if (m.s === n.s && m.f === sourceNote.f && Math.abs(m.noteTime - n.t) < _ND_TIME_EPS) {
                             _ndOutline = mMissOutline; _ndFaceMat = mMissEdgeArrays; _ndMatchedMark = m; break;
                         }
                     }
