@@ -8468,6 +8468,11 @@
                     return;
                 }
                 if (changedKey === 'reactive' || changedKey === 'showFretOnNote' ||
+                    changedKey === 'hitFx' || changedKey === 'sparks' ||
+                    changedKey === 'cinematic' || changedKey === 'verdictMarks' ||
+                    changedKey === 'timingFx' || changedKey === 'streakFx' ||
+                    changedKey === 'bloom' || changedKey === 'fpsVisible' ||
+                    changedKey === 'fretDividersVisible' || changedKey === 'chordDiagramVisible' ||
                     changedKey === 'fretNumberGhostScope' ||
                     changedKey === 'cameraSmoothing' || changedKey === 'zoomSmoothing' ||
                     changedKey === 'tiltSmoothing' || changedKey === 'cameraLockLow' ||
