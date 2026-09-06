@@ -5923,7 +5923,7 @@
         // the drawNote hot path, so a string cache key would allocate per
         // note per frame. Disposed in teardown. `hex` is a 0xRRGGBB number;
         // the low nibble of the key tags the variant (0 ▲, 1 ▼, 3-6 chevron
-        // step-count) so triangle and chevron entries can't collide.
+        // step-count, 8/9 slide, 10/11 slap/pop) so marker entries can't collide.
         const _techMatCache = new Map();
 
         // Hammer-on / pull-off triangle marker: a white ▲ (up) / ▼ (down)
@@ -6018,6 +6018,40 @@
             g.closePath();
             g.fillStyle = '#' + h.toString(16).padStart(6, '0');
             g.fill();
+            const mat = new T.SpriteMaterial({
+                map: new T.CanvasTexture(c), transparent: true,
+                depthTest: false, depthWrite: false,
+            });
+            _techMatCache.set(key, mat);
+            return mat;
+        }
+
+        // Slap = a downward bowed bar; pop = the upward counterpart. A dark
+        // filled bar with a string-colored rim stays distinct from HO/PO triangles.
+        function bassAttackMat(isPop, hex) {
+            const h = (hex >>> 0) & 0xffffff;
+            const key = h * 16 + (isPop ? 11 : 10);
+            const cached = _techMatCache.get(key);
+            if (cached) return cached;
+            const S = 256;
+            const c = document.createElement('canvas');
+            c.width = c.height = S;
+            const g = c.getContext('2d');
+            const sy = y => (isPop ? 1 - y : y) * S;
+            g.beginPath();
+            g.moveTo(S * 0.12, sy(0.30));
+            g.lineTo(S * 0.50, sy(0.54));
+            g.lineTo(S * 0.88, sy(0.30));
+            g.lineTo(S * 0.88, sy(0.50));
+            g.lineTo(S * 0.50, sy(0.74));
+            g.lineTo(S * 0.12, sy(0.50));
+            g.closePath();
+            g.fillStyle = '#101820';
+            g.fill();
+            g.lineJoin = 'round';
+            g.lineWidth = S * 0.065;
+            g.strokeStyle = '#' + h.toString(16).padStart(6, '0');
+            g.stroke();
             const mat = new T.SpriteMaterial({
                 map: new T.CanvasTexture(c), transparent: true,
                 depthTest: false, depthWrite: false,
@@ -12469,6 +12503,10 @@
                             // so Object.assign leaves a stale `true` from a previous
                             // muted chord note untouched. Reset it explicitly here.
                             _scrChordNote.fhm = cn.fhm || false;
+                            // Bass attacks are also omit-when-false: do not let
+                            // a reused chord member inherit the preceding marker.
+                            _scrChordNote.slp = cn.slp || false;
+                            _scrChordNote.plk = cn.plk || false;
                             // Same stale-scratch hazard for the bend shape:
                             // `bnv`/`bt` are omit-when-default on the wire, so a
                             // chord note without them would otherwise inherit the
@@ -14118,7 +14156,7 @@
         function noteHasRepeatTechniqueCue(n) {
             // Compact repeat frames have their own palm/fret-hand mute marks,
             // but these cues live on individual gems and must approach with them.
-            return !!(n.hm || n.hp || n.ho || n.po || n.tp || n.ac
+            return !!(n.hm || n.hp || n.ho || n.po || n.tp || n.ac || n.slp || n.plk
                 || (Number(n.bn) || 0) > 0
                 || (Array.isArray(n.bnv) && n.bnv.some(p => (Number(p.v) || 0) > 0)));
         }
@@ -15102,6 +15140,20 @@
                         chevron.rotation.z = approachRot;
                         chevron.scale.set(chevronScale, chevronScale, 1);
                         chevron.renderOrder = techniqueMarkerRenderOrder;
+                    }
+                }
+                if (n.slp || n.plk) {
+                    for (let attack = 0; attack < 2; attack++) {
+                        const isPop = attack === 1;
+                        if (!(isPop ? n.plk : n.slp)) continue;
+                        const attackMark = pTechPlane.get();
+                        attackMark.material = _spriteMat2MeshMat(attackMark, bassAttackMat(isPop, activePalette[s]));
+                        attackMark.material.opacity = _showHit ? 1.0 : 0.9;
+                        attackMark.scale.set(NW * 1.55 * (n.f === 0 ? openWScale : 1), NH * 1.7, 1);
+                        const attackOffset = n.slp && n.plk ? (isPop ? 1 : -1) * NH * 0.65 : 0;
+                        attackMark.position.set(x, y + techniqueYNow + attackOffset, noteZ + K);
+                        attackMark.rotation.z = approachRot;
+                        attackMark.renderOrder = techniqueMarkerRenderOrder;
                     }
                 }
                 // Tremolo label ('~~~') removed — trail shape already conveys it visually.

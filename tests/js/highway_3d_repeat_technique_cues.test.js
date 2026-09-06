@@ -26,7 +26,7 @@ test('Godzilla-like palm-muted pinch harmonics retain their approach gems', () =
 });
 
 test('each gem-only technique is preserved even with zero sustain', () => {
-    for (const flag of ['hm', 'hp', 'ho', 'po', 'tp', 'ac']) {
+    for (const flag of ['hm', 'hp', 'ho', 'po', 'tp', 'ac', 'slp', 'plk']) {
         assert.equal(suppress(true, false, [{ s: 2, f: 5, sus: 0, [flag]: true }]), false, flag);
     }
     for (const bend of [{ bn: 1 }, { bn: 0, bnv: [{ t: 0.2, v: 1 }] }]) {
