@@ -102,3 +102,21 @@ test('camera bootstrap and lookahead ignore sentinel and malformed frets', () =>
     assert.deepEqual(run.lookaheadComputeFretBounds(0, [], notes, chords), { minF: 7, maxF: 7 });
     assert.deepEqual(run.lookaheadComputeFretBounds(0, [{ time: 0, fret: 3, width: 4 }], [], chords), { minF: 3, maxF: 6 });
 });
+
+
+test('standalone muted arpeggio brackets use the same width as the unfretted slab', () => {
+    const start = src.indexOf('const _openHalfW = (() => {');
+    const end = src.indexOf('drawArpBrackets(', start);
+    assert.ok(start > 0 && end > start);
+    const width = new Function('n', '_arpBrktAncB', 'singleOpenLaneW',
+        'const NW = 1, K = 1, xFret = f => f;'
+        + fn('isUnpitchedMute') + fn('usesUnfrettedPosition')
+        + src.slice(start, end) + ';return _openHalfW;');
+    for (const anchor of [{ dMin: 2, dMax: 6 }, null]) {
+        const expected = width({ f: 0 }, anchor, 12);
+        assert.ok(expected > 0);
+        assert.equal(width({ f: 127, mt: true }, anchor, 12), expected);
+        assert.equal(width({ f: 7 }, anchor, 12), null);
+        assert.equal(width({ f: 127 }, anchor, 12), null);
+    }
+});

@@ -13459,7 +13459,7 @@
                                         : (singleOpenX !== undefined ? singleOpenX : curX))
                                     : xFretMid(n.f);
                                 const _openHalfW = (() => {
-                                    if (n.f !== 0) return null;
+                                    if (!usesUnfrettedPosition(n)) return null;
                                     if (_arpBrktAncB) {
                                         const _xl = xFret(_arpBrktAncB.dMin), _xr = xFret(_arpBrktAncB.dMax);
                                         if (_xr > _xl) return Math.max(0.22, (_xr - _xl + NW * 0.4 * 2) * 0.96 / (40 * K)) * 20 * K;
