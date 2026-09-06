@@ -12443,6 +12443,7 @@
                             }
                         }
                     }
+                    const suppressRepeatGems = repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes);
                     if (!deferChordGems || _deferFallback || suppressSynthChord) {
                         for (const cn of chordNotes) {
                             // Suppress non-first gems while an authored arpeggio frame
@@ -12486,7 +12487,7 @@
                                 now,
                                 usesUnfrettedPosition(cn) ? chordCX : undefined,
                                 skipLabel,
-                                (isRepeat && !chordLinksSlide) || suppressSynthChord,
+                                suppressRepeatGems || suppressSynthChord,
                                 chordTailHoldS,
                                 usesUnfrettedPosition(cn) ? laneWForOpenStrings : undefined,
                                 true,
@@ -14112,6 +14113,18 @@
 
         function noteHasVibrato(n) {
             return !!(n && (n.vb || n.vibrato));
+        }
+
+        function noteHasRepeatTechniqueCue(n) {
+            // Compact repeat frames have their own palm/fret-hand mute marks,
+            // but these cues live on individual gems and must approach with them.
+            return !!(n.hm || n.hp || n.ho || n.po || n.tp || n.ac
+                || (Number(n.bn) || 0) > 0
+                || (Array.isArray(n.bnv) && n.bnv.some(p => (Number(p.v) || 0) > 0)));
+        }
+
+        function repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes) {
+            return !!isRepeat && !chordLinksSlide && !chordNotes.some(noteHasRepeatTechniqueCue);
         }
 
         function bendVisualDirY(stringIdx) {
