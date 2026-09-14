@@ -51,6 +51,9 @@
     let lastUserAction = null;
     let pendingSeekWasPlaying = null;
     let commandAdapterDepth = 0;
+    // Resume may schedule a countdown. Its completion is awaited outside the
+    // adapter echo guard so pause/stop and loop events remain observable.
+    const pendingResumes = new Set();
     let currentSession = _newIdleSession();
 
     // Run a command's transport-adapter call while flagging that any resulting
@@ -813,12 +816,14 @@
         // A stopped (terminal) session is already rejected as 'no-target' by
         // _denyIfNoTarget above, so no separate 'already stopped' branch here.
         const session = currentSession;
+        const sequence = commandSequence;
         try { if (transportAdapter && typeof transportAdapter.pause === 'function') await _driveAdapter(() => transportAdapter.pause({ requesterId })); }
         catch (err) {
             if (currentSession !== session) return _supersededOutcome('pause', session, requesterId);
             return _outcome('pause', 'failed', 'failed', err && err.message ? err.message : String(err), { requesterId });
         }
         if (currentSession !== session) return _supersededOutcome('pause', session, requesterId);
+        if (sequence !== commandSequence) return _outcome('pause', 'cancelled', 'cancelled', 'A newer transport action superseded pause', { requesterId });
         _setState('paused', { requesterId, priority: _priority(args) });
         _recordOutcome('pause', 'handled', { status: 'paused', requesterId });
         _emitPlayback('paused', { requesterId });
@@ -836,15 +841,27 @@
         // normal-priority resumes (the block keys off lastUserAction.command).
         if (_priority(args) === 'user') { commandSequence += 1; lastUserAction = { command: 'resume', sequence: commandSequence, requesterId, createdAt: _now() }; }
         const session = currentSession;
+        const request = { session, sequence: commandSequence, requesterId, resumed: false };
+        pendingResumes.add(request);
         try {
             if (transportAdapter && typeof transportAdapter.resume === 'function') {
-                const result = await _driveAdapter(() => transportAdapter.resume({ requesterId }));
+                let result = await _driveAdapter(() => transportAdapter.resume({ requesterId }));
+                if (result && result.completion) result = await result.completion;
                 if (currentSession !== session) return _supersededOutcome('resume', session, requesterId);
+                if (request.sequence !== commandSequence) return _outcome('resume', 'cancelled', 'cancelled', 'A newer transport action superseded resume', { requesterId });
                 if (result && result.unavailable) return _outcome('resume', 'unavailable', 'unavailable', result.reason || 'Media route cannot resume', { requesterId });
+                if (result && result.completed === false) {
+                    _mergeTransportSnapshot(_snapshotTransport());
+                    _setState(currentSession.transport.isPlaying ? 'playing' : 'paused', { requesterId });
+                    const status = result.status === 'failed' ? 'failed' : 'cancelled';
+                    return _outcome('resume', status, status, result.reason || 'Playback did not resume', { requesterId });
+                }
             }
         } catch (err) {
             if (currentSession !== session) return _supersededOutcome('resume', session, requesterId);
             return _outcome('resume', 'failed', 'failed', err && err.message ? err.message : String(err), { requesterId });
+        } finally {
+            pendingResumes.delete(request);
         }
         if (currentSession !== session) return _supersededOutcome('resume', session, requesterId);
         _setState('playing', { requesterId, priority: _priority(args) });
@@ -852,7 +869,7 @@
         // Emit only 'resumed' (not 'started'): observers must be able to tell a
         // resume from a fresh start, and a double signal can fire startup logic
         // twice. Fresh playback emits 'started' from _start.
-        _emitPlayback('resumed', { requesterId });
+        if (!request.resumed) _emitPlayback('resumed', { requesterId });
         return _handled('resume', 'playing', snapshot({ exportMode: 'exported' }));
     }
 
@@ -1032,7 +1049,27 @@
             _setState(shouldPlay ? 'playing' : 'paused', { requesterId: source.requesterId, readiness: 'ready', reason: source.reason });
         }
         else if (name === 'loop-restarted') {
-            if (currentSession.loop) currentSession.loop.lastRestartAt = _now();
+            const startTime = _number(source.loopA, null);
+            const endTime = _number(source.loopB, null);
+            const lastRestartAt = _now();
+            if (startTime != null && endTime != null) {
+                // The core loop bridge emits one legacy loop:restart event for
+                // both the initial pass and later wraps. Promote a previously
+                // armed snapshot to active here without requiring a duplicate
+                // loop-set event.
+                _updateLoopFromSnapshot({
+                    ...currentSession.loop,
+                    startTime,
+                    endTime,
+                    enabled: true,
+                    state: 'active',
+                    requesterId: source.requesterId,
+                    lastRestartAt,
+                });
+            } else if (currentSession.loop) {
+                currentSession.loop.lastRestartAt = lastRestartAt;
+                currentSession.media.loop = _clone(currentSession.loop);
+            }
         } else if (name === 'loop-stale') {
             if (currentSession.loop) currentSession.loop.state = 'stale';
         }
@@ -1081,7 +1118,15 @@
                 // driving the transport adapter, the song:* events it produces
                 // are not genuine legacy-surface usage and would duplicate the
                 // command's own playback:* events (and re-archive on stop).
-                if (commandAdapterDepth > 0) return;
+                // Loop restart is a semantic side effect of a redirected seek,
+                // not a song:* echo synthesized again by the command handler.
+                if (commandAdapterDepth > 0 && legacy !== 'loop:restart') return;
+                const resumes = [...pendingResumes].filter(request => request.session === currentSession
+                    && request.sequence === commandSequence);
+                if (resumes.length && legacy === 'song:play') return;
+                if (legacy === 'song:resume') {
+                    for (const request of resumes) request.resumed = true;
+                }
                 const detail = _plainObject(event && event.detail);
                 recordBridgeHit({ bridgeId: 'playback.song-events', legacySurface: legacy, source: detail.requesterId || 'legacy-event-bus', reason: 'legacy song event observed' });
                 if (legacy === 'song:loading') {
@@ -1100,7 +1145,8 @@
                     transportEvent('loop-restarted', { loopA: detail.loopA, loopB: detail.loopB, currentTime: detail.time, requesterId: 'core.loop' });
                     return;
                 }
-                transportEvent(playbackEvent, { ...detail, requesterId: detail.requesterId || 'legacy-event-bus' });
+                transportEvent(playbackEvent, { ...detail, requesterId: detail.requesterId
+                    || (legacy === 'song:resume' && resumes[0]?.requesterId) || 'legacy-event-bus' });
             });
         }
     }

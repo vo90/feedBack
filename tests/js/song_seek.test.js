@@ -16,7 +16,19 @@ const APP_JS = path.join(__dirname, '..', '..', 'static', 'js', 'transport.js');
 function extractFunction(src, signature) {
     const start = src.indexOf(signature);
     if (start === -1) throw new Error(`extractFunction: '${signature}' not found in app.js`);
-    const openBrace = src.indexOf('{', start);
+    let scan = start + signature.length;
+    while (scan < src.length && src[scan] !== '(' && src[scan] !== '{') scan++;
+    if (src[scan] === '(') {
+        let parenDepth = 1;
+        scan++;
+        while (scan < src.length && parenDepth > 0) {
+            const ch = src[scan];
+            if (ch === '(') parenDepth++;
+            else if (ch === ')') parenDepth--;
+            scan++;
+        }
+    }
+    const openBrace = src.indexOf('{', scan);
     let depth = 1;
     let i = openBrace + 1;
     while (i < src.length && depth > 0) {
@@ -74,6 +86,11 @@ function loadFunctions(sandbox, src) {
     const code = `
         let _audioSeekChain = Promise.resolve();
         let _audioSeekGen = 0;
+        let _playAttemptGen = 0;
+        let _resumeRequestGen = 0;
+        let _resumeInFlight = null;
+        let _loopPlayStartTargetResolver = null;
+        let _loopRestartHandler = null;
         // _audioSeek now syncs the jump-fix tracker so far seeks don't
         // trigger an immediate revert; declare it here so the sandbox
         // assignment lands on a real binding rather than an implicit global.
@@ -88,10 +105,16 @@ function loadFunctions(sandbox, src) {
         ${extractFunction(src, 'function _juceSeekWithTimeout(')}
         ${extractFunction(src, 'function _audioTime()')}
         ${extractFunction(src, 'function _audioDuration()')}
-        ${extractFunction(src, 'async function _audioSeek(')}
+        ${extractFunction(src, 'function setLoopPlayStartTargetResolver(')}
+        ${extractFunction(src, 'function setLoopRestartHandler(')}
+        ${extractFunction(src, 'async function _restartLoopFromOutside(')}
+        ${extractFunction(src, 'async function _audioSeek')}
         ${extractFunction(src, 'async function seekBy(')}
         globalThis.__audioSeek = _audioSeek;
         globalThis.__seekBy = seekBy;
+        globalThis.__setLoopPlayStartTargetResolver = setLoopPlayStartTargetResolver;
+        globalThis.__setLoopRestartHandler = setLoopRestartHandler;
+        globalThis.__setPlaying = value => { S.isPlaying = !!value; };
         // Mirror _resetAudioSeekState exactly: bump only — chain stays so
         // new seeks queue behind in-flight ones and don't race the IPC.
         globalThis.__bumpGen = () => { _audioSeekGen++; };
@@ -287,10 +310,112 @@ test('seekBy floors at zero (does not seek to negative time)', async () => {
     assert.equal(seek.detail.to, 0);
 });
 
-// CENSUS over the WHOLE frontend, not one file. This test counts call/emit sites, and the
-// carve keeps moving them between app.js and static/js/*.js — point it at a single file
-// and the count silently shrinks as code leaves, which reads as "someone deleted an emit"
-// (or, worse, passes while genuinely missing sites). Read every source that can hold one.
+test('timeline seeks remain unrestricted when an active loop has a play-start target', async () => {
+    const src = fs.readFileSync(APP_JS, 'utf8');
+    const sandbox = buildSandbox({ juceMode: false, currentTime: 30 });
+    loadFunctions(sandbox, src);
+    sandbox.__setLoopPlayStartTargetResolver((requested) => (
+        requested >= 12 && requested < 20 ? requested : 12
+    ));
+
+    await sandbox.__audioSeek(90, 'sectionmap-click', {
+        restartActiveLoopWhilePlaying: true,
+    });
+
+    const seek = sandbox.__emitCalls.find((c) => c.event === 'song:seek');
+    assert.equal(seek.detail.from, 30);
+    assert.equal(seek.detail.to, 90);
+    assert.equal(sandbox.audio._t, 90);
+});
+
+test('timeline seeks during playback restart an active loop at A', async () => {
+    const src = fs.readFileSync(APP_JS, 'utf8');
+    const sandbox = buildSandbox({ juceMode: false, currentTime: 30 });
+    loadFunctions(sandbox, src);
+    sandbox.__setLoopPlayStartTargetResolver((requested) => (
+        requested >= 12 && requested < 20 ? requested : 12
+    ));
+    sandbox.__setPlaying(true);
+
+    await sandbox.__audioSeek(3, 'sectionmap-click', {
+        restartActiveLoopWhilePlaying: true,
+    });
+
+    const seek = sandbox.__emitCalls.find((c) => c.event === 'song:seek');
+    assert.equal(seek.detail.from, 30);
+    assert.equal(seek.detail.to, 12);
+    assert.equal(sandbox.audio._t, 12);
+});
+
+test('outside timeline seeks delegate to the loop restart policy while playing', async () => {
+    const src = fs.readFileSync(APP_JS, 'utf8');
+    const sandbox = buildSandbox({ juceMode: false, currentTime: 30 });
+    loadFunctions(sandbox, src);
+    const restartCalls = [];
+    sandbox.__setLoopPlayStartTargetResolver((requested) => (
+        requested >= 12 && requested < 20 ? requested : 12
+    ));
+    sandbox.__setLoopRestartHandler(async (request) => {
+        restartCalls.push(request);
+        sandbox.audio._t = request.targetTime;
+        return { completed: true, from: 30, to: request.targetTime };
+    });
+    sandbox.__setPlaying(true);
+
+    const result = await sandbox.__audioSeek(3, 'sectionmap-click', {
+        restartActiveLoopWhilePlaying: true,
+    });
+
+    assert.equal(restartCalls.length, 1);
+    assert.equal(restartCalls[0].requestedTime, 3);
+    assert.equal(restartCalls[0].targetTime, 12);
+    assert.equal(restartCalls[0].trigger, 'seek');
+    assert.equal(result.completed, true);
+    assert.equal(result.to, 12);
+    assert.equal(sandbox.__emitCalls.length, 0, 'the controller-owned restart must own its seek event');
+});
+
+test('timeline seeks during playback can move freely within A-B', async () => {
+    const src = fs.readFileSync(APP_JS, 'utf8');
+    const sandbox = buildSandbox({ juceMode: false, currentTime: 14 });
+    loadFunctions(sandbox, src);
+    sandbox.__setLoopPlayStartTargetResolver((requested) => (
+        requested >= 12 && requested < 20 ? requested : 12
+    ));
+    sandbox.__setPlaying(true);
+
+    await sandbox.__audioSeek(17, 'sectionmap-click', {
+        restartActiveLoopWhilePlaying: true,
+    });
+
+    const seek = sandbox.__emitCalls.find((c) => c.event === 'song:seek');
+    assert.equal(seek.detail.from, 14);
+    assert.equal(seek.detail.to, 17);
+    assert.equal(sandbox.audio._t, 17);
+});
+
+test('inside timeline seeks do not invoke the loop restart policy', async () => {
+    const src = fs.readFileSync(APP_JS, 'utf8');
+    const sandbox = buildSandbox({ juceMode: false, currentTime: 14 });
+    loadFunctions(sandbox, src);
+    let restartCalls = 0;
+    sandbox.__setLoopPlayStartTargetResolver((requested) => (
+        requested >= 12 && requested < 20 ? requested : 12
+    ));
+    sandbox.__setLoopRestartHandler(async () => {
+        restartCalls++;
+        return { completed: true, from: 14, to: 12 };
+    });
+    sandbox.__setPlaying(true);
+
+    await sandbox.__audioSeek(17, 'sectionmap-click', {
+        restartActiveLoopWhilePlaying: true,
+    });
+
+    assert.equal(restartCalls, 0);
+    assert.equal(sandbox.audio._t, 17);
+});
+
 function allFrontendSources() {
     const jsDir = path.join(__dirname, '..', '..', 'static', 'js');
     const parts = [fs.readFileSync(path.join(__dirname, '..', '..', 'static', 'app.js'), 'utf8')];

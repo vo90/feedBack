@@ -8,7 +8,8 @@
 // Esc must stay bubble-phase so it doesn't reorder ahead of the player's
 // Escape-to-exit handling. A revert to bubble-phase should fail here.
 //
-// Source-level only — same strategy as the other tests/js/ files.
+// Capture-phase contract checks. Real DOM/CSS, focus, trigger toggling and
+// outside-click behavior are covered in tests/browser/loop-panel.spec.js.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
