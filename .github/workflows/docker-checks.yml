@@ -3,8 +3,7 @@ name: Docker build checks
 on:
   push:
     branches:
-      - fix/docker-ffmpeg-retention
-      - fix/docker-ffmpeg-retention-integration
+      - main
       - dev/integration-v2
     paths:
       - Dockerfile
