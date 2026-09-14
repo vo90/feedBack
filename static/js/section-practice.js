@@ -586,7 +586,7 @@ function _sectionPracticePillHtml() {
     return '<button type="button" id="section-practice-pill" class="section-practice-pill"'
         + ' aria-haspopup="dialog" aria-expanded="false" aria-controls="section-practice-bar"'
         + ' aria-label="Practice &amp; Loops"'
-        + ' onclick="toggleSectionPracticePopover()" title="Practice &amp; Loops">'
+        + ' onclick="toggleSectionPracticePopover(this)" title="Practice &amp; Loops">'
         + '<span class="section-practice-pill-icon" aria-hidden="true">'
         + '<svg class="v3-rail-svg section-practice-pill-svg" viewBox="0 0 24 24">'
         + '<path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M12,6A6,6 0 0,0 6,12A6,6 0 0,0 12,18A6,6 0 0,0 18,12A6,6 0 0,0 12,6M12,8A4,4 0 0,1 16,12A4,4 0 0,1 12,16A4,4 0 0,1 8,12A4,4 0 0,1 12,8M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10Z"/>'
@@ -775,43 +775,126 @@ export function _sectionPracticePopoverOpen() {
     return !!(bar && bar.classList.contains('section-practice-bar--open'));
 }
 
-function _openSectionPracticePopover() {
+let _sectionPracticePopoverTrigger = null;
+let _sectionPracticeLayoutObserver = null;
+let _sectionPracticeLayoutFrame = null;
+
+function _setSectionPracticePopoverExpanded(open) {
+    for (const id of ['section-practice-pill', 'v3-loop-indicator-open']) {
+        document.getElementById(id)?.setAttribute('aria-expanded', String(open));
+    }
+    // Owned independently of player-chrome's pop-open flag: closing another
+    // rail tool during the opening click cannot hide this panel's ancestor.
+    document.getElementById('player')?.classList.toggle('practice-panel-open', open);
+}
+
+function _positionSectionPracticePopover() {
+    if (!_sectionPracticePopoverOpen()) return;
+    const bar = document.getElementById('section-practice-bar');
+    const player = document.getElementById('player');
+    if (!bar || !player) return;
+    const parent = bar.offsetParent;
+    if (!parent) return;
+    const parentRect = parent.getBoundingClientRect();
+    const scaleX = parent.offsetWidth ? parentRect.width / parent.offsetWidth : 1;
+    const scaleY = parent.offsetHeight ? parentRect.height / parent.offsetHeight : 1;
+    if (!scaleX || !scaleY) return;
+    const viewport = window.visualViewport;
+    const playerRect = player.getBoundingClientRect();
+    const left = Math.max(playerRect.left, viewport?.offsetLeft || 0) + 8;
+    const top = Math.max(playerRect.top, viewport?.offsetTop || 0) + 8;
+    const right = Math.min(playerRect.right, (viewport?.offsetLeft || 0) + (viewport?.width || window.innerWidth)) - 8;
+    const bottom = Math.min(playerRect.bottom, (viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight)) - 8;
+    // Start from the stylesheet's anchor on every layout. Convert viewport
+    // corrections to the actual positioning parent's units (also covers zoom).
+    bar.style.top = '';
+    bar.style.left = '';
+    bar.style.bottom = '';
+    bar.style.maxWidth = '';
+    const preferredWidth = bar.getBoundingClientRect().width / scaleX;
+    bar.style.maxWidth = `${Math.max(0, Math.min(preferredWidth, (right - left) / scaleX))}px`;
+    bar.style.maxHeight = `${Math.max(0, (bottom - top) / scaleY)}px`;
+    const rect = bar.getBoundingClientRect();
+    const targetLeft = Math.max(left, Math.min(rect.left, right - rect.width));
+    const targetTop = Math.max(top, Math.min(rect.top, bottom - rect.height));
+    const offsetTop = bar.offsetTop;
+    bar.style.left = `${bar.offsetLeft + (targetLeft - rect.left) / scaleX}px`;
+    bar.style.bottom = 'auto';
+    bar.style.top = `${offsetTop + (targetTop - rect.top) / scaleY}px`;
+}
+
+function _scheduleSectionPracticePopoverLayout() {
+    if (!_sectionPracticePopoverOpen() || _sectionPracticeLayoutFrame !== null) return;
+    _sectionPracticeLayoutFrame = requestAnimationFrame(() => {
+        _sectionPracticeLayoutFrame = null;
+        _positionSectionPracticePopover();
+    });
+}
+
+function _observeSectionPracticePopoverLayout() {
+    // Observe only while open. Content/rail size changes and viewport resizing
+    // update placement without measuring layout in the highway's draw hook.
+    if (typeof ResizeObserver === 'function') {
+        _sectionPracticeLayoutObserver = new ResizeObserver(_scheduleSectionPracticePopoverLayout);
+        for (const id of ['section-practice-bar', 'section-practice-control', 'v3-player-rail', 'player']) {
+            const element = document.getElementById(id);
+            if (element) _sectionPracticeLayoutObserver.observe(element);
+        }
+    }
+    window.addEventListener('resize', _scheduleSectionPracticePopoverLayout);
+    window.visualViewport?.addEventListener('resize', _scheduleSectionPracticePopoverLayout);
+    window.visualViewport?.addEventListener('scroll', _scheduleSectionPracticePopoverLayout);
+}
+
+function _openSectionPracticePopover(trigger) {
     const bar = document.getElementById('section-practice-bar');
     if (!bar) return;
+    _sectionPracticePopoverTrigger = trigger || document.getElementById('section-practice-pill');
     bar.classList.add('section-practice-bar--open');
-    const pill = document.getElementById('section-practice-pill');
-    if (pill) pill.setAttribute('aria-expanded', 'true');
+    _setSectionPracticePopoverExpanded(true);
+    _positionSectionPracticePopover();
+    _observeSectionPracticePopoverLayout();
+    bar.scrollTop = 0;
+    bar.querySelector('button:enabled, select:enabled, input:enabled')?.focus({ preventScroll: true });
     _installSectionPracticeDismiss();
 }
 
-function _closeSectionPracticePopover() {
+function _closeSectionPracticePopover({ restoreFocus = true } = {}) {
     const bar = document.getElementById('section-practice-bar');
-    const pill = document.getElementById('section-practice-pill');
+    _sectionPracticeLayoutObserver?.disconnect();
+    _sectionPracticeLayoutObserver = null;
+    if (_sectionPracticeLayoutFrame !== null) cancelAnimationFrame(_sectionPracticeLayoutFrame);
+    _sectionPracticeLayoutFrame = null;
+    window.removeEventListener('resize', _scheduleSectionPracticePopoverLayout);
+    window.visualViewport?.removeEventListener('resize', _scheduleSectionPracticePopoverLayout);
+    window.visualViewport?.removeEventListener('scroll', _scheduleSectionPracticePopoverLayout);
     if (bar) {
         const focusWasInside = bar.contains(document.activeElement);
         bar.classList.remove('section-practice-bar--open');
-        // Return focus to the pill if it was inside the popover — otherwise it
-        // would be stranded on a now-display:none control, which also makes the
-        // shortcut gate treat that stale target as interactive and suppress
-        // player keys until focus is moved manually.
-        if (focusWasInside && pill) pill.focus();
+        if (restoreFocus && _sectionPracticePopoverTrigger?.isConnected) {
+            _sectionPracticePopoverTrigger.focus({ preventScroll: true });
+        } else if (focusWasInside) {
+            // An outside click may have no focusable target. Do not leave the
+            // keyboard shortcut gate pointing into a now-hidden dialog.
+            document.activeElement.blur();
+        }
     }
-    if (pill) pill.setAttribute('aria-expanded', 'false');
+    _sectionPracticePopoverTrigger = null;
+    _setSectionPracticePopoverExpanded(false);
 }
 
-export function toggleSectionPracticePopover() {
+export function toggleSectionPracticePopover(trigger) {
     if (_sectionPracticePopoverOpen()) _closeSectionPracticePopover();
-    else _openSectionPracticePopover();
+    else _openSectionPracticePopover(trigger);
 }
 
 let _sectionPracticeDismissBound = false;
 function _installSectionPracticeDismiss() {
     if (_sectionPracticeDismissBound) return;
     _sectionPracticeDismissBound = true;
-    // Click-outside + Esc close. Bound once on document; the pill's own click is
-    // inside #section-practice-control so it never self-closes. Listeners added
-    // mid-dispatch don't fire for the opening click, so there's no immediate
-    // close race.
+    // Click-outside + Esc close. Both the pill and the HUD trigger are exempt:
+    // capture must not close the panel before the trigger toggles it. Listeners
+    // added mid-dispatch don't fire for the opening click.
     //
     // The click listener uses the CAPTURE phase: the v3 player rail's icon
     // buttons call e.stopPropagation() in their click handler (player-chrome.js
@@ -828,7 +911,9 @@ function _installSectionPracticeDismiss() {
         if (!_sectionPracticePopoverOpen()) return;
         const ctrl = document.getElementById('section-practice-control');
         if (ctrl && ctrl.contains(e.target)) return;
-        _closeSectionPracticePopover();
+        const hud = document.getElementById('v3-loop-indicator-open');
+        if (hud && hud.contains(e.target)) return;
+        _closeSectionPracticePopover({ restoreFocus: false });
     }, true);
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && _sectionPracticePopoverOpen()) _closeSectionPracticePopover();

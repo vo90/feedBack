@@ -87,6 +87,10 @@
     const COMMAND_TIMEOUTS_MS = {
         'audio-mix': { 'get-fader-value': 2100, 'set-fader-value': 2100 },
         'midi-input': { 'discover': 15000, 'open-source': 15000 },
+        // Resume can own a four-beat countdown before audible playback starts.
+        // Even a 1 BPM chart needs four minutes; keep this bounded while letting
+        // the playback owner report actual start/cancellation, not a 250ms timeout.
+        playback: { resume: 300000 },
     };
     function _commandTimeoutFor(capability, commandName) {
         const byCap = COMMAND_TIMEOUTS_MS[capability];

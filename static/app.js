@@ -80,6 +80,7 @@ import {
     showCountOverlay,
     showSongCreditsOverlay,
     startSongCountIn,
+    getCountInStart,
 } from './js/count-in.js';
 
 import {
@@ -89,6 +90,7 @@ import {
     deleteSelectedLoop,
     getLoopState,
     handleLoopBoundary,
+    handleLoopMediaEnded,
     loadSavedLoop,
     loadSavedLoops,
     loopA,
@@ -291,7 +293,8 @@ import {
     setPlayButtonState, jucePlayer, _audioTime, _audioDuration, _songEventPayload,
     _markPlaybackPaused, _markPlaybackResumed, _emitPlaybackStopped, _emitSongPositionChanged,
     _waitForSongReady, _resetAudioSeekState, _audioSeek, togglePlay, seekBy, audioSeekGen,
-    setLoopPlayStartTargetResolver, setLoopRestartHandler,
+    setLoopPlayStartTargetResolver, setLoopRestartHandler, setPlaybackStartOwnerResolver,
+    resumePlayback, pausePlayback, cancelPlaybackStart,
 } from './js/transport.js';
 
 // Timeline navigation stays free while paused. When Play is pressed with an
@@ -313,17 +316,20 @@ setLoopPlayStartTargetResolver((requestedTime) => {
 // is a real loop restart. Route it through the controller so the selected
 // first-pass policy is honored: count-in restarts with four beats, while
 // immediate starts without one.
-setLoopRestartHandler(async ({ trigger }) => {
+setLoopRestartHandler(async ({ trigger, guard }) => {
     const from = _audioTime();
     const completed = await startLoop({
         source: trigger === 'play' ? 'outside-play' : 'outside-seek',
+        guard,
     });
     return {
         completed: !!completed,
         from,
         to: completed ? _audioTime() : NaN,
+        playbackStart: getCountInStart(),
     };
 });
+setPlaybackStartOwnerResolver(getCountInStart);
 
 
 // Demo analytics — real impl set by demo.js; no-op in normal builds
@@ -917,34 +923,18 @@ function _installPlaybackTransportAdapter() {
             return _currentPlaybackSnapshot();
         },
         async pause() {
-            const wasPlaying = S.isPlaying;
-            if (!window._juceMode && wasPlaying) {
-                S.isPlaying = false;
-                window.feedBack.isPlaying = false;
-                audio.pause();
-                _markPlaybackPaused();
-            } else {
-                if (window._juceMode) await jucePlayer.pause();
-                else audio.pause();
-                if (wasPlaying) _markPlaybackPaused();
-                else { S.isPlaying = false; window.feedBack.isPlaying = false; setPlayButtonState(false); }
-            }
+            cancelLoopOperations();
+            await pausePlayback();
             return _currentPlaybackSnapshot();
         },
-        async resume() {
-            if (window._juceMode) {
-                const started = await jucePlayer.play();
-                if (!started) return { unavailable: true, reason: 'desktop backing transport unavailable' };
-                _markPlaybackResumed();
-            } else {
-                await audio.play();
-                S.isPlaying = true;
-                window.feedBack.isPlaying = true;
-                setPlayButtonState(true);
-            }
-            return _currentPlaybackSnapshot();
+        resume() {
+            // Scheduling a countdown is not yet resumed playback. Let the
+            // capability host await completion outside its adapter echo guard.
+            return { completion: resumePlayback() };
         },
         async stop() {
+            cancelLoopOperations();
+            cancelPlaybackStart();
             const stopTime = _audioTime();
             const hadPlayableSong = !!audio.src || !!window._juceAudioUrl || S.isPlaying;
             const wasPlaying = S.isPlaying;
@@ -1040,11 +1030,24 @@ audio.addEventListener('error', (e) => {
 });
 audio.addEventListener('stalled', () => console.log('Audio stalled at', audio.currentTime.toFixed(1)));
 audio.addEventListener('waiting', () => console.log('Audio waiting/buffering at', audio.currentTime.toFixed(1)));
-audio.addEventListener('ended', () => {
-    console.log('Audio ended'); S.isPlaying = false;
+function _handlePlaybackEnded() {
+    const loopEnd = handleLoopMediaEnded(_audioTime());
+    if (loopEnd) {
+        loopEnd.completion.catch(err => console.warn('[loop] end-of-media restart failed:', err));
+        return;
+    }
+    if (!S.isPlaying) return;
+    S.isPlaying = false;
     setPlayButtonState(false);
     window.feedBack.isPlaying = false;
+    // Stop the completed native backing before observers can load a new song.
+    if (window._juceMode) jucePlayer.pause().catch(err => console.warn('[app] end-of-track pause error:', err));
     window.feedBack.emit('song:ended', _songEventPayload());
+}
+audio.addEventListener('ended', () => {
+    // An old queued event must not end a new source, or a seek that already
+    // returned the current element to loop A. JUCE has its own terminal check.
+    if (!window._juceMode && audio.ended) _handlePlaybackEnded();
 });
 audio.addEventListener('timeupdate', () => {
     _emitSongPositionChanged(audio.currentTime, audio.duration || null);
@@ -1053,19 +1056,15 @@ audio.addEventListener('play', () => {
     // During a JUCE engine reroute the element is paused/played as a transparent
     // migration step — playback genuinely continues, so don't emit song:play or
     // flip feedBack.isPlaying (the watcher keeps the canonical state itself).
-    if (window._juceRerouteInProgress) return;
-    window.feedBack.isPlaying = true;
-    const payload = _songEventPayload();
-    window.feedBack.emit('song:play', payload);
-    window.feedBack.emit('song:resume', payload);
+    if (window._juceRerouteInProgress || audio.paused) return;
+    _markPlaybackResumed();
 });
 audio.addEventListener('pause', () => {
-    if (!S.isPlaying) return;
+    if (!audio.paused || !S.isPlaying || isCountingIn() || audio.ended) return;
     // Same as above: suppress the song:pause emitted by a reroute's deliberate
     // audio.pause() — the migration is transparent to plugin play-state.
     if (window._juceRerouteInProgress) return;
-    window.feedBack.isPlaying = false;
-    window.feedBack.emit('song:pause', _songEventPayload());
+    _markPlaybackPaused();
 });
 
 window.feedBack.on('song:play', _acquireWakeLock);
@@ -1837,11 +1836,7 @@ setInterval(() => {
     if (dur && !isCountingIn()) {
         // JUCE end-of-track: HTML5 fires 'ended'; JUCE needs a manual check
         if (window._juceMode && S.isPlaying && ct >= dur) {
-            S.isPlaying = false;
-            setPlayButtonState(false);
-            window.feedBack.isPlaying = false;
-            window.feedBack.emit('song:ended', _songEventPayload());
-            jucePlayer.pause().catch((err) => console.warn('[app] end-of-track pause error:', err));
+            _handlePlaybackEnded();
         }
         // The unified controller distinguishes configured/armed bounds from an
         // active loop and applies the selected repeat policy.

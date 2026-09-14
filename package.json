@@ -8,6 +8,7 @@
     "test:headed": "playwright test --headed",
     "test:debug": "playwright test --debug",
     "test:js": "node --test tests/js/*.test.js 'tests/plugins/*/js/*.test.js'",
+    "test:loop-panel": "playwright test --config playwright.loop-panel.config.cjs",
     "install:playwright": "playwright install chromium",
     "lint": "eslint ."
   },

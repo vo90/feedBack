@@ -7,10 +7,11 @@
 // it seeks to A and activates the loop. Built-in UI paths opt into the new
 // preference-driven behavior with { activation: 'preference' }.
 import { uiPrompt } from './dom.js';
-import { _audioSeek, _audioTime, audioSeekGen, togglePlay } from './transport.js';
+import { _audioSeek, _audioTime, audioSeekGen, pausePlayback, startPhysicalPlayback } from './transport.js';
 import {
     _cancelCountIn,
     isCountingIn,
+    getCountInStart,
     pauseBackingForCountIn,
     startCountIn,
 } from './count-in.js';
@@ -36,7 +37,7 @@ export let _loopMutationGen = 0;
 let _loopPhase = 'inactive'; // inactive | partial | armed | starting | active
 let _loopSource = null;
 let _loopOperationGen = 0;
-let _loopWrapInFlight = false;
+let _loopWrapInFlight = null;
 let _loopPreferences = loadLoopPreferences();
 let _savedLoopsLoadGen = 0;
 let _savedLoopsRetryTimer = null;
@@ -101,7 +102,7 @@ function _setPointButtonState(id, selected) {
 export function cancelLoopOperations(options = {}) {
     const { deactivate = false } = options;
     _loopOperationGen++;
-    _loopWrapInFlight = false;
+    _loopWrapInFlight = null;
     _cancelCountIn();
     if (_loopPhase === 'starting' || (deactivate && _loopPhase === 'active')) {
         _loopPhase = _validLoopBounds() ? 'armed' : (loopA !== null ? 'partial' : 'inactive');
@@ -236,9 +237,13 @@ export async function setLoop(a, b, options) {
     }
 
     if (typeof commitGuard === 'function' && !commitGuard()) return false;
-    const priorPhase = _loopPhase;
+    // A superseded request may leave the visible phase at "starting".
+    // Rollback must restore a stable configuration, never that transient phase.
+    const priorPhase = _validLoopBounds()
+        ? (_loopPhase === 'active' && S.isPlaying ? 'active' : 'armed')
+        : (Number.isFinite(loopA) ? 'partial' : 'inactive');
     const operation = ++_loopOperationGen;
-    _loopWrapInFlight = false;
+    _loopWrapInFlight = null;
     _cancelCountIn();
     _loopPhase = 'starting';
     updateLoopUI();
@@ -283,18 +288,31 @@ export async function startLoop(options = {}) {
     const currentBoundsStillMatch = () => operation === _loopOperationGen
         && seekGeneration === audioSeekGen()
         && loopA === bounds.a
-        && loopB === bounds.b;
+        && loopB === bounds.b
+        && (!options.guard || options.guard());
+    const settleFailedStart = () => {
+        if (operation !== _loopOperationGen) return;
+        _cancelCountIn();
+        _loopPhase = _validLoopBounds() ? 'armed' : 'inactive';
+        updateLoopUI();
+    };
     const countInFirstPass = _loopPreferences.firstPass === 'count-in';
     if (countInFirstPass) {
         // On an initial start/restart, stop the native backing engine before
         // repositioning it. Seeking a still-running JUCE transport can leak a
         // short false start from A before the count-in owns playback.
-        await pauseBackingForCountIn();
-        if (!currentBoundsStillMatch()) return false;
+        const paused = await pauseBackingForCountIn();
+        if (!currentBoundsStillMatch()) { settleFailedStart(); return false; }
+        if (paused === false) {
+            _loopPhase = 'armed';
+            updateLoopUI();
+            return false;
+        }
     }
     const r = await _audioSeek(bounds.a, 'loop-start', { guard: currentBoundsStillMatch });
     if (!currentBoundsStillMatch() || !r.completed || Math.abs(r.to - bounds.a) > 0.05) {
         if (operation === _loopOperationGen) {
+            _cancelCountIn();
             _loopPhase = _validLoopBounds() ? 'armed' : 'inactive';
             updateLoopUI();
         }
@@ -308,6 +326,13 @@ export async function startLoop(options = {}) {
             immediate: true,
             bounds,
             backingAlreadyPaused: true,
+        });
+        const owner = getCountInStart();
+        owner?.completion.then(outcome => {
+            if (!outcome.completed && currentBoundsStillMatch()) {
+                _loopPhase = 'armed';
+                updateLoopUI();
+            }
         });
         if (!started && currentBoundsStillMatch()) {
             _loopPhase = 'armed';
@@ -324,8 +349,8 @@ export async function startLoop(options = {}) {
             time: bounds.a,
         });
     }
-    if (!S.isPlaying) await togglePlay();
-    if (!currentBoundsStillMatch()) return false;
+    if (!S.isPlaying) await startPhysicalPlayback({ guard: currentBoundsStillMatch });
+    if (!currentBoundsStillMatch()) { settleFailedStart(); return false; }
     if (!S.isPlaying) {
         _loopPhase = 'armed';
         updateLoopUI();
@@ -334,44 +359,85 @@ export async function startLoop(options = {}) {
     return true;
 }
 
-export async function handleLoopBoundary(currentTime) {
-    if (!isLoopActive()
-        || !S.isPlaying
-        || !Number.isFinite(currentTime)
-        || currentTime < loopB
-        || _loopWrapInFlight
-        || isCountingIn()) {
-        return false;
+// Reserve synchronously: a media-ended event and the 60 Hz clock may observe
+// the same boundary before either asynchronous restart reaches its first await.
+function _reserveLoopBoundary(currentTime, ended) {
+    if (!isLoopActive() || !Number.isFinite(currentTime) || currentTime < loopB) return null;
+    if (_loopWrapInFlight) {
+        _loopWrapInFlight.ended ||= ended;
+        return _loopWrapInFlight;
     }
+    if (!S.isPlaying || isCountingIn()) return null;
     const bounds = { a: loopA, b: loopB };
     const operation = _loopOperationGen;
-    _loopWrapInFlight = true;
+    const session = audioSeekGen();
+    let scheduled;
+    const claim = { status: 'reserved', ended, started: new Promise(resolve => { scheduled = resolve; }) };
+    _loopWrapInFlight = claim;
+    const stillCurrent = () => operation === _loopOperationGen && session === audioSeekGen()
+        && _loopPhase === 'active' && loopA === bounds.a && loopB === bounds.b;
+    claim.completion = (async () => {
+        // Give both callers the same completed reservation object immediately.
+        await Promise.resolve();
+        if (!stillCurrent()) { scheduled(false); return false; }
+        const repeatMode = window._ndAnyDrillActive ? 'continuous' : _loopPreferences.repeat;
+        if (repeatMode === 'count-in') {
+            const started = await startCountIn({ bounds });
+            scheduled(started);
+            if (!started) return false;
+            const owner = getCountInStart();
+            if (!owner) return false;
+            const outcome = await owner.completion;
+            return stillCurrent() && outcome.completed;
+        }
+        const result = await _audioSeek(bounds.a, 'loop-wrap-continuous', { guard: stillCurrent });
+        if (!stillCurrent() || !result.completed || Math.abs(result.to - bounds.a) > 0.05) {
+            scheduled(false);
+            return false;
+        }
+        // A naturally repeating transport keeps running across a seek; a
+        // terminal media event has stopped it and needs an explicit Play.
+        if (claim.ended) {
+            const outcome = await startPhysicalPlayback({ guard: stillCurrent });
+            if (!outcome.completed || !stillCurrent()) { scheduled(false); return false; }
+        }
+        S.lastAudioTime = result.to;
+        window.feedBack?.emit('loop:restart', { loopA: bounds.a, loopB: bounds.b, time: bounds.a });
+        scheduled(true);
+        return true;
+    })().catch(err => {
+        console.warn('[loop] restart failed:', err);
+        scheduled(false);
+        return false;
+    }).then(completed => {
+        if (_loopWrapInFlight === claim) {
+            _loopWrapInFlight = null;
+            if (!completed && stillCurrent()) {
+                _cancelCountIn();
+                void pausePlayback();
+                _loopPhase = 'armed';
+                updateLoopUI();
+            }
+        }
+        return completed;
+    });
+    return claim;
+}
 
-    // Note-detection conductor loops already provide their own audible lead-in
-    // and historically request a delay-free host wrap.
-    const repeatMode = window._ndAnyDrillActive ? 'continuous' : _loopPreferences.repeat;
-    if (repeatMode === 'count-in') {
-        const started = await startCountIn({ bounds });
-        _loopWrapInFlight = false;
-        return started;
-    }
+export async function handleLoopBoundary(currentTime) {
+    if (_loopWrapInFlight) return false;
+    const claim = _reserveLoopBoundary(currentTime, false);
+    return claim ? claim.started : false;
+}
 
-    const stillCurrent = () => operation === _loopOperationGen
-        && _loopPhase === 'active'
-        && loopA === bounds.a
-        && loopB === bounds.b;
-    const r = await _audioSeek(bounds.a, 'loop-wrap-continuous', { guard: stillCurrent });
-    _loopWrapInFlight = false;
-    if (!stillCurrent() || !r.completed || Math.abs(r.to - bounds.a) > 0.05) return false;
-    S.lastAudioTime = r.to;
-    if (window.feedBack) {
-        window.feedBack.emit('loop:restart', {
-            loopA: bounds.a,
-            loopB: bounds.b,
-            time: bounds.a,
-        });
+// Called BEFORE publishing ordinary ended state; deliberately paused or armed
+// loops are ineligible. Returning an existing claim also consumes duplicate EOF.
+export function handleLoopMediaEnded(currentTime) {
+    const owner = getCountInStart();
+    if (owner && _validLoopBounds() && (_loopPhase === 'starting' || _loopPhase === 'active')) {
+        return { status: 'owned', completion: owner.completion.then(outcome => outcome.completed) };
     }
-    return true;
+    return _reserveLoopBoundary(currentTime, true);
 }
 
 export function updateLoopPreference(name, value) {

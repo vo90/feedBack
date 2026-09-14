@@ -24,7 +24,7 @@
 // See ./host.js: reading an unwired hook THROWS, and tests/js/host_contract.test.js
 // fails CI if the hooks used here and the hooks app.js wires ever drift apart.
 import { audio } from './audio-el.js';
-import { _audioSeek, _songEventPayload, jucePlayer, setPlayButtonState } from './transport.js';
+import { _audioSeek, _songEventPayload, jucePlayer, setPlayButtonState, resumePlayback, pausePlayback, cancelPlaybackStart } from './transport.js';
 import { setSpeed } from './player-controls.js';
 import { S } from './player-state.js';
 
@@ -897,40 +897,25 @@ export let _resetJuceAudioShimChain = function () {};
         if (!batch || !window._juceMode) return;
         const wantsPause = !!batch.wantsPause;
         const seekTime = batch.seekTime;
+        // A prior queued Play may be awaiting this countdown. Cancel ownership
+        // before queuing Pause so the queue cannot hold Pause behind that Play.
+        if (wantsPause && !forUpcomingPlay) cancelPlaybackStart();
         if (wantsPause && seekTime !== undefined) {
             enqueue(async (gen) => {
+                if (!forUpcomingPlay) {
+                    await pausePlayback();
+                    if (gen !== _juceShimGen) return;
+                }
                 const r = await _audioSeek(seekTime, 'audio-element-shim', {
                     restartActiveLoopWhilePlaying: forUpcomingPlay,
                 });
-                if (!r.completed) return; // seek cancelled by teardown
-                if (gen !== _juceShimGen) return;
-                if (!forUpcomingPlay) {
-                    await jucePlayer.pause();
-                    if (gen !== _juceShimGen) return;
-                    S.isPlaying = false;
-                    setPlayButtonState(false);
-                    const sm = window.feedBack;
-                    if (sm) {
-                        sm.isPlaying = false;
-                        sm.emit('song:pause', _songEventPayload());
-                    }
-                }
+                if (!r.completed || gen !== _juceShimGen) return;
                 audio.dispatchEvent(new Event('seeked'));
             });
             return;
         }
         if (wantsPause) {
-            enqueue(async (gen) => {
-                await jucePlayer.pause();
-                if (gen !== _juceShimGen) return;
-                S.isPlaying = false;
-                setPlayButtonState(false);
-                const sm = window.feedBack;
-                if (sm) {
-                    sm.isPlaying = false;
-                    sm.emit('song:pause', _songEventPayload());
-                }
-            });
+            enqueue(async () => { await pausePlayback(); });
             return;
         }
         if (seekTime !== undefined) {
@@ -1003,17 +988,10 @@ export let _resetJuceAudioShimChain = function () {};
         if (window._juceMode) {
             if (_juceShimBatch != null) flushJuceShimBatchNow({ forUpcomingPlay: true });
             const p = enqueue(async (gen) => {
-                const started = await jucePlayer.play();
-                if (gen !== _juceShimGen || !started) return;
-                S.isPlaying = true;
-                setPlayButtonState(true);
-                const sm = window.feedBack;
-                if (sm) {
-                    sm.isPlaying = true;
-                    const payload = _songEventPayload();
-                    sm.emit('song:play', payload);
-                    sm.emit('song:resume', payload);
-                }
+                // The preceding seek may already own a countdown. Join its
+                // actual start instead of issuing a second physical Play.
+                if (gen !== _juceShimGen) return;
+                await resumePlayback();
             });
             return p.then(() => undefined);
         }

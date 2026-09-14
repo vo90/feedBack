@@ -69,6 +69,15 @@ export function _emitSongPositionChanged(time, duration) {
     window.feedBack.emit('song:position-changed', Object.assign(payload, { duration }));
 }
 
+// Native commands finish asynchronously. Keep stop behind an in-flight start
+// so cancellation cannot be undone by a late physical startBacking completion.
+let _backingCommandChain = Promise.resolve();
+function _queueBackingCommand(command) {
+    const result = _backingCommandChain.then(command);
+    _backingCommandChain = result.catch(() => {});
+    return result;
+}
+
 export const jucePlayer = {
     _timer: null,
     _pos: 0,
@@ -84,15 +93,26 @@ export const jucePlayer = {
         return Math.min(this._pos + elapsed * this._speed, this._dur > 0 ? this._dur : Infinity);
     },
     get duration() { return this._dur; },
-    async play() {
-        try {
-            await window.feedBackDesktop.audio.startBacking();
-        } catch (err) {
-            console.warn('[jucePlayer] startBacking failed:', err);
-            return false;
-        }
-        this._startPolling();
-        return true;
+    async play(options = {}) {
+        const session = audioSeekGen();
+        const permitted = () => session === audioSeekGen() && (!options.guard || options.guard());
+        return _queueBackingCommand(async () => {
+            if (!permitted()) return false;
+            try {
+                await window.feedBackDesktop.audio.startBacking();
+                if (!permitted()) {
+                    // A replacement song waits for stop() before loading its
+                    // source. Finish this cleanup inside the same command queue.
+                    await window.feedBackDesktop.audio.stopBacking();
+                    return false;
+                }
+            } catch (err) {
+                console.warn('[jucePlayer] startBacking failed:', err);
+                return false;
+            }
+            this._startPolling();
+            return true;
+        });
     },
     async pause() {
         // Snapshot the interpolated position before stopping the poll so
@@ -101,11 +121,16 @@ export const jucePlayer = {
         this._pos = this.currentTime;
         this._pollAt = performance.now();
         this._stopPolling();
-        try {
-            await window.feedBackDesktop.audio.stopBacking();
-        } catch (err) {
-            console.warn('[jucePlayer] stopBacking failed:', err);
-        }
+        return _queueBackingCommand(async () => {
+            this._stopPolling();
+            try {
+                await window.feedBackDesktop.audio.stopBacking();
+                return true;
+            } catch (err) {
+                console.warn('[jucePlayer] stopBacking failed:', err);
+                return false;
+            }
+        });
     },
     async seek(s) {
         const prev = this._pos;
@@ -178,22 +203,26 @@ export function _songEventPayload() {
 }
 
 export function _markPlaybackPaused() {
+    const changed = S.isPlaying || window.feedBack?.isPlaying;
     S.isPlaying = false;
     setPlayButtonState(false);
     if (window.feedBack) {
         window.feedBack.isPlaying = false;
-        window.feedBack.emit('song:pause', _songEventPayload());
+        if (changed) window.feedBack.emit('song:pause', _songEventPayload());
     }
 }
 
 export function _markPlaybackResumed() {
+    const changed = !window.feedBack?.isPlaying;
     S.isPlaying = true;
     setPlayButtonState(true);
     if (window.feedBack) {
         window.feedBack.isPlaying = true;
-        const payload = _songEventPayload();
-        window.feedBack.emit('song:play', payload);
-        window.feedBack.emit('song:resume', payload);
+        if (changed) {
+            const payload = _songEventPayload();
+            window.feedBack.emit('song:play', payload);
+            window.feedBack.emit('song:resume', payload);
+        }
     }
 }
 
@@ -231,6 +260,15 @@ let _audioSeekGen = 0;
 // only when paused playback is about to start.
 let _loopPlayStartTargetResolver = null;
 let _loopRestartHandler = null;
+let _playbackStartOwnerResolver = null;
+
+export function setPlaybackStartOwnerResolver(resolver) {
+    _playbackStartOwnerResolver = typeof resolver === 'function' ? resolver : null;
+}
+
+function _playbackStartOwner() {
+    return _playbackStartOwnerResolver?.() || null;
+}
 
 export function setLoopPlayStartTargetResolver(resolver) {
     _loopPlayStartTargetResolver = typeof resolver === 'function' ? resolver : null;
@@ -244,13 +282,14 @@ export function setLoopRestartHandler(handler) {
     _loopRestartHandler = typeof handler === 'function' ? handler : null;
 }
 
-async function _restartLoopFromOutside(requestedTime, targetTime, trigger) {
+async function _restartLoopFromOutside(requestedTime, targetTime, trigger, guard = null) {
     if (!_loopRestartHandler) return null;
     try {
         const result = await _loopRestartHandler({
             requestedTime,
             targetTime,
             trigger,
+            guard,
         });
         if (result && typeof result === 'object') return result;
         return {
@@ -273,6 +312,9 @@ export function _resetAudioSeekState() {
     // quickly because each subsequent old-gen step bails on the first
     // guard the moment its predecessor resolves.
     _audioSeekGen++;
+    _playAttemptGen++;
+    _resumeRequestGen++;
+    _resumeInFlight = null;
 }
 
 // Time-box the JUCE IPC so a single hung seek can't block the global
@@ -378,103 +420,110 @@ export async function _audioSeek(s, reason, options = {}) {
     return _audioSeekChain;
 }
 
-// Per-attempt counter for HTML5 audio.play() invocations. Bumped on
-// every play branch entry so a slow rejection from attempt N can't
-// clobber the UI of a newer attempt N+1 within the same session.
+// Physical start is separate from resume policy. A count-in uses this directly,
+// avoiding the loop resolver and its own completion promise.
 let _playAttemptGen = 0;
+let _resumeInFlight = null;
+let _resumeRequestGen = 0;
 
-async function _prepareLoopPlayStart() {
-    if (!_loopPlayStartTargetResolver) return true;
-    const current = _audioTime();
-    let target = current;
+export async function startPhysicalPlayback(options = {}) {
+    const session = audioSeekGen();
+    const attempt = ++_playAttemptGen;
+    const permitted = () => session === audioSeekGen()
+        && attempt === _playAttemptGen && (!options.guard || options.guard());
+    if (!permitted()) return { status: 'cancelled', completed: false };
     try {
-        const resolved = _loopPlayStartTargetResolver(current);
-        if (Number.isFinite(resolved)) target = resolved;
-    } catch (_) {
-        // A UI policy hook must never block ordinary playback.
-        return true;
+        if (window._juceMode) {
+            const started = await jucePlayer.play({ guard: permitted });
+            if (!permitted()) return { status: 'cancelled', completed: false };
+            if (!started) {
+                _markPlaybackPaused();
+                return { status: 'failed', completed: false };
+            }
+        } else {
+            // Preserve the responsive second-click Pause behavior while the
+            // browser waits for buffering or an output device to wake.
+            S.isPlaying = true;
+            setPlayButtonState(true);
+            await audio.play();
+            if (!permitted()) {
+                // Session replacement pauses the old element. Never pause a
+                // newer session or a newer successful start here.
+                if (session === audioSeekGen() && attempt === _playAttemptGen) audio.pause();
+                return { status: 'cancelled', completed: false };
+            }
+        }
+        _markPlaybackResumed();
+        return { status: 'playing', completed: true };
+    } catch (err) {
+        if (!permitted()) return { status: 'cancelled', completed: false };
+        if (!window._juceRerouteInProgress) _markPlaybackPaused();
+        console.warn('[app] playback start failed:', err);
+        return { status: 'failed', completed: false };
     }
-    if (!Number.isFinite(target) || Math.abs(target - current) <= 0.01) return true;
-    const restarted = await _restartLoopFromOutside(current, target, 'play');
-    if (restarted !== null) {
-        const completed = !!restarted.completed
-            && Number.isFinite(restarted.to)
-            && Math.abs(restarted.to - target) <= 0.05;
-        // The loop controller owns playback after a successful restart: it
-        // either scheduled the count-in or started immediate playback itself.
-        // Signal togglePlay() to stop instead of applying the original click a
-        // second time (which would bypass the count-in or pause immediately).
-        return completed ? 'handled' : false;
-    }
-    const r = await _audioSeek(target, 'loop-play-start');
-    return r.completed && Math.abs(r.to - target) <= 0.05;
+}
+
+export function cancelPlaybackStart() {
+    _playAttemptGen++;
+    _resumeRequestGen++;
+    _resumeInFlight = null;
+    _playbackStartOwner()?.cancel?.();
+}
+
+export async function pausePlayback() {
+    cancelPlaybackStart();
+    _markPlaybackPaused();
+    if (window._juceMode) await jucePlayer.pause();
+    else audio.pause();
+}
+
+export function resumePlayback() {
+    const owner = _playbackStartOwner();
+    if (owner) return owner.completion;
+    if (_resumeInFlight) return _resumeInFlight;
+    if (S.isPlaying) return Promise.resolve({ status: 'playing', completed: true });
+    const session = audioSeekGen();
+    const request = ++_resumeRequestGen;
+    const permitted = () => session === audioSeekGen() && request === _resumeRequestGen;
+    const pending = (async () => {
+        if (_loopPlayStartTargetResolver) {
+            const current = _audioTime();
+            let target = current;
+            try {
+                const resolved = _loopPlayStartTargetResolver(current);
+                if (Number.isFinite(resolved)) target = resolved;
+            } catch (_) { /* A UI policy hook must not block ordinary playback. */ }
+            if (Number.isFinite(target) && Math.abs(target - current) > 0.01) {
+                const restarted = await _restartLoopFromOutside(current, target, 'play', permitted);
+                if (!permitted()) return { status: 'cancelled', completed: false };
+                if (restarted !== null) {
+                    if (!restarted.completed || !Number.isFinite(restarted.to)
+                        || Math.abs(restarted.to - target) > 0.05) {
+                        return { status: 'failed', completed: false };
+                    }
+                    const owned = restarted.playbackStart || _playbackStartOwner();
+                    if (owned) return owned.completion;
+                    return { status: S.isPlaying ? 'playing' : 'failed', completed: !!S.isPlaying };
+                }
+                const seek = await _audioSeek(target, 'loop-play-start', { guard: permitted });
+                if (!seek.completed || Math.abs(seek.to - target) > 0.05) {
+                    return { status: 'failed', completed: false };
+                }
+            }
+        }
+        if (!permitted()) return { status: 'cancelled', completed: false };
+        const owned = _playbackStartOwner();
+        if (owned) return owned.completion;
+        return startPhysicalPlayback({ guard: permitted });
+    })();
+    _resumeInFlight = pending;
+    pending.finally(() => { if (_resumeInFlight === pending) _resumeInFlight = null; });
+    return pending;
 }
 
 export async function togglePlay() {
-    // Seeking is intentionally free while paused. The active-loop rule is
-    // applied only at the transition into playback: resolve to A, verify the
-    // backend landed there, then start. Re-read S.isPlaying after the await so
-    // two rapid toggles still settle as Play -> Pause rather than double-start.
-    if (!S.isPlaying) {
-        const preparation = await _prepareLoopPlayStart();
-        if (preparation !== true) return;
-    }
-
-    if (window._juceMode) {
-        if (S.isPlaying) {
-            await jucePlayer.pause();
-            S.isPlaying = false;
-            setPlayButtonState(false);
-            window.feedBack.isPlaying = false;
-            window.feedBack.emit('song:pause', _songEventPayload());
-        } else {
-            const started = await jucePlayer.play();
-            if (!started) return; // startBacking() failed — IPC error already logged
-            S.isPlaying = true;
-            setPlayButtonState(true);
-            window.feedBack.isPlaying = true;
-            const payload = _songEventPayload();
-            window.feedBack.emit('song:play', payload);
-            window.feedBack.emit('song:resume', payload);
-        }
-        return;
-    }
-    if (S.isPlaying) {
-        audio.pause(); S.isPlaying = false;
-        setPlayButtonState(false);
-    } else {
-        // Flip the UI optimistically before awaiting the play() Promise so
-        // a quick second click during a slow start (buffering, device
-        // wake, etc.) still enters the pause branch above. Two stale-
-        // resolution guards:
-        //   - _audioSeekGen: bumped in showScreen() teardown and
-        //     playSong(), so a rejection from a torn-down session can't
-        //     touch new-session UI. Survives same-URL reloads.
-        //   - _playAttemptGen: bumped on every play branch entry, so
-        //     within a single session a slow rejection from attempt N
-        //     can't clobber a faster attempt N+1 (Play → Pause → Play).
-        const sessionGen = _audioSeekGen;
-        const attempt = ++_playAttemptGen;
-        S.isPlaying = true;
-        setPlayButtonState(true);
-        try {
-            await audio.play();
-        } catch (err) {
-            if (sessionGen !== _audioSeekGen) return;
-            if (attempt !== _playAttemptGen) return;
-            // An engine reroute (HTML5 -> JUCE) deliberately pauses the <audio>
-            // element mid-migration, which rejects this in-flight play() with an
-            // AbortError even though playback continues on the JUCE transport.
-            // The reroute owns isPlaying / the button while it runs (same guard
-            // the <audio> 'play'/'pause' listeners use); resetting here would
-            // leave the button showing Play while the song keeps playing — the
-            // "two clicks to pause on the first song after a fresh load" bug.
-            if (window._juceRerouteInProgress) return;
-            console.error('[app] audio.play() rejected:', err);
-            S.isPlaying = false;
-            setPlayButtonState(false);
-        }
-    }
+    if (S.isPlaying || _resumeInFlight || _playbackStartOwner()) return pausePlayback();
+    return resumePlayback();
 }
 
 export async function seekBy(s) {

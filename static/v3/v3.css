@@ -536,6 +536,9 @@ html[data-scoreboard="off"] #v3-live-performance-hud { display: none !important;
 .v3-railzone:hover .v3-rail,
 .v3-railzone:focus-within .v3-rail,
 #player.pop-open .v3-rail { opacity: 1; transform: none; }
+/* The practice panel owns this flag separately from the other rail tools.
+   Show its positioning ancestor immediately so layout uses its final bounds. */
+#player.practice-panel-open .v3-rail { opacity: 1; transform: none; transition: none; }
 
 .v3-rail-icon {
     position: relative;
@@ -657,17 +660,21 @@ html[data-scoreboard="off"] #v3-live-performance-hud { display: none !important;
     right: auto;
     bottom: auto;
     top: 0;
-    min-width: 230px;
+    min-width: 0;
     width: min(420px, calc(100vw - 120px));
     max-width: min(420px, calc(100vw - 120px));
     max-height: min(82vh, 720px);
     overflow-y: auto;
+    overscroll-behavior: contain;
+    box-sizing: border-box;
+    scroll-padding: 8px;
     padding: .9rem;
     border-radius: .9rem;
     border: 1px solid rgba(51, 65, 85, .6);
     background: rgba(15, 23, 42, .96);
     box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
 }
+#v3-player-rail #section-practice-bar > * { flex-shrink: 0; }
 
 /* — Rail feature popovers — */
 .v3-rail-pop {

@@ -1042,7 +1042,8 @@
                 </div>
                 <div id="v3-loop-indicator" class="v3-loop-indicator" data-state="inactive" hidden>
                     <button id="v3-loop-indicator-open" class="v3-loop-indicator-main" type="button"
-                            onclick="toggleSectionPracticePopover()" title="Open Practice & Loops">
+                            aria-haspopup="dialog" aria-expanded="false" aria-controls="section-practice-bar"
+                            onclick="toggleSectionPracticePopover(this)" title="Open Practice & Loops">
                         <svg class="v3-loop-indicator-icon" viewBox="0 0 24 24" aria-hidden="true">
                             <path d="M7 7h10l-2.5-2.5M17 17H7l2.5 2.5M19 7l-4-4m-10 14 4 4M19 7v4M5 17v-4" />
                         </svg>

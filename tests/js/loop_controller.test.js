@@ -73,10 +73,12 @@ function buildHarness(preferences = {}, { juce = false, isPlaying = false } = {}
             loopEvents.push({ name: 'song:seek', detail: { from, to: seconds, reason } });
             return { completed: true, from, to: seconds };
         },
-        async togglePlay() {
+        async startPhysicalPlayback() {
             sandbox.__playCalls++;
             sandbox.S.isPlaying = true;
         },
+        getCountInStart() { return { completion: Promise.resolve({ completed: true }) }; },
+        async pausePlayback() { sandbox.S.isPlaying = false; },
         _cancelCountIn() {
             sandbox.__cancelCalls++;
         },

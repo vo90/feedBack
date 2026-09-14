@@ -86,7 +86,7 @@ test('loop playback choices use plain-language labels instead of technical terms
 });
 
 test('the regular game HUD clearly exposes configured and active loop states', () => {
-    assert.match(HTML, /id="v3-loop-indicator-open"[\s\S]*onclick="toggleSectionPracticePopover\(\)"/);
+    assert.match(HTML, /id="v3-loop-indicator-open"[\s\S]*onclick="toggleSectionPracticePopover\(this\)"/);
     assert.match(HTML, /id="v3-loop-indicator-clear"[\s\S]*onclick="clearLoop\(\)"/);
     assert.match(HTML, /id="v3-loop-announcement"[\s\S]*role="status"[\s\S]*aria-live="polite"/);
     assert.match(HTML, /id="v3-loop-indicator-label"/);
@@ -150,7 +150,7 @@ test('JUCE pause-and-seek restarts an outside loop only when playback follows', 
 
 test('timeline seeks stay free while paused and restart active loops while playing', () => {
     assert.match(APP, /setLoopPlayStartTargetResolver\(\(requestedTime\)/);
-    assert.match(APP, /setLoopRestartHandler\(async\s*\(\{\s*trigger\s*\}\)\s*=>\s*\{[\s\S]*startLoop\(\{/);
+    assert.match(APP, /setLoopRestartHandler\(async\s*\(\{\s*trigger\s*,\s*guard\s*\}\)\s*=>\s*\{[\s\S]*startLoop\(\{/);
     assert.match(APP, /requestedTime\s*>=\s*state\.loopA\s*&&\s*requestedTime\s*<\s*state\.loopB/);
     assert.match(APP, /seek\(seconds,\s*reason,\s*options\)[\s\S]*restartActiveLoopWhilePlaying:\s*true/);
     assert.match(APP, /seek\(\{\s*time,\s*reason\s*\}\)[\s\S]*restartActiveLoopWhilePlaying:\s*true/);

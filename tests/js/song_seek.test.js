@@ -86,6 +86,9 @@ function loadFunctions(sandbox, src) {
     const code = `
         let _audioSeekChain = Promise.resolve();
         let _audioSeekGen = 0;
+        let _playAttemptGen = 0;
+        let _resumeRequestGen = 0;
+        let _resumeInFlight = null;
         let _loopPlayStartTargetResolver = null;
         let _loopRestartHandler = null;
         // _audioSeek now syncs the jump-fix tracker so far seeks don't
@@ -106,10 +109,8 @@ function loadFunctions(sandbox, src) {
         ${extractFunction(src, 'function setLoopRestartHandler(')}
         ${extractFunction(src, 'async function _restartLoopFromOutside(')}
         ${extractFunction(src, 'async function _audioSeek')}
-        ${extractFunction(src, 'async function _prepareLoopPlayStart(')}
         ${extractFunction(src, 'async function seekBy(')}
         globalThis.__audioSeek = _audioSeek;
-        globalThis.__prepareLoopPlayStart = _prepareLoopPlayStart;
         globalThis.__seekBy = seekBy;
         globalThis.__setLoopPlayStartTargetResolver = setLoopPlayStartTargetResolver;
         globalThis.__setLoopRestartHandler = setLoopRestartHandler;
@@ -415,68 +416,6 @@ test('inside timeline seeks do not invoke the loop restart policy', async () => 
     assert.equal(sandbox.audio._t, 17);
 });
 
-test('preparing Play with an active loop seeks to A before playback starts', async () => {
-    const src = fs.readFileSync(APP_JS, 'utf8');
-    const sandbox = buildSandbox({ juceMode: false, currentTime: 30 });
-    loadFunctions(sandbox, src);
-    sandbox.__setLoopPlayStartTargetResolver((requested) => (
-        requested >= 12 && requested < 20 ? requested : 12
-    ));
-
-    assert.equal(await sandbox.__prepareLoopPlayStart(), true);
-
-    const seek = sandbox.__emitCalls.find((c) => c.event === 'song:seek');
-    assert.equal(seek.detail.from, 30);
-    assert.equal(seek.detail.to, 12);
-    assert.equal(seek.detail.reason, 'loop-play-start');
-    assert.equal(sandbox.audio._t, 12);
-});
-
-test('preparing Play from outside delegates to the loop first-pass restart policy', async () => {
-    const src = fs.readFileSync(APP_JS, 'utf8');
-    const sandbox = buildSandbox({ juceMode: false, currentTime: 30 });
-    loadFunctions(sandbox, src);
-    const restartCalls = [];
-    sandbox.__setLoopPlayStartTargetResolver((requested) => (
-        requested >= 12 && requested < 20 ? requested : 12
-    ));
-    sandbox.__setLoopRestartHandler(async (request) => {
-        restartCalls.push(request);
-        sandbox.audio._t = request.targetTime;
-        return { completed: true, from: 30, to: request.targetTime };
-    });
-
-    assert.equal(await sandbox.__prepareLoopPlayStart(), 'handled');
-    assert.equal(restartCalls.length, 1);
-    assert.equal(restartCalls[0].trigger, 'play');
-    assert.equal(restartCalls[0].targetTime, 12);
-    assert.equal(sandbox.__emitCalls.length, 0);
-});
-
-test('togglePlay stops when the loop controller owns an outside-position restart', () => {
-    const src = fs.readFileSync(APP_JS, 'utf8');
-    const togglePlay = extractFunction(src, 'async function togglePlay(');
-    assert.match(togglePlay, /const preparation = await _prepareLoopPlayStart\(\)/);
-    assert.match(togglePlay, /if \(preparation !== true\) return/);
-});
-
-test('preparing Play from inside A-B preserves the paused position', async () => {
-    const src = fs.readFileSync(APP_JS, 'utf8');
-    const sandbox = buildSandbox({ juceMode: false, currentTime: 16 });
-    loadFunctions(sandbox, src);
-    sandbox.__setLoopPlayStartTargetResolver((requested) => (
-        requested >= 12 && requested < 20 ? requested : 12
-    ));
-
-    assert.equal(await sandbox.__prepareLoopPlayStart(), true);
-    assert.equal(sandbox.__emitCalls.length, 0, 'an in-loop Play start must not seek away');
-    assert.equal(sandbox.audio._t, 16);
-});
-
-// CENSUS over the WHOLE frontend, not one file. This test counts call/emit sites, and the
-// carve keeps moving them between app.js and static/js/*.js — point it at a single file
-// and the count silently shrinks as code leaves, which reads as "someone deleted an emit"
-// (or, worse, passes while genuinely missing sites). Read every source that can hold one.
 function allFrontendSources() {
     const jsDir = path.join(__dirname, '..', '..', 'static', 'js');
     const parts = [fs.readFileSync(path.join(__dirname, '..', '..', 'static', 'app.js'), 'utf8')];
