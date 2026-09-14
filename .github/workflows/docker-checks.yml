@@ -1,0 +1,54 @@
+name: Docker build checks
+
+on:
+  push:
+    branches:
+      - fix/docker-ffmpeg-retention
+      - fix/docker-ffmpeg-retention-integration
+      - dev/integration-v2
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/docker-checks.yml
+      - .github/workflows/release.yml
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/docker-checks.yml
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - name: Build without publishing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: feedback-build-check:local
+      - name: Verify packaged audio tools
+        run: |
+          docker run --rm --entrypoint sh feedback-build-check:local -ec '
+            ffmpeg -version
+            ffprobe -version
+            ffmpeg -hide_banner -loglevel error -f lavfi \
+              -i sine=frequency=440:duration=0.2 -c:a libvorbis /tmp/smoke.ogg
+            ffprobe -v error -show_entries stream=codec_name \
+              -of default=noprint_wrappers=1:nokey=1 /tmp/smoke.ogg | grep -qx vorbis
+          '
