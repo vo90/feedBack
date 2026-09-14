@@ -139,10 +139,8 @@ test('every song:play/pause/ended emit uses _songEventPayload', () => {
     );
 });
 
-// CENSUS over the WHOLE frontend, not one file. This test counts call/emit sites, and the
-// carve keeps moving them between app.js and static/js/*.js — point it at a single file
-// and the count silently shrinks as code leaves, which reads as "someone deleted an emit"
-// (or, worse, passes while genuinely missing sites). Read every source that can hold one.
+// Check the whole frontend: shared transport helpers own events previously
+// emitted independently by app.js, countdowns, and the compatibility shim.
 function allFrontendSources() {
     const jsDir = path.join(__dirname, '..', '..', 'static', 'js');
     const parts = [fs.readFileSync(path.join(__dirname, '..', '..', 'static', 'app.js'), 'utf8')];
@@ -152,16 +150,15 @@ function allFrontendSources() {
     return parts.join('\n');
 }
 
-test('there are at least 8 song:* emit sites threaded through the helper', () => {
-    // Sanity-check that the helper actually got wired everywhere. If the
-    // count drops, someone removed an emit (regression) or refactored an
-    // event away (intentional — this test then needs updating).
+test('all song:play/pause/ended emit sites retain the enriched payload', () => {
     const src = allFrontendSources();
     const matches = src.match(/(?:window\.feedBack|\w+)\.emit\(\s*['"]song:(play|pause|ended)['"][^)]*\)/g) || [];
-    assert.ok(
-        matches.length >= 8,
-        `expected ≥8 song:* emits, found ${matches.length}`,
-    );
+    // Require each event, without requiring duplicate emit sites that shared
+    // transport ownership intentionally removes. Behavioral event counts are
+    // covered by loop_app_integration and playback_loop_lifecycle tests.
+    for (const event of ['play', 'pause', 'ended']) {
+        assert.ok(matches.some(match => match.includes(`song:${event}`)), `missing song:${event} emit`);
+    }
     // Same dual-form acceptance as the per-line check: either a direct
     // _songEventPayload() call or a captured `payload` var.
     for (const m of matches) {

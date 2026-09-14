@@ -7,11 +7,11 @@
 // setLoop() and practiceSection() call each other. So it is cut BY NAME, and
 // everything it calls back into app.js goes through the host seam.
 //
-// It owns its own state — the _sectionPractice* / _sectionParents* scalars are read
-// nowhere else and move in with it. It needs 11 hooks from app.js, and four of those
-// are read-only GETTERS: loopA / loopB / _audioSeekGen / _loopMutationGen are only
-// ever READ here, never written, so app.js keeps owning them and no state container
-// is needed.
+// It owns only section-selection state — the _sectionPractice* /
+// _sectionParents* scalars are read nowhere else and move in with it. Loop
+// bounds and lifecycle belong to the shared loop controller. Calls back into
+// app.js and the controller cross the host seam so the module graph remains
+// acyclic.
 //
 // app.js used to reach IN and reset this module's state directly (clearLoop() zeroed
 // the selection; changeArrangement() invalidated the parent count). It cannot now — an
@@ -62,9 +62,9 @@ let _sectionPracticeMode = false;
 let _sectionPracticeActiveParent = -1;
 let _sectionPracticeWholeSection = false;
 let _sectionPracticeSavedPartIndex = 0;
-// Monotonic token to cancel stale practiceSection() retries: a newer click
+// Monotonic token to cancel stale practiceSection() requests: a newer click
 // (or a song/arrangement change, which also bumps _audioSeekGen) supersedes
-// any in-flight retry loop so it can't re-arm the wrong loop/count-in.
+// any in-flight controller work so it cannot arm the wrong loop.
 let _sectionPracticeRequestGen = 0;
 // >0 while a practiceSection() request is awaiting its loop. While set,
 // _syncSectionPracticeFromLoop() (e.g. from a mid-await bar re-render) must not
@@ -78,10 +78,10 @@ export function _setSectionPracticeMode(on, opts = {}) {
     _sectionPracticeMode = next;
     const cb = document.getElementById('section-practice-mode');
     if (cb) cb.checked = _sectionPracticeMode;
-    // Surface the "looping" state on the collapsed pill so the user can tell
-    // Section Practice is armed without opening the popover.
+    // Section selection is UI state only. The loop controller separately owns
+    // the pill's armed/active classes.
     const pill = document.getElementById('section-practice-pill');
-    if (pill) pill.classList.toggle('section-practice-pill--active', _sectionPracticeMode);
+    if (pill) pill.classList.toggle('section-practice-pill--section-selected', _sectionPracticeMode);
     _sectionPracticeFollowParent = -1;
     if (_sectionPracticeMode) {
         if (opts.defaultWholeOn) {
@@ -93,10 +93,9 @@ export function _setSectionPracticeMode(on, opts = {}) {
         }
     } else {
         // Turning the feature off must cancel any in-flight practiceSection()
-        // retry: otherwise a stale setLoop() that lands after the user unchecks
-        // Section Practice would re-arm the loop, flip the mode back on via
-        // _syncSectionPracticeFromLoop(), and restart playback through
-        // startCountIn(). Bumping the request gen makes the pending retry bail.
+        // request: otherwise stale controller work landing after the user
+        // unchecks Section Practice could re-arm the loop and flip the mode
+        // back on via _syncSectionPracticeFromLoop().
         _sectionPracticeRequestGen++;
         // Cancel any pending count-in: every section-practice teardown routes
         // through here (mode toggle off, clearLoop, and _hideSectionPracticeBar
@@ -495,18 +494,59 @@ function _migrateSectionPracticeDomLayout(bar) {
 }
 
 function _sectionPracticeBarInnerHtml() {
-    return '<div class="section-practice-row section-practice-controls-row">'
+    return '<div class="practice-loop-heading">'
+        + '<strong>Practice &amp; Loops</strong>'
+        + '<span id="loop-status" class="practice-loop-status" data-state="inactive" aria-live="polite">No loop configured</span>'
+        + '</div>'
+        + '<section class="practice-loop-group" aria-labelledby="custom-loop-heading">'
+        + '<div class="practice-loop-group-title" id="custom-loop-heading">Custom loop</div>'
+        + '<div class="section-practice-row practice-loop-actions">'
+        + '<button type="button" onclick="setLoopStart()" id="btn-loop-a" class="v3-pop-btn" aria-pressed="false" title="Set loop start at the current time">Set A</button>'
+        + '<button type="button" onclick="setLoopEnd()" id="btn-loop-b" class="v3-pop-btn" aria-pressed="false" disabled title="Set loop end at the current time">Set B</button>'
+        + '<button type="button" onclick="startLoop()" id="btn-loop-start" class="v3-pop-btn practice-loop-start" disabled aria-describedby="loop-status">Start Loop</button>'
+        + '<button type="button" onclick="clearLoop()" id="btn-loop-clear" class="v3-pop-btn" disabled>Clear</button>'
+        + '<button type="button" onclick="saveCurrentLoop()" id="btn-loop-save" class="v3-pop-btn" disabled>Save</button>'
+        + '<span id="loop-label" class="practice-loop-bounds" aria-live="polite"></span>'
+        + '</div>'
+        + '<div class="section-practice-row practice-loop-saved">'
+        + '<label class="sr-only" for="saved-loops">Saved loops</label>'
+        + '<select id="saved-loops" onchange="loadSavedLoop(this.value)" class="v3-pop-select" disabled>'
+        + '<option value="">Saved Loops</option>'
+        + '</select>'
+        + '<button type="button" onclick="deleteSelectedLoop()" id="btn-loop-delete" class="v3-pop-btn" disabled aria-label="Delete selected saved loop">Delete</button>'
+        + '</div>'
+        + '</section>'
+        + '<fieldset class="practice-loop-group practice-loop-options">'
+        + '<legend class="practice-loop-group-title">How the loop plays</legend>'
+        + '<label class="practice-loop-option" for="loop-activation-preference"><span>After setting a loop</span>'
+        + '<select id="loop-activation-preference" class="v3-pop-select" onchange="updateLoopPreference(\'activation\', this.value)">'
+        + '<option value="arm">Wait for me to start</option><option value="auto">Start automatically</option>'
+        + '</select></label>'
+        + '<label class="practice-loop-option" for="loop-first-pass-preference"><span>When the loop starts</span>'
+        + '<select id="loop-first-pass-preference" class="v3-pop-select" onchange="updateLoopPreference(\'firstPass\', this.value)">'
+        + '<option value="count-in">Count in first</option><option value="immediate">Start right away</option>'
+        + '</select></label>'
+        + '<label class="practice-loop-option" for="loop-repeat-preference"><span>When the loop repeats</span>'
+        + '<select id="loop-repeat-preference" class="v3-pop-select" onchange="updateLoopPreference(\'repeat\', this.value)">'
+        + '<option value="count-in">Count in again</option><option value="continuous">Repeat right away</option>'
+        + '</select></label>'
+        + '</fieldset>'
+        + '<section class="practice-loop-group practice-section-group" aria-labelledby="practice-section-heading">'
+        + '<div class="practice-loop-group-title" id="practice-section-heading">Practice Section</div>'
+        + '<div class="section-practice-row section-practice-controls-row">'
         + '<label class="section-practice-mode-wrap" title="Loop the selected section until turned off">'
         + '<input type="checkbox" id="section-practice-mode" onchange="onSectionPracticeModeChange()">'
-        + '<span class="section-practice-mode-text">Practice Section</span>'
+        + '<span class="section-practice-mode-text">Use selected section</span>'
         + '</label>'
         + _sectionPracticeWholeCheckboxHtml()
         + _sectionPracticePieceRowHtml()
         + '</div>'
         + '<div class="section-practice-row section-practice-chips-row">'
         + '<span class="section-practice-label">Sections:</span>'
-        + '<div id="section-practice-scroll" class="section-practice-scroll" role="toolbar"></div>'
-        + '</div>';
+        + '<div id="section-practice-scroll" class="section-practice-scroll" role="toolbar" aria-label="Song sections"></div>'
+        + '<span id="section-practice-empty" class="practice-section-empty hidden">No chart sections available.</span>'
+        + '</div>'
+        + '</section>';
 }
 
 function _ensureSectionPracticeWholeCheckbox() {
@@ -545,13 +585,13 @@ function _sectionPracticeCurrentPartIndex() {
 function _sectionPracticePillHtml() {
     return '<button type="button" id="section-practice-pill" class="section-practice-pill"'
         + ' aria-haspopup="dialog" aria-expanded="false" aria-controls="section-practice-bar"'
-        + ' aria-label="Section practice"'
-        + ' onclick="toggleSectionPracticePopover()" title="Section practice">'
+        + ' aria-label="Practice &amp; Loops"'
+        + ' onclick="toggleSectionPracticePopover(this)" title="Practice &amp; Loops">'
         + '<span class="section-practice-pill-icon" aria-hidden="true">'
         + '<svg class="v3-rail-svg section-practice-pill-svg" viewBox="0 0 24 24">'
         + '<path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M12,6A6,6 0 0,0 6,12A6,6 0 0,0 12,18A6,6 0 0,0 18,12A6,6 0 0,0 12,6M12,8A4,4 0 0,1 16,12A4,4 0 0,1 12,16A4,4 0 0,1 8,12A4,4 0 0,1 12,8M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10Z"/>'
         + '</svg></span>'
-        + '<span class="section-practice-pill-text">Practice</span>'
+        + '<span class="section-practice-pill-text">Practice &amp; Loops</span>'
         + '<span class="section-practice-pill-caret" aria-hidden="true">▾</span>'
         + '</button>';
 }
@@ -568,12 +608,12 @@ function _syncSectionPracticePillV3Chrome(isV3) {
             ring.setAttribute('aria-hidden', 'true');
             pill.insertBefore(ring, pill.firstChild);
         }
-        pill.setAttribute('title', 'Practice');
-        pill.setAttribute('aria-label', 'Practice');
+        pill.setAttribute('title', 'Practice & Loops');
+        pill.setAttribute('aria-label', 'Practice & Loops');
     } else {
         if (ring) ring.remove();
-        pill.setAttribute('title', 'Section practice');
-        pill.setAttribute('aria-label', 'Section practice');
+        pill.setAttribute('title', 'Practice & Loops');
+        pill.setAttribute('aria-label', 'Practice & Loops');
     }
 }
 
@@ -679,7 +719,11 @@ function _ensureSectionPracticeDom() {
     let bar = document.getElementById('section-practice-bar');
     if (bar) {
         _ensureSectionPracticeControlWrap(bar);
-        _migrateSectionPracticeDomLayout(bar);
+        if (!bar.querySelector('.practice-loop-options')) {
+            bar.innerHTML = _sectionPracticeBarInnerHtml();
+        } else {
+            _migrateSectionPracticeDomLayout(bar);
+        }
         if (!bar.querySelector('#section-practice-piece-row')) {
             const controlsRow = bar.querySelector('.section-practice-controls-row')
                 || bar.querySelector('.section-practice-primary-row');
@@ -692,6 +736,7 @@ function _ensureSectionPracticeDom() {
         _ensureSectionPracticeWholeCheckbox();
         bar.querySelector('.section-practice-show-all-wrap')?.remove();
         _placeSectionPracticeControlForChrome();
+        host.updateLoopUI();
         return bar;
     }
     const controls = document.getElementById('player-controls');
@@ -701,7 +746,7 @@ function _ensureSectionPracticeDom() {
     bar.id = 'section-practice-bar';
     bar.className = 'section-practice-bar';
     bar.setAttribute('role', 'dialog');
-    bar.setAttribute('aria-label', 'Section practice');
+    bar.setAttribute('aria-label', 'Practice & Loops');
     bar.innerHTML = _sectionPracticeBarInnerHtml();
     const ctrl = document.createElement('div');
     ctrl.id = 'section-practice-control';
@@ -713,6 +758,7 @@ function _ensureSectionPracticeDom() {
     // anchors on `#player-controls > button:last-of-type` (see static/v3/index.html).
     _mountSectionPracticeControlSafe(ctrl);
     _placeSectionPracticeControlForChrome();
+    host.updateLoopUI();
     return bar;
 }
 
@@ -729,43 +775,126 @@ export function _sectionPracticePopoverOpen() {
     return !!(bar && bar.classList.contains('section-practice-bar--open'));
 }
 
-function _openSectionPracticePopover() {
+let _sectionPracticePopoverTrigger = null;
+let _sectionPracticeLayoutObserver = null;
+let _sectionPracticeLayoutFrame = null;
+
+function _setSectionPracticePopoverExpanded(open) {
+    for (const id of ['section-practice-pill', 'v3-loop-indicator-open']) {
+        document.getElementById(id)?.setAttribute('aria-expanded', String(open));
+    }
+    // Owned independently of player-chrome's pop-open flag: closing another
+    // rail tool during the opening click cannot hide this panel's ancestor.
+    document.getElementById('player')?.classList.toggle('practice-panel-open', open);
+}
+
+function _positionSectionPracticePopover() {
+    if (!_sectionPracticePopoverOpen()) return;
+    const bar = document.getElementById('section-practice-bar');
+    const player = document.getElementById('player');
+    if (!bar || !player) return;
+    const parent = bar.offsetParent;
+    if (!parent) return;
+    const parentRect = parent.getBoundingClientRect();
+    const scaleX = parent.offsetWidth ? parentRect.width / parent.offsetWidth : 1;
+    const scaleY = parent.offsetHeight ? parentRect.height / parent.offsetHeight : 1;
+    if (!scaleX || !scaleY) return;
+    const viewport = window.visualViewport;
+    const playerRect = player.getBoundingClientRect();
+    const left = Math.max(playerRect.left, viewport?.offsetLeft || 0) + 8;
+    const top = Math.max(playerRect.top, viewport?.offsetTop || 0) + 8;
+    const right = Math.min(playerRect.right, (viewport?.offsetLeft || 0) + (viewport?.width || window.innerWidth)) - 8;
+    const bottom = Math.min(playerRect.bottom, (viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight)) - 8;
+    // Start from the stylesheet's anchor on every layout. Convert viewport
+    // corrections to the actual positioning parent's units (also covers zoom).
+    bar.style.top = '';
+    bar.style.left = '';
+    bar.style.bottom = '';
+    bar.style.maxWidth = '';
+    const preferredWidth = bar.getBoundingClientRect().width / scaleX;
+    bar.style.maxWidth = `${Math.max(0, Math.min(preferredWidth, (right - left) / scaleX))}px`;
+    bar.style.maxHeight = `${Math.max(0, (bottom - top) / scaleY)}px`;
+    const rect = bar.getBoundingClientRect();
+    const targetLeft = Math.max(left, Math.min(rect.left, right - rect.width));
+    const targetTop = Math.max(top, Math.min(rect.top, bottom - rect.height));
+    const offsetTop = bar.offsetTop;
+    bar.style.left = `${bar.offsetLeft + (targetLeft - rect.left) / scaleX}px`;
+    bar.style.bottom = 'auto';
+    bar.style.top = `${offsetTop + (targetTop - rect.top) / scaleY}px`;
+}
+
+function _scheduleSectionPracticePopoverLayout() {
+    if (!_sectionPracticePopoverOpen() || _sectionPracticeLayoutFrame !== null) return;
+    _sectionPracticeLayoutFrame = requestAnimationFrame(() => {
+        _sectionPracticeLayoutFrame = null;
+        _positionSectionPracticePopover();
+    });
+}
+
+function _observeSectionPracticePopoverLayout() {
+    // Observe only while open. Content/rail size changes and viewport resizing
+    // update placement without measuring layout in the highway's draw hook.
+    if (typeof ResizeObserver === 'function') {
+        _sectionPracticeLayoutObserver = new ResizeObserver(_scheduleSectionPracticePopoverLayout);
+        for (const id of ['section-practice-bar', 'section-practice-control', 'v3-player-rail', 'player']) {
+            const element = document.getElementById(id);
+            if (element) _sectionPracticeLayoutObserver.observe(element);
+        }
+    }
+    window.addEventListener('resize', _scheduleSectionPracticePopoverLayout);
+    window.visualViewport?.addEventListener('resize', _scheduleSectionPracticePopoverLayout);
+    window.visualViewport?.addEventListener('scroll', _scheduleSectionPracticePopoverLayout);
+}
+
+function _openSectionPracticePopover(trigger) {
     const bar = document.getElementById('section-practice-bar');
     if (!bar) return;
+    _sectionPracticePopoverTrigger = trigger || document.getElementById('section-practice-pill');
     bar.classList.add('section-practice-bar--open');
-    const pill = document.getElementById('section-practice-pill');
-    if (pill) pill.setAttribute('aria-expanded', 'true');
+    _setSectionPracticePopoverExpanded(true);
+    _positionSectionPracticePopover();
+    _observeSectionPracticePopoverLayout();
+    bar.scrollTop = 0;
+    bar.querySelector('button:enabled, select:enabled, input:enabled')?.focus({ preventScroll: true });
     _installSectionPracticeDismiss();
 }
 
-function _closeSectionPracticePopover() {
+function _closeSectionPracticePopover({ restoreFocus = true } = {}) {
     const bar = document.getElementById('section-practice-bar');
-    const pill = document.getElementById('section-practice-pill');
+    _sectionPracticeLayoutObserver?.disconnect();
+    _sectionPracticeLayoutObserver = null;
+    if (_sectionPracticeLayoutFrame !== null) cancelAnimationFrame(_sectionPracticeLayoutFrame);
+    _sectionPracticeLayoutFrame = null;
+    window.removeEventListener('resize', _scheduleSectionPracticePopoverLayout);
+    window.visualViewport?.removeEventListener('resize', _scheduleSectionPracticePopoverLayout);
+    window.visualViewport?.removeEventListener('scroll', _scheduleSectionPracticePopoverLayout);
     if (bar) {
         const focusWasInside = bar.contains(document.activeElement);
         bar.classList.remove('section-practice-bar--open');
-        // Return focus to the pill if it was inside the popover — otherwise it
-        // would be stranded on a now-display:none control, which also makes the
-        // shortcut gate treat that stale target as interactive and suppress
-        // player keys until focus is moved manually.
-        if (focusWasInside && pill) pill.focus();
+        if (restoreFocus && _sectionPracticePopoverTrigger?.isConnected) {
+            _sectionPracticePopoverTrigger.focus({ preventScroll: true });
+        } else if (focusWasInside) {
+            // An outside click may have no focusable target. Do not leave the
+            // keyboard shortcut gate pointing into a now-hidden dialog.
+            document.activeElement.blur();
+        }
     }
-    if (pill) pill.setAttribute('aria-expanded', 'false');
+    _sectionPracticePopoverTrigger = null;
+    _setSectionPracticePopoverExpanded(false);
 }
 
-export function toggleSectionPracticePopover() {
+export function toggleSectionPracticePopover(trigger) {
     if (_sectionPracticePopoverOpen()) _closeSectionPracticePopover();
-    else _openSectionPracticePopover();
+    else _openSectionPracticePopover(trigger);
 }
 
 let _sectionPracticeDismissBound = false;
 function _installSectionPracticeDismiss() {
     if (_sectionPracticeDismissBound) return;
     _sectionPracticeDismissBound = true;
-    // Click-outside + Esc close. Bound once on document; the pill's own click is
-    // inside #section-practice-control so it never self-closes. Listeners added
-    // mid-dispatch don't fire for the opening click, so there's no immediate
-    // close race.
+    // Click-outside + Esc close. Both the pill and the HUD trigger are exempt:
+    // capture must not close the panel before the trigger toggles it. Listeners
+    // added mid-dispatch don't fire for the opening click.
     //
     // The click listener uses the CAPTURE phase: the v3 player rail's icon
     // buttons call e.stopPropagation() in their click handler (player-chrome.js
@@ -782,7 +911,9 @@ function _installSectionPracticeDismiss() {
         if (!_sectionPracticePopoverOpen()) return;
         const ctrl = document.getElementById('section-practice-control');
         if (ctrl && ctrl.contains(e.target)) return;
-        _closeSectionPracticePopover();
+        const hud = document.getElementById('v3-loop-indicator-open');
+        if (hud && hud.contains(e.target)) return;
+        _closeSectionPracticePopover({ restoreFocus: false });
     }, true);
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && _sectionPracticePopoverOpen()) _closeSectionPracticePopover();
@@ -822,7 +953,9 @@ export function _sectionPracticeBarIsReady() {
     const ctrl = document.getElementById('section-practice-control');
     if (!ctrl || ctrl.classList.contains('section-practice-control--hidden')) return false;
     const scroll = document.getElementById('section-practice-scroll');
-    return !!(scroll && scroll.querySelector('[data-parent-idx]'));
+    const empty = document.getElementById('section-practice-empty');
+    return !!(scroll && (scroll.querySelector('[data-parent-idx]')
+        || (empty && !empty.classList.contains('hidden'))));
 }
 
 export function _installSectionPracticeDrawHook() {
@@ -893,10 +1026,21 @@ export function renderSectionPracticeBar() {
     const bar = _ensureSectionPracticeDom();
     const scroll = document.getElementById('section-practice-scroll');
     if (!bar || !scroll) return;
+    const empty = document.getElementById('section-practice-empty');
+    const mode = document.getElementById('section-practice-mode');
+    const whole = document.getElementById('section-practice-whole');
     if (!parents.length) {
-        _hideSectionPracticeBar();
+        _showSectionPracticeBar(bar);
+        scroll.innerHTML = '';
+        if (empty) empty.classList.remove('hidden');
+        if (mode) mode.disabled = true;
+        if (whole) whole.disabled = true;
+        _syncSectionPracticePieceUi();
         return;
     }
+    if (empty) empty.classList.add('hidden');
+    if (mode) mode.disabled = false;
+    if (whole) whole.disabled = false;
     if (_sectionPracticeActiveParent >= parents.length) {
         _sectionPracticeResetSelectionUi();
     }
@@ -1037,49 +1181,40 @@ export async function practiceSection(index, opts = {}) {
     // loop. Cleared in finally so every exit path (bail, success, failure) resets.
     _sectionPracticeRequestInFlight++;
     try {
-    host._cancelCountIn();
-    _setSectionPracticeMode(true, { skipClearLoop: true });
+        _setSectionPracticeMode(true, { skipClearLoop: true });
 
-    // setLoop() is seek-gated: it returns false when the seek is cancelled
-    // during arrangement switches / teardown-gen bumps, or when the backend
-    // clock clamps off-target. Retry briefly to land after the transport
-    // becomes ready without forking the loop system.
-    let ok = false;
-    for (let attempt = 0; attempt < 5; attempt++) {
-        // A newer click or a song/arrangement change supersedes this retry.
+        // This feature only supplies chart-derived bounds. setLoop's shared
+        // controller applies the activation, first-pass, and repeat policies.
+        let ok = false;
         if (requestGen !== _sectionPracticeRequestGen || seekGen !== audioSeekGen() || loopGen !== host._loopMutationGen()) return;
         try {
-            // skipSectionSync: this function owns the section-practice state and
-            // applies it below under the request-gen guard, so a stale retry
-            // landing here can't re-sync/re-arm via setLoop's shared path.
-            // commitGuard: also prevent a superseded retry from committing
-            // loopA/loopB at all — setLoop re-checks this right before arming,
-            // after its internal seek await, so a stale loop is never armed.
+            // skipSectionSync: this function owns section-selection state and
+            // applies it below under the request-gen guard.
+            // commitGuard: prevent a superseded request from committing bounds
+            // at all; the controller re-checks it immediately before arming.
             ok = await host.setLoop(start, end, {
+                activation: 'preference',
+                source: 'section',
                 skipSectionSync: true,
                 commitGuard: () => requestGen === _sectionPracticeRequestGen && seekGen === audioSeekGen() && loopGen === host._loopMutationGen(),
             });
         } catch (err) {
             ok = false;
         }
-        if (ok) break;
-        await new Promise(res => setTimeout(res, 60 + attempt * 90));
-    }
-    // Re-check after the awaited retries before applying any loop/count-in state.
-    if (requestGen !== _sectionPracticeRequestGen || seekGen !== audioSeekGen() || loopGen !== host._loopMutationGen()) return;
+        // Re-check after the awaited controller work before painting selection.
+        if (requestGen !== _sectionPracticeRequestGen || seekGen !== audioSeekGen() || loopGen !== host._loopMutationGen()) return;
 
-    if (ok) {
-        _sectionPracticeWholeSection = whole;
-        if (!whole) {
-            _sectionPracticeSelected = index;
-            _sectionPracticeSavedPartIndex = index;
+        if (ok) {
+            _sectionPracticeWholeSection = whole;
+            if (!whole) {
+                _sectionPracticeSelected = index;
+                _sectionPracticeSavedPartIndex = index;
+            }
+            _blurSectionPracticeFocusIfNeeded();
+            _updateSectionPracticeHighlight(_audioTime());
+        } else {
+            _setSectionPracticeMode(false, { skipClearLoop: true });
         }
-        _blurSectionPracticeFocusIfNeeded();
-        _updateSectionPracticeHighlight(_audioTime());
-        host.startCountIn({ immediate: true });
-    } else {
-        _setSectionPracticeMode(false, { skipClearLoop: true });
-    }
     } finally {
         _sectionPracticeRequestInFlight--;
     }
@@ -1189,7 +1324,8 @@ export function _maybeRefreshSectionPracticeDuration(dur) {
 
 // Re-render when section metadata appears (before audio duration is known).
 export function _ensureSectionPracticeBar() {
-    if (_sectionPracticeSourceSections().length === 0) return;
+    const player = document.getElementById('player');
+    if (!player || !player.classList.contains('active') || !host.currentFilename()) return;
     if (!_sectionPracticeBarIsReady()) {
         renderSectionPracticeBar();
     }

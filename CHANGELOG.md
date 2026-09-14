@@ -68,6 +68,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loaded as fretted arrangements — the loader's file/notation gate keeps a drum
   part out of the fretted pipeline (and out of note-detection grading), pinned
   by test. Legacy single-drum packs read exactly as before, as a one-part list.
+- **Practice loops are easier to control and understand** — A/B and section
+  loops now share clear start/count-in/repeat choices, can be saved per song,
+  show their bounds on the timeline, and remain visible in the game HUD.
+  Seeking stays free inside the loop while outside seeks restart from A using
+  the selected first-pass behavior.
 - **`chart-transform` capability domain (#952)** — plugins can now remap the
   chart before rendering and scoring through a core-owned provider
   coordinator. Synchronous transforms run after difficulty filtering; host

@@ -33,11 +33,16 @@ function sourceBetween(startText, endText) {
     return src.slice(start, end);
 }
 
+const nextOnStringTolerance = src.match(/const NEXT_ON_STRING_T_EPS = ([\d.]+);/);
+assert.ok(nextOnStringTolerance, 'the renderer must declare its onset tolerance');
+const NEXT_ON_STRING_T_EPS = Number(nextOnStringTolerance[1]);
+
 const hwyLinkNextTargetNotes = new Function(
+    'NEXT_ON_STRING_T_EPS',
     '"use strict";'
     + extractFn(src, 'hwyLinkNextTargetNotes')
     + '\nreturn hwyLinkNextTargetNotes;',
-)();
+)(NEXT_ON_STRING_T_EPS);
 
 const hwyShouldSuppressNoteBody = new Function(
     '"use strict";'
@@ -116,6 +121,8 @@ test('explicit slides link while unlinked grace slides and changed-fret attacks 
     const changedFretAttack = { t: 2, s: 2, f: 7, ho: true };
     const unpitchedLink = { t: 1, s: 3, f: 5, slu: 2, ln: true };
     const unpitchedTarget = { t: 2, s: 3, f: 2 };
+    const pullOffLink = { t: 1, s: 4, f: 7, ln: true };
+    const pullOffTarget = { t: 2, s: 4, f: 3, po: true };
 
     const targets = hwyLinkNextTargetNotes(
         [
@@ -123,6 +130,7 @@ test('explicit slides link while unlinked grace slides and changed-fret attacks 
             graceSlide, graceTarget,
             plainLink, changedFretAttack,
             unpitchedLink, unpitchedTarget,
+            pullOffLink, pullOffTarget,
         ],
         [],
     );
@@ -131,6 +139,7 @@ test('explicit slides link while unlinked grace slides and changed-fret attacks 
     assert.equal(targets.has(graceTarget), false);
     assert.equal(targets.has(changedFretAttack), false);
     assert.equal(targets.has(unpitchedTarget), true);
+    assert.equal(targets.has(pullOffTarget), false);
 });
 
 test('strict authored links work without sustain and malformed events fail open', () => {
@@ -149,6 +158,64 @@ test('strict authored links work without sustain and malformed events fail open'
     assert.equal(targets.has(target), true);
     assert.equal(targets.has(stringFlagTarget), false);
     assert.equal(targets.has(malformedTarget), false);
+});
+
+test('dangling slide links leave both Die By The Sword chords visible', () => {
+    const firstChord = [{ s: 1, f: 7 }, { s: 3, f: 9 }];
+    const secondChord = [{ s: 1, f: 7 }, { s: 2, f: 9 }];
+    const targets = hwyLinkNextTargetNotes([], [
+        {
+            t: 273.363007,
+            notes: [
+                { s: 1, f: 7, sl: 5, sus: 0.306, ln: true },
+                { s: 2, f: 9, sl: 7, sus: 0.306, ln: true },
+            ],
+        },
+        { t: 273.976013, notes: firstChord },
+        { t: 278.873993, notes: secondChord },
+    ]);
+
+    for (const note of [...firstChord, ...secondChord]) {
+        assert.equal(targets.has(note), false, `string ${note.s} fret ${note.f} remains visible`);
+    }
+});
+
+test('a late matching slide destination is a visible new attack', () => {
+    const source = { t: 1, s: 0, f: 3, sl: 7, sus: 0.25, ln: true };
+    const target = { t: 2, s: 0, f: 7 };
+    assert.equal(hwyLinkNextTargetNotes([source, target], []).has(target), false);
+});
+
+test('timely pitched and unpitched links require their authored slide destination', () => {
+    for (const slide of ['sl', 'slu']) {
+        const source = { t: 1, s: 0, f: 7, [slide]: 5, sus: 0.25, ln: true };
+        const wrongFret = { t: 1.25, s: 0, f: 7 };
+        const slideTarget = { t: 1.25, s: 0, f: 5 };
+        assert.equal(
+            hwyLinkNextTargetNotes([source, wrongFret], []).has(wrongFret),
+            false,
+            `${slide} must not suppress an attack at the starting fret`,
+        );
+        assert.equal(
+            hwyLinkNextTargetNotes([source, slideTarget], []).has(slideTarget),
+            true,
+            `${slide} still suppresses its valid continuation`,
+        );
+    }
+});
+
+test('positive sustain bounds links with rounding tolerance and allows overlap', () => {
+    const source = { t: 1, s: 0, f: 3, sus: 0.25, ln: true };
+    const latest = source.t + source.sus + NEXT_ON_STRING_T_EPS;
+    for (const [time, expected, label] of [
+        [1.1, true, 'overlapping continuation'],
+        [latest - 0.001, true, 'inside the rounding tolerance'],
+        [latest, true, 'exactly at the tolerance boundary'],
+        [latest + 0.001, false, 'beyond the tolerance boundary'],
+    ]) {
+        const target = { t: time, s: 0, f: 3 };
+        assert.equal(hwyLinkNextTargetNotes([source, target], []).has(target), expected, label);
+    }
 });
 
 test('explicit links remain suppressed at the hit line without changing legacy skipBody', () => {
@@ -204,4 +271,43 @@ test('explicit suppression skips attack/drop-line but leaves the continuation tr
         /Rendered for ALL notes with sustain, including legacy skipBody/,
         'the sustain trail must remain outside the suppressed attack-body gate',
     );
+});
+
+test('LinkNext, repeat gems, and trail caches coexist across the renderer lifecycle', () => {
+    const declarations = sourceBetween(
+        'let _arpGhostInferRefHs = null;',
+        'let _laneRailFlagsRefTpl = null;',
+    );
+    assert.match(declarations, /let _linkNextTargetSet = null;/);
+    assert.match(declarations, /let _trailYieldEventsByFret = \[\];/);
+    assert.doesNotMatch(declarations, /_slideTarget(?:Set|NotesRef|ChordsRef)/);
+
+    const prepass = sourceBetween(
+        '// ── Linked-target gem-suppression pre-pass',
+        '/** Arpeggio lane purple rails',
+    );
+    const linkNextIndex = prepass.indexOf('_linkNextTargetSet = hwyLinkNextTargetNotes');
+    const trailIndex = prepass.indexOf('if (_trailYieldNotesRef !== notes');
+    assert.ok(linkNextIndex >= 0, 'LinkNext selection must remain in the chart pre-pass');
+    assert.ok(trailIndex > linkNextIndex, 'trail indexing must follow LinkNext selection');
+
+    const chordPath = sourceBetween(
+        'const suppressRepeatGems = repeatChordMaySuppressGems(',
+        'lastFretForString[cn.s] = cn.f;',
+    );
+    assert.match(chordPath, /_linkNextTargetSet\.has\(cn\)/);
+    assert.match(chordPath, /suppressRepeatGems \|\| suppressSynthChord/);
+
+    const reset = extractFn(src, '_resetStringDependentCaches');
+    assert.match(reset, /trailVisibilityReleaseChartReferences\(\);/);
+
+    const teardown = sourceBetween(
+        '_measureStarts = []; _measureStartsRef = null;',
+        'function canvasSize(canvas)',
+    );
+    assert.match(
+        teardown,
+        /_linkNextTargetSet\s*=\s*null;[\s\S]*?_linkNextTargetChordsRef\s*=\s*null;[\s\S]*?trailVisibilityReleaseChartReferences\(\);/,
+    );
+    assert.doesNotMatch(src, /_slideTarget(?:Set|NotesRef|ChordsRef)|_isSlideTgt/);
 });

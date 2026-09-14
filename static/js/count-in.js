@@ -8,9 +8,10 @@
 // ./player-state.js. Every earlier slice only READ what it shared, so a getter hook
 // sufficed; this one could not.
 //
-// It imports the loop module directly (setLoop / loopA / loopB — a count-in that starts
-// inside an A-B loop must begin at A). Nothing imports count-in back: app.js and
-// section-practice both reach it through the host seam, so the graph stays acyclic.
+// Loop bounds are supplied as an immutable snapshot by the loop controller. A
+// legacy direct caller may fall back to window.feedBack.getLoop(), but this
+// module neither owns nor imports loop state, so the dependency graph stays
+// acyclic.
 //
 // app.js's autoplay path used to reach IN and set the credits timers itself. It cannot
 // now, and it should not have to — so the module exports the OPERATIONS instead
@@ -20,8 +21,7 @@
 // See ./host.js: reading an unwired hook THROWS, and tests/js/host_contract.test.js
 // fails CI if the hooks used here and the hooks app.js wires ever drift apart.
 import { audio } from './audio-el.js';
-import { _audioSeek, _songEventPayload, jucePlayer, setPlayButtonState, togglePlay } from './transport.js';
-import { loopA, loopB, setLoop } from './loops.js';
+import { _audioSeek, audioSeekGen, _markPlaybackPaused, jucePlayer, startPhysicalPlayback } from './transport.js';
 import { S } from './player-state.js';
 
 // ── Count-in click sound (Web Audio API) ────────────────────────────────
@@ -110,6 +110,41 @@ export function countInBeats(startT) {
 }
 
 let _countingIn = false;
+let _countInStart = null;
+
+// Ownership begins before pause/seek, and survives the final asynchronous
+// physical Play. A queued compatibility Play can join this promise safely.
+export function getCountInStart() {
+    return _countInStart;
+}
+
+function _newCountInStart() {
+    let resolve;
+    const owner = {
+        session: audioSeekGen(),
+        generation: _countInGen,
+        completion: new Promise(done => { resolve = done; }),
+        resolve: outcome => resolve(outcome),
+        cancel: () => _cancelCountIn(),
+    };
+    _countInStart = owner;
+    _countingIn = true;
+    return owner;
+}
+
+function _currentCountIn(owner) {
+    return _countInStart === owner && owner.generation === _countInGen
+        && owner.session === audioSeekGen();
+}
+
+function _finishCountIn(owner, outcome) {
+    if (!_currentCountIn(owner)) return;
+    _countInStart = null;
+    _countingIn = false;
+    hideCountOverlay();
+    if (!outcome.completed) _markPlaybackPaused();
+    owner.resolve(outcome);
+}
 let _countOverlay = null;
 // Generation token so teardown can cancel an in-progress count-in. Each
 // startCountIn() captures the gen at entry; rewindStep, the loop-wrap
@@ -131,8 +166,14 @@ const _CREDITS_HOLD_MS = 3000;
 // a count-in handoff that never plays). This hard cap guarantees the credits
 // never linger over the window.highway. Generous enough to outlast a normal count-in.
 const _CREDITS_MAX_MS = 12000;
-export function _cancelCountIn() {
+export function _cancelCountIn(options = {}) {
+    const owner = _countInStart;
+    _countInStart = null;
     _countInGen++;
+    if (owner) {
+        owner.resolve({ status: 'cancelled', completed: false });
+        if (options.reconcile !== false && owner.session === audioSeekGen()) _markPlaybackPaused();
+    }
     _countingIn = false;
     hideCountOverlay();
     // The credits overlay rides the count-in lifecycle (and its no-count-in
@@ -242,198 +283,99 @@ export function hideSongCreditsOverlay() {
     if (_creditsOverlay) { _creditsOverlay.remove(); _creditsOverlay = null; }
 }
 
-export async function startCountIn(opts = {}) {
-    if (_countingIn) return;
-    _countingIn = true;
-    // Snapshot the current gen so every delayed callback (rewind frames,
-    // post-seek then, count-in ticks, post-count play) can bail if a
-    // teardown bumped the gen mid-flight via _cancelCountIn().
-    const gen = _countInGen;
-    const immediate = !!opts.immediate;
-    if (window._juceMode) {
-        await jucePlayer.pause().catch((err) => console.error('[app] jucePlayer.pause error in count-in:', err));
-    } else {
-        audio.pause();
+// Stop the physical backing transport before an initial loop seek. Keeping
+// this next to startCountIn makes the JUCE and HTML5 paths use the same pause
+// semantics while allowing the loop controller to establish the important
+// pause -> seek -> count-in order.
+export async function pauseBackingForCountIn() {
+    const owner = _countInStart || _newCountInStart();
+    let paused = true;
+    if (window._juceMode) paused = await jucePlayer.pause();
+    else audio.pause();
+    if (!_currentCountIn(owner)) return false;
+    if (paused === false) {
+        _finishCountIn(owner, { status: 'failed', completed: false });
+        return false;
     }
-    if (gen !== _countInGen) return; // teardown during pause
-
-    // Section-practice entry: already at loop A after setLoop(); skip the
-    // B→A rewind animation used on loop wrap and go straight to clicks.
-    if (immediate) {
-        if (loopA === null || loopB === null) {
-            _countingIn = false;
-            return;
-        }
-        S.lastAudioTime = loopA;
-        window.highway.setTime(loopA);
-        if (window.feedBack) {
-            window.feedBack.emit('loop:restart', { loopA, loopB, time: loopA });
-        }
-        beginCount();
-        return;
-    }
-
-    // Rewind animation: sweep highway time from B to A
-    const rewindDuration = 400; // ms
-    const rewindStart = performance.now();
-    const fromTime = loopB;
-    const toTime = loopA;
-
-    function rewindStep(now) {
-        if (gen !== _countInGen) return; // teardown mid-rewind
-        const elapsed = now - rewindStart;
-        const t = Math.min(elapsed / rewindDuration, 1);
-        // Ease out quad
-        const eased = 1 - (1 - t) * (1 - t);
-        const currentT = fromTime + (toTime - fromTime) * eased;
-        window.highway.setTime(currentT);
-        if (t < 1) {
-            _countInRaf = requestAnimationFrame(rewindStep);
-        } else {
-            _countInRaf = 0;
-            // Rewind done — set final position and start count.
-            // Await the JUCE seek so the engine has repositioned before
-            // we start the click track (HTML5 path is synchronous).
-            _audioSeek(loopA, 'loop-wrap').then((r) => {
-                if (gen !== _countInGen) return; // teardown during seek
-                // Abort the loop restart in two cases:
-                //   1. Cancelled (player torn down): don't beginCount on a
-                //      new session.
-                //   2. Off-target landing (JUCE rollback / clamp far from
-                //      loopA): proceeding would emit loop:restart and start
-                //      a count-in from the wrong position. Audio is at
-                //      r.from / r.to, which is not where the loop wants to
-                //      resume — better to drop this iteration than play out
-                //      of sync.
-                // 50 ms tolerance: well within JUCE's normal seek precision
-                // but tight enough to catch a real rollback or no-op.
-                if (!r.completed || Math.abs(r.to - loopA) > 0.05) {
-                    // startCountIn paused audio at entry but left isPlaying
-                    // alone — beginCount would have set it on resume. On
-                    // abort, sync the transport: audio is paused, so
-                    // isPlaying must reflect that and the button + plugin
-                    // host must agree.
-                    _countingIn = false;
-                    if (S.isPlaying) {
-                        S.isPlaying = false;
-                        setPlayButtonState(false);
-                        if (window.feedBack) {
-                            window.feedBack.isPlaying = false;
-                            window.feedBack.emit('song:pause', _songEventPayload());
-                        }
-                    }
-                    return;
-                }
-                // Use the verified post-seek clock for the chart so audio
-                // and chart stay in sync if JUCE clamped to slightly
-                // before/after loopA. The loop:restart event keeps `time:
-                // loopA` because subscribers treat that as the semantic
-                // marker for "new iteration starts at A", not the actual
-                // audio position.
-                S.lastAudioTime = r.to;
-                window.highway.setTime(r.to);
-                window.feedBack.emit('loop:restart', { loopA, loopB, time: loopA });
-                beginCount();
-            });
-        }
-    }
-    _countInRaf = requestAnimationFrame(rewindStep);
-
-    function beginCount() {
-        const bpm = window.highway.getBPM(loopA);
-        const beatInterval = 60 / bpm;
-        // One bar of the meter at loop A (a short bar there is counted short,
-        // same as the song-start pickup).
-        const clicks = countInBeats(loopA);
-        let count = 0;
-
-        function tick() {
-            if (gen !== _countInGen) return; // teardown mid-count
-            count++;
-            if (count > clicks) {
-                hideCountOverlay();
-                _countingIn = false;
-                if (window._juceMode) {
-                    jucePlayer.play().then((started) => {
-                        if (gen !== _countInGen) return; // teardown during play start
-                        if (!started) return;
-                        S.isPlaying = true;
-                        setPlayButtonState(true);
-                        window.feedBack.isPlaying = true;
-                        const payload = _songEventPayload();
-                        window.feedBack.emit('song:play', payload);
-                        window.feedBack.emit('song:resume', payload);
-                    }).catch((err) => console.error('[app] jucePlayer.play error:', err));
-                } else {
-                    audio.play().then(() => {
-                        if (gen !== _countInGen) return;
-                        S.isPlaying = true;
-                        setPlayButtonState(true);
-                    }).catch((err) => {
-                        if (gen !== _countInGen) return;
-                        // An engine reroute's deliberate pause aborts this play()
-                        // while playback continues on JUCE — don't reset the
-                        // button (mirrors the togglePlay guard).
-                        if (window._juceRerouteInProgress) return;
-                        // Same rationale as togglePlay: don't claim playback
-                        // started if the Promise rejected.
-                        console.error('[app] audio.play() rejected after count-in:', err);
-                        S.isPlaying = false;
-                        setPlayButtonState(false);
-                    });
-                }
-                return;
-            }
-            showCountOverlay(count);
-            playClick(count === 1);
-            _countInTimer = setTimeout(tick, beatInterval * 1000);
-        }
-        _countInTimer = setTimeout(tick, 500);
-    }
+    return true;
 }
 
-// Start-of-song count-in: a one-bar click before playback begins, gated by the
-// "Countdown before song" setting (Gameplay tab). Mirrors the loop count-in's
-// overlay + click + gen-token cancellation, but counts from the song's current
-// position (0 at song start) with no loop A/B rewind. startCountIn() is loop-
-// coupled (early-returns when loopA/loopB are null), so this is a sibling
-// rather than an overload. Hands off to togglePlay() once the count completes.
-export async function startSongCountIn() {
-    if (_countingIn) return;
-    _countingIn = true;
-    // Snapshot the gen so a teardown (showScreen/playSong calls _cancelCountIn)
-    // bumps it and every delayed callback below bails.
-    const gen = _countInGen;
-    if (window._juceMode) {
-        await jucePlayer.pause().catch((err) => console.error('[app] jucePlayer.pause error in song count-in:', err));
-    } else {
-        audio.pause();
-    }
-    if (gen !== _countInGen) return; // teardown during pause
-    const startT = S.lastAudioTime || 0;
-    let bpm = window.highway.getBPM(startT);
-    // Pre-chart / malformed-tempo fallback: 120 BPM (500 ms per beat).
+function _beginCount(owner, startTime) {
+    let bpm = window.highway.getBPM(startTime);
     if (!Number.isFinite(bpm) || bpm <= 0) bpm = 120;
-    const beatInterval = 60 / bpm;
-    const clicks = countInBeats(startT);
+    const clicks = countInBeats(startTime);
     let count = 0;
-    function tick() {
-        if (gen !== _countInGen) return; // teardown mid-count
+    const tick = async () => {
+        if (!_currentCountIn(owner)) return;
         count++;
         if (count > clicks) {
             hideCountOverlay();
-            _countingIn = false;
-            // Hand off to the normal play path — togglePlay() flips isPlaying,
-            // updates the button, and emits song:play/resume for plugins.
-            Promise.resolve(togglePlay()).catch((err) => console.warn('[app] play after count-in failed:', err));
+            const outcome = await startPhysicalPlayback({ guard: () => _currentCountIn(owner) });
+            _finishCountIn(owner, outcome);
             return;
         }
         showCountOverlay(count);
         playClick(count === 1);
-        _countInTimer = setTimeout(tick, beatInterval * 1000);
-    }
-    // First beat after a short lead-in, matching the loop count-in's 500 ms.
+        _countInTimer = setTimeout(tick, 60000 / bpm);
+    };
     _countInTimer = setTimeout(tick, 500);
+}
+
+export async function startCountIn(opts = {}) {
+    if (_countingIn && !opts.backingAlreadyPaused) return false;
+    let requestedBounds = opts.bounds && typeof opts.bounds === 'object' ? opts.bounds : null;
+    if (!requestedBounds && window.feedBack && typeof window.feedBack.getLoop === 'function') {
+        try { requestedBounds = window.feedBack.getLoop(); } catch (_) { return false; }
+    }
+    const loopA = Number(requestedBounds && (requestedBounds.a ?? requestedBounds.loopA));
+    const loopB = Number(requestedBounds && (requestedBounds.b ?? requestedBounds.loopB));
+    if (!Number.isFinite(loopA) || !Number.isFinite(loopB) || loopB <= loopA) return false;
+    const owner = _countInStart || _newCountInStart();
+    if (!opts.backingAlreadyPaused && !await pauseBackingForCountIn()) return false;
+    if (!_currentCountIn(owner)) return false;
+
+    const begin = time => {
+        S.lastAudioTime = time;
+        if (typeof window.highway.freezeTime === 'function') window.highway.freezeTime(time);
+        else window.highway.setTime(time);
+        window.feedBack?.emit('loop:restart', { loopA, loopB, time: loopA });
+        _beginCount(owner, loopA);
+    };
+    if (opts.immediate) {
+        begin(loopA);
+        return true;
+    }
+
+    const rewindStart = performance.now();
+    const rewindStep = now => {
+        if (!_currentCountIn(owner)) return;
+        const t = Math.min((now - rewindStart) / 400, 1);
+        const eased = 1 - (1 - t) * (1 - t);
+        window.highway.setTime(loopB + (loopA - loopB) * eased);
+        if (t < 1) {
+            _countInRaf = requestAnimationFrame(rewindStep);
+            return;
+        }
+        _countInRaf = 0;
+        _audioSeek(loopA, 'loop-wrap', { guard: () => _currentCountIn(owner) }).then(result => {
+            if (!_currentCountIn(owner)) return;
+            if (!result.completed || Math.abs(result.to - loopA) > 0.05) {
+                _finishCountIn(owner, { status: 'failed', completed: false });
+                return;
+            }
+            begin(result.to);
+        });
+    };
+    _countInRaf = requestAnimationFrame(rewindStep);
+    return true;
+}
+
+// Song-load count-ins share the same start owner and cancellation semantics.
+export async function startSongCountIn() {
+    if (_countingIn) return;
+    const owner = _newCountInStart();
+    if (!await pauseBackingForCountIn() || !_currentCountIn(owner)) return;
+    _beginCount(owner, S.lastAudioTime || 0);
 }
 
 // ── Operations app.js's autoplay path used to perform by reaching in ────────
