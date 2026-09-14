@@ -4,7 +4,7 @@ export function openHarmonyBatch(filenames, { fetcher = (...args) => fetch(...ar
     const dialog = document.createElement('dialog');
     dialog.setAttribute('aria-labelledby', 'harmony-batch-title');
     dialog.setAttribute('role', 'dialog');
-    dialog.style.cssText = 'width:min(540px,90vw);max-height:80vh;border:1px solid #404757;border-radius:18px;padding:24px;background:#151a24;color:#eff2f7;box-shadow:0 24px 80px #0009';
+    dialog.style.cssText = 'position:fixed;inset:0;margin:auto;width:min(540px,90vw);max-height:80vh;border:1px solid #404757;border-radius:18px;padding:24px;background:#151a24;color:#eff2f7;box-shadow:0 24px 80px #0009';
     dialog.innerHTML = '<h2 id="harmony-batch-title" style="font-size:20px;font-weight:650;margin-bottom:8px">Analyse harmony</h2>'
         + '<p style="font-size:13px;color:#aab5c8;line-height:1.5;margin-bottom:18px">Read every instrument chart to estimate keys, chords and scales for the 3D guide. Results stay in this profile.</p>'
         + '<p data-status role="status" aria-live="polite" style="margin-bottom:10px">Starting…</p>'
