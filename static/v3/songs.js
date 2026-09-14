@@ -1603,11 +1603,29 @@
             '<button data-batch="playlist" class="text-sm bg-fb-primary hover:bg-fb-primaryHi text-white px-3 py-1 rounded-full">Add to playlist</button>' +
             '<button data-batch="details" class="text-sm bg-fb-card/60 hover:bg-fb-card border border-fb-border/50 text-fb-text px-3 py-1 rounded-full">Edit details</button>' +
             '<button data-batch="saved" class="text-sm bg-fb-card/60 hover:bg-fb-card border border-fb-border/50 text-fb-text px-3 py-1 rounded-full">Save for Later</button>' +
+            '<button data-batch="harmony" class="text-sm bg-fb-card/60 hover:bg-fb-card border border-fb-border/50 text-fb-text px-3 py-1 rounded-full">Analyse harmony</button>' +
             '<button data-batch="clear" class="text-sm text-fb-textDim hover:text-fb-text px-2">Clear</button>';
         bar.querySelector('[data-batch="clear"]').addEventListener('click', () => { state.selected.clear(); reload(); renderBatchBar(); });
         bar.querySelector('[data-batch="saved"]').addEventListener('click', batchSave);
         bar.querySelector('[data-batch="playlist"]').addEventListener('click', batchAddToPlaylist);
         bar.querySelector('[data-batch="details"]').addEventListener('click', openBulkEdit);
+        bar.querySelector('[data-batch="harmony"]').addEventListener('click', async (event) => {
+            const button = event.currentTarget;
+            const filenames = [...state.selected].map(key => {
+                const song = state.songsById[key];
+                return song ? localFilename(song) : (state.provider === 'local' ? key : null);
+            });
+            if (filenames.some(name => !name)) {
+                button.textContent = 'Select local songs';
+                return;
+            }
+            button.disabled = true;
+            try {
+                const { openHarmonyBatch } = await import('/static/js/harmony-batch.js');
+                openHarmonyBatch(filenames);
+            } catch (_) { button.textContent = 'Analysis unavailable'; }
+            finally { button.disabled = false; }
+        });
     }
 
     async function batchSave() {

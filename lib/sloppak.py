@@ -65,6 +65,7 @@ from song import (
 )
 import drums as drums_mod
 import notation as notation_mod
+from harmony import sanitize_harmony, source_revision
 
 
 def find_full_mix(stems: list[dict]) -> dict | None:
@@ -775,6 +776,12 @@ class LoadedSloppak:
     # its back-compat alias). None when the pack has no drums at all; a
     # single-part list for a legacy pack with only the song-level key.
     drum_parts: list[dict] | None = None
+    # Song-wide intended chord progression (manifest `harmony:`, spec §7.8).
+    # Teaching/display only; never input to note grading.
+    harmony: dict | None = None
+    # Application metadata for invalidating locally saved guide corrections.
+    # Not a feedpak manifest field; includes source chart/guide/audio revision.
+    harmonic_guide_revision: str | None = None
 
 
 def _load_drum_tab_file(source_dir: Path, rel: str, label: str) -> dict | None:
@@ -1077,6 +1084,14 @@ def load_song(
             # _finite_float keeps a malformed manifest NaN/Infinity from
             # poisoning the song_info JSON (same guard as the wire path).
             arr.cent_offset = _finite_float(entry["centOffset"])
+        # The chart-only guide needs the source's fret convention. Source SNG
+        # positive frets are physical; zero means the capo. Keep this separate
+        # from grading and from the legacy pitch helper.
+        from harmony_source import arrangement_pitch_metadata
+        try:
+            arr.guide_pitch_metadata = arrangement_pitch_metadata(data or {}, entry)
+        except (ValueError, TypeError, IndexError, KeyError, OverflowError):
+            log.warning("sloppak: optional harmony pitch metadata is unavailable", exc_info=True)
         # `tones` overrides WHOLESALE, unlike the field-level overrides above:
         # the entry's object replaces the arrangement JSON's entirely, with no
         # per-field merge (spec §5.2). A Writer SHOULD NOT emit both, but when
@@ -1437,6 +1452,20 @@ def load_song(
                         "events": clean_events,
                     }
 
+    # Optional harmony.json — intended song-wide progression (spec §7.8),
+    # independent of the selected arrangement's played chord functions.
+    harmony_data: dict | None = None
+    harmony_rel = manifest.get("harmony")
+    if isinstance(harmony_rel, str) and harmony_rel.strip():
+        harmony_path = _resolve_pack_path(source_dir, harmony_rel, "harmony")
+        if harmony_path is not None and harmony_path.is_file():
+            try:
+                harmony_data = sanitize_harmony(load_json(harmony_path))
+                if harmony_data is None:
+                    log.warning("sloppak: harmony %r ignored — expected an events list", harmony_rel)
+            except Exception as e:
+                log.warning("sloppak: failed to parse harmony %r: %s", harmony_rel, e)
+
     # Optional rigs.json — the pack's rig library (manifest `rigs:` key,
     # spec §7.9). Loaded here so the highway WS can hand it to whatever voices
     # the part; the bindings that reference it ride the arrangement's `tones`.
@@ -1463,6 +1492,26 @@ def load_song(
     else:
         full_mix_data = _legacy_full_mix(manifest, source_dir)
 
+    # Hash chart/guide contents, but only stat large audio sources. For zipped
+    # packs source_revision uses central-directory CRCs and avoids unpack-cache
+    # mtimes, so clearing the cache does not discard the user's local edits.
+    revision_files = ["manifest.yaml", "manifest.yml"]
+    for relative in (keys_rel, harmony_rel, manifest.get("song_timeline")):
+        if isinstance(relative, str) and relative:
+            revision_files.append(relative)
+    for entry in manifest.get("arrangements", []) or []:
+        if isinstance(entry, dict):
+            for field in ("file", "notation", "drum_tab"):
+                relative = entry.get(field)
+                if isinstance(relative, str) and relative:
+                    revision_files.append(relative)
+    revision_audio = [entry["file"] for entry in stems]
+    if full_mix_stem is not None:
+        revision_audio.append(full_mix_stem["file"])
+    if full_mix_data:
+        revision_audio.append(full_mix_data)
+    guide_revision = source_revision(dlc_root / filename, revision_files, revision_audio)
+
     return LoadedSloppak(
         song=song,
         stems=stems,
@@ -1475,6 +1524,8 @@ def load_song(
         tempos=tempos_data,
         time_signatures=time_sigs_data,
         keys=keys_data,
+        harmony=harmony_data,
+        harmonic_guide_revision=guide_revision,
         rigs=rigs_data,
         notation_by_id=notation_by_id_data,
         arrangement_ids=arrangement_ids_acc,

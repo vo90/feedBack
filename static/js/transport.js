@@ -410,6 +410,7 @@ export async function _audioSeek(s, reason, options = {}) {
         if (window.highway && typeof window.highway.setTime === 'function') {
             window.highway.setTime(to);
         }
+        window.highway?.notifyHarmonicGuideSeek?.(reason);
         window.feedBack.emit('song:seek', { from, to, reason: reason || null });
         return { completed: true, from, to };
     }).catch((err) => {
