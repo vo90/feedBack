@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - dev/integration-v2
+      - dev/integration
     paths:
       - Dockerfile
       - .dockerignore
