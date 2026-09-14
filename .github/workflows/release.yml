@@ -1,8 +1,9 @@
 name: release
 
 on:
-  push:
-    tags: ['v*']
+  # Uploading tags for backup must not publish a Docker image.
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -27,6 +28,10 @@ jobs:
         id: meta
         run: |
           tag="${GITHUB_REF_NAME}"        # e.g. v0.3.0 or v0.3.0-beta.1
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Docker releases require a version tag such as v0.3.0."
+            exit 1
+          fi
           version="${tag#v}"              # strip leading v
           echo "version=$version" >> "$GITHUB_OUTPUT"
           # Emit the full tag list here so the build step never receives a
