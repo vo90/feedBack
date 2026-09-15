@@ -14267,8 +14267,9 @@
                             }
                         }
                     }
-                    // Compact frames retain gems needed for technique cues or moving sustains.
+                    // Repeat gems remain visible for technique cues or moving sustains.
                     const suppressRepeatGems = repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes);
+                    let retainsChordGems = false;
                     if (!deferChordGems || _deferFallback || suppressSynthChord) {
                         for (const cn of chordNotes) {
                             const _isLinkNextTgt = !!(_linkNextTargetSet && _linkNextTargetSet.has(cn));
@@ -14328,6 +14329,9 @@
                                 chordHighwayLavenderArpVisual || suppressSynthChord || chordWireHighDensity(ch),
                                 _isLinkNextTgt,
                             );
+                            // Frame height follows the gems this path actually retains,
+                            // including arpeggio deferral and linked continuation skips.
+                            if (!(suppressRepeatGems || suppressSynthChord || _isLinkNextTgt)) retainsChordGems = true;
                             lastFretForString[cn.s] = cn.f;
                             // gate by THIS note's own sustain against the
                             // current render time — drawNote has already
@@ -14423,13 +14427,16 @@
                         const xLeft = chordFrameXL;
                         const xRight = chordFrameXR;
                         const cx = (xLeft + xRight) * 0.5;
+                        const compactRepeatFrame = isRepeat && !retainsChordGems;
                         const yA = sY(0), yB = sY(nStr - 1);
                         const yMinF = Math.min(yA, yB) - S_GAP * 0.8;
                         const yMaxF = Math.max(yA, yB) + S_GAP * 0.8;
                         const fullChordBoxH = yMaxF - yMinF;
                         let height = fullChordBoxH;
-                        if (isRepeat) height *= 0.5;
-                        // Repeat frames use half height but anchor at yMinF (board
+                        if (compactRepeatFrame) height *= 0.5;
+                        // Only gem-suppressed repeats use half height. A retained
+                        // accent, technique or moving sustain needs the full string
+                        // span. Compact frames still anchor at yMinF (board
                         // level) rather than centering in the string range. With the
                         // camera tilted downward, a centered half-height frame puts
                         // its bottom bar mid-strings — far above the board — causing
@@ -14629,8 +14636,8 @@
                         fill.material.map = isArpeggioFrame ? chordFrameGradTexArp : chordFrameGradTex;
                         fill.material.color.setRGB(1, 1, 1);
 
-                        const withTopFrame = !isRepeat;
-                        // Non-repeat tapers the upper side bars + draws a thin top bar;
+                        const withTopFrame = !compactRepeatFrame;
+                        // Full-height frames taper the upper sides and have a thin top bar;
                         // hoisted out so ySideHi can match the actual top-bar thickness
                         // (using ft would leave a visible gap between the thin top bar
                         // and the side bars meeting it).
@@ -14643,13 +14650,13 @@
 
                         // Bottom bar: thin teal (like top bar) + dark corners on top.
                         {
-                            const botCW = Math.min(sideH * (isRepeat ? 0.5 : 0.25), width * 0.4);
+                            const botCW = Math.min(sideH * (compactRepeatFrame ? 0.5 : 0.25), width * 0.4);
                             drawFrameBox(cx, yBot + ftThin * 0.5, width, ftThin, chordFrameRenderOrder);
                             drawFrameBox(cx + width * 0.5 - botCW * 0.5, yBot + ft * 0.5, botCW, ft, chordFrameRenderOrder + 0.0001, sideHex);
                             drawFrameBox(cx - width * 0.5 + botCW * 0.5, yBot + ft * 0.5, botCW, ft, chordFrameRenderOrder + 0.0002, sideHex);
                         }
 
-                        if (isRepeat) {
+                        if (compactRepeatFrame) {
                             // Lower 30%: thick dark segment
                             const repLoH = sideH * 0.3;
                             const repLoCy = ySideLo + repLoH * 0.5;
@@ -14661,7 +14668,7 @@
                             drawFrameBox(cx - width * 0.5 + ftThin * 0.5, repHiCy, ftThin, repHiH, chordFrameRenderOrder + 0.0001);
                             drawFrameBox(cx + width * 0.5 - ftThin * 0.5, repHiCy, ftThin, repHiH, chordFrameRenderOrder + 0.0001);
                         } else {
-                            // Non-repeat: thick sides up to repeat-frame height, then taper to thin above.
+                            // Full-height frame: thick sides below, then taper to thin above.
                             const threshY = yBot + fullChordBoxH * 0.5; // top of what a repeat frame would be
 
                             // Lower thick segment (ySideLo → threshY)
@@ -14706,7 +14713,7 @@
                                 b.rotation.set(0, 0, rotZ);
                             };
                             // Bottom: center-only bloom (skip dark corner areas)
-                            const _bCW = Math.min(sideH * (isRepeat ? 0.5 : 0.25), width * 0.4);
+                            const _bCW = Math.min(sideH * (compactRepeatFrame ? 0.5 : 0.25), width * 0.4);
                             const centerBotW = width - 2 * _bCW;
                             if (centerBotW > 0)
                                 drawHaloBar(cx, yBot + ft * 0.5, centerBotW * 0.5, ft, 0);
@@ -14714,7 +14721,7 @@
                             if (withTopFrame)
                                 drawHaloBar(cx, yTop - ftThin * 0.5, width * 0.5, ftThin, 0);
                             // Lateral: bloom only on the upper thin-teal segment (skip dark lower segment)
-                            if (isRepeat) {
+                            if (compactRepeatFrame) {
                                 const repLoH = sideH * 0.3;
                                 const repHiH = sideH - repLoH;
                                 if (repHiH > 0) {
