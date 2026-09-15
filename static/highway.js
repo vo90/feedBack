@@ -87,8 +87,10 @@ function createHighway() {
         if (!hwState.canvas) return;
         if (!harmonicGuideUI) {
             const parent = hwState._resizeContainer || hwState.canvas.parentElement;
-            if (parent) harmonicGuideUI = createHarmonyGuideUI(parent, harmonicGuide);
+            if (parent) harmonicGuideUI = createHarmonyGuideUI(parent, harmonicGuide,
+                { canvas: hwState.canvas, storage: guideStorage });
         }
+        harmonicGuideUI?.setCanvas(hwState.canvas);
         harmonicGuideUI?.setSupported(hwState._renderer?.supportsHarmonicGuide === true);
         harmonicGuide.setPlaybackState({ supported: hwState._renderer?.supportsHarmonicGuide === true });
     }
@@ -668,6 +670,7 @@ function createHighway() {
             loop: harmonicGuideLoop ? harmonicGuideChartLoop : null,
         });
         harmonicGuideUI?.update(b.harmonicGuide);
+        b.harmonicGuideLayout = harmonicGuideUI?.getLayout() || null;
         return b;
     }
 

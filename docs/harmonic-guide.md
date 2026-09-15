@@ -10,6 +10,15 @@ the header shows the song key, suggested scale, current chord or target note,
 and the next four changes. Smaller windows show fewer upcoming changes.
 The countdown uses the song's beat map, with seconds as the fallback.
 
+The panel docks near the top between the song information and right-hand HUD
+when there is room. The dock reserves space for native lyrics and overlay cards.
+Use **Move harmony guide** to drag the information, status and legend together.
+The panel snaps to nearby edges and remembers its position across songs and
+restarts, with positions kept inside the canvas when the window changes size.
+Floating the panel leaves lyrics in their usual position. **Reset guide position**
+returns it to the top dock. With the move handle focused, arrow keys move the
+panel, Shift moves faster, Enter saves, Escape cancels and Home resets it.
+
 The target comes from authored harmony, your corrections, or the combined song
 charts. It never follows the microphone, detected notes or scoring. A slash
 chord such as C/E still targets C; E is its bass note.
@@ -17,12 +26,15 @@ chord such as C/E still targets C; E is its bass note.
 During a sufficiently long rest in the selected arrangement, the guide shows
 scale notes directly on the existing foreground strings and frets:
 
-- Each scale note uses the regular 3D gem shape and string-colour gradient.
+- Each scale note uses the regular 3D gem shape. Ordinary scale notes have
+  transparent centres and outlines in their string colour.
   The default label is its interval from the scale root: R for the root,
   with correctly altered degrees such as ♭3 or ♯4.
-- A white border identifies the scale tonic.
-- A gold outline identifies the current chord's root or target note. Both
-  borders appear together when the current target is also the scale tonic.
+- A white border identifies the scale tonic, which stays hollow until it is
+  also the current target.
+- The current chord's root or target note is filled with the native string-colour
+  gradient and has a gold outline. Both borders appear together when the current
+  target is also the scale tonic. Degree labels stay relative to the scale.
 - Soft outlines identify supported fingering positions. The position closest
   to the camera's centre is stronger; adjacent positions remain quieter.
 

@@ -123,22 +123,28 @@ test('scale tonic and current song target are distinct roles at stationary fret 
         { string: 0, fret: 5, note: 'A', isTonic: true, isTarget: false },
         { string: 1, fret: 6, note: 'F', isTonic: false, isTarget: true },
         { string: 2, fret: 7, note: 'A', isTonic: true, isTarget: true },
+        { string: 3, fret: 8, note: 'B', isTonic: false, isTarget: false },
     ];
     h.update({ enabled: true, alpha: 0.6, markers });
     const { batches: b } = h.snapshot();
     assert.equal(h.scene.children[0].children.length, 13, 'full guide has eight native gem batches plus five outlines');
-    assert.equal(b.strings.count, 3); assert.equal(b.tonic.count, 2); assert.equal(b.target.count, 2);
-    const at = positionOf(b.gem0, 0);
+    assert.equal(b.strings.count, 4); assert.equal(b.tonic.count, 2); assert.equal(b.target.count, 2);
+    assert.equal(b.gem0.count, 0, 'scale tonic stays hollow while another note is the song target');
+    assert.equal(b.gem1.count, 1, 'current chord root is filled');
+    assert.equal(b.gem2.count, 1, 'coincident tonic and target is filled with both outlines');
+    assert.equal(b.gem3.count, 0, 'ordinary scale notes are hollow');
+    const at = positionOf(b.strings, 0);
     assert.ok(Math.abs(at.x - 0.3375) < 1e-6);
     assert.ok(Math.abs(at.y - 0.1725) < 1e-6);
     assert.equal(at.z, 0, 'scale map remains on the playing line');
-    assert.equal(b.gem0.material.opacity, 0.6 * 0.64);
+    assert.equal(b.gem1.material.opacity, 0.6 * 0.9);
     assert.equal(b.target.material.depthWrite, false);
     assert.equal(b.target.material.fog, false);
     h.update({ enabled: true, alpha: 1, markers: [{ string: 0, fret: 5, note: 'A', isTonic: true }] });
     assert.equal(b.strings.count, 1); assert.equal(b.gem1.count, 0);
     assert.equal(b.target.count, 0, 'old chord targets do not linger');
     assert.equal(b.tonic.count, 1);
+    assert.equal(b.gem2.count, 0, 'old filled targets clear when the song target changes');
     h.dispose();
 });
 
@@ -169,7 +175,7 @@ test('guide gems borrow the native string gradients while owning their fade mate
 test('left-handed and inverted layouts preserve marker string/fret identity', () => {
     const h = makeGuideHarness({ lefty: true, inverted: true });
     h.update({ enabled: true, alpha: 1, markers: [{ string: 0, fret: 5, note: 'A' }] });
-    const at = positionOf(h.snapshot().batches.gem0, 0);
+    const at = positionOf(h.snapshot().batches.strings, 0);
     assert.ok(Math.abs(at.x + 0.3375) < 1e-6);
     assert.ok(Math.abs(at.y - 0.0225) < 1e-6);
     assert.equal(at.z, 0);
@@ -181,12 +187,12 @@ test('open-string guide markers use the native open-note column, including mirro
         const h = makeGuideHarness({ lefty });
         h.update({ enabled: true, alpha: 1, markers: [{ string: 0, fret: 0, note: 'E', isTonic: true }] });
         const { batches } = h.snapshot();
-        const at = positionOf(batches.gem0, 0);
+        const at = positionOf(batches.strings, 0);
         assert.ok(Math.abs(at.x - (lefty ? 0.015 : -0.015)) < 1e-6);
         assert.equal(at.z, 0);
         assert.equal(batches.tonic.count, 1);
         assert.equal(batches.gem0.frustumCulled, false, 'no stale batch bounds clip open-string or high-fret instances');
-        const matrix = new T.Matrix4(); batches.gem0.getMatrixAt(0, matrix);
+        const matrix = new T.Matrix4(); batches.strings.getMatrixAt(0, matrix);
         const size = new T.Vector3().setFromMatrixScale(matrix);
         assert.ok(size.x <= 0.701 && size.y <= 0.701, 'open note is a compact gem, never a chart-wide slab');
         h.dispose();
@@ -260,8 +266,10 @@ test('malformed marker data cannot place out-of-range notes or overflow GPU batc
         { string: 0, fret: NaN }, { string: 0, fret: 5.5 }, null,
         ...Array.from({ length: 300 }, () => ({ string: 0, fret: 5, note: 'A' }))];
     h.update({ enabled: true, alpha: 1, markers });
-    assert.equal(h.snapshot().batches.gem0.count, 25, 'each string batch is bounded to its 25 frets');
+    assert.equal(h.snapshot().batches.gem0.count, 0, 'unselected scale notes have no fill');
     assert.equal(h.snapshot().batches.strings.count, 25, 'rejected overflow gems cannot leave stray outlines');
+    h.update({ enabled: true, alpha: 1, markers: markers.map(m => m && ({ ...m, isTarget: true })) });
+    assert.equal(h.snapshot().batches.gem0.count, 25, 'filled targets share the same per-string capacity');
     h.dispose();
     const fullNeck = makeGuideHarness({ stringCount: 8 });
     fullNeck.update({ enabled: true, alpha: 1, markers: Array.from({ length: 200 }, (_, i) =>
@@ -308,4 +316,32 @@ test('native guide is opt-in, uses the final camera and cleans up with renderer 
         'renderer owner releases borrowed gradients even if no chart mesh ever used their string');
     assert.doesNotMatch(extract('updateHarmonicGuide'), /drawNote\(|getNoteState|noteState|\.push\(.*\bnotes\b|dZ\(/,
         'guide rendering neither creates travelling chart notes nor reads live-input scoring');
+});
+
+test('top dock reserves lyric space at native canvas resolution while floating and hidden guides do not', () => {
+    const render = new Function(`let _lyrRowsCache = null;
+        ${extract('harmonicGuideTopInset')}
+        ${extract('drawLyrics')}
+        return { inset: harmonicGuideTopInset, lyrics: drawLyrics };`)();
+    assert.equal(render.inset({ topInset: 100, viewportHeight: 800 }, 1600), 200);
+    for (const layout of [null, {}, { topInset: NaN, viewportHeight: 800 },
+        { topInset: 100, viewportHeight: 0 }, { topInset: 0, viewportHeight: 800 }]) {
+        assert.equal(render.inset(layout, 800), 0);
+    }
+    const calls = [];
+    const ctx = { measureText: text => ({ width: text.length * 8 }), beginPath() {},
+        moveTo() {}, lineTo() {}, quadraticCurveTo() {}, closePath() {}, fill() {},
+        fillText: (text, x, y) => calls.push({ text, x, y }) };
+    const lyrics = [{ t: 0, d: 20, w: 'Room to improvise+' }];
+    render.lyrics(lyrics, 1, ctx, 1440, 800, 0);
+    const originalY = calls.pop().y;
+    const bottom = render.lyrics(lyrics, 1, ctx, 1440, 800, 180);
+    assert.ok(calls.pop().y > 180);
+    assert.ok(bottom > 180 && bottom < 800);
+    render.lyrics(lyrics, 1, ctx, 1440, 800, 0);
+    assert.equal(calls.pop().y, originalY, 'moving the panel away from its top dock restores natural lyric placement');
+    const drawnBefore = calls.length;
+    assert.equal(render.lyrics(lyrics, 1, ctx, 600, 160, 150), 0,
+        'a banner that cannot fit below the dock is omitted');
+    assert.equal(calls.length, drawnBefore, 'lyrics never move behind the guide to fit a short canvas');
 });

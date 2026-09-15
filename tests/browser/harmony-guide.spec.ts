@@ -22,6 +22,12 @@ async function installSongFixture(page: Page, authored = true) {
     localStorage.setItem('h3d_bg_style', 'off');
     localStorage.setItem('h3d_bg_bloom', 'false');
     localStorage.setItem('h3d_bg_sparks', 'false');
+    const nativeFillText = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
+      if (text === 'Harmony guide lyric') (window as any).__hgLyricTop = { y, height: this.canvas.height };
+      if (maxWidth === undefined) nativeFillText.call(this, text, x, y);
+      else nativeFillText.call(this, text, x, y, maxWidth);
+    };
 
     const NativeWebSocket = window.WebSocket;
     class SongSocket extends EventTarget {
@@ -47,6 +53,7 @@ async function installSongFixture(page: Page, authored = true) {
           });
           this.emit({ type: 'beats', data: Array.from({ length: 61 }, (_, i) => ({ time: i / 2, measure: i % 4 === 0 ? i / 4 : -1 })) });
           this.emit({ type: 'sections', data: [{ time: 0, name: 'Verse' }] });
+          this.emit({ type: 'lyrics', source: 'authored', data: [{ t: 0, d: 25, w: 'Harmony guide lyric+' }] });
           if (authored) this.emit({ type: 'keys', version: 1, data: [{ t: 0, key: 'Am', scale: 'natural_minor' }] });
           if (authored) this.emit({ type: 'harmony', version: 1, data: [
             { t: 0, root: 'A', quality: 'min' }, { t: 4, root: 'F', quality: 'maj' },
@@ -113,6 +120,7 @@ async function openSong(page: Page) {
           chord: guide.state?.current?.label, targetPc: guide.state?.targetPc,
           scale: guide.state?.scale?.id,
           labelMode: guide.options?.labelMode,
+          layout: bundle.harmonicGuideLayout ? { ...bundle.harmonicGuideLayout } : null,
           markers: guide.markers.map((m: any) => ({ pc: m.pc, fret: m.fret, string: m.string,
             degree: m.degreeLabel, tonic: m.isTonic, target: m.isTarget })),
           positionCount: guide.positions.length,
@@ -364,4 +372,58 @@ test('missing annotations trigger chart analysis, independent scales, honest gap
   await atTime(page, 12.5);
   await expect(page.locator('.hg-current .hg-eyebrow')).toHaveText('POSSIBLE ROOT');
   await expect(page.locator('.hg-chord')).toHaveText('E');
+});
+
+test('guide docks above a tall HUD, moves as one panel and remembers a bounded position', async ({ page }, testInfo) => {
+  test.setTimeout(120000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await installSongFixture(page); await openSong(page); await atTime(page, 4.5);
+  await page.evaluate(() => {
+    const hud = document.querySelector('#v3-live-performance-hud') as HTMLElement;
+    hud.style.setProperty('display', 'block', 'important');
+    hud.style.height = '260px'; hud.style.width = '180px';
+  });
+  const panel = page.locator('.hg-panel');
+  const move = page.getByRole('button', { name: 'Move harmony guide', exact: true });
+  const reset = page.getByRole('button', { name: 'Reset guide position', exact: true });
+  await expect.poll(async () => (await panel.boundingBox())!.y).toBeLessThan(120);
+  const dock = (await panel.boundingBox())!;
+  const score = (await page.locator('#v3-live-performance-hud').boundingBox())!;
+  expect(dock.x + dock.width).toBeLessThanOrEqual(score.x);
+  await expect.poll(() => page.evaluate(() => {
+    const w = window as any, canvas = document.querySelector('#highway')!.getBoundingClientRect();
+    const box = document.querySelector('.hg-panel')!.getBoundingClientRect();
+    return w.__hgLyricTop ? canvas.y + w.__hgLyricTop.y / w.__hgLyricTop.height * canvas.height - box.bottom : -1;
+  })).toBeGreaterThanOrEqual(0);
+  await screenshot(page, testInfo, 'harmony-panel-top-dock');
+  const preferences = await page.evaluate(() => localStorage.getItem('feedback.harmonicGuide.preferences.v1'));
+  const handle = (await move.boundingBox())!;
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down(); await page.mouse.move(300, 420, { steps: 8 }); await page.mouse.up();
+  await expect.poll(async () => (await panel.boundingBox())!.y).toBeGreaterThan(250);
+  await expect.poll(() => page.evaluate(() => (window as any).__hgFrame.layout.topInset)).toBe(0);
+  const floated = (await panel.boundingBox())!;
+  const status = (await page.locator('.hg-footer').boundingBox())!;
+  expect(status.y).toBeGreaterThan(floated.y);
+  expect(status.y + status.height).toBeLessThanOrEqual(floated.y + floated.height);
+  expect(await page.evaluate(() => localStorage.getItem('feedback.harmonicGuide.preferences.v1'))).toBe(preferences);
+  await screenshot(page, testInfo, 'harmony-panel-floating');
+
+  await openSong(page); await atTime(page, 4.5);
+  await expect.poll(async () => Math.abs((await panel.boundingBox())!.y - floated.y)).toBeLessThan(3);
+  expect(Math.abs((await panel.boundingBox())!.x - floated.x)).toBeLessThan(3);
+  await page.setViewportSize({ width: 390, height: 680 });
+  await expect.poll(async () => {
+    const p = (await panel.boundingBox())!, c = (await page.locator('#highway').boundingBox())!;
+    return p.x >= c.x && p.y >= c.y && p.x + p.width <= c.x + c.width + 1 && p.y + p.height <= c.y + c.height + 1;
+  }).toBe(true);
+  await screenshot(page, testInfo, 'harmony-panel-narrow');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await reset.click();
+  await expect.poll(() => page.evaluate(() => (window as any).__hgFrame.layout.topInset)).toBeGreaterThan(0);
+  await expect.poll(async () => (await panel.boundingBox())!.y).toBeLessThan(120);
+  await move.focus(); await page.keyboard.press('Shift+ArrowDown');
+  await expect.poll(() => page.evaluate(() => (window as any).__hgFrame.layout.topInset)).toBe(0);
+  await page.keyboard.press('Home');
+  await expect.poll(() => page.evaluate(() => (window as any).__hgFrame.layout.topInset)).toBeGreaterThan(0);
 });

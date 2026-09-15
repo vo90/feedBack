@@ -1,6 +1,8 @@
 /** Permanent 3D harmony HUD and a local, song-timed correction editor. */
 import { createHarmonyTimeline, resolveHarmony } from './harmony-guide-model.js';
 import { parseGuideTime, formatGuideTime, parseGuideChord, guideChordText } from './harmony-guide-controller.js';
+import { createGuidePlacementStore, DEFAULT_GUIDE_PLACEMENT, guidePanelPosition,
+    guidePlacementFromPoint } from './harmony-guide-placement.js';
 
 const SCALES = [
     ['', 'Choose from key'], ['major', 'Major'], ['natural_minor', 'Natural minor'],
@@ -104,9 +106,12 @@ export function validateGuideRows(keyRows, chordRows, duration = Infinity, scale
 }
 
 /** DOM queries happen at mount only. update() writes cached nodes on change. */
-export function createHarmonyGuideUI(container, controller) {
+export function createHarmonyGuideUI(container, controller, { canvas = null, storage = null } = {}) {
     const root = element('div', 'hg-root');
     root.addEventListener('keydown', event => event.stopPropagation());
+    root.addEventListener('keyup', event => event.stopPropagation());
+    const panel = element('div', 'hg-panel');
+    panel.addEventListener('pointerdown', event => event.stopPropagation());
     const toggle = button('Harmony guide', () => {
         try { controller.setOptions({ enabled: true }); refreshControls(); }
         catch (error) { toggle.title = error.message; }
@@ -130,12 +135,20 @@ export function createHarmonyGuideUI(container, controller) {
     const upcoming = Array.from({ length: 4 }, () => element('span', 'hg-next-chord'));
     nextLine.append(...upcoming); progression.append(nextLabel, nextLine);
     const controls = element('div', 'hg-controls');
-    controls.append(button('Edit', openEditor), button('×', () => {
+    const move = button('', () => {}, 'hg-move');
+    move.setAttribute('aria-label', 'Move harmony guide');
+    const grip = element('span', 'hg-grip'); grip.setAttribute('aria-hidden', 'true'); move.append(grip);
+    const moveHelp = 'Drag to move. Arrow keys move; Shift moves faster. Enter saves, Escape cancels, Home resets to the top.';
+    move.title = moveHelp;
+    const reset = button('↥', resetPlacement, 'hg-reset');
+    reset.title = 'Reset harmony guide to the top';
+    reset.setAttribute('aria-label', 'Reset guide position');
+    controls.append(reset, button('Edit', openEditor), button('×', () => {
         try { controller.setOptions({ enabled: false }); refreshControls(); }
         catch (error) { toggle.title = error.message; }
     }, 'hg-close'));
     controls.lastChild.setAttribute('aria-label', 'Hide harmony guide');
-    strip.append(context, current, progression, controls);
+    strip.append(move, context, current, progression, controls);
     const footer = element('div', 'hg-footer');
     const provenance = element('span', 'hg-source');
     const status = element('span', 'hg-status');
@@ -148,24 +161,146 @@ export function createHarmonyGuideUI(container, controller) {
     tonicLegend.title = 'Home note of the suggested scale';
     targetLegend.title = 'Current root or target note from the song’s harmony';
     legend.append(scaleLegend, tonicLegend, targetLegend);
-    root.append(toggle, strip, footer, legend); container.append(root);
+    const announcement = element('span', 'hg-sr-only');
+    announcement.setAttribute('role', 'status'); announcement.setAttribute('aria-live', 'polite');
+    panel.append(strip, footer, legend, announcement);
+    root.append(toggle, panel); container.append(root);
 
     let supported = false, observer = null, dialog = null, editorIdentity = null, lastGeneration = -1;
     const mainPlayer = container.id === 'player';
     const playerHud = mainPlayer ? container.querySelector('#player-hud') : null;
-    const updateInset = () => {
-        const inset = playerHud ? Math.ceil(playerHud.getBoundingClientRect().height) + 8 : 14;
-        root.style.setProperty('--hg-top', `${inset}px`);
+    const hudSides = playerHud ? [...playerHud.children].slice(0, 2) : [];
+    const placementStore = createGuidePlacementStore(storage);
+    let placement = placementStore.get(), layoutFrame = null, destroyed = false;
+    let drag = null, keyboardStart = null;
+    let metrics = null, position = { left: 0, top: 0 };
+    // The renderer reads this stable object; all DOM measurements stay in the
+    // observer-driven layout pass, never in the highway's draw loop.
+    const layout = { topInset: 0, viewportHeight: 0 };
+    const scheduleLayout = () => {
+        if (!destroyed && layoutFrame == null) layoutFrame = requestAnimationFrame(measureLayout);
     };
-    updateInset();
-    if (playerHud && typeof ResizeObserver !== 'undefined') {
-        observer = new ResizeObserver(updateInset); observer.observe(playerHud);
+    function publishPosition() {
+        if (!metrics) return;
+        position = guidePanelPosition(placement, metrics.viewport, metrics.panel, metrics.hud);
+        panel.style.left = `${position.left}px`; panel.style.top = `${position.top}px`;
+        panel.dataset.placement = placement.mode;
+        layout.topInset = supported && controller.options.enabled && placement.mode === 'top'
+            ? Math.min(metrics.viewport.height, position.top + metrics.panel.height + 8) : 0;
     }
+    function measureLayout() {
+        layoutFrame = null;
+        if (destroyed || !supported) return;
+        const view = (canvas || container).getBoundingClientRect();
+        if (!view.width || !view.height) { layout.topInset = 0; return; }
+        const parent = root.offsetParent || container;
+        const parentRect = parent.getBoundingClientRect();
+        root.style.left = `${view.left - parentRect.left - parent.clientLeft + parent.scrollLeft}px`;
+        root.style.top = `${view.top - parentRect.top - parent.clientTop + parent.scrollTop}px`;
+        root.style.width = `${view.width}px`; root.style.height = `${view.height}px`;
+        layout.viewportHeight = view.height;
+        const side = node => {
+            if (!node) return null;
+            const rect = node.getBoundingClientRect();
+            return rect.width && rect.height ? { left: rect.left - view.left, right: rect.right - view.left,
+                top: rect.top - view.top, bottom: rect.bottom - view.top } : null;
+        };
+        const hud = { left: side(hudSides[0]), right: side(hudSides[1]) };
+        const viewport = { width: view.width, height: view.height };
+        // Keep the collapsed control near the top, alongside the right HUD box,
+        // rather than below a potentially tall performance/queue column.
+        const toggleWidth = toggle.offsetWidth, toggleHeight = toggle.offsetHeight;
+        const toggleRight = hud.right ? hud.right.left - 12 : view.width - 12;
+        toggle.style.left = `${Math.max(12, Math.min(view.width - toggleWidth - 12, toggleRight - toggleWidth))}px`;
+        toggle.style.top = `${Math.max(12, Math.min(view.height - toggleHeight - 12, hud.right?.top || 12))}px`;
+        metrics = { viewport, hud, panel: { width: panel.offsetWidth, height: panel.offsetHeight } };
+        publishPosition();
+        if (drag) {
+            drag.origin = { ...position }; drag.startX = drag.lastX; drag.startY = drag.lastY;
+        }
+    }
+    function savePlacement(message = 'Harmony guide position saved.') {
+        const saved = placementStore.save(placement);
+        move.title = saved ? moveHelp : `${moveHelp} Position is available for this session; browser storage is unavailable.`;
+        setText(announcement, saved ? message : 'Position changed for this session. Browser storage is unavailable.');
+    }
+    function resetPlacement() {
+        cancelDrag(); keyboardStart = null;
+        placement = { ...DEFAULT_GUIDE_PLACEMENT };
+        publishPosition(); savePlacement('Harmony guide returned to the top.');
+    }
+    function cancelDrag() {
+        if (!drag) return;
+        const previous = drag; drag = null;
+        placement = previous.placement;
+        panel.classList.remove('hg-panel--dragging');
+        if (move.hasPointerCapture(previous.id)) move.releasePointerCapture(previous.id);
+        publishPosition();
+    }
+    move.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || !metrics || drag) return;
+        event.preventDefault(); move.focus({ preventScroll: true });
+        keyboardStart = null;
+        drag = { id: event.pointerId, startX: event.clientX, startY: event.clientY,
+            lastX: event.clientX, lastY: event.clientY, origin: { ...position }, placement: { ...placement }, moved: false };
+        move.setPointerCapture(event.pointerId); panel.classList.add('hg-panel--dragging');
+    });
+    move.addEventListener('pointermove', event => {
+        if (!drag || event.pointerId !== drag.id || !metrics) return;
+        drag.lastX = event.clientX; drag.lastY = event.clientY;
+        const dx = event.clientX - drag.startX, dy = event.clientY - drag.startY;
+        if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+        drag.moved = true;
+        placement = guidePlacementFromPoint({ left: drag.origin.left + dx, top: drag.origin.top + dy }, metrics.viewport, metrics.panel);
+        publishPosition();
+    });
+    move.addEventListener('pointerup', event => {
+        if (!drag || event.pointerId !== drag.id) return;
+        const moved = drag.moved; drag = null;
+        panel.classList.remove('hg-panel--dragging');
+        if (move.hasPointerCapture(event.pointerId)) move.releasePointerCapture(event.pointerId);
+        if (moved) {
+            const dock = guidePanelPosition(DEFAULT_GUIDE_PLACEMENT, metrics.viewport, metrics.panel, metrics.hud);
+            placement = guidePlacementFromPoint(position, metrics.viewport, metrics.panel, { snap: 16, dock });
+            publishPosition(); savePlacement();
+        }
+    });
+    move.addEventListener('pointercancel', cancelDrag);
+    move.addEventListener('lostpointercapture', cancelDrag);
+    move.addEventListener('keydown', event => {
+        if (event.key === 'Home') { event.preventDefault(); resetPlacement(); return; }
+        if (event.key === 'Escape') {
+            event.preventDefault(); cancelDrag();
+            if (keyboardStart) { placement = keyboardStart; keyboardStart = null; publishPosition(); }
+            setText(announcement, 'Move cancelled.'); return;
+        }
+        if (event.key === 'Enter' && keyboardStart) {
+            event.preventDefault(); keyboardStart = null; savePlacement(); return;
+        }
+        const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+        const direction = directions[event.key];
+        if (!direction || !metrics) return;
+        event.preventDefault();
+        if (!keyboardStart) keyboardStart = { ...placement };
+        const step = event.shiftKey ? 32 : 8;
+        placement = guidePlacementFromPoint({ left: position.left + direction[0] * step,
+            top: position.top + direction[1] * step }, metrics.viewport, metrics.panel);
+        publishPosition();
+    });
+    move.addEventListener('blur', () => { if (keyboardStart) { keyboardStart = null; savePlacement(); } });
+    if (typeof ResizeObserver !== 'undefined') {
+        observer = new ResizeObserver(scheduleLayout);
+        for (const node of new Set([container, canvas, playerHud, panel, ...hudSides].filter(Boolean))) observer.observe(node);
+    }
+    window.addEventListener('resize', scheduleLayout);
+    document.addEventListener('fullscreenchange', scheduleLayout);
     function refreshControls() {
         root.hidden = !supported;
         toggle.hidden = controller.options.enabled;
-        strip.hidden = footer.hidden = !controller.options.enabled;
+        panel.hidden = !controller.options.enabled;
+        if (!supported || !controller.options.enabled) { layout.topInset = 0; cancelDrag(); }
         if (!controller.options.enabled) legend.hidden = true;
+        scheduleLayout();
     }
     refreshControls();
 
@@ -300,7 +435,18 @@ export function createHarmonyGuideUI(container, controller) {
         dialog.append(content); container.append(dialog); dialog.showModal();
     }
     return {
-        setSupported(value) { supported = !!value; if (!supported) closeEditor(); refreshControls(); },
+        getLayout() { return layout; },
+        setCanvas(value) {
+            if (canvas === value) return;
+            if (canvas && canvas !== container) observer?.unobserve(canvas);
+            canvas = value;
+            if (canvas) observer?.observe(canvas);
+            scheduleLayout();
+        },
+        setSupported(value) {
+            if (supported === !!value) return;
+            supported = !!value; if (!supported) closeEditor(); refreshControls();
+        },
         update(guide) {
             if (dialog && editorIdentity !== controller.songIdentity) closeEditor();
             if (lastGeneration !== controller.generation) { lastGeneration = controller.generation; refreshControls(); }
@@ -350,6 +496,13 @@ export function createHarmonyGuideUI(container, controller) {
             setText(status, message);
             legend.hidden = !(guide.alpha > 0 && state.scale);
         },
-        destroy() { observer?.disconnect(); closeEditor(); root.remove(); },
+        destroy() {
+            destroyed = true; cancelDrag(); layout.topInset = 0;
+            observer?.disconnect();
+            if (layoutFrame != null) cancelAnimationFrame(layoutFrame);
+            window.removeEventListener('resize', scheduleLayout);
+            document.removeEventListener('fullscreenchange', scheduleLayout);
+            closeEditor(); root.remove();
+        },
     };
 }

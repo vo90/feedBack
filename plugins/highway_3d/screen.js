@@ -7595,7 +7595,12 @@
                 _lastOpenStringLblSig = '';
                 return;
             }
-            tuningLblG.visible = true;
+            // The open-position scale gems occupy the same headstock column.
+            // Let their degree labels own it during the map, then restore pitch
+            // labels on the next normal chart frame without rebuilding sprites.
+            const guide = bundle.harmonicGuide;
+            tuningLblG.visible = !(guide?.enabled && guide.alpha >= 0.002
+                && Array.isArray(guide.markers) && guide.markers.some(m => m?.fret === 0));
             // Cheap-key fast path: compare the inputs that drive the label content
             // against last frame. The signature string + labels array build are
             // both per-frame allocators, so skipping them when nothing changed
@@ -7853,7 +7858,9 @@
             b.strings.material.opacity *= 0.78;
             for (let s = 0; s < MAX_RENDER_STRINGS; s++) {
                 const mat = b['gem' + s].material;
-                mat.opacity *= 0.64;
+                mat.opacity *= 0.9;
+                // Hollow notes still consume a slot in their string's map.
+                b['gem' + s].userData.markerCount = 0;
                 // Native palette changes update gradient geometry in place;
                 // copy the material tint too for flat seventh/eighth strings.
                 mat.color.copy(mStr[s].color);
@@ -7864,13 +7871,16 @@
                 if (!m || !Number.isInteger(m.string) || m.string < 0 || m.string >= nStr
                     || !Number.isInteger(m.fret) || m.fret < 0 || m.fret > NFRETS) continue;
                 const gem = b['gem' + m.string];
-                if (gem.count >= NFRETS + 1) continue;
+                if (gem.userData.markerCount >= NFRETS + 1) continue;
+                gem.userData.markerCount++;
                 const x = xFretMid(m.fret), y = sY(m.string);
                 const scale = Math.min(0.7, fretColumnWorldW(m.fret) * 0.68 / (NW * 1.34),
                     S_GAP * 0.82 / (NH * 1.55));
                 // Open strings use a compact gem at the native open column;
                 // a chart's wide open-note slab would cover other scale frets.
-                harmonicGuideInstance(gem, x, y, scale, scale, 0);
+                // Only the song's current root is filled. Scale degrees and
+                // the scale tonic remain hollow until they become that target.
+                if (m.isTarget) harmonicGuideInstance(gem, x, y, scale, scale, 0);
                 const colorIndex = b.strings.count;
                 harmonicGuideInstance(b.strings, x, y, scale, scale, 0);
                 b.strings.setColorAt(colorIndex, _harmonyColor.set(activePalette[m.string]));
@@ -8751,7 +8761,14 @@
         // just drawing over the cached widths.
         let _lyrRowsCache = null;
 
-        function drawLyrics(lyrics, currentTime, ctx, W, H) {
+        function harmonicGuideTopInset(layout, height) {
+            if (!layout || !Number.isFinite(layout.topInset) || layout.topInset <= 0
+                || !Number.isFinite(layout.viewportHeight) || layout.viewportHeight <= 0
+                || !Number.isFinite(height) || height <= 0) return 0;
+            return Math.min(height, layout.topInset * height / layout.viewportHeight);
+        }
+
+        function drawLyrics(lyrics, currentTime, ctx, W, H, topInset = 0) {
             if (!lyrics._lines) {
                 const lines = [];
                 let line = null, word = null;
@@ -8794,7 +8811,7 @@
             if (nextLine && gapToNext <= 3.0) linesToShow.push(nextLine);
 
             const fontSize = Math.max(18, H * 0.028) | 0;
-            const lineY = H * 0.04;
+            let lineY = H * 0.04;
             const sylText = s => { const t = s.w || ''; return (t.endsWith('+') || t.endsWith('-')) ? t.slice(0, -1) : t; };
 
             ctx.font = `bold ${fontSize}px sans-serif`;
@@ -8843,6 +8860,11 @@
 
             const rowHeight = fontSize + 6;
             const totalHeight = rows.length * rowHeight + 10;
+            // DOM layout is cached by the guide; no DOM reads enter this draw.
+            // Keep floating panels independent. If a very short view has no room
+            // below the dock, do not paint the banner behind the guide.
+            lineY = Math.max(lineY, topInset > 0 ? topInset + 12 : 0);
+            if (topInset > 0 && lineY - 4 + totalHeight > H - 8) return 0;
 
             ctx.fillStyle = 'rgba(0,0,0,0.7)';
             ctx.beginPath();
@@ -19619,9 +19641,11 @@
                     lyricsCtx.clearRect(0, 0, lyricsCanvas.width, lyricsCanvas.height);
                     // Capture the actual lyrics-banner bottom so overlay cards
                     // step down past every wrapped row, not just a 2-row estimate.
-                    let lyricsBottom = 0;
+                    const guideTop = harmonicGuideTopInset(bundle.harmonicGuideLayout, lyricsCanvas.height);
+                    let lyricsBottom = guideTop;
                     if (bundle.lyricsVisible && bundle.lyrics?.length) {
-                        lyricsBottom = drawLyrics(bundle.lyrics, bundle.currentTime, lyricsCtx, lyricsCanvas.width, lyricsCanvas.height) || 0;
+                        lyricsBottom = Math.max(guideTop, drawLyrics(bundle.lyrics, bundle.currentTime,
+                            lyricsCtx, lyricsCanvas.width, lyricsCanvas.height, guideTop) || 0);
                     }
                     drawHarmonicGuideLabels(lyricsCtx, lyricsCanvas.width, lyricsCanvas.height);
                     drawNotedetectLabels(lyricsCtx, lyricsCanvas.width, lyricsCanvas.height);

@@ -10,10 +10,12 @@ const { build: buildTransport } = require('./helpers/loop-transport-harness');
 const moduleRoot = path.join(__dirname, '../../static/js');
 const dataUrl = source => 'data:text/javascript;base64,' + Buffer.from(source).toString('base64');
 const modelUrl = dataUrl(fs.readFileSync(path.join(moduleRoot, 'harmony-guide-model.js'), 'utf8'));
+const placementUrl = dataUrl(fs.readFileSync(path.join(moduleRoot, 'harmony-guide-placement.js'), 'utf8'));
 const controllerUrl = dataUrl(fs.readFileSync(path.join(moduleRoot, 'harmony-guide-controller.js'), 'utf8')
     .replaceAll("'./harmony-guide-model.js'", JSON.stringify(modelUrl)));
 const uiUrl = dataUrl(fs.readFileSync(path.join(moduleRoot, 'harmony-guide-ui.js'), 'utf8')
     .replaceAll("'./harmony-guide-model.js'", JSON.stringify(modelUrl))
+    .replaceAll("'./harmony-guide-placement.js'", JSON.stringify(placementUrl))
     .replaceAll("'./harmony-guide-controller.js'", JSON.stringify(controllerUrl)));
 const controllerModule = import(controllerUrl);
 const uiModule = import(uiUrl);
