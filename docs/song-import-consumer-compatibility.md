@@ -11,6 +11,9 @@ and determine smart role names even when display names identify the musicians.
 Raw creator names remain intact. Generic `guitar` does not invent a lead role.
 Explicit types supply role tuning and participate in both legacy and smart
 library filters. Display sorting keeps the original manifest index.
+The highway's `song_info` includes `arrangement_type` for the active part and
+`type` on each arrangement option so visualization providers can distinguish
+supplemental guitar notation from a piano/keys part.
 
 Already indexed packs need a library rescan to acquire the new type and tuning
 metadata. This branch does not automatically write or rescan a real library.
