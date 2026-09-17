@@ -26,6 +26,7 @@ import {
 import {
     _shimmerNoise, bnvNormalizedPoints, chordHarmonyLabels, project, roundRect,
     teachingDegreeLabel, teachingFingerLabel,
+    noteFretLabel,
 } from './highway-geometry.js';
 import {
     BG, CHAIN_GAP_THRESHOLD, CHAIN_RENDER_FULL_MAX, CHORD_FRAME_FRETS, MUTE_BOX_BAR,
@@ -118,7 +119,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
         hwState.ctx.font = `bold ${fontSize}px sans-serif`;
         hwState.ctx.textAlign = 'center';
         hwState.ctx.textBaseline = 'middle';
-        fillTextReadable(hwState, '0', W/2, y);
+        fillTextReadable(hwState, noteFretLabel(0, opts), W/2, y);
 
         // Technique labels on open strings — PM, H/P/T, tremolo, and
         // accent markers are all meaningful on fret 0. Bend and slide
@@ -225,7 +226,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     hwState.ctx.font = `bold ${fontSize}px sans-serif`;
     hwState.ctx.textAlign = 'center';
     hwState.ctx.textBaseline = 'middle';
-    fillTextReadable(hwState, String(fret), x, y);
+    fillTextReadable(hwState, noteFretLabel(fret, opts), x, y);
 
     // Bend notation
     if (bend && bend > 0 && sz >= 12) {
@@ -708,7 +709,7 @@ export function drawChords(hwState, W, H) {
                 if (x > xMax) xMax = x;
             }
         }
-        if (allMuted) {
+        if (allMuted && !sorted.some(n => n.ghost === true)) {
             const { boxX, boxW, boxTop, boxH } = _computeChordBox(hwState, p, H, W, sorted, sz, actualSpread, baseFret);
 
             hwState.ctx.strokeStyle = MUTE_BOX_STROKE;
@@ -1105,6 +1106,7 @@ export function bsearchChords(arr, time) {
 // bypass drawNote and so must fall back to the full path whenever a
 // technique flag is present, otherwise authored cues vanish silently.
 export function _noteHasTechniqueFlags(n) {
+    if (n.ghost === true) return true;
     if (n.bn || n.ho || n.po || n.tp || n.pm || n.vb || n.tr || n.ac || n.hm || n.hp || n.mt || n.fhm) return true;
     if (typeof n.sl === 'number' && n.sl >= 0) return true;
     return false;

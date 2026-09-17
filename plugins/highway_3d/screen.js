@@ -1297,6 +1297,44 @@
         return priorityRank * TRAIL_YIELD_STRING_ORDER_STEP;
     }
 
+    /** One bounded shared mesh: ordinary box plus two curved parentheses.
+     * Local extents are 1.48 * width by 1.16 * height by depth, also used by
+     * the trail matcher. No text, per-frame geometry or additional draw calls.
+     */
+    function hwyGhostNoteOutlineGeometry(T, width, height, depth) {
+        const body = new T.Shape();
+        body.moveTo(-width / 2, -height / 2);
+        body.lineTo(width / 2, -height / 2);
+        body.lineTo(width / 2, height / 2);
+        body.lineTo(-width / 2, height / 2);
+        body.closePath();
+        const shapes = [body];
+        for (const side of [-1, 1]) {
+            const bracket = new T.Shape();
+            // Outer then inner path; 16 segments retain a rounded silhouette
+            // at both approach rotation extremes without font/texture scaling.
+            for (let i = 0; i <= 16; i++) {
+                const u = i / 16;
+                const x = side * width * (0.62 + 0.12 * Math.sin(Math.PI * u));
+                const y = height * 1.16 * (u - 0.5);
+                if (i === 0) bracket.moveTo(x, y);
+                else bracket.lineTo(x, y);
+            }
+            for (let i = 16; i >= 0; i--) {
+                const u = i / 16;
+                bracket.lineTo(side * width * (0.55 + 0.12 * Math.sin(Math.PI * u)),
+                    height * 1.16 * (u - 0.5));
+            }
+            bracket.closePath();
+            shapes.push(bracket);
+        }
+        const geometry = new T.ExtrudeGeometry(shapes, { depth, bevelEnabled: false, steps: 1 });
+        geometry.translate(0, 0, -depth / 2);
+        geometry.computeBoundingBox();
+        geometry.computeBoundingSphere();
+        return geometry;
+    }
+
     /** Chart-static fret index; rebuilt only when arrangement arrays change. */
     function hwyBuildTrailYieldEvents(notes, chords, stringCount) {
         const byFret = new Array(NFRETS + 1);
@@ -1309,6 +1347,7 @@
             (byFret[f] || (byFret[f] = [])).push({
                 t, s, f, end: t + duration,
                 accent: !!accent,
+                ghost: pathNote?.ghost === true,
                 standalone: chordMeta === null,
                 chordMeta,
                 // The event is also the allocation-free path descriptor used
@@ -1366,6 +1405,7 @@
                     && cur.s === prev.s) {
                     prev.end = Math.max(prev.end, cur.end);
                     prev.accent = prev.accent || cur.accent;
+                    prev.ghost = prev.ghost || cur.ghost;
                     prev.standalone = prev.standalone || cur.standalone;
                     if (!prev.chordMeta && cur.chordMeta) prev.chordMeta = cur.chordMeta;
                     if (!(prev.sl >= 0) && cur.sl >= 0) prev.sl = cur.sl;
@@ -2262,7 +2302,7 @@
                 case 'ho': case 'po': case 'hm': case 'hp':
                 case 'pm': case 'mt': case 'vb': case 'tr':
                 case 'ac': case 'tp': case 'ln': case 'fhm':
-                case 'plk': case 'slp': case 'ig':
+                case 'plk': case 'slp': case 'ig': case 'ghost':
                     if (v === false) continue;
                     return true;
                 case 'bnv':
@@ -5648,10 +5688,10 @@
         let _canvasReplacedHandler = null;
         let ambLight = null, dirLight = null;
         let fretG = null, tuningLblG = null, noteG = null, beatG = null, lblG = null;
-        let gNote = null, gSus = null, gBeat = null, gTapChevron = null;
+        let gNote = null, gNoteGhost = null, gSus = null, gBeat = null, gTapChevron = null;
         // Per-string gradient gem geometries (index 0..5). Built in initScene
         // from sampled colour PNGs; each carries a per-vertex colour attribute.
-        let gNoteGrad = [];
+        let gNoteGrad = [], gNoteGhostGrad = [];
         let mStr = [], mGlow = [], mSus = [], mStrHitOutline = [], mAccentOutline = [], mAccentCore = [], mAccentHaloNear = [], mAccentHaloMid = [], mAccentHaloFar = [];
         // Pre-built accent-halo shell descriptors per string. Populated after
         // mAccentHaloFar/Mid/Near are materialised; consumed in drawNote()'s
@@ -8737,6 +8777,11 @@
 
             // Rectangular note geometry
             gNote = new T.BoxGeometry(NW, NH, ND);
+            // The parentheses are part of the same outline mesh, not a label
+            // or extra overlay. They inherit its rotation, movement, material,
+            // pool lifetime and every physical trail-order correction.
+            gNoteGhost = hwyGhostNoteOutlineGeometry(T, NW, NH, ND);
+            _ownedSharedGeos.push(gNoteGhost);
             // Per-string vertical gradient gems — colours sampled from the
             // original colour PNGs (top highlight → deeper bottom). Each gradient
             // string gets its own BoxGeometry clone carrying a per-vertex colour
@@ -8759,6 +8804,14 @@
                     _colors[i * 3 + 2] = _tmpCol.b;
                 }
                 g.setAttribute('color', new T.BufferAttribute(_colors, 3));
+                _ownedSharedGeos.push(g);
+                return g;
+            });
+            gNoteGhostGrad = gNoteGrad.map(() => {
+                const g = gNoteGhost.clone();
+                g.setAttribute('color', new T.BufferAttribute(
+                    new Float32Array(g.attributes.position.count * 3), 3,
+                ));
                 _ownedSharedGeos.push(g);
                 return g;
             });
@@ -10357,6 +10410,7 @@
             if (!T || !gNoteGrad || !gNoteGrad.length) return;
             const isCustom = (activePalette === _customPalette);
             const topCol = new T.Color(), botCol = new T.Color(), tmp = new T.Color();
+            const bracketCol = new T.Color(), white = new T.Color(0xffffff);
             const halfH = NH / 2;
             for (let s = 0; s < gNoteGrad.length; s++) {
                 const g = gNoteGrad[s];
@@ -10385,6 +10439,20 @@
                     colAttr.setXYZ(i, tmp.r, tmp.g, tmp.b);
                 }
                 colAttr.needsUpdate = true;
+                const ghost = gNoteGhostGrad[s];
+                if (ghost?.attributes.color) {
+                    const gp = ghost.attributes.position;
+                    const gc = ghost.attributes.color;
+                    // Pale string tint keeps the parentheses readable without
+                    // changing the ordinary gem gradient or sharing new alpha.
+                    bracketCol.setHex(base).lerp(white, 0.82);
+                    for (let i = 0; i < gp.count; i++) {
+                        if (Math.abs(gp.getX(i)) > NW * 0.51) tmp.copy(bracketCol);
+                        else tmp.copy(botCol).lerp(topCol, (gp.getY(i) + halfH) / NH);
+                        gc.setXYZ(i, tmp.r, tmp.g, tmp.b);
+                    }
+                    gc.needsUpdate = true;
+                }
             }
         }
 
@@ -13995,6 +14063,7 @@
                             // so Object.assign leaves a stale `true` from a previous
                             // muted chord note untouched. Reset it explicitly here.
                             _scrChordNote.fhm = cn.fhm || false;
+                            _scrChordNote.ghost = cn.ghost === true;
                             // Bass attacks are also omit-when-false: do not let
                             // a reused chord member inherit the preceding marker.
                             _scrChordNote.slp = cn.slp || false;
@@ -15700,7 +15769,7 @@
         function noteHasRepeatTechniqueCue(n) {
             // Compact repeat frames have their own palm/fret-hand mute marks,
             // but these cues live on individual gems and must approach with them.
-            return !!(n.hm || n.hp || n.ho || n.po || n.tp || n.ac || n.slp || n.plk
+            return !!(n.ghost === true || n.hm || n.hp || n.ho || n.po || n.tp || n.ac || n.slp || n.plk
                 || (Number(n.bn) || 0) > 0
                 || (Array.isArray(n.bnv) && n.bnv.some(p => (Number(p.v) || 0) > 0)));
         }
@@ -15865,7 +15934,8 @@
                 ? (xFret(anchor.dMin) + xFret(anchor.dMax)) * 0.5
                 : curX;
             const outlineWidthScale = (35 / 40) * 1.1
-                * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
+                * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1)
+                * (event.ghost === true ? 1.48 : 1);
             const coreWidthScale = event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1;
             const bodyScale = 0.96 * Math.max(coreWidthScale, outlineWidthScale);
 
@@ -15977,7 +16047,8 @@
             } else {
                 targetX = xFretMid(event.f);
                 targetW = NW * 1.1
-                    * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
+                    * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1)
+                    * (event.ghost === true ? 1.48 : 1);
             }
             const onsetMatches = hwyTrailFootprintsCanOcclude(
                 visuallyBelow,
@@ -16364,8 +16435,10 @@
 
             // The approach rotation is already present on the pooled mesh.
             // Resolve its XY axis-aligned footprint without Box3/Vector churn.
-            const width = NW * outline.scale.x;
-            const height = NH * outline.scale.y;
+            // Ghost parentheses extend the physical mesh. Include their real
+            // bounds in the same rotated footprint used for ordinary gems.
+            const width = NW * outline.scale.x * (n.ghost === true ? 1.48 : 1);
+            const height = NH * outline.scale.y * (n.ghost === true ? 1.16 : 1);
             const cos = Math.abs(Math.cos(outline.rotation.z));
             const sin = Math.abs(Math.sin(outline.rotation.z));
             gem.x = outline.position.x;
@@ -16627,7 +16700,7 @@
          * only avoids opening time windows for frets the strand cannot reach.
          */
         function trailYieldSweepMayReachFret(sweepCenter, sweepWidth, fret) {
-            const widestGem = NW * 1.1 * ACCENT_RIM_XY_SCALE_MUL;
+            const widestGem = NW * 1.1 * ACCENT_RIM_XY_SCALE_MUL * 1.48;
             return hwyTrailOverlapsGemX(
                 sweepCenter, sweepWidth, xFretMid(fret), widestGem,
             );
@@ -17328,7 +17401,7 @@
                 // outline + core share the pNote pool, so set geometry explicitly
                 // each frame (a recycled mesh may carry a gradient geometry from a
                 // prior core use). Outline always uses the plain box.
-                outline.geometry = gNote;
+                outline.geometry = n.ghost === true ? gNoteGhost : gNote;
                 const trailYieldGemEvent = trailYieldTargetEvent;
                 const isTrailYieldTarget = !!(trailYieldGemEvent
                     && !trailYieldGemInFront
@@ -17388,7 +17461,9 @@
                 // carried by the outline shell and lateral face fill.
                 core.material = n.ac ? mAccentCore[s] : mStr[s];
                 // Gradient gem body for strings 0..5; flat box otherwise.
-                core.geometry = (!n.ac && gNoteGrad[s]) ? gNoteGrad[s] : gNote;
+                core.geometry = n.ghost === true
+                    ? ((!n.ac && gNoteGhostGrad[s]) ? gNoteGhostGrad[s] : gNoteGhost)
+                    : ((!n.ac && gNoteGrad[s]) ? gNoteGrad[s] : gNote);
                 core.renderOrder = renderOrderForLayerAtZ(noteZ, noteCoreLayer);
                 core.position.set(x, y + techniqueYNow, noteZ + 0.001);
                 core.rotation.z = approachRot;
@@ -18929,7 +19004,8 @@
             chordFrameGradTex = chordFrameGradTexArp = null;
             pFretColMarker = null;
             _fretMarkerWaveCache.clear();
-            gNote = gSus = gBeat = gTapChevron = null;
+            gNote = gNoteGhost = gSus = gBeat = gTapChevron = null;
+            gNoteGrad = []; gNoteGhostGrad = [];
             tgtX = curX = xFretMid(CAM_LOCK_CENTER_FRET); tgtDist = curDist = CAM_DIST_BASE; tgtLookY = curLookY = 0; _fretRowFitBoost = 1; nStr = NSTR; _oobStringWarned = false;
             _lookaheadCamX = xFretMid(CAM_LOCK_CENTER_FRET);
             _lookaheadFretSpan = DEFAULT_LOOKAHEAD_FRET_SPAN;

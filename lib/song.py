@@ -63,6 +63,8 @@ class Note:
     # finger); spelled-out `hand` on the wire because `rh` is taken.
     # Default-omitted on the wire; older readers ignore it.
     hand: str | None = None
+    # Authored quiet/parenthesized attack, independent of dead-note mute or tie.
+    ghost: bool = False
 
 
 @dataclass
@@ -256,6 +258,8 @@ def note_to_wire(n: Note) -> dict:
     }
     if n.link_next:
         out["ln"] = True
+    if n.ghost is True:
+        out["ghost"] = True
     if n.fret_hand_mute:
         out["fhm"] = True
     if n.pluck:
@@ -523,6 +527,7 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         sustain=float(d.get("sus", 0.0)),
         slide_to=int(d.get("sl", -1)),
         slide_unpitch_to=int(d.get("slu", -1)),
+        ghost=d.get("ghost") is True,
         bend=float(d.get("bn", 0.0)),
         bend_intent=_wire_int_optional(d.get("bt"), 0),
         bend_values=_sanitize_bend_curve(d.get("bnv")),
