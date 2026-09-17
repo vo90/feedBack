@@ -105,6 +105,16 @@
     </script>
 </div>
 
+<div role="group" aria-labelledby="h3d-notation-heading" class="mt-6">
+    <h3 id="h3d-notation-heading" class="text-sm font-medium text-gray-400 mb-2">Note appearance</h3>
+    <label for="h3d-notation-style" class="text-xs font-medium text-gray-400 mb-1 block">Notation style</label>
+    <select id="h3d-notation-style" class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
+        <option value="current">Current</option>
+        <option value="rsplus">RS+ inspired</option>
+    </select>
+    <p class="text-xs text-gray-500 mt-1">RS+ inspired keeps note faces solid and sharp, uses crisp accent rims and technique symbols, and gives chord frames steady contrast. Your colours and other settings are kept.</p>
+</div>
+
 <div role="group" aria-labelledby="h3d-bg-heading" class="mt-6">
     <h3 id="h3d-bg-heading" class="text-sm font-medium text-gray-400 mb-2">3D Highway — Background</h3>
     <p class="text-xs text-gray-500 mb-3">
@@ -512,9 +522,10 @@
                     onchange="window.h3dBgSetTextSize && window.h3dBgSetTextSize(this.value)"
                     class="w-full accent-accent">
                 <p class="text-[10px] text-gray-500 mt-1">
-                    Scales every text sprite in the scene — chord names, fret
-                    numbers, technique markers (bend / slide / H/P/T), section
-                    banners. Default 0.50 = 1.0× (no change). 0 = 0.5×, 1 = 1.5×.
+                    Scales text labels such as chord names, fret numbers and
+                    section banners. RS+ inspired face symbols keep a fixed fit
+                    inside the note; Current retains its existing marker sizing.
+                    Default 0.50 = 1.0× (no change). 0 = 0.5×, 1 = 1.5×.
                 </p>
                 <div class="flex justify-between text-[10px] text-gray-500 mt-1">
                     <span>Smaller</span>
@@ -543,7 +554,7 @@
                     oninput="document.getElementById('h3d-vibrancy-label').textContent = parseFloat(this.value).toFixed(2); window.h3dBgSetVibrancy && window.h3dBgSetVibrancy(this.value)"
                     onchange="window.h3dBgSetVibrancy && window.h3dBgSetVibrancy(this.value)"
                     class="w-full accent-accent">
-                <p class="text-[10px] text-gray-500 mt-1">
+                <p id="h3d-vibrancy-description" class="text-[10px] text-gray-500 mt-1">
                     How vivid idle strings, note bodies, and sustains read against
                     the dark scene. <em>Pastel</em> matches the original washed-out
                     look (low opacity, hit notes wash toward white); <em>Vivid</em>
@@ -564,7 +575,7 @@
                     oninput="document.getElementById('h3d-glow-label').textContent = parseFloat(this.value).toFixed(2); window.h3dBgSetGlow && window.h3dBgSetGlow(this.value)"
                     onchange="window.h3dBgSetGlow && window.h3dBgSetGlow(this.value)"
                     class="w-full accent-accent">
-                <p class="text-[10px] text-gray-500 mt-1">
+                <p id="h3d-glow-description" class="text-[10px] text-gray-500 mt-1">
                     How much halo / bloom builds up around hit notes, sustain
                     outlines, technique markers, and the projection ghost layer.
                     <em>Off</em> kills emissive everywhere (flat-shaded look,
@@ -634,8 +645,8 @@
 
             <div class="mt-3 flex items-start justify-between gap-3">
                 <label for="h3d-bloom" class="text-xs font-medium text-gray-400">
-                    Glow bloom
-                    <span class="block text-[10px] text-gray-500 font-normal">Real light-bleed around the glowing notes and hit flash (higher fidelity). Turns itself off in split-screen. If your machine struggles, turn this off first.</span>
+                    <span id="h3d-bloom-title">Glow bloom</span>
+                    <span id="h3d-bloom-description" class="block text-[10px] text-gray-500 font-normal">Real light-bleed around the glowing notes and hit flash (higher fidelity). Turns itself off in split-screen. If your machine struggles, turn this off first.</span>
                 </label>
                 <input type="checkbox" id="h3d-bloom" checked
                     onchange="window.h3dBgSetBloom && window.h3dBgSetBloom(this.checked)"
@@ -1476,6 +1487,35 @@
             const customImageName    = (typeof storedCustomImageName === 'string')    ? storedCustomImageName    : DEFAULTS.customImageName;
             const customVideoName    = (typeof storedCustomVideoName === 'string')    ? storedCustomVideoName    : DEFAULTS.customVideoName;
 
+            const notationSelect = document.getElementById('h3d-notation-style');
+            const notationDescriptions = [
+                ['h3d-vibrancy-description', 'Adjusts string-colour saturation. Playable note faces always stay fully opaque; accents and distance do not change their opacity.'],
+                ['h3d-glow-description', 'Scales decorative highway glow on notes, chord frames, sustains, strings, fret wires and previews. Off removes luminous extras while keeping sharp notes, accent rims, symbols and guidance visible. Background and score effects have separate controls.'],
+                ['h3d-bloom-title', 'Soft glow'],
+                ['h3d-bloom-description', 'Adds restrained soft edges outside accent rims and chord frames. Note faces and technique symbols stay sharp. Requires Glow above zero; also available in split-screen.'],
+            ].map(([id, rsplus]) => {
+                const element = document.getElementById(id);
+                return { element, current: element?.innerHTML, rsplus };
+            });
+            function showNotationDescription(value) {
+                for (const item of notationDescriptions) {
+                    if (!item.element) continue;
+                    if (value === 'rsplus') item.element.textContent = item.rsplus;
+                    else item.element.innerHTML = item.current;
+                }
+            }
+            if (notationSelect) {
+                let notationValue = 'current';
+                try { if (localStorage.getItem('h3d_bg_notationStyle') === 'rsplus') notationValue = 'rsplus'; } catch (_) {}
+                notationSelect.value = notationValue;
+                showNotationDescription(notationValue);
+                notationSelect.addEventListener('change', () => {
+                    const value = notationSelect.value === 'rsplus' ? 'rsplus' : 'current';
+                    if (window.h3dBgSetNotationStyle) window.h3dBgSetNotationStyle(value);
+                    else { try { localStorage.setItem('h3d_bg_notationStyle', value); } catch (_) {} }
+                    showNotationDescription(value);
+                });
+            }
             const sel = document.getElementById('h3d-bg-style');
             const bgThemeSel = document.getElementById('h3d-bg-theme');
             const hwThemeSel = document.getElementById('h3d-hw-theme');

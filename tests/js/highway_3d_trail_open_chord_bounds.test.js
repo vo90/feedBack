@@ -22,12 +22,20 @@ function extractFn(source, name) {
     throw new Error(`unbalanced braces extracting ${name}`);
 }
 
-const resolver = new Function('assert', `
+// Use the drawing path's real rim scale as the comparison, so a future
+// geometry change cannot silently leave the overlap matcher too narrow.
+const sizingStart = src.indexOf('const ndRim =');
+const sizingEnd = src.indexOf('// ── Lateral face fill', sizingStart);
+assert.ok(sizingStart >= 0 && sizingEnd > sizingStart);
+const openRimSizing = src.slice(sizingStart, sizingEnd);
+
+const harness = new Function('assert', `
     const NFRETS = 24;
     const ACCENT_RIM_XY_SCALE_MUL = 1.2;
     const OPEN_NOTE_PAD_X = 1;
     let _drawAnchors = [];
     let curX = 0;
+    let rsPlusNotation = false;
     const xFret = fret => fret * 10;
     const openNoteLaneBoxW = () => 40;
     ${extractFn(src, 'getChartAnchorAt')}
@@ -37,13 +45,29 @@ const resolver = new Function('assert', `
     ${extractFn(src, 'chordFallbackLaneBounds')}
     ${extractFn(src, 'trailYieldAddTargetXBounds')}
     ${extractFn(src, 'trailYieldOpenTargetXBounds')}
-    return (event, anchors) => {
-        _drawAnchors = anchors;
-        const bounds = new Float64Array(2);
-        assert.equal(trailYieldOpenTargetXBounds(event, bounds), true);
-        return Array.from(bounds);
+    return {
+        resolve(event, anchors, rsPlus = false) {
+            _drawAnchors = anchors;
+            rsPlusNotation = rsPlus;
+            const bounds = new Float64Array(2);
+            assert.equal(trailYieldOpenTargetXBounds(event, bounds), true);
+            return Array.from(bounds);
+        },
+        renderedOpenWidth(laneWidth, accent, rsPlus) {
+            rsPlusNotation = rsPlus;
+            const K = 1, NW = 8;
+            const n = { f: 0, ac: accent };
+            const rimXY = !rsPlusNotation && n.ac ? ACCENT_RIM_XY_SCALE_MUL : 1;
+            const rimZ = 1, openSlabThickMul = 1;
+            const openWScale = laneWidth * 0.96 / 40;
+            let rimWidth = 0;
+            const outline = { scale: { set(x) { rimWidth = NW * x; } } };
+            ${openRimSizing}
+            return rimWidth;
+        },
     };
 `)(assert);
+const resolver = harness.resolve;
 
 const anchor = [{ time: 0, fret: 3, width: 5 }];
 
@@ -66,4 +90,39 @@ test('covered open chord footprints retain the authored anchor wires', () => {
         accent: false,
         chordMeta: { size: 2, minF: 3, maxF: 7 },
     }, anchor), [21, 69]);
+});
+
+test('RS+ open footprints reach the actual ordinary and accent rims in every lane placement', () => {
+    const placements = [
+        { standalone: true, laneWidth: 40, center: 45 },
+        { chordMeta: { size: 2, minF: 3, maxF: 7 }, laneWidth: 50, center: 45 },
+        { chordMeta: { size: 2, minF: 2, maxF: 2 }, laneWidth: 40, center: 30 },
+    ];
+    for (const placement of placements) {
+        for (const accent of [false, true]) {
+            const event = { t: 1, standalone: !!placement.standalone, chordMeta: placement.chordMeta, accent };
+            const [left, right] = resolver(event, anchor, true);
+            const width = harness.renderedOpenWidth(placement.laneWidth, accent, true);
+            assert.ok(Math.abs(left - (placement.center - width / 2)) < 1e-10);
+            assert.ok(Math.abs(right - (placement.center + width / 2)) < 1e-10);
+            // An approaching strand at the visible rim must be a potential
+            // overlap; the old Current-only estimate rejected this location.
+            const nearRim = placement.center + width / 2 - 0.001;
+            assert.ok(nearRim >= left && nearRim <= right);
+            assert.ok(right < placement.center + width / 2 + 0.001,
+                'decorative halo padding must not enlarge the attack footprint');
+        }
+    }
+});
+
+test('Current open footprint policy survives a style round trip', () => {
+    for (const accent of [false, true]) {
+        const event = { t: 1, standalone: false, accent, chordMeta: { size: 2, minF: 3, maxF: 7 } };
+        const before = resolver(event, anchor);
+        resolver(event, anchor, true);
+        assert.deepEqual(resolver(event, anchor), before);
+        const expectedWidth = 48 * (accent ? 1.2 : 1);
+        assert.ok(Math.abs(before[0] - (45 - expectedWidth / 2)) < 1e-10);
+        assert.ok(Math.abs(before[1] - (45 + expectedWidth / 2)) < 1e-10);
+    }
 });

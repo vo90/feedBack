@@ -3536,7 +3536,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration };
+    const BG_DEFAULTS = { notationStyle: 'current', style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -3544,6 +3544,7 @@
     // mount outside that flow and settings.html (which can't represent 'venue')
     // would be unable to switch back. BG_STYLES still has a 'venue' renderer entry.
     const BG_STYLE_IDS = ['off', 'particles', 'silhouettes', 'lights', 'geometric', 'butterchurn', 'image', 'video'];
+    const NOTATION_STYLE_IDS = ['current', 'rsplus'];
     // Scene color themes — TWO INDEPENDENT AXES sharing one palette family.
     // The combined `BG_THEMES` table below is the single source of truth; each
     // entry carries the colors for BOTH axes, but the two axes are selected and
@@ -3976,6 +3977,7 @@
         }
         if (_BG_BOOL_KEYS.has(key)) return _bgCoerceBool(val, BG_DEFAULTS[key]);
         if (key === 'style') return BG_STYLE_IDS.includes(val) ? val : BG_DEFAULTS.style;
+        if (key === 'notationStyle') return NOTATION_STYLE_IDS.includes(val) ? val : BG_DEFAULTS.notationStyle;
         if (key === 'palette') return (PALETTE_IDS.includes(val) || val === 'custom') ? val : BG_DEFAULTS.palette;
         if (key === 'bgTheme') return BG_THEME_IDS.includes(val) ? val : BG_DEFAULTS.bgTheme;
         // Highway axis shares the same id-set as the background axis.
@@ -4048,6 +4050,7 @@
     // Settings.html setters — global keys; per-panel overrides via direct
     // localStorage edits today, runtime UI in a follow-up.
     window.h3dBgSetStyle = (v) => _bgWriteGlobal('style', v);
+    window.h3dBgSetNotationStyle = (v) => _bgWriteGlobal('notationStyle', _bgCoerce('notationStyle', v));
     window.h3dBgSetIntensity = (v) => _bgWriteGlobal('intensity', v);
     window.h3dBgSetReactive = (v) => _bgWriteGlobal('reactive', !!v);
     window.h3dBgSetPalette = (v) => _bgWriteGlobal('palette', v);
@@ -5652,6 +5655,11 @@
         // Per-string gradient gem geometries (index 0..5). Built in initScene
         // from sampled colour PNGs; each carries a per-vertex colour attribute.
         let gNoteGrad = [];
+        let gRsNote = null, gRsNoteGrad = [], gRsNoteHalo = null, rsHaloTexture = null;
+        let mRsBody = [], mRsRim = [], mRsAccentRim = [], mRsHitRim = [], mRsHalo = [];
+        let mRsSus = [], mRsSusHit = [], mRsSusEdge = [];
+        let mRsMissRim = null;
+        let rsNotationPaletteSig = '';
         let mStr = [], mGlow = [], mSus = [], mStrHitOutline = [], mAccentOutline = [], mAccentCore = [], mAccentHaloNear = [], mAccentHaloMid = [], mAccentHaloFar = [];
         // Pre-built accent-halo shell descriptors per string. Populated after
         // mAccentHaloFar/Mid/Near are materialised; consumed in drawNote()'s
@@ -6204,6 +6212,9 @@
         // _vibrancyIdleOp / _vibrancyProjOp are cached so
         // updateStringHighlights() and drawNote() don't recompute the
         // linear blend every frame.
+        let rsPlusNotation      = false;
+        // Local, bounded halos replace luminance-threshold bloom in this style.
+        function notationSoftGlow() { return rsPlusNotation && _bloom ? glowMul : 0; }
         let vibrancy            = BG_DEFAULTS.vibrancy;
         let glowMul             = BG_DEFAULTS.glow;
         let _hitFx              = BG_DEFAULTS.hitFx;
@@ -6474,6 +6485,7 @@
         let pNoteFretLabel, pConnectorLine, pDropLine, pTapChevron, pAccentHalo;
         let pTeachMarkLbl;  // teaching marks fg/sd label sprites (§6.2.2)
         let pHaloBar = null, gHaloBar = null; // gradient halo bar geometry — replaces per-shell pChordAccentHalo
+        let pRsChordFrame = null, gRsChordFrame = null; // rounded rims and bounded outside-only glow
         let gArpBracket = null; // shared 1×1×1 box geometry for pArpBracket; built once, disposed in teardown
         let pSusRibbon = null, pSusRibbonOl = null;
         let pFretColMarker;
@@ -7082,6 +7094,129 @@
             return mat;
         }
 
+        // RS+ face marks use one sharp mask per combination. Multiple authored
+        // techniques share the face instead of painting over one another. Keep
+        // the existing precedence for contradictory flags (PO over HO, FH over
+        // PM, natural over pinch); slap + pop remain two distinct marks.
+        function rsPlusTechniqueFlags(n) {
+            return (n.po ? 2 : n.ho ? 1 : n.tp ? 4 : 0)
+                | (n.slp ? 8 : 0) | (n.plk ? 16 : 0)
+                | (n.mt || n.fhm ? 64 : n.pm ? 32 : 0)
+                | (n.hm ? 128 : n.hp ? 256 : 0);
+        }
+
+        function rsPlusTechniqueCells(flags) {
+            const names = ['hammerOn', 'pullOff', 'tap', 'slap', 'pop',
+                'palmMute', 'fretHandMute', 'naturalHarmonic', 'pinchHarmonic'];
+            const marks = names.filter((_, i) => flags & (1 << i));
+            const columns = marks.length > 1 ? 2 : 1;
+            const rows = Math.max(1, Math.ceil(marks.length / columns));
+            return marks.map((kind, i) => ({ kind,
+                x: (i % columns) / columns, y: Math.floor(i / columns) / rows,
+                w: 1 / columns, h: 1 / rows }));
+        }
+
+        // All coordinates are normalized within the padded face cell. The pale
+        // fill and thin dark keyline remain readable on yellow/white palettes;
+        // no colored blur, lighting, or emissive contribution is baked in.
+        function drawRsPlusTechniqueGlyph(g, kind) {
+            const pale = '#fff5d6', dark = '#17212b';
+            const finish = (filled = true) => {
+                g.lineJoin = 'round';
+                g.lineCap = 'round';
+                g.strokeStyle = dark;
+                g.lineWidth = 0.052;
+                g.stroke();
+                if (filled) { g.fillStyle = pale; g.fill(); }
+            };
+            g.beginPath();
+            if (kind === 'hammerOn' || kind === 'pullOff') {
+                const y = v => kind === 'pullOff' ? 1 - v : v;
+                g.moveTo(0.18, y(0.17)); g.lineTo(0.82, y(0.17));
+                g.lineTo(0.5, y(0.84)); g.closePath(); finish();
+            } else if (kind === 'tap') {
+                g.moveTo(0.10, 0.25); g.lineTo(0.50, 0.59); g.lineTo(0.90, 0.25);
+                g.lineTo(0.90, 0.49); g.lineTo(0.50, 0.83); g.lineTo(0.10, 0.49);
+                g.closePath(); finish();
+            } else if (kind === 'slap' || kind === 'pop') {
+                const y = v => kind === 'pop' ? 1 - v : v;
+                g.moveTo(0.09, y(0.27));
+                g.quadraticCurveTo(0.34, y(0.25), 0.50, y(0.53));
+                g.quadraticCurveTo(0.66, y(0.25), 0.91, y(0.27));
+                g.lineTo(0.91, y(0.49));
+                g.quadraticCurveTo(0.67, y(0.47), 0.50, y(0.79));
+                g.quadraticCurveTo(0.33, y(0.47), 0.09, y(0.49));
+                g.closePath(); finish();
+            } else if (kind === 'palmMute' || kind === 'fretHandMute') {
+                g.moveTo(0.20, 0.19); g.lineTo(0.80, 0.81);
+                g.moveTo(0.80, 0.19); g.lineTo(0.20, 0.81);
+                g.lineCap = 'round';
+                g.strokeStyle = kind === 'palmMute' ? pale : dark;
+                g.lineWidth = 0.23; g.stroke();
+                g.strokeStyle = kind === 'palmMute' ? dark : pale;
+                g.lineWidth = 0.17; g.stroke();
+            } else if (kind === 'naturalHarmonic' || kind === 'pinchHarmonic') {
+                if (kind === 'naturalHarmonic') {
+                    g.arc(0.50, 0.50, 0.29, 0, Math.PI * 2);
+                } else {
+                    g.ellipse(0.43, 0.50, 0.32, 0.24, 0, 0, Math.PI * 2);
+                    g.moveTo(0.89, 0.50);
+                    g.ellipse(0.57, 0.50, 0.32, 0.24, 0, 0, Math.PI * 2);
+                    g.moveTo(0.70, 0.50);
+                    g.ellipse(0.50, 0.50, 0.20, 0.18, 0, 0, Math.PI * 2);
+                }
+                g.strokeStyle = dark;
+                g.lineWidth = kind === 'naturalHarmonic' ? 0.17 : 0.075; g.stroke();
+                g.strokeStyle = pale;
+                g.lineWidth = kind === 'naturalHarmonic' ? 0.12 : 0.040; g.stroke();
+            } else if (kind === 'bend' || kind === 'slideRight' || kind === 'slideLeft') {
+                if (kind === 'bend') {
+                    g.moveTo(0.20, 0.64); g.lineTo(0.50, 0.30); g.lineTo(0.80, 0.64);
+                } else {
+                    const x = v => kind === 'slideLeft' ? 1 - v : v;
+                    g.moveTo(x(0.34), 0.18); g.lineTo(x(0.71), 0.50); g.lineTo(x(0.34), 0.82);
+                }
+                g.lineCap = g.lineJoin = 'round';
+                g.strokeStyle = dark; g.lineWidth = 0.20; g.stroke();
+                g.strokeStyle = pale; g.lineWidth = 0.13; g.stroke();
+            }
+        }
+
+        function rsPlusTechniqueMat(kind, detail = 0) {
+            const key = 'technique|rsplus-v1|' + kind + '|' + detail;
+            if (txtCache[key]) return txtCache[key];
+            const c = document.createElement('canvas');
+            c.width = c.height = 512;
+            const g = c.getContext('2d');
+            if (kind === 'bendAmount') {
+                // Chart values are semitones. Preserve fractional values rather
+                // than rounding to a whole number of chevrons or changing units.
+                const label = String(detail) + ' st';
+                g.font = '600 174px Arial, sans-serif';
+                g.textAlign = 'center'; g.textBaseline = 'middle';
+                g.lineJoin = 'round'; g.lineWidth = 22;
+                g.strokeStyle = '#17212b'; g.strokeText(label, 256, 256, 480);
+                g.fillStyle = '#fff5d6'; g.fillText(label, 256, 256, 480);
+            } else {
+                g.scale(512, 512);
+                const cells = typeof kind === 'number'
+                    ? rsPlusTechniqueCells(kind) : [{ kind, x: 0, y: 0, w: 1, h: 1 }];
+                for (const cell of cells) {
+                    g.save();
+                    g.translate(cell.x + cell.w * 0.04, cell.y + cell.h * 0.04);
+                    g.scale(cell.w * 0.92, cell.h * 0.92);
+                    drawRsPlusTechniqueGlyph(g, cell.kind);
+                    g.restore();
+                }
+            }
+            const mat = new T.SpriteMaterial({
+                map: new T.CanvasTexture(c), transparent: true, opacity: 1,
+                depthTest: false, depthWrite: false, fog: false, toneMapped: false,
+            });
+            txtCache[key] = mat;
+            return mat;
+        }
+
         function pinchHarmonicMat(col) {
             const baseCol = new T.Color(col != null ? col : '#ffd84d');
             // v5 — compact concentric ellipses:
@@ -7440,6 +7575,8 @@
                 base = new T.MeshBasicMaterial({
                     map: sm.map,
                     transparent: true,
+                    fog: sm.fog !== false,
+                    toneMapped: sm.toneMapped !== false,
                     // depthTest: false — cross-note Z ordering is handled by
                     // per-note renderOrderForLayerAtZ(...) calls rather than the
                     // depth buffer. This is necessary because close notes often use
@@ -8762,6 +8899,7 @@
                 _ownedSharedGeos.push(g);
                 return g;
             });
+            _initRsNotation();
             // Seed gem colors from whatever palette is active at mount (custom
             // colors recolor the gem bodies just like the strings/trails).
             _recolorGemGradients();
@@ -9324,6 +9462,54 @@
                 }),
             ));
 
+            // A unit plane keeps rounded corners circular in world coordinates:
+            // dimensions live in uniforms rather than stretching a cached ring.
+            // The second pass is optional, bounded outside the frame, and cannot
+            // brighten the chord interior or any note face inside it.
+            gRsChordFrame = new T.PlaneGeometry(1, 1);
+            pRsChordFrame = pool(noteG, () => new T.Mesh(gRsChordFrame, new T.ShaderMaterial({
+                uniforms: {
+                    uSize: { value: new T.Vector2(1, 1) },
+                    uRim: { value: 0.01 }, uRadius: { value: 0.03 },
+                    uPad: { value: 0 }, uOpenTop: { value: 0 },
+                    uHalo: { value: 0 }, uOpacity: { value: 1 },
+                    uColor: { value: new T.Color(CHORD_BOX_TEAL_HEX) },
+                },
+                vertexShader: `
+                    varying vec2 vUv;
+                    void main() {
+                        vUv = uv;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }`,
+                fragmentShader: `
+                    varying vec2 vUv;
+                    uniform vec2 uSize;
+                    uniform float uRim, uRadius, uPad, uOpenTop, uHalo, uOpacity;
+                    uniform vec3 uColor;
+                    void main() {
+                        vec2 p = (vUv - 0.5) * (uSize + 2.0 * uPad);
+                        // An open repeat panel extends its side strokes to the
+                        // top edge instead of rounding into a hidden top bar.
+                        if (uOpenTop > 0.5) p.y = min(p.y, uSize.y * 0.5 - uRadius);
+                        vec2 q = abs(p) - uSize * 0.5 + uRadius;
+                        float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - uRadius;
+                        float aa = max(fwidth(d), 0.000001);
+                        float coverage;
+                        if (uHalo > 0.5) {
+                            coverage = step(0.0, d) * pow(1.0 - smoothstep(0.0, uPad, d), 2.0);
+                        } else {
+                            coverage = (1.0 - smoothstep(-aa, aa, d))
+                                * smoothstep(-uRim - aa, -uRim + aa, d);
+                        }
+                        if (coverage * uOpacity < 0.001) discard;
+                        gl_FragColor = vec4(uColor, coverage * uOpacity);
+                        #include <tonemapping_fragment>
+                        #include <colorspace_fragment>
+                    }`,
+                transparent: true, depthWrite: false, depthTest: false,
+                fog: false, side: T.DoubleSide, forceSinglePass: true,
+            })));
+
             // PM strum X fill — 4 corner regions + centre; the 4 arms (L,R,T,B) are left empty.
             // 16 vertices, 14 triangles.
             //  0=A(-1,1)  1=TLC(-0.48,1)  2=T(-0.012,0.257)  3=TRC(0.5,1)
@@ -9792,6 +9978,7 @@
             pTeachMarkLbl.warm(_WARM_NOTE);
             pChordFrameFill.warm(_WARM_CHORD);
             pChordBox.warm(_WARM_CHORD);
+            pRsChordFrame.warm(_WARM_CHORD * 2);
             pChordLbl.warm(_WARM_CHORD);
             pBarreLine.warm(_WARM_CHORD);
             pArpBracket.warm(_WARM_CHORD);
@@ -9846,6 +10033,12 @@
                     // so it re-lays-out for the new spacing; per-frame note
                     // geometry reads fretX live and needs no rebuild.
                     if (fretG) buildBoard();
+                    return;
+                }
+                if (changedKey === 'notationStyle') {
+                    _bgLoadSettings();
+                    _applyVibrancy();
+                    _applyGlow();
                     return;
                 }
                 if (changedKey === 'inlayLabelsVisible') {
@@ -10129,6 +10322,8 @@
 
         function _bgLoadSettings() {
             const panelKey = _bgPanelKey(highwayCanvas);
+            const previousNotationStyle = rsPlusNotation;
+            rsPlusNotation = _bgReadSetting(panelKey, 'notationStyle') === 'rsplus';
             bgStyleId = _bgReadSetting(panelKey, 'style');
             bgIntensity = _bgReadSetting(panelKey, 'intensity');
             bgReactive = _bgReadSetting(panelKey, 'reactive');
@@ -10281,6 +10476,16 @@
             } catch (_) {
                 bgCustomVideoName = (memVideoName !== undefined) ? memVideoName : BG_DEFAULTS.customVideoName;
             }
+            // Bulk resets and panel override clears also reload this path.
+            // Retint only after the complete palette/vibrancy/glow snapshot.
+            _applyRsNotationPalette();
+            if (previousNotationStyle !== rsPlusNotation) {
+                // A bulk rebuild can bypass the notationStyle listener. Restore
+                // shared Current materials too, including active sustain colors
+                // and hit-outline intensity, after the new values are loaded.
+                _applyVibrancy();
+                _applyGlow();
+            }
         }
         // Live-swap palette by mutating existing materials in place.
         // Three.js colors propagate to all sharing meshes on the next
@@ -10347,6 +10552,103 @@
             _applyVibrancy();
         }
 
+        // A shallow bevel and rounded silhouette, bounded by the original gem
+        // dimensions so chord/slide placement and trail footprints stay valid.
+        function _initRsNotation() {
+            const bevel = ND * 0.12;
+            const hw = NW / 2 - bevel, hh = NH / 2 - bevel;
+            const radius = NH * 0.15 - bevel;
+            const shape = new T.Shape();
+            shape.moveTo(-hw + radius, -hh);
+            shape.lineTo(hw - radius, -hh);
+            shape.quadraticCurveTo(hw, -hh, hw, -hh + radius);
+            shape.lineTo(hw, hh - radius);
+            shape.quadraticCurveTo(hw, hh, hw - radius, hh);
+            shape.lineTo(-hw + radius, hh);
+            shape.quadraticCurveTo(-hw, hh, -hw, hh - radius);
+            shape.lineTo(-hw, -hh + radius);
+            shape.quadraticCurveTo(-hw, -hh, -hw + radius, -hh);
+            gRsNote = new T.ExtrudeGeometry(shape, {
+                depth: ND - 2 * bevel, bevelEnabled: true,
+                bevelSize: bevel, bevelThickness: bevel, bevelSegments: 1,
+                curveSegments: 3, steps: 1,
+            });
+            gRsNote.translate(0, 0, -(ND - 2 * bevel) / 2);
+            gRsNoteGrad = activePalette.map(() => {
+                const geo = gRsNote.clone();
+                geo.setAttribute('color', new T.BufferAttribute(new Float32Array(geo.attributes.position.count * 3), 3));
+                return geo;
+            });
+            const basic = (color, extra = {}) => new T.MeshBasicMaterial({
+                color, transparent: true, opacity: 1, depthWrite: false,
+                fog: false, toneMapped: false, ...extra,
+            });
+            mRsBody = activePalette.map(() => basic(0xffffff, { vertexColors: true }));
+            mRsRim = activePalette.map(c => basic(c));
+            mRsAccentRim = activePalette.map(c => basic(c));
+            mRsHitRim = activePalette.map(c => basic(c));
+            mRsSus = activePalette.map(c => basic(c, { depthTest: false, opacity: 0.62 }));
+            mRsSusHit = activePalette.map(c => basic(c, { depthTest: false, opacity: 0.82 }));
+            mRsSusEdge = activePalette.map(c => basic(c, { depthTest: false, opacity: 0.72 }));
+            mRsMissRim = basic(0xff5577);
+            // An outside-only, rounded falloff. There is no luminous face to
+            // bleach yellow/white notes, and no full-screen blur pass.
+            const w = 256, h = 128, pixels = new Uint8Array(w * h * 4);
+            for (let iy = 0; iy < h; iy++) {
+                for (let ix = 0; ix < w; ix++) {
+                    const px = Math.abs((ix + 0.5) / w - 0.5) * NW * 1.5;
+                    const py = Math.abs((iy + 0.5) / h - 0.5) * NH * 1.5;
+                    const r = NH * 0.17;
+                    const qx = px - (NW * 0.575 - r), qy = py - (NH * 0.575 - r);
+                    const distance = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+                    const falloff = Math.max(0, 1 - distance / (NH * 0.16));
+                    const alpha = distance > 0 ? falloff * falloff : 0;
+                    const off = (iy * w + ix) * 4;
+                    pixels[off] = pixels[off + 1] = pixels[off + 2] = 255;
+                    pixels[off + 3] = Math.round(255 * alpha);
+                }
+            }
+            rsHaloTexture = new T.DataTexture(pixels, w, h, T.RGBAFormat);
+            rsHaloTexture.magFilter = T.LinearFilter;
+            rsHaloTexture.minFilter = T.LinearMipmapLinearFilter;
+            rsHaloTexture.generateMipmaps = true;
+            rsHaloTexture.needsUpdate = true;
+            gRsNoteHalo = new T.PlaneGeometry(NW * 1.5, NH * 1.5);
+            mRsHalo = activePalette.map(c => basic(c, { map: rsHaloTexture, depthTest: false, opacity: 0 }));
+            _applyRsNotationPalette();
+        }
+
+        function _applyRsNotationPalette() {
+            if (!T || !gRsNoteGrad.length) return;
+            const signature = activePalette.join(',') + '|' + vibrancy + '|' + glowMul;
+            if (signature === rsNotationPaletteSig) return;
+            rsNotationPaletteSig = signature;
+            const col = new T.Color();
+            for (let s = 0; s < activePalette.length; s++) {
+                col.setHex(activePalette[s]);
+                const grey = col.r * 0.2126 + col.g * 0.7152 + col.b * 0.0722;
+                const saturation = 0.55 + 0.45 * vibrancy;
+                col.r = grey + (col.r - grey) * saturation;
+                col.g = grey + (col.g - grey) * saturation;
+                col.b = grey + (col.b - grey) * saturation;
+                const geo = gRsNoteGrad[s];
+                const pos = geo.attributes.position, normals = geo.attributes.normal, colors = geo.attributes.color;
+                for (let i = 0; i < pos.count; i++) {
+                    const height = Math.max(0, Math.min(1, pos.getY(i) / NH + 0.5));
+                    const shade = (0.78 + 0.22 * height) * (Math.abs(normals.getZ(i)) > 0.9 ? 1 : 0.88);
+                    colors.setXYZ(i, col.r * shade, col.g * shade, col.b * shade);
+                }
+                colors.needsUpdate = true;
+                mRsRim[s].color.copy(col).lerp(new T.Color(0xffffff), 0.30 + 0.08 * glowMul);
+                mRsAccentRim[s].color.copy(col).lerp(new T.Color(0xffffff), 0.76 + 0.08 * glowMul);
+                mRsHitRim[s].color.copy(col).lerp(new T.Color(0xffffff), 0.90);
+                mRsSus[s].color.copy(col);
+                mRsSusHit[s].color.copy(col).lerp(new T.Color(0xffffff), 0.10 * glowMul);
+                mRsSusEdge[s].color.copy(col).lerp(new T.Color(0xffffff), 0.35);
+                mRsHalo[s].color.copy(col);
+            }
+        }
+
         // Recompute the per-vertex gem-gradient colors from the active palette.
         // Built-in palettes (and unchanged slots of a custom palette) keep the
         // hand-tuned DEFAULT_GEM_GRADIENTS stops so the stock look is preserved;
@@ -10399,6 +10701,7 @@
         // anticipation loop in update(), so they read glowMul /
         // _vibrancyIdleOp / vibrancy directly each frame instead.
         function _applyVibrancy() {
+            _applyRsNotationPalette();
             const t = vibrancy;
             const idleOp     = 0.4  + 0.6  * t;  // mStr / IDLE_OP source
             // projIdleOp drives the projMeshArr ghost-frame opacity and is
@@ -10417,7 +10720,7 @@
                     // vibrancy=1 the white-wash on hit notes goes away.
                     if (!_paletteColorTmp && T) _paletteColorTmp = new T.Color();
                     if (_paletteColorTmp) {
-                        mGlow[s].color.setHex(0xffffff).lerp(_paletteColorTmp.setHex(activePalette[s]), t);
+                        mGlow[s].color.setHex(0xffffff).lerp(_paletteColorTmp.setHex(activePalette[s]), rsPlusNotation ? 1 : t);
                     }
                 }
                 if (mAccentCore[s]) {
@@ -10444,6 +10747,7 @@
             _vibrancyProjOp = projIdleOp;
         }
         function _applyGlow() {
+            _applyRsNotationPalette();
             const g = glowMul;
             for (let s = 0; s < activePalette.length; s++) {
                 if (mStr[s])  mStr[s].emissiveIntensity  = 0.002 * g;
@@ -10462,10 +10766,10 @@
             if (mWhiteOutline) mWhiteOutline.emissiveIntensity = 0.6 * g;
             if (mMissOutline)  mMissOutline.emissiveIntensity  = 1.2 * g;
             for (let s = 0; s < mHitBright.length; s++) {
-                if (mHitBright[s]) mHitBright[s].emissiveIntensity = 4.0 * g;
+                if (mHitBright[s]) mHitBright[s].emissiveIntensity = (rsPlusNotation ? 0.35 * _hitFx : 4.0) * g;
             }
             if (mSusOutline)      mSusOutline.emissiveIntensity      = 0.3 * g;
-            if (mHitSusOutline)   mHitSusOutline.emissiveIntensity   = 0.7 * g;
+            if (mHitSusOutline)   mHitSusOutline.emissiveIntensity   = (rsPlusNotation ? 0.25 * _hitFx : 0.7) * g;
             if (mTapChevron)   mTapChevron.emissiveIntensity   = 0.9 * g;
             if (mBarre)        mBarre.emissiveIntensity        = 0.9 * g;
             for (let si = 0; si < activePalette.length; si++) {
@@ -10679,6 +10983,7 @@
         }
         function _sparkBurst(x, y, z, hex, count) {
             if (!_sparkPts || count <= 0) return;
+            if (rsPlusNotation && (glowMul <= 0 || _hitFx <= 0)) return;
             const r = ((hex >> 16) & 255) / 255, g = ((hex >> 8) & 255) / 255, b = (hex & 255) / 255;
             let made = 0;
             for (let i = 0; i < _SPARK_N && made < count; i++) {
@@ -10706,7 +11011,8 @@
             }
             _sparkPts.geometry.attributes.position.needsUpdate = true;
             _sparkPts.geometry.attributes.color.needsUpdate = true;
-            _sparkPts.visible = any;
+            _sparkPts.material.opacity = rsPlusNotation ? 0.8 * glowMul * _hitFx : 0.8;
+            _sparkPts.visible = any && _sparkPts.material.opacity > 0;
         }
         // #4 Bloom: lazy-load the vendored postprocessing addons and build an
         // EffectComposer (RenderPass -> UnrealBloomPass -> OutputPass/ACES). Returns
@@ -11101,7 +11407,7 @@
             // so the per-string scratch arrays stay hot in L1 across all
             // material writes for a given string.
             const BASE_GLOW = 0.02 * glowMul;
-            const MAX_GLOW  = 3.5  * glowMul;
+            const MAX_GLOW  = (rsPlusNotation ? 0.5 : 3.5) * glowMul;
             const IDLE_OP   = _vibrancyIdleOp;
             const g = glowMul;
             const venueGemMul = _venueSceneOverride ? VENUE_GEM_EMISSIVE_MUL : 1;
@@ -11122,7 +11428,8 @@
                 // The glow slider scales it here since this assignment
                 // stomps anything _applyGlow() set statically.
                 const bg = noteState.strGlow[s] * g;
-                if (mGlow[s]) mGlow[s].emissiveIntensity = bg * venueGemMul;
+                if (mGlow[s]) mGlow[s].emissiveIntensity = rsPlusNotation ? Math.min(bg, 0.35 * g) : bg * venueGemMul;
+                if (mRsHalo[s]) mRsHalo[s].opacity = 0.35 * notationSoftGlow();
                 if (mAccentCore[s]) {
                     mAccentCore[s].emissiveIntensity =
                         (bg + noteState.accentFillBoost[s] * g) * venueGemMul;
@@ -12439,9 +12746,11 @@
                 const vg = _ndVerdictSawAlpha ? _ndVerdictMaxAlpha : 1;
                 const venueGemMul = _venueSceneOverride ? VENUE_GEM_EMISSIVE_MUL : 1;
                 for (let s = 0; s < mHitBright.length; s++) {
-                    if (mHitBright[s]) mHitBright[s].emissiveIntensity = 4.0 * glowMul * vg * venueGemMul;
+                    if (mHitBright[s]) mHitBright[s].emissiveIntensity = rsPlusNotation
+                        ? 0.35 * glowMul * _hitFx * vg : 4.0 * glowMul * vg * venueGemMul;
                 }
-                if (mHitSusOutline) mHitSusOutline.emissiveIntensity = 0.7 * glowMul * vg * venueGemMul;
+                if (mHitSusOutline) mHitSusOutline.emissiveIntensity = rsPlusNotation
+                    ? 0.25 * glowMul * _hitFx * vg : 0.7 * glowMul * vg * venueGemMul;
                 _ndVerdictMaxAlpha = 0;
                 _ndVerdictSawAlpha = false;
             }
@@ -12481,6 +12790,7 @@
             if (pGhostFretLbl) pGhostFretLbl.reset();
             _scrGhostUpcomingCount.fill(0, 0, nStr);
             pChordBox.reset(); pChordFrameFill.reset(); pChordLbl.reset(); pBarreLine.reset(); pArpBracket.reset(); pHaloBar.reset();
+            pRsChordFrame.reset();
             _imPMTechCount = _imFHTechCount = 0;
             _imPMXFillCount = _imPMXLinesCount = _imFHXFillCount = _imFHXLinesCount = 0;
             if (pPMXFill) pPMXFill.reset();
@@ -12800,7 +13110,7 @@
                     // lerps these toward FRET_WIRE_HIT_* in place, so they must
                     // be re-seeded or a flash would never fade back out.
                     _m.emissive.setHex(FRET_EMISSIVE);
-                    _m.emissiveIntensity = 1;
+                    _m.emissiveIntensity = rsPlusNotation ? 0 : 1;
                 }
             }
 
@@ -14146,13 +14456,14 @@
                         const yBot = yMinF;
                         const yTop = yMinF + height;
                         const cY = (yBot + yTop) * 0.5;
-                        const fade = Math.max(0, 1 - chDt / AHEAD);
+                        const fade = rsPlusNotation ? 1 : Math.max(0, 1 - chDt / AHEAD);
                         const chordAccent = chordNotes.some(cn => cn.ac);
 
                         // Rim thickness from full vertical span — repeat halves inner height only,
                         // not bar thickness vs first chord — see CHORD_FRAME_RIM_* tuning.
                         let ft = Math.max(CHORD_FRAME_RIM_MIN * K, fullChordBoxH * CHORD_FRAME_RIM_FRAC_H);
-                        if (chordAccent) ft *= 1.22;
+                        if (rsPlusNotation) ft *= 0.5;
+                        if (chordAccent) ft *= rsPlusNotation ? 1.85 : 1.22;
                         // Lavender frame: authored arpeggio marker only.
                         // RS ``highDensity`` is kept out — it tags gallops & repeated
                         // strums (Frantic ~2:46), not arpeggio.
@@ -14301,7 +14612,7 @@
                         }
 
                         if (chDt > 0) { // framebox only on highway, not on the fretboard
-                        const repDim = isRepeat ? 0.78 : 1;
+                        const repDim = !rsPlusNotation && isRepeat ? 0.78 : 1;
                         const edgeOp = fade * chordTailMul;
                         const thickZ = Math.max(CHORD_FRAME_RIM_Z_MIN * K, ft * CHORD_FRAME_RIM_Z_SCAL);
                         // Per-depth layer stack: chord frames, gems, technique markers,
@@ -14347,6 +14658,10 @@
                         const sideH = Math.max(ySideHi - ySideLo, ft * 1.25);
                         const sideCy = ySideLo + sideH * 0.5;
 
+                        if (rsPlusNotation) {
+                            drawRsPlusChordFrame(cx, cY, z, width, height, ftSide,
+                                compactRepeatFrame, rimHex, edgeOp);
+                        } else {
                         // Bottom bar: thin teal (like top bar) + dark corners on top.
                         {
                             const botCW = Math.min(sideH * (compactRepeatFrame ? 0.5 : 0.25), width * 0.4);
@@ -14389,13 +14704,14 @@
                             // Top bar: thin
                             drawFrameBox(cx, yTop - ftThin * 0.5, width, ftThin, chordFrameRenderOrder);
                         }
+                        }
 
                         // Accent bloom on frame edges: 4 additive shells with
                         // Gaussian-style falloff. Each border expands only in its
                         // perpendicular axis so bloom never leaves the frame boundary:
                         //   horizontal bars (top/bottom) → expand Y only
                         //   vertical bars (left/right)   → expand X only
-                        if (chordAccent && pHaloBar) {
+                        if (!rsPlusNotation && chordAccent && pHaloBar) {
                             // Bloom only on the teal (thin) parts of the frame — the dark
                             // "#163137" L-corners are deliberately left without bloom so they
                             // remain visibly dark (same appearance as non-accent chords).
@@ -14735,7 +15051,7 @@
                             if (_railLen > 0.001) {
                                 const _yA   = sY(0), _yB = sY(nStr - 1);
                                 const _yBot = Math.min(_yA, _yB) - S_GAP * 0.8;
-                                const _fadeAhead = chDt > 0 ? Math.max(0, 1 - chDt / AHEAD) : 1;
+                                const _fadeAhead = !rsPlusNotation && chDt > 0 ? Math.max(0, 1 - chDt / AHEAD) : 1;
                                 const _fadeSus   = Math.min(1, _dtSusEnd / 0.25);
                                 const _op  = _fadeAhead * _fadeSus * 0.9;
                                 const _hex = chordHighwayLavenderArpVisual ? ARPEGGIO_RIM_BLUE_HEX : CHORD_BOX_TEAL_HEX;
@@ -14751,9 +15067,10 @@
                                     rl.scale.set(_railW, 1, _railLen);
                                     // Bloom glow — wider gaussian plane, additive blending
                                     if (!_leanSus) {
+                                        if (rsPlusNotation && notationSoftGlow() <= 0) continue;
                                         const bl = pSusRailBloom.get();
                                         bl.material.color.setHex(_hex);
-                                        bl.material.opacity = _op * 0.8;
+                                        bl.material.opacity = _op * (rsPlusNotation ? notationSoftGlow() * 0.25 : 0.8);
                                         bl.position.set(_rxIn, _yBot + 0.001, _zMid);
                                         bl.scale.set(3 * K, 1, _railLen);
                                     }
@@ -14848,12 +15165,14 @@
                     const _f = _i === 0 ? _fwLo : _fwHi;
                     if (_f < 0) break;                       // nothing lit
                     if (_i === 1 && _f === _fwLo) break;     // single wire lit
-                    const _g = _fwHitGlow[_f];
+                    const _g = _fwHitGlow[_f] * (rsPlusNotation ? _hitFx : 1);
                     const _m = fretWireMats[_f];
                     if (!_m) continue;
                     _m.color.lerp(_fwHitColor, _g);
                     _m.emissive.lerp(_fwHitEmissive, _g);
-                    _m.emissiveIntensity = 1 + (FRET_WIRE_HIT_INTENSITY - 1) * _g;
+                    _m.emissiveIntensity = rsPlusNotation
+                        ? glowMul * 1.5 * _g
+                        : 1 + (FRET_WIRE_HIT_INTENSITY - 1) * _g;
                     _m.opacity += (FRET_WIRE_HIT_OP - _m.opacity) * _g;
                 }
 
@@ -14864,7 +15183,9 @@
                 // the outline reverts and idle intensity is irrelevant.
                 for (let _s = 0; _s < mRimFlash.length; _s++) {
                     const _m = mRimFlash[_s];
-                    if (_m) _m.emissiveIntensity = 1 + (FRET_WIRE_HIT_INTENSITY - 1) * _rimFlashIn[_s];
+                    if (_m) _m.emissiveIntensity = rsPlusNotation
+                        ? glowMul * _hitFx * 1.5 * _rimFlashIn[_s]
+                        : 1 + (FRET_WIRE_HIT_INTENSITY - 1) * _rimFlashIn[_s];
                 }
             }
 
@@ -15864,9 +16185,11 @@
             const anchorCX = anchor
                 ? (xFret(anchor.dMin) + xFret(anchor.dMax)) * 0.5
                 : curX;
-            const outlineWidthScale = (35 / 40) * 1.1
-                * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
-            const coreWidthScale = event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1;
+            // Match the selected style's rendered open rim. RS+ keeps the
+            // body at the ordinary width and emphasizes accents on its rim.
+            const outlineWidthScale = rsPlusNotation ? (event.accent ? 1.15 : 1.075)
+                : (35 / 40) * 1.1 * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
+            const coreWidthScale = !rsPlusNotation && event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1;
             const bodyScale = 0.96 * Math.max(coreWidthScale, outlineWidthScale);
 
             if (event.standalone || !event.chordMeta) {
@@ -16033,7 +16356,7 @@
         }
 
         function trailYieldApplyBehindLayerRecord(
-            worldZ, outline, core, face, coveringRenderOrder = Infinity,
+            worldZ, outline, core, face, coveringRenderOrder = Infinity, halo = null,
         ) {
             const outlineOrder = renderOrderForLayerAtZ(
                 worldZ, 'NOTE_OUTLINE_BEHIND_TRAIL',
@@ -16056,6 +16379,9 @@
             if (face) face.renderOrder = Number.isFinite(coveringRenderOrder)
                 ? Math.min(faceOrder, coveringRenderOrder - 0.001)
                 : faceOrder;
+            // The optional RS+ halo is part of this gem, including when a
+            // later crossing demotes it after its initial layer was chosen.
+            if (halo) halo.renderOrder = outline.renderOrder - 0.01;
         }
 
         function trailYieldApplyBehindLayers(event) {
@@ -16072,6 +16398,7 @@
                 event._trailYieldGemCore,
                 event._trailYieldGemFace,
                 coveringRenderOrder,
+                event._trailYieldGemHalo,
             );
             const extras = event._trailYieldGemExtraRecords;
             for (let i = 1; i < count; i++) {
@@ -16079,6 +16406,7 @@
                 trailYieldApplyBehindLayerRecord(
                     record.worldZ, record.outline, record.core, record.face,
                     coveringRenderOrder,
+                    record.halo,
                 );
             }
             trailYieldConstrainOwnTrailBehindGem(event);
@@ -16110,7 +16438,7 @@
             matchedEvents[ctx.matchedEventCount++] = event;
         }
 
-        function trailYieldRegisterGem(event, worldZ, outline, core, face) {
+        function trailYieldRegisterGem(event, worldZ, outline, core, face, halo = null) {
             if (!event) return;
             if (event._trailYieldGemFrame !== _trailYieldFrameId) {
                 event._trailYieldGemFrame = _trailYieldFrameId;
@@ -16125,6 +16453,7 @@
                 event._trailYieldGemOutline = outline;
                 event._trailYieldGemCore = core;
                 event._trailYieldGemFace = face;
+                event._trailYieldGemHalo = halo;
             } else {
                 // A standalone arpeggio note can duplicate a chord member.
                 // Allocate records only for that uncommon second emission.
@@ -16135,6 +16464,7 @@
                 record.outline = outline;
                 record.core = core;
                 record.face = face;
+                record.halo = halo;
             }
             if (event._trailYieldTargetFrame === _trailYieldFrameId) {
                 trailYieldApplyBehindLayers(event);
@@ -17237,8 +17567,8 @@
                 }
                 // (approachRot / PROJ_WIN_G / projFactorG / inGhostWin hoisted above)
 
-                const rimXY = n.ac ? ACCENT_RIM_XY_SCALE_MUL : 1;
-                const rimZ = n.ac ? ACCENT_RIM_Z_SCALE_MUL : 1;
+                const rimXY = !rsPlusNotation && n.ac ? ACCENT_RIM_XY_SCALE_MUL : 1;
+                const rimZ = !rsPlusNotation && n.ac ? ACCENT_RIM_Z_SCALE_MUL : 1;
 
                 // feedBack#254 — apply outline + lateral face-fill overrides from provider verdict.
                 // hit/active → green outline (mHitBright[s]) + green lateral faces;
@@ -17259,7 +17589,7 @@
                         // alpha > 1 must not over-drive emissiveIntensity.
                         const _rimA = Math.max(0, Math.min(1, _vAlpha));
                         if (_rimA > _rimFlashIn[s]) _rimFlashIn[s] = _rimA;
-                        _hitPunch = 1 + 0.22 * _hitFx * _vAlpha;   // #3 scale-punch (biggest at strike, eases)
+                        _hitPunch = 1 + (rsPlusNotation ? 0.08 : 0.22) * _hitFx * _vAlpha;   // #3 scale-punch (biggest at strike, eases)
                         if (_verdictMarks) { const _tc = _timingHex(_ndMatchedMark && _ndMatchedMark.timingState); _ndLabels.push({ x, y: y + NH * 1.7, z: noteZ + 0.02, labels: [{ text: '✓', color: '#' + _tc.toString(16).padStart(6, '0') }] }); }  // #6 + #5
                         if (_sparks && _hitFx > 0 && _vAlpha > 0.5) {
                             const _spk = s + '|' + n.f + '|' + n.t.toFixed(2);
@@ -17292,12 +17622,14 @@
                 // around a missed gem muddies the dark-core-plus-red-rim fail
                 // signal, matching the same miss-over-accent priority the
                 // gem core material applies below.
-                if (n.ac && _ndState !== 'miss' && mAccentHaloNear[s]) {
+                if (!rsPlusNotation && n.ac && _ndState !== 'miss' && mAccentHaloNear[s]) {
                     const rZ = approachRot;
                     const accentShells = _accentShellsByString[s];
                     for (let hi = 0; hi < accentShells.length; hi++) {
                         const sh = accentShells[hi];
                         const glow = pAccentHalo.get();
+                        glow.geometry = gNote;
+                        glow.renderOrder = 0;
                         glow.material = sh.mat;
                         glow.rotation.z = rZ;
                         glow.position.set(x, y + techniqueYNow, noteZ - sh.zK * K);
@@ -17324,11 +17656,19 @@
                 // priority the accent halo guard above already applies.
                 const _ndVerdict = (_ndCs && (_ndState === 'miss' || _ndGood))
                     || !!_ndMatchedMark;
-                outline.material = (n.ac && !_ndVerdict) ? mAccentOutline[s] : _ndOutline;
+                // Provider verdicts take precedence; event-only detectors still
+                // carry hit/miss feedback through their matched mark.
+                const rsMiss = _ndCs && (_ndState === 'miss' || _ndGood)
+                    ? _ndState === 'miss' : !!_ndMatchedMark && !_ndHadHitMark;
+                const rsHit = _ndCs && (_ndState === 'miss' || _ndGood)
+                    ? _ndGood : _ndHadHitMark;
+                outline.material = rsPlusNotation
+                    ? (rsMiss ? mRsMissRim : (rsHit ? mRsHitRim[s] : (n.ac ? mRsAccentRim[s] : mRsRim[s])))
+                    : ((n.ac && !_ndVerdict) ? mAccentOutline[s] : _ndOutline);
                 // outline + core share the pNote pool, so set geometry explicitly
                 // each frame (a recycled mesh may carry a gradient geometry from a
                 // prior core use). Outline always uses the plain box.
-                outline.geometry = gNote;
+                outline.geometry = rsPlusNotation ? gRsNote : gNote;
                 const trailYieldGemEvent = trailYieldTargetEvent;
                 const isTrailYieldTarget = !!(trailYieldGemEvent
                     && !trailYieldGemInFront
@@ -17345,13 +17685,25 @@
                     trailYieldGemInFront, isTrailYieldTarget,
                     'TECHNIQUE_MARKER', 'NOTE_FACE_BEHIND_TRAIL',
                 );
+                let noteHaloMesh = null;
+                if (rsPlusNotation && (n.ac || rsHit) && !rsMiss && notationSoftGlow() > 0) {
+                    const halo = pAccentHalo.get();
+                    noteHaloMesh = halo;
+                    halo.geometry = gRsNoteHalo;
+                    halo.material = mRsHalo[s];
+                    halo.renderOrder = renderOrderForLayerAtZ(noteZ, noteOutlineLayer) - 0.01;
+                    halo.position.set(x, y + techniqueYNow, noteZ - ND);
+                    halo.rotation.z = approachRot;
+                    if (n.f === 0) halo.scale.set((40 * K / NW) * openWScale, 0.1 * openSlabThickMul, 1);
+                    else halo.scale.set(1, 1, 1);
+                }
                 outline.renderOrder = renderOrderForLayerAtZ(noteZ, noteOutlineLayer);
                 outline.position.set(x, y + techniqueYNow, noteZ);
                 outline.rotation.z = approachRot;
-                const ndRim = 1.1;
+                const ndRim = rsPlusNotation ? (n.ac ? 1.15 : 1.075) : 1.1;
                 if (n.f === 0) {
                     outline.scale.set(
-                        (35 * K / NW) * ndRim * rimXY * openWScale,
+                        ((rsPlusNotation ? 40 : 35) * K / NW) * ndRim * rimXY * openWScale,
                         0.1 * ndRim * openSlabThickMul,
                         0.6 * ndRim * rimZ,
                     );
@@ -17386,9 +17738,9 @@
                 const core = pNote.get();
                 // Body always keeps the string colour. Verdict feedback is
                 // carried by the outline shell and lateral face fill.
-                core.material = n.ac ? mAccentCore[s] : mStr[s];
+                core.material = rsPlusNotation ? mRsBody[s] : (n.ac ? mAccentCore[s] : mStr[s]);
                 // Gradient gem body for strings 0..5; flat box otherwise.
-                core.geometry = (!n.ac && gNoteGrad[s]) ? gNoteGrad[s] : gNote;
+                core.geometry = rsPlusNotation ? gRsNoteGrad[s] : ((!n.ac && gNoteGrad[s]) ? gNoteGrad[s] : gNote);
                 core.renderOrder = renderOrderForLayerAtZ(noteZ, noteCoreLayer);
                 core.position.set(x, y + techniqueYNow, noteZ + 0.001);
                 core.rotation.z = approachRot;
@@ -17403,7 +17755,7 @@
                 }
                 if (_hitPunch !== 1) core.scale.multiplyScalar(_hitPunch);   // #3 hit scale-punch
                 trailYieldRegisterGem(
-                    trailYieldGemEvent, noteZ, outline, core, noteFaceMesh,
+                    trailYieldGemEvent, noteZ, outline, core, noteFaceMesh, noteHaloMesh,
                 );
                 trailOrderRegisterUpcomingGem(
                     n, dt, trailYieldGemEvent, outline, core,
@@ -17571,9 +17923,10 @@
                         // same materials as the gem border so hit/miss colours are
                         // perceptually identical across gem outline, lateral faces,
                         // and sustain trail rim.
-                        const _susOlMat = _ndState === 'miss' ? mMissOutline
-                            : _ndGood ? (mHitBright[s] ?? mHitSusOutline)
-                            : mSusOutline;
+                        const _susOlMat = rsPlusNotation
+                            ? (_ndState === 'miss' ? mRsMissRim : mRsSusEdge[s])
+                            : (_ndState === 'miss' ? mMissOutline
+                                : _ndGood ? (mHitBright[s] ?? mHitSusOutline) : mSusOutline);
                         const emitSusStrip = (xCenter, segLen, zCenter) => {
                             // Same depth-bucket scheme as chord frames, using the
                             // ordered sustain-trail layer so same-depth frames win
@@ -17607,7 +17960,7 @@
                                 trOut.position.set(xOff, y, zCenter);
                                 trOut.scale.set(tw + 0.4 * K, th + 0.4 * K, segLen);
                                 const tr = pSus.get();
-                                tr.material = _ndState ? mGlow[s] : mSus[s];
+                                tr.material = rsPlusNotation ? (_ndGood ? mRsSusHit[s] : mRsSus[s]) : (_ndState ? mGlow[s] : mSus[s]);
                                 tr.renderOrder = trailRenderOrder + 0.0005;
                                 tr.position.set(xOff, y, zCenter);
                                 tr.scale.set(tw, th, segLen);
@@ -17702,7 +18055,7 @@
                                 body.scale.set(1, 1, 1);
                                 body.rotation.set(0, 0, 0);
                                 body.position.set(0, 0, 0);
-                                body.material = _ndState ? mGlow[s] : mSus[s];
+                                body.material = rsPlusNotation ? (_ndGood ? mRsSusHit[s] : mRsSus[s]) : (_ndState ? mGlow[s] : mSus[s]);
                                 slideRibbonUpdatePair(
                                     olMesh.geometry, body.geometry, strandX,
                                     tw + 0.4 * K, th + 0.4 * K,
@@ -17768,7 +18121,9 @@
                     const neckAlpha = Math.max(0, Math.min(1, 1 - dt / GHOST_UPCOMING_WIN));
                     if (neckAlpha > 0.001) {
                         const arrowHexN = darkenHex(activePalette[s], 0.55);
-                        const arrowSmN = slideArrowMat(slideDirN > 0, arrowHexN);
+                        const arrowSmN = rsPlusNotation
+                            ? rsPlusTechniqueMat(slideDirN > 0 ? 'slideRight' : 'slideLeft')
+                            : slideArrowMat(slideDirN > 0, arrowHexN);
                         const arrowN = pTechPlane.get();
                         arrowN.material = _spriteMat2MeshMat(arrowN, arrowSmN);
                         const arrowScaleN = NH * 1.1 * LBL_MULT * _textSizeMul;
@@ -17825,7 +18180,9 @@
                     const slideDir = Math.sign(fretMid(slideSt.endFret) - fretMid(n.f)) * (_leftyCached ? -1 : 1);
                     if (slideDir !== 0) {
                         const arrowHex = darkenHex(activePalette[s], 0.55);
-                        const arrowSm = slideArrowMat(slideDir > 0, arrowHex);
+                        const arrowSm = rsPlusNotation
+                            ? rsPlusTechniqueMat(slideDir > 0 ? 'slideRight' : 'slideLeft')
+                            : slideArrowMat(slideDir > 0, arrowHex);
                         const arrow = pTechPlane.get();
                         arrow.material = _spriteMat2MeshMat(arrow, arrowSm);
                         const arrowScale = NH * 1.1 * sLbl;
@@ -17851,10 +18208,11 @@
                     // the gem (approachRot). Fixed world size so it perspective-
                     // shrinks naturally without distFactor compensation.
                     const steps = Math.max(1, Math.min(4, Math.round(_bendPeak)));
-                    const bendSm = bendChevronMat(steps, activePalette[s] || 0xffffff);
+                    const bendSm = rsPlusNotation ? rsPlusTechniqueMat('bend')
+                        : bendChevronMat(steps, activePalette[s] || 0xffffff);
                     const l = pTechPlane.get();
                     l.material = _spriteMat2MeshMat(l, bendSm);
-                    const cs = NH * 2.4;
+                    const cs = NH * (rsPlusNotation ? 1.5 : 2.4);
                     l.scale.set(cs, cs, 1);
                     const bendDir = bendVisualDirY(s);
                     l.position.set(x, y + techniqueYNow + bendDir * NH * 1.1, noteZ + K);
@@ -17862,8 +18220,34 @@
                     l.renderOrder = techniqueMarkerRenderOrder;
                     // Only an upward bend occupies the upper label stack.
                     if (bendDir > 0) yo = Math.max(yo, y + techniqueYNow + NH * 2.5);
+                    if (rsPlusNotation) {
+                        const amount = pTechPlane.get();
+                        amount.material = _spriteMat2MeshMat(amount, rsPlusTechniqueMat('bendAmount', _bendPeak));
+                        amount.material.opacity = 1;
+                        amount.scale.set(NW * 1.7, NH * 1.1, 1);
+                        amount.position.set(x + NW * 1.2,
+                            y + techniqueYNow + bendDir * NH * 1.1, noteZ + K);
+                        // The direction cue follows inversion; its amount stays
+                        // upright and in semitones even on downward bends.
+                        amount.rotation.z = 0;
+                        amount.renderOrder = techniqueMarkerRenderOrder;
+                    }
                 }
-                if (n.ho || n.po || n.tp) {
+                if (rsPlusNotation) {
+                    const faceFlags = rsPlusTechniqueFlags(n);
+                    if (faceFlags) {
+                        const face = pTechPlane.get();
+                        face.material = _spriteMat2MeshMat(face, rsPlusTechniqueMat(faceFlags));
+                        face.material.opacity = 1;
+                        // A common padded face footprint is independent of
+                        // distance, text size, verdict, and lighting. The mask
+                        // packs combinations into cells before texture creation.
+                        face.scale.set(NW * 1.12 * (n.f === 0 ? openWScale : 1), NH * 1.12, 1);
+                        face.position.set(x, y + techniqueYNow, noteZ + K);
+                        face.rotation.z = approachRot;
+                        face.renderOrder = techniqueMarkerRenderOrder;
+                    }
+                } else if (n.ho || n.po || n.tp) {
                     if (n.ho || n.po) {
                         // Hammer-on / pull-off: ▲/▼ triangle — PlaneGeometry mesh
                         // so it tilts with the gem instead of billboarding.
@@ -17885,7 +18269,7 @@
                         chevron.renderOrder = techniqueMarkerRenderOrder;
                     }
                 }
-                if (n.slp || n.plk) {
+                if (!rsPlusNotation && (n.slp || n.plk)) {
                     for (let attack = 0; attack < 2; attack++) {
                         const isPop = attack === 1;
                         if (!(isPop ? n.plk : n.slp)) continue;
@@ -17900,7 +18284,7 @@
                     }
                 }
                 // Tremolo label ('~~~') removed — trail shape already conveys it visually.
-                if (n.pm || n.mt || n.fhm) {
+                if (!rsPlusNotation && (n.pm || n.mt || n.fhm)) {
                     // Muted notes: pool-based plane with per-note Z-proportional
                     // renderOrder (techniqueMarkerRenderOrder). The previous InstancedMesh
                     // approach used a fixed renderOrder (702/700), which made PM/FH markers from
@@ -17921,7 +18305,7 @@
                 // hm / hp — PlaneGeometry overlay sized like the palm-mute X,
                 // so the symbol only appears on the front face and matches
                 // the palm-mute marker proportions.
-                if (n.hm || n.hp) {
+                if (!rsPlusNotation && (n.hm || n.hp)) {
                     const harmSprite = n.hm ? naturalHarmonicMat() : pinchHarmonicMat(activePalette[s]);
                     const harmMark = pTechPlane.get();
                     harmMark.material = _spriteMat2MeshMat(harmMark, harmSprite);
@@ -18145,7 +18529,7 @@
                 const rimSolid = arpGhostActive
                     ? 0.75 * arpGhostAlpha
                     : projFactor * 0.94;
-                proj.material.opacity = Math.min(0.96,
+                proj.material.opacity = rsPlusNotation ? 0.55 * rimSolid * bodyDim : Math.min(0.96,
                     projScale * rimSolid * (0.5 + 0.5 * glowMul) * bodyDim);
                 proj.material.emissiveIntensity = arpGhostActive
                     ? 0.35 * arpGhostAlpha * glowMul * bodyDim
@@ -18155,7 +18539,9 @@
                 proj.rotation.z = projRim;
                 proj.visible = true;
 
-                const ghostFretOk = showFretOnNote && (
+                const techniqueCoversGhost = rsPlusNotation && !effSkipBody && !slideSt
+                    && dt < 0.12 && dt > -0.12 && rsPlusTechniqueFlags(n) !== 0;
+                const ghostFretOk = showFretOnNote && !techniqueCoversGhost && (
                     arpGhostActive ||
                     fretNumberGhostScope === 'all' ||
                     (fretNumberGhostScope === 'chords' && fromChord)
@@ -18213,7 +18599,7 @@
                     const upcomingProgress = projFactor;
                     const proj = projMeshArr[s][slotIdx];
                     const rimSolid = upcomingProgress * 0.94;
-                    proj.material.opacity = Math.min(0.96,
+                    proj.material.opacity = rsPlusNotation ? 0.55 * rimSolid * bodyDim : Math.min(0.96,
                         projScale * rimSolid * (0.5 + 0.5 * glowMul) * bodyDim);
                     proj.material.emissiveIntensity = upcomingProgress * 0.55 * glowMul * bodyDim;
                     const growScale = PROJ_GROW_MIN + (1 - PROJ_GROW_MIN) * upcomingProgress;
@@ -18244,6 +18630,30 @@
          * the < > tips are placed at the actual edges of the note rather than a
          * fixed offset.
          */
+        function drawRsPlusChordFrame(cx, cy, z, width, height, rim, openTop, color, opacity) {
+            if (!pRsChordFrame || !(width > 0 && height > 0 && opacity > 0)) return;
+            const softGlow = notationSoftGlow();
+            const radius = Math.min(rim * 3, width * 0.18, height * 0.18);
+            for (let pass = 0; pass < (softGlow > 0 ? 2 : 1); pass++) {
+                const halo = pass === 1;
+                const pad = halo ? rim * 2.5 : 0;
+                const mesh = pRsChordFrame.get();
+                const u = mesh.material.uniforms;
+                u.uSize.value.set(width, height);
+                u.uRim.value = rim;
+                u.uRadius.value = radius;
+                u.uPad.value = pad;
+                u.uOpenTop.value = openTop ? 1 : 0;
+                u.uHalo.value = halo ? 1 : 0;
+                u.uOpacity.value = opacity * (halo ? softGlow * 0.3 : 1);
+                u.uColor.value.setHex(color);
+                mesh.position.set(cx, cy, z);
+                mesh.scale.set(width + 2 * pad, height + 2 * pad, 1);
+                mesh.rotation.set(0, 0, 0);
+                mesh.renderOrder = renderOrderForLayerAtZ(z, halo ? 'CHORD_EDGE_GLOW' : 'CHORD_FRAME');
+            }
+        }
+
         function drawArpBrackets(x, y, bracketDt, arpEnd, now, s, isOpen = false, openHalfW = null) {
             if (bracketDt >= AHEAD) return;
             if (bracketDt < 0 && now > arpEnd + 0.05) return;
@@ -18262,7 +18672,7 @@
             if (alpha < 0.01) return;
 
             const bracketZ = bracketDt > 0 ? Math.min(0, dZ(bracketDt)) : 0;
-            const col = activePalette[s % activePalette.length];
+            const col = rsPlusNotation ? ARPEGGIO_RIM_BLUE_HEX : activePalette[s % activePalette.length];
             const barThick = NW * 0.09;
             const bracketH = NH * 1.05;
             const capLen   = NW * 0.42;
@@ -18829,7 +19239,15 @@
             _imFHXLinesMat?.dispose?.(); _imFHXLinesMat = null;
             _imM4 = _imPos = _imSca = _imQ = _imAZ = _imColor = null;
             gHaloBar?.dispose?.(); gHaloBar = null;
+            gRsChordFrame?.dispose?.(); gRsChordFrame = null; pRsChordFrame = null;
             gArpBracket?.dispose?.(); gArpBracket = null;
+            for (const arr of [mRsBody, mRsRim, mRsAccentRim, mRsHitRim, mRsHalo, mRsSus, mRsSusHit, mRsSusEdge]) for (const m of arr) m?.dispose?.();
+            for (const g of gRsNoteGrad) g?.dispose?.();
+            gRsNote?.dispose?.(); gRsNoteHalo?.dispose?.(); rsHaloTexture?.dispose?.(); mRsMissRim?.dispose?.();
+            gRsNote = gRsNoteHalo = rsHaloTexture = mRsMissRim = null;
+            rsNotationPaletteSig = '';
+            gRsNoteGrad = []; mRsBody = []; mRsRim = []; mRsAccentRim = []; mRsHitRim = []; mRsHalo = [];
+            mRsSus = []; mRsSusHit = []; mRsSusEdge = [];
             for (const m of mStr) m?.dispose?.();
             for (const m of mGlow) m?.dispose?.();
             for (const m of mSus) m?.dispose?.();
@@ -19299,7 +19717,7 @@
                     _streakHeat += (Math.min(1, _streakHits / 16) - _streakHeat) * 0.08;   // #7 ease heat
                 }
                 {
-                    const comp = (_bloom && !_ssActive()) ? _bloomEnsure() : null;
+                    const comp = (!rsPlusNotation && _bloom && !_ssActive()) ? _bloomEnsure() : null;
                     if (comp) {
                         const bsz = canvasSize(highwayCanvas);
                         if (bsz) _bloomResize(bsz.w, bsz.h);
@@ -19487,6 +19905,13 @@
     // removed — per-string colors are set via the core "Highway String Colors"
     // UI, which drives both highways by named string.
     window.feedBackViz_highway_3d.panelControls = [
+        {
+            key: 'notationStyle', label: 'Notation style', type: 'select',
+            options: [{ id: 'current', label: 'Current' }, { id: 'rsplus', label: 'RS+ inspired' }],
+            default: BG_DEFAULTS.notationStyle,
+        },
+        { key: 'glow', label: 'Highway glow', type: 'range', min: 0, max: 1, step: 0.05, default: BG_DEFAULTS.glow },
+        { key: 'bloom', label: 'Soft glow / bloom', type: 'toggle', default: BG_DEFAULTS.bloom },
         {
             key: 'cameraSmoothing',
             label: 'Camera smoothing (X-pan)',

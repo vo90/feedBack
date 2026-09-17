@@ -12,12 +12,13 @@ function extract(name) {
 }
 function marker(string, inverted, stringCount = 6) {
     const start = src.indexOf('                if (_bendPeak > 0) {');
-    const end = src.indexOf('\n                if (n.ho || n.po || n.tp)', start);
+    const end = src.indexOf('\n                if (rsPlusNotation) {', start);
     assert.ok(start >= 0 && end > start);
     const mesh = { material: {}, scale: { set() {} }, position: { set(x,y,z) { this.y=y; } }, rotation: {} };
     const fn = new Function('s', '_invertedCached', 'nStr', 'mesh', `
         const validString = s => Number.isInteger(s) && s >= 0 && s < nStr;
         ${extract('bendVisualDirY')}
+        const rsPlusNotation=false;
         const _bendPeak=2, NH=1, K=.1, x=5, y=10, techniqueYNow=.5, noteZ=-1, approachRot=.2;
         const activePalette=Array(nStr).fill(0xffffff), pTechPlane={get:()=>mesh};
         const bendChevronMat=()=>({}), _spriteMat2MeshMat=()=>({}), techniqueMarkerRenderOrder=20;

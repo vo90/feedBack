@@ -12,12 +12,13 @@ function listenerHarness() {
         let loads = 0, rebuilds = 0, _bgListener;
         const _bgLoadSettings = () => loads++;
         const _bgRebuild = () => rebuilds++;
+        const _applyVibrancy = () => {}, _applyGlow = () => {};
         ${src.slice(start, end)}
         return { emit(key) { _bgListener(key); return { loads, rebuilds }; } };
     `)();
 }
 
-for (const key of ['hitFx', 'sparks', 'cinematic', 'verdictMarks', 'timingFx',
+for (const key of ['notationStyle', 'hitFx', 'sparks', 'cinematic', 'verdictMarks', 'timingFx',
     'streakFx', 'bloom', 'fpsVisible', 'fretDividersVisible', 'chordDiagramVisible']) {
     test(`${key} immediately refreshes live state without rebuilding the background`, () => {
         const h = listenerHarness();

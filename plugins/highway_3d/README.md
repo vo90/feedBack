@@ -29,6 +29,27 @@ A 3D note highway visualization for [FeedBack](https://github.com/got-feedback/f
 
 Most of the visual controls (background style, intensity, audio reactivity, color palette) live on FeedBack's **Settings** screen under the *3D Highway* section.
 
+### Notation style
+
+Choose **Current** to retain the existing appearance, or **RS+ inspired** for rounded, solid note faces and sharp technique symbols. Current remains the default. Changing style keeps your saved string colors, background, and effects settings.
+
+In RS+ inspired, ordinary and accented notes have the same full body opacity throughout their approach. Accents use a stronger rim; each chord member follows its own chart accent flag. Repeated chords use shorter frames, while chords with techniques that need individual notes retain those notes. Hollow neck previews and purple arpeggio guidance remain visually separate from playable attacks.
+
+| Control | RS+ inspired behavior |
+|---|---|
+| Vibrancy | Changes color saturation; note faces remain opaque. |
+| Glow | Scales decorative highway glow. Zero keeps crisp notes, accent rims, technique symbols, and guidance visible. |
+| Soft glow | Adds restrained outer halos without blurring note faces. Requires Glow above zero and works in split-screen. |
+| Hit feedback intensity | Controls strike animation and flashes; zero retains the basic verdict cue. |
+| Text size | Scales text labels; face symbols keep their fit inside notes. |
+| Preview visibility | Controls the neck guidance separately from the incoming notes. |
+
+Current retains its existing Glow behavior and full-scene **Glow bloom**, which is disabled in split-screen. RS+ inspired uses local edge halos instead. Background decorations and 2D score effects have separate controls.
+
+The split-screen panel's **3D settings** expose notation style, Glow, and Soft glow / bloom independently for each panel. Global settings apply wherever no panel override is saved.
+
+The note and technique vocabulary follows [Ubisoft's RS+ notehead guide](https://www.ubisoft.com/en-gb/game/rocksmith/plus/news-updates/11LCT7xGpOMZrwjrRMbZbS/rocksmith-notehead-guide). This is an original visual approximation with deliberate readability choices, including no approach-distance dimming of playable notes. It does not change chart data, timing, scoring, or technique paths. Bend amount labels use chart semitones, including fractional values.
+
 ## Contributing / development
 
 For maintainers and AI assistants working on the codebase, see [`CLAUDE.md`](CLAUDE.md) — it's a navigation guide that maps every visual element to where it lives in `screen.js`, plus the gotchas worth knowing before tweaking.
