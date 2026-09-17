@@ -63,6 +63,12 @@ class Note:
     # finger); spelled-out `hand` on the wire because `rh` is taken.
     # Default-omitted on the wire; older readers ignore it.
     hand: str | None = None
+    # Targetless slide-outs retain direction without manufacturing a fret.
+    # Mark intervals are seconds relative to this attack, identifying the
+    # authored segment, not a measured slide speed. A present array (including
+    # []) is authoritative over the older direction-only scalar.
+    slide_out: str | None = None
+    slide_out_marks: list | None = None
 
 
 @dataclass
@@ -289,6 +295,10 @@ def note_to_wire(n: Note) -> dict:
     # directly-constructed Note can't put junk ('LH', True, …) on the wire.
     if n.hand in ("lh", "rh"):
         out["hand"] = n.hand
+    if n.slide_out in ("up", "down"):
+        out["slide_out"] = n.slide_out
+    if n.slide_out_marks is not None:
+        out["slide_out_marks"] = _sanitize_slide_out_marks(n.slide_out_marks, n.sustain)
     return out
 
 
@@ -515,6 +525,35 @@ def note_pitch_midi(arr: "Arrangement", note: "Note") -> int | None:
                            arr.tuning or [], note.string, note.fret)
 
 
+def _sanitize_slide_out_marks(raw, sustain: float) -> list:
+    """Validate source segment bounds; never infer timing from a scalar.
+
+    Reject malformed/overlapping/out-of-order marks individually. The empty
+    result remains present, preventing legacy scalar fallback after bad data.
+    Tolerate at most half a wire millisecond beyond the rounded sustain end.
+    """
+    if not isinstance(raw, list) or not math.isfinite(sustain) or sustain < 0:
+        return []
+    out = []
+    previous_end = 0.0
+    for mark in raw:
+        if not isinstance(mark, dict) or mark.get("direction") not in ("up", "down"):
+            continue
+        start, end = mark.get("start"), mark.get("end")
+        if (not isinstance(start, (int, float)) or isinstance(start, bool)
+                or not isinstance(end, (int, float)) or isinstance(end, bool)
+                or not math.isfinite(start) or not math.isfinite(end)
+                or start < previous_end or not 0 <= start < end
+                or end > sustain + 0.000501):
+            continue
+        # Preserve accepted authored precision. The display clips its geometry
+        # to sustain; transport must not rewrite a source boundary because the
+        # older wire sustain field rounded it to milliseconds.
+        out.append({"direction": mark["direction"], "start": float(start), "end": float(end)})
+        previous_end = end
+    return out
+
+
 def note_from_wire(d: dict, time: float | None = None) -> Note:
     return Note(
         time=float(d.get("t", time if time is not None else 0.0)),
@@ -553,6 +592,9 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         # (junk, wrong case, bools) falls back to unassigned rather than
         # poisoning downstream hand-split/practice logic.
         hand=d.get("hand") if d.get("hand") in ("lh", "rh") else None,
+        slide_out=d.get("slide_out") if d.get("slide_out") in ("up", "down") else None,
+        slide_out_marks=(_sanitize_slide_out_marks(d["slide_out_marks"], float(d.get("sus", 0)))
+                         if "slide_out_marks" in d else None),
     )
 
 

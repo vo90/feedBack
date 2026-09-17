@@ -63,6 +63,56 @@ export function strumGroupBuckets(items) {
     return order.map(k => byKey.get(k)).filter(g => g.length >= 2);
 }
 
+// Same source contract as the 3D highway: array presence is authoritative;
+// bounds locate a written segment, never an exact pitch/speed instruction.
+export function slideOutMarks2D(n) {
+    if (!Array.isArray(n?.slide_out_marks) || !Number.isFinite(n.sus) || n.sus <= 0) return [];
+    const out = [];
+    let end = 0;
+    for (const m of n.slide_out_marks) {
+        if (!m || !['up', 'down'].includes(m.direction)
+            || !Number.isFinite(m.start) || !Number.isFinite(m.end)
+            || m.start < end || m.start < 0 || m.end <= m.start || m.end > n.sus + 0.000501) continue;
+        end = Math.min(m.end, n.sus);
+        if (end > m.start) out.push({ direction: m.direction, start: m.start, end });
+    }
+    return out;
+}
+
+function drawSlideOutRibbon2D(hwState, W, H, n, onset = n.t) {
+    if (!Array.isArray(n.slide_out_marks) || !(n.f > 0) || n.sl >= 0 || n.slu >= 0
+        || onset + n.sus < hwState.currentTime || onset > hwState.currentTime + VISIBLE_SECONDS) return;
+    const c = hwState.ctx;
+    for (const mark of slideOutMarks2D(n)) {
+        const start = onset + Math.max(mark.start, mark.end - 0.22);
+        const end = onset + mark.end;
+        if (end <= hwState.currentTime || start > hwState.currentTime + VISIBLE_SECONDS) continue;
+        c.save();
+        c.strokeStyle = hwState.STRING_COLORS[n.s] || '#aaa';
+        c.lineCap = 'butt';
+        let previous = null;
+        for (let i = 0; i <= 16; i++) {
+            const u = i / 16;
+            const t = start + (end - start) * u;
+            const dt = t - hwState.currentTime;
+            const p = project(Math.max(0, dt));
+            if (!p || dt > VISIBLE_SECONDS) { previous = null; continue; }
+            const ease = u * u * (3 - 2 * u);
+            const localWidth = Math.abs(fretX(hwState, n.f, p.scale, W) - fretX(hwState, n.f - 1, p.scale, W));
+            const x = fretX(hwState, n.f, p.scale, W)
+                + (mark.direction === 'up' ? 1 : -1) * localWidth * 0.8 * ease;
+            const y = p.y * H;
+            if (previous && dt >= 0) {
+                c.globalAlpha = 1 - ease;
+                c.lineWidth = Math.max(2, 6 * p.scale) * (1 - 0.28 * ease);
+                c.beginPath(); c.moveTo(previous.x, previous.y); c.lineTo(x, y); c.stroke();
+            }
+            previous = { x, y };
+        }
+        c.restore();
+    }
+}
+
 export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     // ns (feedBack#254): normalized judgment state from _noteState,
     // or null/undefined. `lit` means render the gem in the bright
@@ -347,6 +397,18 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
             hwState.ctx.stroke();
         }
     }
+    // Older scalar-only files carry direction but no reliable segment time.
+    // Use a compact on-gem slash, never a timed trail or target fret.
+    if (slide < 0 && slu < 0 && opts?.slide_out_marks === undefined
+        && (opts?.slide_out === 'up' || opts?.slide_out === 'down')) {
+        const direction = opts.slide_out === 'up' ? 1 : -1;
+        hwState.ctx.strokeStyle = '#fff';
+        hwState.ctx.lineWidth = Math.max(2, sz / 10);
+        hwState.ctx.beginPath();
+        hwState.ctx.moveTo(x - sz * 0.25, y + direction * sz * 0.25);
+        hwState.ctx.lineTo(x + sz * 0.25, y - direction * sz * 0.25);
+        hwState.ctx.stroke();
+    }
 
     // H/P/T label above note
     if (hammerOn || pullOff || tap) {
@@ -494,6 +556,12 @@ export function drawSustains(hwState, W, H) {
             hwState.ctx.lineTo(x1 - sw1, y1);
             hwState.ctx.fill();
         }
+        drawSlideOutRibbon2D(hwState, W, H, n);
+    }
+    const chords = hwState._xfChords !== null ? hwState._xfChords
+        : hwState._filteredChords !== null ? hwState._filteredChords : hwState.chords;
+    for (const chord of chords || []) for (const n of chord.notes || []) {
+        drawSlideOutRibbon2D(hwState, W, H, n, chord.t);
     }
 }
 
@@ -1107,6 +1175,8 @@ export function bsearchChords(arr, time) {
 export function _noteHasTechniqueFlags(n) {
     if (n.bn || n.ho || n.po || n.tp || n.pm || n.vb || n.tr || n.ac || n.hm || n.hp || n.mt || n.fhm) return true;
     if (typeof n.sl === 'number' && n.sl >= 0) return true;
+    if ((Array.isArray(n.slide_out_marks) && slideOutMarks2D(n).length > 0) || (n.slide_out_marks === undefined
+        && (n.slide_out === 'up' || n.slide_out === 'down'))) return true;
     return false;
 }
 
