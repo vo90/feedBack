@@ -63,6 +63,10 @@ class Note:
     # finger); spelled-out `hand` on the wire because `rh` is taken.
     # Default-omitted on the wire; older readers ignore it.
     hand: str | None = None
+    # Pitched ghost note (quiet/parenthesized), distinct from dead-note mute.
+    ghost: bool = False
+    # Targetless slide gesture. Never manufacture a destination fret for it.
+    slide_out: str | None = None
 
 
 @dataclass
@@ -256,6 +260,10 @@ def note_to_wire(n: Note) -> dict:
     }
     if n.link_next:
         out["ln"] = True
+    if n.ghost:
+        out["ghost"] = True
+    if n.slide_out in ("up", "down"):
+        out["slide_out"] = n.slide_out
     if n.fret_hand_mute:
         out["fhm"] = True
     if n.pluck:
@@ -523,6 +531,8 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         sustain=float(d.get("sus", 0.0)),
         slide_to=int(d.get("sl", -1)),
         slide_unpitch_to=int(d.get("slu", -1)),
+        ghost=d.get("ghost") is True,
+        slide_out=d.get("slide_out") if d.get("slide_out") in ("up", "down") else None,
         bend=float(d.get("bn", 0.0)),
         bend_intent=_wire_int_optional(d.get("bt"), 0),
         bend_values=_sanitize_bend_curve(d.get("bnv")),
@@ -754,7 +764,8 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
 
     Path-type resolution (first match wins):
     1. XML <arrangementProperties> flags (path_lead / path_rhythm / path_bass)
-    2. Name-based fallback when ALL three flags are zero — keeps sloppak /
+    2. Explicit manifest role (lead/rhythm/bass), independent of display name.
+    3. Name-based fallback when ALL three flags are zero — keeps sloppak /
        GP-imported sources and custom song with unset flags working by mapping
        "Lead" / "Rhythm" / "Bass" / "Combo" → the matching path. Anything
        outside that set (Vocals, ShowLights, …) → None.
@@ -803,6 +814,11 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
             return "path_rhythm", bool(a.bonus_arr)
         if a.path_bass:
             return "path_bass", bool(a.bonus_arr)
+        role = str(a.type or "").strip().lower()
+        if role in ("lead", "rhythm", "bass"):
+            return "path_" + role, bool(a.bonus_arr)
+        if role in ("piano", "keys", "drums", "vocals"):
+            return None, bool(a.bonus_arr)
         name = a.name if isinstance(a.name, str) else ""
         entry = _NAME_FALLBACK.get(name.strip().lower())
         if entry is None:

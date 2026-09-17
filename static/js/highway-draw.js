@@ -26,6 +26,7 @@ import {
 import {
     _shimmerNoise, bnvNormalizedPoints, chordHarmonyLabels, project, roundRect,
     teachingDegreeLabel, teachingFingerLabel,
+    bendToneLabel, noteFretLabel, slideOutLabel,
 } from './highway-geometry.js';
 import {
     BG, CHAIN_GAP_THRESHOLD, CHAIN_RENDER_FULL_MAX, CHORD_FRAME_FRETS, MUTE_BOX_BAR,
@@ -118,7 +119,11 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
         hwState.ctx.font = `bold ${fontSize}px sans-serif`;
         hwState.ctx.textAlign = 'center';
         hwState.ctx.textBaseline = 'middle';
-        fillTextReadable(hwState, '0', W/2, y);
+        fillTextReadable(hwState, noteFretLabel({ ...opts, f: 0 }), W/2, y);
+        const openSlideLabel = slideOutLabel(opts || {});
+        if (openSlideLabel && sz >= 14) {
+            fillTextReadable(hwState, openSlideLabel, W/2 + hw * 0.65, y - barH - 4);
+        }
 
         // Technique labels on open strings — PM, H/P/T, tremolo, and
         // accent markers are all meaningful on fret 0. Bend and slide
@@ -225,7 +230,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     hwState.ctx.font = `bold ${fontSize}px sans-serif`;
     hwState.ctx.textAlign = 'center';
     hwState.ctx.textBaseline = 'middle';
-    fillTextReadable(hwState, String(fret), x, y);
+    fillTextReadable(hwState, noteFretLabel({ ...opts, f: fret }), x, y);
 
     // Bend notation
     if (bend && bend > 0 && sz >= 12) {
@@ -282,13 +287,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
             labelTopY = tipY;
         }
 
-        // Bend label: peak magnitude — "full", "1/2", "1 1/2", "2"
-        let label;
-        if (bend === 0.5) label = '½';
-        else if (bend === 1) label = 'full';
-        else if (bend === 1.5) label = '1½';
-        else if (bend === 2) label = '2';
-        else label = bend.toFixed(1);
+        const label = bendToneLabel(bend);
 
         hwState.ctx.fillStyle = '#fff';
         hwState.ctx.font = `bold ${Math.max(9, sz * 0.28) | 0}px sans-serif`;
@@ -298,6 +297,12 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     }
 
     if (sz < 14) return;  // Skip small technique labels
+    const slideGesture = slideOutLabel(opts || {});
+    if (slideGesture) {
+        hwState.ctx.font = `bold ${Math.max(9, sz * 0.25) | 0}px sans-serif`;
+        hwState.ctx.textAlign = 'center';
+        fillTextReadable(hwState, slideGesture, x, y + half + sz * 0.5);
+    }
 
     // Teaching marks (§6.2.2) — display only, never grading. The fret-hand
     // finger (fg) renders by default as a small numeral hugging the gem's
@@ -1105,6 +1110,7 @@ export function bsearchChords(arr, time) {
 // bypass drawNote and so must fall back to the full path whenever a
 // technique flag is present, otherwise authored cues vanish silently.
 export function _noteHasTechniqueFlags(n) {
+    if (n.ghost === true || n.slide_out === 'up' || n.slide_out === 'down') return true;
     if (n.bn || n.ho || n.po || n.tp || n.pm || n.vb || n.tr || n.ac || n.hm || n.hp || n.mt || n.fhm) return true;
     if (typeof n.sl === 'number' && n.sl >= 0) return true;
     return false;

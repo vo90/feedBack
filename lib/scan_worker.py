@@ -117,7 +117,7 @@ def _extract_meta_sloppak(path: Path) -> dict:
     arrs = meta.get("arrangements") or []
     if arrs:
         from song import Arrangement as _ArrCls
-        _arr_objs = [_ArrCls(name=a.get("name", "")) for a in arrs]
+        _arr_objs = [_ArrCls(name=a.get("name", ""), type=a.get("type", "")) for a in arrs]
         _smart = compute_smart_names(_arr_objs)
         for a, sn in zip(arrs, _smart):
             a["smart_name"] = sn

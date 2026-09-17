@@ -3762,8 +3762,9 @@ class MetadataDB:
             else:
                 placeholders = ",".join(["?"] * len(arr_has))
                 where += (f" AND EXISTS (SELECT 1 FROM json_each({alias}.arrangements) "
-                          f"WHERE json_extract(value, '$.name') IN ({placeholders}))")
-                params += arr_has
+                          f"WHERE json_extract(value, '$.name') IN ({placeholders}) "
+                          f"OR lower(json_extract(value, '$.type')) IN ({placeholders}))")
+                params += arr_has + [a.lower() for a in arr_has]
         arr_lacks = [a for a in (arrangements_lacks or []) if a in self._ALLOWED_ARRANGEMENT_NAMES]
         if arr_lacks and naming_mode == "smart":
             arr_lacks = list(dict.fromkeys("Lead" if a == "Combo" else a for a in arr_lacks))
@@ -3808,8 +3809,9 @@ class MetadataDB:
             else:
                 placeholders = ",".join(["?"] * len(arr_lacks))
                 where += (f" AND NOT EXISTS (SELECT 1 FROM json_each({alias}.arrangements) "
-                          f"WHERE json_extract(value, '$.name') IN ({placeholders}))")
-                params += arr_lacks
+                          f"WHERE json_extract(value, '$.name') IN ({placeholders}) "
+                          f"OR lower(json_extract(value, '$.type')) IN ({placeholders}))")
+                params += arr_lacks + [a.lower() for a in arr_lacks]
         stems_h = [s for s in (stems_has or []) if s in self._ALLOWED_STEM_IDS]
         if stems_h:
             placeholders = ",".join(["?"] * len(stems_h))

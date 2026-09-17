@@ -30,6 +30,47 @@ export function project(tOffset) {
     return { y, scale };
 }
 
+export function bendToneLabel(semitones) {
+    // Wire pitch is semitones; conventional tab labels count whole tones.
+    if (!Number.isFinite(semitones) || semitones <= 0) return '';
+    const labels = { 0.5: '¼', 1: '½', 1.5: '¾', 2: 'full', 3: '1½', 4: '2' };
+    return labels[semitones] || String(Math.round(semitones * 50) / 100);
+}
+
+export function noteFretLabel(note) {
+    const text = String(note.f);
+    return note.ghost === true ? '(' + text + ')' : text;
+}
+
+export function slideOutLabel(note) {
+    return note.slide_out === 'up' ? 'slide ↑' : note.slide_out === 'down' ? 'slide ↓' : '';
+}
+
+export function maxNoteFretInWindow(notes, chords, templates, time, ahead) {
+    // A visual fallback only. It does not invent fretting-hand anchors or a
+    // destination pitch for a targetless slide. Include held notes and chords.
+    let max = 0;
+    const collect = (n, onset) => {
+        if (onset + (Number(n.sus) || 0) < time - 2) return;
+        for (const f of [n.f, n.sl, n.slu]) {
+            if (Number.isFinite(f) && f > max) max = f;
+        }
+    };
+    for (const n of notes || []) {
+        if (n.t > time + ahead) break;
+        collect(n, n.t);
+    }
+    for (const c of chords || []) {
+        if (c.t > time + ahead) break;
+        if (Array.isArray(c.notes) && c.notes.length) {
+            for (const n of c.notes) collect(n, c.t);
+        } else if (c.t >= time - 2) {
+            for (const f of templates?.[c.id]?.frets || []) collect({ f }, c.t);
+        }
+    }
+    return max;
+}
+
 export function bnvNormalizedPoints(bnv, sus) {
     if (!Array.isArray(bnv) || bnv.length === 0) return [];
     // Map each point's time over the NOTE's span [0, sus] so it sits at its

@@ -12417,6 +12417,8 @@
                             // so Object.assign leaves a stale `true` from a previous
                             // muted chord note untouched. Reset it explicitly here.
                             _scrChordNote.fhm = cn.fhm || false;
+                            _scrChordNote.ghost = cn.ghost === true;
+                            _scrChordNote.slide_out = cn.slide_out === 'up' || cn.slide_out === 'down' ? cn.slide_out : undefined;
                             // Same stale-scratch hazard for the bend shape:
                             // `bnv`/`bt` are omit-when-default on the wire, so a
                             // chord note without them would otherwise inherit the
@@ -12435,7 +12437,7 @@
                                 now,
                                 cn.f === 0 ? chordCX : undefined,
                                 skipLabel,
-                                (isRepeat && !chordLinksSlide) || suppressSynthChord,
+                                (isRepeat && !chordLinksSlide && !cn.ghost && !cn.slide_out) || suppressSynthChord,
                                 chordTailHoldS,
                                 cn.f === 0 ? laneWForOpenStrings : undefined,
                                 true,
@@ -14072,6 +14074,14 @@
         // Teaching marks (§6.2.2) — display only, never grading. Pure label
         // helpers, mirroring static/highway.js so the two highways agree;
         // node-tested via tests/js/highway_teaching_marks.test.js.
+        function sourceTechniqueLabel(n) {
+            const parts = [];
+            if (n.ghost === true) parts.push('(' + n.f + ')');
+            if (n.slide_out === 'up') parts.push('slide ↑');
+            if (n.slide_out === 'down') parts.push('slide ↓');
+            return parts.join(' · ');
+        }
+
         function teachingFingerLabel(fg) {
             // fret-hand finger: '' when unset/out of range; 0 -> 'T' (thumb),
             // 1..4 -> '1'..'4'.
@@ -15025,6 +15035,18 @@
                     }
                 }
                 // Tremolo label ('~~~') removed — trail shape already conveys it visually.
+                // A ghost is still pitched. A slide-out has direction but no
+                // destination; show its gesture without bending the pitch rail.
+                const sourceLabel = sourceTechniqueLabel(n);
+                if (sourceLabel) {
+                    const mark = pTeachMarkLbl.get();
+                    _setLabelMap(mark, txtMat(sourceLabel, '#ffffff', false, 'sourceTechnique'));
+                    const markerSize = NH * 3.5;
+                    mark.scale.set(markerSize, markerSize, 1);
+                    mark.position.set(x, yo + NH * 1.4, noteZ + K);
+                    mark.renderOrder = techniqueMarkerRenderOrder;
+                    mark.material.opacity = 1;
+                }
                 if (n.pm || n.mt || n.fhm) {
                     // Muted notes: pool-based plane with per-note Z-proportional
                     // renderOrder (techniqueMarkerRenderOrder). The previous InstancedMesh

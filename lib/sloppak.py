@@ -1488,8 +1488,12 @@ def _tuning_for_meta(arrangements_manifest: list[dict]) -> list[int]:
     """Best-effort guitar-first tuning for the library index."""
     for entry in arrangements_manifest:
         name = str(entry.get("name", "")).lower()
+        role = str(entry.get("type", "")).lower()
         tun = entry.get("tuning")
-        if tun and isinstance(tun, list) and name in ("lead", "rhythm", "combo"):
+        if tun and isinstance(tun, list) and (
+            role in ("lead", "rhythm", "guitar", "combo")
+            or not role and name in ("lead", "rhythm", "combo")
+        ):
             return list(tun)
     # Fallback: first arrangement with a tuning
     for entry in arrangements_manifest:
@@ -1509,8 +1513,16 @@ def _role_tuning_for_meta(arrangements_manifest: list[dict], role: str) -> list[
     Exact name first, then a looser containment pass so an alt/bonus chart
     ("Bass 2", "Alt Rhythm") still beats pretending the part is in the lead
     guitar's tuning."""
+    # Explicit type wins even when the creator names the bassist or guitar.
+    for entry in arrangements_manifest:
+        tun = entry.get("tuning")
+        if str(entry.get("type", "")).lower() == role and isinstance(tun, list) and tun:
+            return list(tun)
     for match_exact in (True, False):
         for entry in arrangements_manifest:
+            authored_type = str(entry.get("type", "")).lower()
+            if authored_type and (role == "bass" or authored_type not in ("guitar", "combo")):
+                continue
             name = str(entry.get("name", "")).lower()
             tun = entry.get("tuning")
             if not (tun and isinstance(tun, list)):
@@ -1531,14 +1543,14 @@ def extract_meta(path: Path) -> dict:
             {
                 "index": i,
                 "name": str(entry.get("name", entry.get("id", f"Arr{i}"))),
+                "type": str(entry.get("type", "")),
                 "notes": 0,  # unknown without loading; fine for the index
             }
         )
     # Sort like archive path: Lead > Combo > Rhythm > Bass
     priority = {"Lead": 0, "Combo": 1, "Rhythm": 2, "Bass": 3}
     arrangements.sort(key=lambda a: priority.get(a["name"], 99))
-    for i, a in enumerate(arrangements):
-        a["index"] = i
+    # Index remains the manifest/load_song index, even if display order differs.
 
     has_lyrics = bool(manifest.get("lyrics"))
     tuning_offsets = _tuning_for_meta(arr_list)
