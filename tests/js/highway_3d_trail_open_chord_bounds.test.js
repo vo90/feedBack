@@ -67,3 +67,18 @@ test('covered open chord footprints retain the authored anchor wires', () => {
         chordMeta: { size: 2, minF: 3, maxF: 7 },
     }, anchor), [21, 69]);
 });
+
+test('open ghost footprints enclose the wider core parentheses, including accents', () => {
+    const wideAnchor = [{ time: 0, fret: 3, width: 10 }];
+    for (const accent of [false, true]) {
+        const bounds = resolver({
+            t: 1, standalone: false, accent, ghost: true,
+            chordMeta: {size: 2, minF: 3, maxF: 7},
+        }, wideAnchor);
+        const actualCoreWidth = 100 * 0.96 * 1.48 * (accent ? 1.2 : 1);
+        assert.ok(Math.abs((bounds[1] - bounds[0]) - actualCoreWidth) < 1e-9);
+        assert.equal((bounds[0] + bounds[1]) * 0.5, 70);
+    }
+    const standalone = resolver({t: 1, standalone: true, ghost: true}, []);
+    assert.ok(Math.abs(standalone[1] - standalone[0] - 40 * 0.96 * 1.48) < 1e-9);
+});

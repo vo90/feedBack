@@ -15936,7 +15936,8 @@
             const outlineWidthScale = (35 / 40) * 1.1
                 * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1)
                 * (event.ghost === true ? 1.48 : 1);
-            const coreWidthScale = event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1;
+            const coreWidthScale = (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1)
+                * (event.ghost === true ? 1.48 : 1);
             const bodyScale = 0.96 * Math.max(coreWidthScale, outlineWidthScale);
 
             if (event.standalone || !event.chordMeta) {
@@ -16433,20 +16434,37 @@
             }
             _trailOrderGemCount++;
 
-            // The approach rotation is already present on the pooled mesh.
-            // Resolve its XY axis-aligned footprint without Box3/Vector churn.
-            // Ghost parentheses extend the physical mesh. Include their real
-            // bounds in the same rotated footprint used for ordinary gems.
-            const width = NW * outline.scale.x * (n.ghost === true ? 1.48 : 1);
-            const height = NH * outline.scale.y * (n.ghost === true ? 1.16 : 1);
+            // Union both actual meshes without Box3/Vector churn: an open
+            // core is wider than its outline, and a hit punch can also expand
+            // the core. Both meshes carry the ghost-parenthesis geometry.
+            const width = NW * (n.ghost === true ? 1.48 : 1);
+            const height = NH * (n.ghost === true ? 1.16 : 1);
             const cos = Math.abs(Math.cos(outline.rotation.z));
             const sin = Math.abs(Math.sin(outline.rotation.z));
-            gem.x = outline.position.x;
-            gem.y = outline.position.y;
-            gem.z = outline.position.z;
-            gem.zHalf = ND * outline.scale.z * 0.5;
-            gem.width = width * cos + height * sin;
-            gem.height = width * sin + height * cos;
+            const coreCos = Math.abs(Math.cos(core.rotation.z));
+            const coreSin = Math.abs(Math.sin(core.rotation.z));
+            const outlineHalfX = (width * Math.abs(outline.scale.x) * cos
+                + height * Math.abs(outline.scale.y) * sin) * 0.5;
+            const outlineHalfY = (width * Math.abs(outline.scale.x) * sin
+                + height * Math.abs(outline.scale.y) * cos) * 0.5;
+            const coreHalfX = (width * Math.abs(core.scale.x) * coreCos
+                + height * Math.abs(core.scale.y) * coreSin) * 0.5;
+            const coreHalfY = (width * Math.abs(core.scale.x) * coreSin
+                + height * Math.abs(core.scale.y) * coreCos) * 0.5;
+            const minX = Math.min(outline.position.x - outlineHalfX, core.position.x - coreHalfX);
+            const maxX = Math.max(outline.position.x + outlineHalfX, core.position.x + coreHalfX);
+            const minY = Math.min(outline.position.y - outlineHalfY, core.position.y - coreHalfY);
+            const maxY = Math.max(outline.position.y + outlineHalfY, core.position.y + coreHalfY);
+            const minZ = Math.min(outline.position.z - ND * Math.abs(outline.scale.z) * 0.5,
+                core.position.z - ND * Math.abs(core.scale.z) * 0.5);
+            const maxZ = Math.max(outline.position.z + ND * Math.abs(outline.scale.z) * 0.5,
+                core.position.z + ND * Math.abs(core.scale.z) * 0.5);
+            gem.x = (minX + maxX) * 0.5;
+            gem.y = (minY + maxY) * 0.5;
+            gem.z = (minZ + maxZ) * 0.5;
+            gem.zHalf = (maxZ - minZ) * 0.5;
+            gem.width = maxX - minX;
+            gem.height = maxY - minY;
             gem.string = n.s;
             gem.event = event;
             gem.outline = outline;

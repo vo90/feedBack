@@ -135,8 +135,8 @@ test('rotated ghost bounds enter the actual upcoming-gem ordering index', () => 
         let _trailOrderGemCount = 0;
         const trailOrderDepthBucket = () => 0;
         ${extract(screen, 'trailOrderRegisterUpcomingGem')}
-        return (n, mesh) => {
-            trailOrderRegisterUpcomingGem(n, 1, {}, mesh, {});
+        return (n, mesh, core = mesh) => {
+            trailOrderRegisterUpcomingGem(n, 1, {}, mesh, core);
             return _trailOrderGems[_trailOrderGemCount - 1];
         };`)();
     const mesh = {scale: {x: 1, y: 1, z: 1}, position: {x: 2, y: 3, z: -5}, rotation: {z: 0}};
@@ -147,7 +147,25 @@ test('rotated ghost bounds enter the actual upcoming-gem ordering index', () => 
     record = register({s: 2, ghost: true}, mesh);
     assert.ok(Math.abs(record.width - 9.28) < 1e-9);
     assert.ok(Math.abs(record.height - 14.8) < 1e-9);
-    assert.equal(register({s: 2}, mesh).width, 8);
+    assert.ok(Math.abs(register({s: 2}, mesh).width - 8) < 1e-9);
+
+    const outline = {scale: {x: 3.85, y: 0.165, z: 0.66},
+        position: {x: 0, y: 3, z: -5}, rotation: {z: 0}};
+    const core = {scale: {x: 4, y: 0.15, z: 0.6},
+        position: {x: 0, y: 3, z: -4.999}, rotation: {z: 0}};
+    record = register({s: 2, ghost: true, f: 0}, outline, core);
+    assert.ok(Math.abs(record.width - 40 * 1.48) < 1e-9,
+        'wide open core brackets must not be clipped to the narrower outline');
+    outline.rotation.z = core.rotation.z = Math.PI / 2;
+    record = register({s: 2, ghost: true, f: 0}, outline, core);
+    assert.ok(Math.abs(record.height - 40 * 1.48) < 1e-9,
+        'the union must rotate with both actual meshes');
+    core.scale.x *= 1.22; core.scale.y *= 1.22; core.scale.z *= 1.22;
+    core.position.x += 0.1;
+    record = register({s: 2, ghost: true, f: 0}, outline, core);
+    assert.ok(Math.abs(record.height - 40 * 1.48 * 1.22) < 1e-9,
+        'hit scaling belongs to the physical footprint too');
+    assert.ok(record.x > 0 && record.zHalf > 0.66);
 });
 
 test('the chart footprint index retains a ghost on either coincident source', () => {
