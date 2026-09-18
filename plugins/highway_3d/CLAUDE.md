@@ -14,8 +14,7 @@ The whole renderer is **one file** — `screen.js`, wrapped in an IIFE, register
 render-only start when the authoritative `bnv` curve omits t=0. Precedence is an
 authored onset sample (even zero), then release/pre-bend intent `bt=1/2/3`, then
 a validated contiguous predecessor's ending bend, otherwise zero. Inheritance
-fills a missing curve onset; curve-less/scalar-only notes retain their existing
-fallback. `bnvSampleAt`
+fills a missing curve onset. `bnvSampleAt`
 retains its generic endpoint-clamping contract. `bendSemisAtTime` and
 `prebendOffsetWorld` use the same resolved curve for trail and gem alignment.
 `hwyLinkNextTargetNotes` optionally collects predecessor records while retaining
@@ -23,9 +22,15 @@ its existing attack-suppression rules. Bend inheritance separately requires a
 positive sustain ending within 1 ms of the next onset; ambiguous sources do not
 supply a starting value. `resolveLinkedBendStarts` runs once per arrangement in
 lane order and stores values in a per-renderer WeakMap. Chord scratch and muted
-drawing views must carry that cached start; never mutate the authored notes or
-allocate/rebuild these relationships in the ribbon-sampling loop. Scalar-only
-bend fallback, the ribbon sample count, and scoring are unchanged.
+drawing views must carry that cached start. `resolveLinkedBendEnds` first resolves
+scalar-only source endpoints from a unique contiguous destination's explicit
+onset (t=0 or pre-bend/release intent). It rejects ambiguous destinations, invalid
+samples and endpoints above the source peak. The scalar's final fallback phase
+meets that pitch instead of releasing to zero; unrelated scalar bends retain
+their existing envelope. Carry the endpoint cache through scratch/muted views
+and clear both caches at teardown. Never mutate authored notes or allocate/rebuild
+these relationships in the ribbon-sampling loop. Timing, ribbon samples and
+scoring remain unchanged; real unlinked gaps remain visible.
 
 The file is laid out top-to-bottom as:
 
