@@ -21,6 +21,14 @@ can move the complete marked gem behind a covering trail in every visibility
 mode. Bracket extents participate in the fretted/open and rotated-gem footprint
 calculations; ordinary notes keep their geometry and appearance.
 
+Open-string slabs keep their thin bodies, but their side parentheses keep
+normal-gem curve proportions instead of stretching with the slab. Each pooled
+mesh owns at most one reusable open-ghost geometry; source string/palette colors
+refresh when the mesh is reused. Actual geometry bounds include the taller
+curves, and the chart matcher includes fixed side extents plus the renderer's
+minimum open-slab width. Wide, narrow, chord and muted open ghosts share this
+path. Whole-note/hit scaling and physical draw order remain inherited.
+
 The existing mute symbol remains visible on a dead-plus-ghost gem. Explicit
 LinkNext continuations still suppress their attack at every playback phase.
 Ordinary ties never acquire ghost flags. Repeated-chord simplification retains
@@ -38,9 +46,11 @@ labels and 3D fretboard-preview settings are unchanged.
   the real FeedPak loader. The minimal semantic examples correspond to Rats
   Rain bar 2, Fire bar 33 and the already-merged Fire bar 50 tied sustain; they
   are not a full musical transcription fixture or a fresh source download.
-- `node --test tests/js/highway_ghost_notes.test.js`: 7 tests execute the actual
+- `node --test tests/js/highway_ghost_notes.test.js`: 8 tests execute the actual
   vendored Three.js geometry and palette update, real 2D note drawing, repeated
   chord/LinkNext decisions, scratch reset and rotated ordering footprints.
+  The open-note regression verifies curve aspect, a thin body, real geometry
+  bounds, palette/string updates and bounded per-mesh reuse.
 - 148 existing targeted JavaScript tests passed for current trail visibility,
   physical ordering, open-chord bounds, repeats, muted bounds, coincident notes,
   known-target slides/LinkNext, prebends, sustain culling/rails and chord caches.

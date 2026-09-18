@@ -87,6 +87,66 @@ test('2D actual note path writes pitched and dead ghost labels without inferring
     assert.equal(load(draw, '_noteHasTechniqueFlags')({ln: true}), false);
 });
 
+test('open ghost curves keep readable proportions around a thin slab and follow pooled colors', async () => {
+    const T = await import(pathToFileURL(path.join(root, 'static/vendor/three/three.module.min.js')).href);
+    const template = load(screen, 'hwyGhostNoteOutlineGeometry')(T, 10, 8, 2);
+    template.setAttribute('color', new T.BufferAttribute(new Float32Array(template.attributes.position.count * 3).fill(.2), 3));
+    const outline = new T.Mesh(template), core = new T.Mesh(template);
+    const shape = load(screen, 'hwyShapeOpenGhostGeometry');
+    const owned = [];
+    const extent = (mesh, isBracket) => {
+        let loX=Infinity, hiX=-Infinity, loY=Infinity, hiY=-Infinity;
+        const base = template.attributes.position, p = mesh.geometry.attributes.position;
+        for (let i=0; i<p.count; i++) {
+            if ((Math.abs(base.getX(i)) > 5.1) !== isBracket) continue;
+            const x=p.getX(i)*mesh.scale.x, y=p.getY(i)*mesh.scale.y;
+            loX=Math.min(loX,x); hiX=Math.max(hiX,x); loY=Math.min(loY,y); hiY=Math.max(hiY,y);
+        }
+        return {width:hiX-loX, height:hiY-loY};
+    };
+    for (const bodyWidth of [80, 160]) {
+        outline.scale.set(bodyWidth/10*.9625,.165,.66);
+        core.scale.set(bodyWidth/10,.15,.6);
+        shape(outline,template,bodyWidth,1.1,10,owned);
+        shape(core,template,bodyWidth,1,10,owned);
+        assert.ok(Math.abs(extent(core,false).height-1.2)<1e-5,'open body stays thin');
+        assert.ok(Math.abs(extent(core,false).width-bodyWidth)<1e-5);
+        assert.ok(Math.abs(extent(core,true).height-9.28)<1e-5,'curves do not inherit slab flattening');
+        assert.ok(Math.abs(extent(core,true).width-(bodyWidth+4.8))<1e-5,'curve width does not stretch with the lane');
+        assert.ok(Math.abs(extent(outline,true).width-(bodyWidth+5.28))<1e-5);
+    }
+    assert.equal(owned.length,2,'one geometry per mesh, no width-keyed cache growth');
+    const register = new Function(`
+        const NW=10,NH=8,ND=2;
+        const _trailOrderGems=[],_trailOrderGemBuckets=[[]],_trailOrderGemBucketCounts=[0];
+        let _trailOrderGemCount=0; const trailOrderDepthBucket=()=>0;
+        ${extract(screen,'trailOrderRegisterUpcomingGem')}
+        return (outline,core)=>{trailOrderRegisterUpcomingGem({s:0,f:0,ghost:true,mt:true},1,{},outline,core);return _trailOrderGems.at(-1);};`)();
+    for (const rotation of [0,Math.PI/2]) {
+        outline.rotation.z=core.rotation.z=rotation;
+        const r=register(outline,core);
+        assert.ok(Math.abs((rotation ? r.height : r.width)-165.28)<1e-5);
+        assert.ok(Math.abs((rotation ? r.width : r.height)-10.208)<1e-5,
+            'ordering encloses readable curves even on a muted chord/open note');
+    }
+    core.scale.multiplyScalar(1.22);
+    shape(core,template,160*1.22,1.22,10,owned);
+    assert.ok(Math.abs(extent(core,true).height-9.28*1.22)<1e-5,'whole-note hit scale remains inherited');
+    const firstGeometry=core.geometry;
+    template.attributes.color.array.fill(.75);
+    template.attributes.color.needsUpdate=true;
+    shape(core,template,160*1.22,1.22,10,owned);
+    assert.equal(core.geometry,firstGeometry);
+    assert.equal(core.geometry.attributes.color.getX(0),.75,'palette changes refresh cached geometry');
+    const anotherString=template.clone();
+    anotherString.attributes.color.array.fill(.5);
+    shape(core,anotherString,160*1.22,1.22,10,owned);
+    assert.equal(core.geometry.attributes.color.getX(0),.5,'pool reuse cannot retain another string color');
+    assert.equal(owned.length,2);
+    for(const g of owned)g.dispose();
+    template.dispose(); anotherString.dispose();
+});
+
 test('repeat simplification retains ghost cues but does not manufacture tied attacks', () => {
     const fns = ['noteHasVibrato', 'noteHasVisibleMotionSustain', 'noteHasRepeatTechniqueCue',
         'repeatChordMaySuppressGems', 'hwyShouldSuppressNoteBody'];

@@ -1335,6 +1335,48 @@
         return geometry;
     }
 
+    // Open notes are wide, thin slabs. Compensate only the parentheses for
+    // that aspect ratio while the original box vertices keep the slab shape.
+    // One owned geometry per pooled mesh bounds the cache at the pool's peak.
+    function hwyShapeOpenGhostGeometry(mesh, template, bodyWidth, markerScale, width, owned) {
+        let g = mesh.userData.openGhostGeometry;
+        if (!g) {
+            g = template.clone();
+            mesh.userData.openGhostGeometry = g;
+            owned.push(g);
+        }
+        const color = template.attributes.color;
+        if (color && (g.userData.colorSource !== color || g.userData.colorVersion !== color.version)) {
+            if (!g.attributes.color) g.setAttribute('color', color.clone());
+            else g.attributes.color.copyArray(color.array);
+            g.attributes.color.needsUpdate = true;
+            g.userData.colorSource = color;
+            g.userData.colorVersion = color.version;
+        }
+        if (g.userData.openWidth !== bodyWidth || g.userData.markerScale !== markerScale
+            || g.userData.meshScaleX !== mesh.scale.x || g.userData.meshScaleY !== mesh.scale.y) {
+            const from = template.attributes.position;
+            const to = g.attributes.position;
+            for (let i = 0; i < from.count; i++) {
+                const x = from.getX(i), y = from.getY(i);
+                if (Math.abs(x) > width * 0.51) {
+                    to.setXYZ(i, Math.sign(x) * (bodyWidth * 0.5
+                        + (Math.abs(x) - width * 0.5) * markerScale) / mesh.scale.x,
+                    y * markerScale / mesh.scale.y, from.getZ(i));
+                } else to.setXYZ(i, x, y, from.getZ(i));
+            }
+            to.needsUpdate = true;
+            g.computeVertexNormals();
+            g.computeBoundingBox();
+            g.computeBoundingSphere();
+            g.userData.openWidth = bodyWidth;
+            g.userData.markerScale = markerScale;
+            g.userData.meshScaleX = mesh.scale.x;
+            g.userData.meshScaleY = mesh.scale.y;
+        }
+        mesh.geometry = g;
+    }
+
     /** Chart-static fret index; rebuilt only when arrangement arrays change. */
     function hwyBuildTrailYieldEvents(notes, chords, stringCount) {
         const byFret = new Array(NFRETS + 1);
@@ -15934,15 +15976,18 @@
                 ? (xFret(anchor.dMin) + xFret(anchor.dMax)) * 0.5
                 : curX;
             const outlineWidthScale = (35 / 40) * 1.1
-                * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1)
-                * (event.ghost === true ? 1.48 : 1);
-            const coreWidthScale = (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1)
-                * (event.ghost === true ? 1.48 : 1);
+                * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
+            const coreWidthScale = event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1;
             const bodyScale = 0.96 * Math.max(coreWidthScale, outlineWidthScale);
+            const ghostExtent = event.ghost === true ? NW * 0.48 * 1.1 : 0;
+            // The actual open renderer clamps its slab scale to .22 even in
+            // very narrow lanes. Preserve ordinary-note matching unchanged.
+            const ghostMinBody = event.ghost === true
+                ? NW * 8 * 0.22 * Math.max(coreWidthScale, outlineWidthScale) : 0;
 
             if (event.standalone || !event.chordMeta) {
                 trailYieldAddTargetXBounds(
-                    anchorCX, openNoteLaneBoxW(event.t) * bodyScale, bounds,
+                    anchorCX, Math.max(openNoteLaneBoxW(event.t) * bodyScale, ghostMinBody) + ghostExtent, bounds,
                 );
             }
 
@@ -15970,7 +16015,7 @@
                         laneW += OPEN_NOTE_PAD_X * 2;
                     }
                 }
-                trailYieldAddTargetXBounds(chordCX, laneW * bodyScale, bounds);
+                trailYieldAddTargetXBounds(chordCX, Math.max(laneW * bodyScale, ghostMinBody) + ghostExtent, bounds);
             }
             return Number.isFinite(bounds[0]) && Number.isFinite(bounds[1]);
         }
@@ -16439,18 +16484,24 @@
             // the core. Both meshes carry the ghost-parenthesis geometry.
             const width = NW * (n.ghost === true ? 1.48 : 1);
             const height = NH * (n.ghost === true ? 1.16 : 1);
+            const outlineBounds = n.ghost === true && n.f === 0 ? outline.geometry?.boundingBox : null;
+            const coreBounds = n.ghost === true && n.f === 0 ? core.geometry?.boundingBox : null;
+            const outlineWidth = outlineBounds ? outlineBounds.max.x - outlineBounds.min.x : width;
+            const outlineHeight = outlineBounds ? outlineBounds.max.y - outlineBounds.min.y : height;
+            const coreWidth = coreBounds ? coreBounds.max.x - coreBounds.min.x : width;
+            const coreHeight = coreBounds ? coreBounds.max.y - coreBounds.min.y : height;
             const cos = Math.abs(Math.cos(outline.rotation.z));
             const sin = Math.abs(Math.sin(outline.rotation.z));
             const coreCos = Math.abs(Math.cos(core.rotation.z));
             const coreSin = Math.abs(Math.sin(core.rotation.z));
-            const outlineHalfX = (width * Math.abs(outline.scale.x) * cos
-                + height * Math.abs(outline.scale.y) * sin) * 0.5;
-            const outlineHalfY = (width * Math.abs(outline.scale.x) * sin
-                + height * Math.abs(outline.scale.y) * cos) * 0.5;
-            const coreHalfX = (width * Math.abs(core.scale.x) * coreCos
-                + height * Math.abs(core.scale.y) * coreSin) * 0.5;
-            const coreHalfY = (width * Math.abs(core.scale.x) * coreSin
-                + height * Math.abs(core.scale.y) * coreCos) * 0.5;
+            const outlineHalfX = (outlineWidth * Math.abs(outline.scale.x) * cos
+                + outlineHeight * Math.abs(outline.scale.y) * sin) * 0.5;
+            const outlineHalfY = (outlineWidth * Math.abs(outline.scale.x) * sin
+                + outlineHeight * Math.abs(outline.scale.y) * cos) * 0.5;
+            const coreHalfX = (coreWidth * Math.abs(core.scale.x) * coreCos
+                + coreHeight * Math.abs(core.scale.y) * coreSin) * 0.5;
+            const coreHalfY = (coreWidth * Math.abs(core.scale.x) * coreSin
+                + coreHeight * Math.abs(core.scale.y) * coreCos) * 0.5;
             const minX = Math.min(outline.position.x - outlineHalfX, core.position.x - coreHalfX);
             const maxX = Math.max(outline.position.x + outlineHalfX, core.position.x + coreHalfX);
             const minY = Math.min(outline.position.y - outlineHalfY, core.position.y - coreHalfY);
@@ -17495,6 +17546,12 @@
                     core.scale.set(rimXY, rimXY, 2.5 * rimZ);
                 }
                 if (_hitPunch !== 1) core.scale.multiplyScalar(_hitPunch);   // #3 hit scale-punch
+                if (n.ghost === true && n.f === 0) {
+                    const bodyWidth = NW * Math.max(outline.scale.x, core.scale.x);
+                    const markerScale = core.scale.y / (0.1 * openSlabThickMul);
+                    hwyShapeOpenGhostGeometry(outline, gNoteGhost, bodyWidth, markerScale * 1.1, NW, _ownedSharedGeos);
+                    hwyShapeOpenGhostGeometry(core, core.geometry, bodyWidth, markerScale, NW, _ownedSharedGeos);
+                }
                 trailYieldRegisterGem(
                     trailYieldGemEvent, noteZ, outline, core, noteFaceMesh,
                 );
