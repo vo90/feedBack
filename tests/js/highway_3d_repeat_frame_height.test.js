@@ -24,6 +24,7 @@ function between(start, end, from = 0) {
 }
 const dispatch = new Function('chordNotes', 'options', `
     'use strict';
+    ${src.slice(src.indexOf('    function slideTrailEnd('), src.indexOf('    // Camera tgtDist building blocks'))}
     ${fn('noteHasVibrato')}
     ${fn('noteHasVisibleMotionSustain')}
     ${fn('noteHasRepeatTechniqueCue')}

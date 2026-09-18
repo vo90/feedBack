@@ -1318,6 +1318,86 @@
         return priorityRank * TRAIL_YIELD_STRING_ORDER_STEP;
     }
 
+    /** One bounded shared mesh: ordinary box plus two curved parentheses.
+     * Local extents are 1.48 * width by 1.16 * height by depth, also used by
+     * the trail matcher. No text, per-frame geometry or additional draw calls.
+     */
+    function hwyGhostNoteOutlineGeometry(T, width, height, depth) {
+        const body = new T.Shape();
+        body.moveTo(-width / 2, -height / 2);
+        body.lineTo(width / 2, -height / 2);
+        body.lineTo(width / 2, height / 2);
+        body.lineTo(-width / 2, height / 2);
+        body.closePath();
+        const shapes = [body];
+        for (const side of [-1, 1]) {
+            const bracket = new T.Shape();
+            // Outer then inner path; 16 segments retain a rounded silhouette
+            // at both approach rotation extremes without font/texture scaling.
+            for (let i = 0; i <= 16; i++) {
+                const u = i / 16;
+                const x = side * width * (0.62 + 0.12 * Math.sin(Math.PI * u));
+                const y = height * 1.16 * (u - 0.5);
+                if (i === 0) bracket.moveTo(x, y);
+                else bracket.lineTo(x, y);
+            }
+            for (let i = 16; i >= 0; i--) {
+                const u = i / 16;
+                bracket.lineTo(side * width * (0.55 + 0.12 * Math.sin(Math.PI * u)),
+                    height * 1.16 * (u - 0.5));
+            }
+            bracket.closePath();
+            shapes.push(bracket);
+        }
+        const geometry = new T.ExtrudeGeometry(shapes, { depth, bevelEnabled: false, steps: 1 });
+        geometry.translate(0, 0, -depth / 2);
+        geometry.computeBoundingBox();
+        geometry.computeBoundingSphere();
+        return geometry;
+    }
+
+    // Open notes are wide, thin slabs. Compensate only the parentheses for
+    // that aspect ratio while the original box vertices keep the slab shape.
+    // One owned geometry per pooled mesh bounds the cache at the pool's peak.
+    function hwyShapeOpenGhostGeometry(mesh, template, bodyWidth, markerScale, width, owned) {
+        let g = mesh.userData.openGhostGeometry;
+        if (!g) {
+            g = template.clone();
+            mesh.userData.openGhostGeometry = g;
+            owned.push(g);
+        }
+        const color = template.attributes.color;
+        if (color && (g.userData.colorSource !== color || g.userData.colorVersion !== color.version)) {
+            if (!g.attributes.color) g.setAttribute('color', color.clone());
+            else g.attributes.color.copyArray(color.array);
+            g.attributes.color.needsUpdate = true;
+            g.userData.colorSource = color;
+            g.userData.colorVersion = color.version;
+        }
+        if (g.userData.openWidth !== bodyWidth || g.userData.markerScale !== markerScale
+            || g.userData.meshScaleX !== mesh.scale.x || g.userData.meshScaleY !== mesh.scale.y) {
+            const from = template.attributes.position;
+            const to = g.attributes.position;
+            for (let i = 0; i < from.count; i++) {
+                const x = from.getX(i), y = from.getY(i);
+                if (Math.abs(x) > width * 0.51) {
+                    to.setXYZ(i, Math.sign(x) * (bodyWidth * 0.5
+                        + (Math.abs(x) - width * 0.5) * markerScale) / mesh.scale.x,
+                    y * markerScale / mesh.scale.y, from.getZ(i));
+                } else to.setXYZ(i, x, y, from.getZ(i));
+            }
+            to.needsUpdate = true;
+            g.computeVertexNormals();
+            g.computeBoundingBox();
+            g.computeBoundingSphere();
+            g.userData.openWidth = bodyWidth;
+            g.userData.markerScale = markerScale;
+            g.userData.meshScaleX = mesh.scale.x;
+            g.userData.meshScaleY = mesh.scale.y;
+        }
+        mesh.geometry = g;
+    }
+
     /** Chart-static fret index; rebuilt only when arrangement arrays change. */
     function hwyBuildTrailYieldEvents(notes, chords, stringCount) {
         const byFret = new Array(NFRETS + 1);
@@ -1330,12 +1410,14 @@
             (byFret[f] || (byFret[f] = [])).push({
                 t, s, f, end: t + duration,
                 accent: !!accent,
+                ghost: pathNote?.ghost === true,
                 standalone: chordMeta === null,
                 chordMeta,
                 // The event is also the allocation-free path descriptor used
                 // for trail-to-trail crossings. Keep only fields that affect X.
                 sl: Number.isFinite(pathNote?.sl) ? pathNote.sl : -1,
                 slu: Number.isFinite(pathNote?.slu) ? pathNote.slu : -1,
+                slide_out_marks: pathNote?.slide_out_marks,
                 tr: !!pathNote?.tr,
                 sus: duration,
             });
@@ -1387,10 +1469,12 @@
                     && cur.s === prev.s) {
                     prev.end = Math.max(prev.end, cur.end);
                     prev.accent = prev.accent || cur.accent;
+                    prev.ghost = prev.ghost || cur.ghost;
                     prev.standalone = prev.standalone || cur.standalone;
                     if (!prev.chordMeta && cur.chordMeta) prev.chordMeta = cur.chordMeta;
                     if (!(prev.sl >= 0) && cur.sl >= 0) prev.sl = cur.sl;
                     if (!(prev.slu >= 0) && cur.slu >= 0) prev.slu = cur.slu;
+                    if (prev.slide_out_marks === undefined) prev.slide_out_marks = cur.slide_out_marks;
                     prev.tr = prev.tr || cur.tr;
                     prev.sus = Math.max(prev.sus, cur.sus);
                     continue;
@@ -2304,7 +2388,7 @@
                 case 'ho': case 'po': case 'hm': case 'hp':
                 case 'pm': case 'mt': case 'vb': case 'tr':
                 case 'ac': case 'tp': case 'ln': case 'fhm':
-                case 'plk': case 'slp': case 'ig':
+                case 'plk': case 'slp': case 'ig': case 'ghost':
                     if (v === false) continue;
                     return true;
                 case 'bnv':
@@ -2784,6 +2868,113 @@
             ? 1 - Math.sin((1 - p) * Math.PI / 2)
             : Math.pow(Math.sin(p * Math.PI / 2), 3);
         return (endX - startX) * w;
+    }
+
+    // A targetless slide is a direction cue, never a synthetic target fret.
+    // Its short flourish occupies the final <=220ms of the written segment;
+    // this is a display convention, not an inferred duration/pitch trajectory.
+    const SLIDE_OUT_CUE_SECONDS = 0.22;
+    const SLIDE_OUT_TIP_SCALE = 0.72;
+    const SLIDE_OUT_EMPTY_MARKS = Object.freeze([]);
+    const _slideOutMarkCache = new WeakMap();
+    function slideOutMarks(n) {
+        const raw = n?.slide_out_marks;
+        if (!Array.isArray(raw) || !Number.isFinite(n.sus) || !(n.sus > 0)) return SLIDE_OUT_EMPTY_MARKS;
+        const cached = _slideOutMarkCache.get(raw);
+        if (cached?.sus === n.sus) return cached.marks;
+        const marks = [];
+        let previousEnd = 0;
+        for (const mark of raw) {
+            if (!mark || (mark.direction !== 'up' && mark.direction !== 'down')
+                || !Number.isFinite(mark.start) || !Number.isFinite(mark.end)
+                || mark.start < previousEnd || !(mark.start >= 0 && mark.end > mark.start)
+                || mark.end > n.sus + 0.000501) continue;
+            const end = Math.min(mark.end, n.sus);
+            if (end <= mark.start) continue;
+            marks.push({ direction: mark.direction, start: mark.start, end });
+            previousEnd = end;
+        }
+        _slideOutMarkCache.set(raw, { sus: n.sus, marks });
+        return marks;
+    }
+    function slideOutCueAt(n, chartTime) {
+        // Known-target slides retain their established geometry.
+        if (slideTrailEnd(n) || !(n.f > 0)) return 0;
+        const elapsed = chartTime - n.t;
+        for (const mark of slideOutMarks(n)) {
+            const start = Math.max(mark.start, mark.end - SLIDE_OUT_CUE_SECONDS);
+            if (elapsed < start - 1e-9 || elapsed > mark.end + 1e-9) continue;
+            // Signed (1 + progress): no object allocation in the ribbon loop.
+            return (mark.direction === 'up' ? 1 : -1) * (1 + Math.max(0, Math.min(1,
+                (elapsed - start) / Math.max(mark.end - start, 1e-9))));
+        }
+        return 0;
+    }
+    function slideOutWidthScaleAt(n, chartTime) {
+        const cue = slideOutCueAt(n, chartTime);
+        return cue ? 1 - (1 - SLIDE_OUT_TIP_SCALE) * hwySmoothstep01(Math.abs(cue) - 1) : 1;
+    }
+    function slideOutAlphaAt(n, chartTime) {
+        const cue = slideOutCueAt(n, chartTime);
+        if (cue) return 1 - hwySmoothstep01(Math.abs(cue) - 1);
+        // Invisible return ring disconnects a middle-segment flourish from
+        // later, unmarked sustain without drawing a sideways return stroke.
+        if (!slideTrailEnd(n)) for (const mark of slideOutMarks(n)) {
+            const delta = chartTime - n.t - mark.end;
+            if (delta > 0 && delta <= 1.1e-7) return 0;
+        }
+        return 1;
+    }
+    function slideOutReach(n) {
+        // A local visual span only: deliberately never convert this to a fret
+        // or reuse it for pitch/grading/camera target calculations.
+        return n?.f > 0 ? Math.abs(fretX(n.f) - fretX(n.f - 1)) * 0.8 : 0;
+    }
+    function slideOutOffsetWorldX(n, chartTime) {
+        const cue = slideOutCueAt(n, chartTime);
+        return cue ? Math.sign(cue)
+            * slideOutReach(n) * hwySmoothstep01(Math.abs(cue) - 1) : 0;
+    }
+    function slideOutLegacyDirection(n) {
+        // Presence is authoritative, even an empty/malformed array. Never
+        // reinterpret a scalar fallback as source-timed slide placement.
+        if (n?.slide_out_marks !== undefined || slideTrailEnd(n)) return 0;
+        return n?.slide_out === 'up' ? 1 : n?.slide_out === 'down' ? -1 : 0;
+    }
+    function noteHasSlideOutCue(n) {
+        return !slideTrailEnd(n) && (slideOutLegacyDirection(n) !== 0 || slideOutMarks(n).length > 0);
+    }
+    function appendSlideOutContourTimes(n, start, end, out) {
+        if (slideTrailEnd(n) || !(n.f > 0)) return;
+        for (const mark of slideOutMarks(n)) {
+            const cueEnd = n.t + mark.end;
+            const cueStart = n.t + Math.max(mark.start, mark.end - SLIDE_OUT_CUE_SECONDS);
+            if (cueStart > end || cueEnd < start) continue;
+            // Every short gesture gets its full contour even if it falls
+            // between the regular long-sustain samples.
+            for (let i = 0; i <= 8; i++) {
+                const t = cueStart + (cueEnd - cueStart) * i / 8;
+                if (t >= start && t <= end) out.push(t);
+            }
+            if (cueEnd + 1e-7 > start && cueEnd + 1e-7 < end) out.push(cueEnd + 1e-7);
+            if (cueEnd + 2e-7 > start && cueEnd + 2e-7 < end) out.push(cueEnd + 2e-7);
+        }
+    }
+    function slideRibbonSampleTimes(n, start, duration, out) {
+        out.length = 0;
+        const end = start + duration;
+        for (let i = 0; i <= SLIDE_RIBBON_SAMPLES; i++) out.push(start + duration * i / SLIDE_RIBBON_SAMPLES);
+        appendSlideOutContourTimes(n, start, end, out);
+        if (out.length > SLIDE_RIBBON_SAMPLES + 1) out.sort((a, b) => a - b);
+        return out;
+    }
+    function slideOutCrossingTimes(source, target, start, end, out) {
+        out.length = 0;
+        out.push(start, end);
+        appendSlideOutContourTimes(source, start, end, out);
+        appendSlideOutContourTimes(target, start, end, out);
+        out.sort((a, b) => a - b);
+        return out;
     }
 
     // Camera tgtDist building blocks. Both the dynamic (camera-follow)
@@ -5690,10 +5881,10 @@
         let _canvasReplacedHandler = null;
         let ambLight = null, dirLight = null;
         let fretG = null, tuningLblG = null, noteG = null, beatG = null, lblG = null;
-        let gNote = null, gSus = null, gBeat = null, gTapChevron = null;
+        let gNote = null, gNoteGhost = null, gSus = null, gBeat = null, gTapChevron = null;
         // Per-string gradient gem geometries (index 0..5). Built in initScene
         // from sampled colour PNGs; each carries a per-vertex colour attribute.
-        let gNoteGrad = [];
+        let gNoteGrad = [], gNoteGhostGrad = [];
         let mStr = [], mGlow = [], mSus = [], mStrHitOutline = [], mAccentOutline = [], mAccentCore = [], mAccentHaloNear = [], mAccentHaloMid = [], mAccentHaloFar = [];
         // Pre-built accent-halo shell descriptors per string. Populated after
         // mAccentHaloFar/Mid/Near are materialised; consumed in drawNote()'s
@@ -5702,6 +5893,22 @@
         // by a stable read. Index 0 = outer, 1 = mid, 2 = near.
         let _accentShellsByString = [];
         let mWhiteOutline = null, mSusOutline = null;
+        // Shared source materials remain untouched. RGBA vertex colors supply
+        // a local fade, with one reusable material variant per existing style.
+        const _slideRibbonFadeMaterials = new Map();
+        function slideRibbonFadeMaterial(source) {
+            let material = _slideRibbonFadeMaterials.get(source);
+            if (!material) {
+                material = source.clone();
+                material.vertexColors = true;
+                _slideRibbonFadeMaterials.set(source, material);
+            }
+            material.color.copy(source.color);
+            material.emissive.copy(source.emissive);
+            material.emissiveIntensity = source.emissiveIntensity;
+            material.opacity = source.opacity;
+            return material;
+        }
         // Dedicated sustain-trail outline material for the hit verdict.
         // Drawn at opacity 0.45 — lower than mSusOutline (0.75) so the
         // bright green emissive doesn't tint the body interior, and the
@@ -8806,6 +9013,11 @@
 
             // Rectangular note geometry
             gNote = new T.BoxGeometry(NW, NH, ND);
+            // The parentheses are part of the same outline mesh, not a label
+            // or extra overlay. They inherit its rotation, movement, material,
+            // pool lifetime and every physical trail-order correction.
+            gNoteGhost = hwyGhostNoteOutlineGeometry(T, NW, NH, ND);
+            _ownedSharedGeos.push(gNoteGhost);
             // Per-string vertical gradient gems — colours sampled from the
             // original colour PNGs (top highlight → deeper bottom). Each gradient
             // string gets its own BoxGeometry clone carrying a per-vertex colour
@@ -8828,6 +9040,14 @@
                     _colors[i * 3 + 2] = _tmpCol.b;
                 }
                 g.setAttribute('color', new T.BufferAttribute(_colors, 3));
+                _ownedSharedGeos.push(g);
+                return g;
+            });
+            gNoteGhostGrad = gNoteGrad.map(() => {
+                const g = gNoteGhost.clone();
+                g.setAttribute('color', new T.BufferAttribute(
+                    new Float32Array(g.attributes.position.count * 3), 3,
+                ));
                 _ownedSharedGeos.push(g);
                 return g;
             });
@@ -9115,6 +9335,9 @@
                     normals[o + 9] = -SQRT_HALF; normals[o + 10] =  SQRT_HALF; normals[o + 11] = 0;
                 }
                 g.setAttribute('normal', new T.Float32BufferAttribute(normals, 3));
+                const colors = new Float32Array(nVert * 4);
+                colors.fill(1);
+                g.setAttribute('color', new T.Float32BufferAttribute(colors, 4));
                 return g;
             };
             // Ribbon meshes mutate vertex positions every frame in
@@ -10426,6 +10649,7 @@
             if (!T || !gNoteGrad || !gNoteGrad.length) return;
             const isCustom = (activePalette === _customPalette);
             const topCol = new T.Color(), botCol = new T.Color(), tmp = new T.Color();
+            const bracketCol = new T.Color(), white = new T.Color(0xffffff);
             const halfH = NH / 2;
             for (let s = 0; s < gNoteGrad.length; s++) {
                 const g = gNoteGrad[s];
@@ -10454,6 +10678,20 @@
                     colAttr.setXYZ(i, tmp.r, tmp.g, tmp.b);
                 }
                 colAttr.needsUpdate = true;
+                const ghost = gNoteGhostGrad[s];
+                if (ghost?.attributes.color) {
+                    const gp = ghost.attributes.position;
+                    const gc = ghost.attributes.color;
+                    // Pale string tint keeps the parentheses readable without
+                    // changing the ordinary gem gradient or sharing new alpha.
+                    bracketCol.setHex(base).lerp(white, 0.82);
+                    for (let i = 0; i < gp.count; i++) {
+                        if (Math.abs(gp.getX(i)) > NW * 0.51) tmp.copy(bracketCol);
+                        else tmp.copy(botCol).lerp(topCol, (gp.getY(i) + halfH) / NH);
+                        gc.setXYZ(i, tmp.r, tmp.g, tmp.b);
+                    }
+                    gc.needsUpdate = true;
+                }
             }
         }
 
@@ -14227,6 +14465,7 @@
                             // so Object.assign leaves a stale `true` from a previous
                             // muted chord note untouched. Reset it explicitly here.
                             _scrChordNote.fhm = cn.fhm || false;
+                            _scrChordNote.ghost = cn.ghost === true;
                             // Bass attacks are also omit-when-false: do not let
                             // a reused chord member inherit the preceding marker.
                             _scrChordNote.slp = cn.slp || false;
@@ -14243,6 +14482,8 @@
                             // every reuse, including an ordinary zero start.
                             _linkedBendStarts.set(_scrChordNote, _linkedBendStarts.get(cn) || 0);
                             _linkedBendEnds.set(_scrChordNote, _linkedBendEnds.get(cn));
+                            _scrChordNote.slide_out = cn.slide_out;
+                            _scrChordNote.slide_out_marks = cn.slide_out_marks;
                             // Same stale-scratch hazard for the teaching marks
                             // (§6.2.2): fg/sd are omit-when-default on the wire,
                             // so a chord note without them must reset to -1 or it
@@ -15860,6 +16101,41 @@
             pbReportTick();
         }
 
+        const _slideRibbonTimesScratch = [];
+        function ensureSlideRibbonCapacity(geometry, slices) {
+            const capacity = geometry.attributes.position.count / 4 - 1;
+            if (capacity < slices) {
+                let next = Math.max(SLIDE_RIBBON_SAMPLES, capacity);
+                while (next < slices) next *= 2;
+                const vertices = (next + 1) * 4;
+                // Release old GPU attributes before replacing a pooled
+                // geometry's buffers. Three reinitializes it on next render.
+                geometry.dispose?.();
+                geometry.setAttribute('position', new T.Float32BufferAttribute(new Float32Array(vertices * 3), 3));
+                const colors = new Float32Array(vertices * 4);
+                colors.fill(1);
+                geometry.setAttribute('color', new T.Float32BufferAttribute(colors, 4));
+                const normals = new Float32Array(vertices * 3);
+                const corners = [-1, -1, 1, -1, 1, 1, -1, 1];
+                for (let i = 0; i < vertices; i++) {
+                    normals[i * 3] = corners[(i % 4) * 2] * Math.SQRT1_2;
+                    normals[i * 3 + 1] = corners[(i % 4) * 2 + 1] * Math.SQRT1_2;
+                }
+                geometry.setAttribute('normal', new T.Float32BufferAttribute(normals, 3));
+                const indices = [];
+                for (let k = 0; k < next; k++) {
+                    const b = k * 4, nx = b + 4;
+                    indices.push(b, nx + 1, b + 1, b, nx, nx + 1,
+                        b + 3, nx + 2, nx + 3, b + 3, b + 2, nx + 2,
+                        b, nx + 3, nx, b, b + 3, nx + 3,
+                        b + 1, nx + 2, b + 2, b + 1, nx + 1, nx + 2);
+                }
+                geometry.setIndex(indices);
+            }
+            geometry.userData.ribbonSlices = slices;
+            geometry.setDrawRange(0, slices * 24);
+        }
+
         /**
          * Indexed sustain ribbon (~SLIDE_RIBBON_SAMPLES longitudinal slices)
          * for slides, bends, vibrato and tremolo — smooth contour vs stacked
@@ -15872,12 +16148,18 @@
             yieldStarts = null, yieldEnds = null, yieldCount = 0,
             trailEnd = Infinity, yieldSettings = TRAIL_YIELD_DEFAULTS,
         ) {
+            const times = slideRibbonSampleTimes(n, susStart, sliceDur, _slideRibbonTimesScratch);
+            const S = times.length - 1;
+            ensureSlideRibbonCapacity(outlineGeom, S);
+            ensureSlideRibbonCapacity(bodyGeom, S);
             const outlinePositions = outlineGeom.attributes.position.array;
             const bodyPositions = bodyGeom.attributes.position.array;
-            const S = SLIDE_RIBBON_SAMPLES;
+            const outlineColors = outlineGeom.attributes.color?.array;
+            const bodyColors = bodyGeom.attributes.color?.array;
+            const hasSlideOut = !slideSt && slideOutMarks(n).length > 0;
             let v = 0;
             for (let k = 0; k <= S; k++) {
-                const Tk = susStart + (k / S) * sliceDur;
+                const Tk = times[k];
                 const zk = dZ(Tk - now);
                 const outlineX = sustainTrailCenterXAt(
                     n, strandBaseX, Tk, slideSt, outlineTw,
@@ -15891,7 +16173,17 @@
                         Tk, yieldStarts, yieldEnds, yieldCount, trailEnd, yieldSettings,
                     )
                     : 0;
-                const yieldScale = 1 - (1 - yieldSettings.minScale) * yieldAmount;
+                // Artistic taper and user-selected visibility narrowing compose
+                // by the smaller envelope, never multiply into a thin sliver.
+                const yieldScale = Math.min(hasSlideOut ? slideOutWidthScaleAt(n, Tk) : 1,
+                    1 - (1 - yieldSettings.minScale) * yieldAmount);
+                if (hasSlideOut && outlineColors && bodyColors) {
+                    const alpha = slideOutAlphaAt(n, Tk);
+                    for (let j = 0; j < 4; j++) {
+                        outlineColors[k * 16 + j * 4 + 3] = alpha;
+                        bodyColors[k * 16 + j * 4 + 3] = alpha;
+                    }
+                }
                 const outlineHalfW = outlineTw * yieldScale * 0.5;
                 const outlineHalfH = outlineTh * yieldScale * 0.5;
                 const bodyHalfW = bodyTw * yieldScale * 0.5;
@@ -15919,6 +16211,8 @@
             }
             outlineGeom.attributes.position.needsUpdate = true;
             bodyGeom.attributes.position.needsUpdate = true;
+            if (hasSlideOut && outlineColors) outlineGeom.attributes.color.needsUpdate = true;
+            if (hasSlideOut && bodyColors) bodyGeom.attributes.color.needsUpdate = true;
             // Normals are pre-baked at geometry creation (see mkSlideRibbonGeo);
             // axis-aligned cross-section means they don't need per-frame recompute.
         }
@@ -15933,13 +16227,15 @@
                 || (Array.isArray(n.bnv) && n.bnv.length > 0)
                 || noteHasVibrato(n)
                 || n.tr
+                || slideOutMarks(n).length > 0
             ));
         }
 
         function noteHasRepeatTechniqueCue(n) {
             // Compact repeat frames have their own palm/fret-hand mute marks,
             // but these cues live on individual gems and must approach with them.
-            return !!(n.hm || n.hp || n.ho || n.po || n.tp || n.ac || n.slp || n.plk
+            return !!(n.ghost === true || n.hm || n.hp || n.ho || n.po || n.tp || n.ac || n.slp || n.plk
+                || noteHasSlideOutCue(n)
                 || (Number(n.bn) || 0) > 0
                 || (Array.isArray(n.bnv) && n.bnv.some(p => (Number(p.v) || 0) > 0)));
         }
@@ -16139,7 +16435,8 @@
         /** Rendered X centre of one sustain strand at a chart time. */
         function sustainTrailCenterXAt(n, strandBaseX, chartTime, slideSt, trailW) {
             return strandBaseX
-                + (_leftyCached ? -1 : 1) * slideOffsetWorldX(n, chartTime, slideSt)
+                + (_leftyCached ? -1 : 1) * (slideOffsetWorldX(n, chartTime, slideSt)
+                    + slideOutOffsetWorldX(n, chartTime))
                 + tremoloOffsetWorldX(n, chartTime, trailW);
         }
 
@@ -16183,10 +16480,15 @@
                 * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
             const coreWidthScale = event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1;
             const bodyScale = 0.96 * Math.max(coreWidthScale, outlineWidthScale);
+            const ghostExtent = event.ghost === true ? NW * 0.48 * 1.1 : 0;
+            // The actual open renderer clamps its slab scale to .22 even in
+            // very narrow lanes. Preserve ordinary-note matching unchanged.
+            const ghostMinBody = event.ghost === true
+                ? NW * 8 * 0.22 * Math.max(coreWidthScale, outlineWidthScale) : 0;
 
             if (event.standalone || !event.chordMeta) {
                 trailYieldAddTargetXBounds(
-                    anchorCX, openNoteLaneBoxW(event.t) * bodyScale, bounds,
+                    anchorCX, Math.max(openNoteLaneBoxW(event.t) * bodyScale, ghostMinBody) + ghostExtent, bounds,
                 );
             }
 
@@ -16214,7 +16516,7 @@
                         laneW += OPEN_NOTE_PAD_X * 2;
                     }
                 }
-                trailYieldAddTargetXBounds(chordCX, laneW * bodyScale, bounds);
+                trailYieldAddTargetXBounds(chordCX, Math.max(laneW * bodyScale, ghostMinBody) + ghostExtent, bounds);
             }
             return Number.isFinite(bounds[0]) && Number.isFinite(bounds[1]);
         }
@@ -16264,7 +16566,8 @@
                 ctx.crossingTargetW,
             );
             return hwyTrailOverlapsGemX(
-                sourceX, ctx.trailW, targetX, ctx.crossingTargetW,
+                sourceX, ctx.trailW * slideOutWidthScaleAt(ctx.note, chartTime),
+                targetX, ctx.crossingTargetW * slideOutWidthScaleAt(target, chartTime),
             );
         }
 
@@ -16292,12 +16595,13 @@
             } else {
                 targetX = xFretMid(event.f);
                 targetW = NW * 1.1
-                    * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
+                    * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1)
+                    * (event.ghost === true ? 1.48 : 1);
             }
             const onsetMatches = hwyTrailFootprintsCanOcclude(
                 visuallyBelow,
                 trailX,
-                ctx.trailW,
+                ctx.trailW * slideOutWidthScaleAt(n, sampleT),
                 targetX,
                 targetW,
             );
@@ -16677,18 +16981,43 @@
             }
             _trailOrderGemCount++;
 
-            // The approach rotation is already present on the pooled mesh.
-            // Resolve its XY axis-aligned footprint without Box3/Vector churn.
-            const width = NW * outline.scale.x;
-            const height = NH * outline.scale.y;
+            // Union both actual meshes without Box3/Vector churn: an open
+            // core is wider than its outline, and a hit punch can also expand
+            // the core. Both meshes carry the ghost-parenthesis geometry.
+            const width = NW * (n.ghost === true ? 1.48 : 1);
+            const height = NH * (n.ghost === true ? 1.16 : 1);
+            const outlineBounds = n.ghost === true && n.f === 0 ? outline.geometry?.boundingBox : null;
+            const coreBounds = n.ghost === true && n.f === 0 ? core.geometry?.boundingBox : null;
+            const outlineWidth = outlineBounds ? outlineBounds.max.x - outlineBounds.min.x : width;
+            const outlineHeight = outlineBounds ? outlineBounds.max.y - outlineBounds.min.y : height;
+            const coreWidth = coreBounds ? coreBounds.max.x - coreBounds.min.x : width;
+            const coreHeight = coreBounds ? coreBounds.max.y - coreBounds.min.y : height;
             const cos = Math.abs(Math.cos(outline.rotation.z));
             const sin = Math.abs(Math.sin(outline.rotation.z));
-            gem.x = outline.position.x;
-            gem.y = outline.position.y;
-            gem.z = outline.position.z;
-            gem.zHalf = ND * outline.scale.z * 0.5;
-            gem.width = width * cos + height * sin;
-            gem.height = width * sin + height * cos;
+            const coreCos = Math.abs(Math.cos(core.rotation.z));
+            const coreSin = Math.abs(Math.sin(core.rotation.z));
+            const outlineHalfX = (outlineWidth * Math.abs(outline.scale.x) * cos
+                + outlineHeight * Math.abs(outline.scale.y) * sin) * 0.5;
+            const outlineHalfY = (outlineWidth * Math.abs(outline.scale.x) * sin
+                + outlineHeight * Math.abs(outline.scale.y) * cos) * 0.5;
+            const coreHalfX = (coreWidth * Math.abs(core.scale.x) * coreCos
+                + coreHeight * Math.abs(core.scale.y) * coreSin) * 0.5;
+            const coreHalfY = (coreWidth * Math.abs(core.scale.x) * coreSin
+                + coreHeight * Math.abs(core.scale.y) * coreCos) * 0.5;
+            const minX = Math.min(outline.position.x - outlineHalfX, core.position.x - coreHalfX);
+            const maxX = Math.max(outline.position.x + outlineHalfX, core.position.x + coreHalfX);
+            const minY = Math.min(outline.position.y - outlineHalfY, core.position.y - coreHalfY);
+            const maxY = Math.max(outline.position.y + outlineHalfY, core.position.y + coreHalfY);
+            const minZ = Math.min(outline.position.z - ND * Math.abs(outline.scale.z) * 0.5,
+                core.position.z - ND * Math.abs(core.scale.z) * 0.5);
+            const maxZ = Math.max(outline.position.z + ND * Math.abs(outline.scale.z) * 0.5,
+                core.position.z + ND * Math.abs(core.scale.z) * 0.5);
+            gem.x = (minX + maxX) * 0.5;
+            gem.y = (minY + maxY) * 0.5;
+            gem.z = (minZ + maxZ) * 0.5;
+            gem.zHalf = (maxZ - minZ) * 0.5;
+            gem.width = maxX - minX;
+            gem.height = maxY - minY;
             gem.string = n.s;
             gem.event = event;
             gem.outline = outline;
@@ -16726,7 +17055,7 @@
 
             if (geometry) {
                 const positions = geometry.attributes.position.array;
-                const last = SLIDE_RIBBON_SAMPLES * 12;
+                const last = (geometry.userData.ribbonSlices ?? SLIDE_RIBBON_SAMPLES) * 12;
                 strand.nearZ = Math.max(positions[2], positions[last + 2]);
                 strand.farZ = Math.min(positions[2], positions[last + 2]);
             } else {
@@ -16747,16 +17076,30 @@
                 return;
             }
             const positions = geometry.attributes.position.array;
-            const span = strand.nearZ - strand.farZ;
-            const u = span > 1e-9
-                ? Math.max(0, Math.min(1, (strand.nearZ - worldZ) / span))
-                : 0;
-            const offset = Math.round(u * SLIDE_RIBBON_SAMPLES) * 12;
-            let minX = positions[offset], maxX = positions[offset];
-            let minY = positions[offset + 1], maxY = positions[offset + 1];
+            // Slide-out contours add exact boundary rings, so sample spacing
+            // is nonuniform. Search the actual rendered depth, not a guessed
+            // uniform index, and interpolate the actual footprint.
+            const last = geometry.userData.ribbonSlices ?? SLIDE_RIBBON_SAMPLES;
+            let lo = 0, hi = last;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (positions[mid * 12 + 2] > worldZ) lo = mid + 1;
+                else hi = mid;
+            }
+            const offset = lo * 12;
+            const previous = Math.max(0, lo - 1) * 12;
+            const zSpan = positions[previous + 2] - positions[offset + 2];
+            const mix = zSpan > 1e-9
+                ? Math.max(0, Math.min(1, (positions[previous + 2] - worldZ) / zSpan)) : 1;
+            const firstX = positions[previous] + (positions[offset] - positions[previous]) * mix;
+            const firstY = positions[previous + 1] + (positions[offset + 1] - positions[previous + 1]) * mix;
+            let minX = firstX, maxX = firstX;
+            let minY = firstY, maxY = firstY;
             for (let vertex = 3; vertex < 12; vertex += 3) {
-                const x = positions[offset + vertex];
-                const y = positions[offset + vertex + 1];
+                const x = positions[previous + vertex]
+                    + (positions[offset + vertex] - positions[previous + vertex]) * mix;
+                const y = positions[previous + vertex + 1]
+                    + (positions[offset + vertex + 1] - positions[previous + vertex + 1]) * mix;
                 if (x < minX) minX = x;
                 if (x > maxX) maxX = x;
                 if (y < minY) minY = y;
@@ -16942,7 +17285,7 @@
          * only avoids opening time windows for frets the strand cannot reach.
          */
         function trailYieldSweepMayReachFret(sweepCenter, sweepWidth, fret) {
-            const widestGem = NW * 1.1 * ACCENT_RIM_XY_SCALE_MUL;
+            const widestGem = NW * 1.1 * ACCENT_RIM_XY_SCALE_MUL * 1.48;
             return hwyTrailOverlapsGemX(
                 sweepCenter, sweepWidth, xFretMid(fret), widestGem,
             );
@@ -16954,6 +17297,7 @@
          * come from the existing occlusion index; this pass only resolves the
          * local geometry and is deliberately independent of front-priority UI.
          */
+        const _slideOutCrossingTimesScratch = [];
         function collectTrailCrossingWindowsForStrand(
             n, now, susEnd, visibleEnd,
             starts, ends, targetTrailEnds,
@@ -16980,8 +17324,10 @@
                 const targetStrandCount = trailCrossingTargetStrands(target);
                 if (targetStrandCount === 0) continue;
                 const span = overlapEnd - overlapStart;
-                const sourceMovesX = !!(ctx.slideSt || n.tr);
-                const targetMovesX = !!(ctx.crossingTargetSlideSt || target.tr);
+                const sourceSlideOut = slideOutMarks(n).length > 0 && !ctx.slideSt;
+                const targetSlideOut = slideOutMarks(target).length > 0 && !ctx.crossingTargetSlideSt;
+                const sourceMovesX = !!(ctx.slideSt || n.tr || sourceSlideOut);
+                const targetMovesX = !!(ctx.crossingTargetSlideSt || target.tr || targetSlideOut);
                 const ribbonStep = span / SLIDE_RIBBON_SAMPLES;
                 const hasTremolo = !!(n.tr || target.tr);
                 const sampleStep = hasTremolo
@@ -17007,7 +17353,8 @@
                     const sourceEndX = sustainTrailCenterXAt(
                         n, ctx.strandBaseX, overlapEnd, ctx.slideSt, ctx.trailW,
                     );
-                    const sourceReach = n.tr ? ctx.trailW * 0.375 : 0;
+                    const sourceReach = (n.tr ? ctx.trailW * 0.375 : 0)
+                        + (sourceSlideOut ? slideOutReach(n) : 0);
                     const targetStartX = sustainTrailCenterXAt(
                         target, ctx.crossingTargetBaseX, overlapStart,
                         ctx.crossingTargetSlideSt, ctx.crossingTargetW,
@@ -17016,7 +17363,8 @@
                         target, ctx.crossingTargetBaseX, overlapEnd,
                         ctx.crossingTargetSlideSt, ctx.crossingTargetW,
                     );
-                    const targetReach = target.tr ? ctx.crossingTargetW * 0.375 : 0;
+                    const targetReach = (target.tr ? ctx.crossingTargetW * 0.375 : 0)
+                        + (targetSlideOut ? slideOutReach(target) : 0);
                     const sourceLo = Math.min(sourceStartX, sourceEndX)
                         - sourceReach - ctx.trailW * 0.5;
                     const sourceHi = Math.max(sourceStartX, sourceEndX)
@@ -17026,16 +17374,20 @@
                     const targetHi = Math.max(targetStartX, targetEndX)
                         + targetReach + ctx.crossingTargetW * 0.5;
                     if (sourceHi < targetLo || targetHi < sourceLo) continue;
-                    count = hwyFillTrailCrossingWindows(
-                        overlapStart,
-                        overlapEnd,
-                        sampleStep,
-                        trailCrossingFootprintsOverlapAt,
-                        starts,
-                        ends,
-                        count,
-                        crossingMergeFrom,
+                    // A short authored mark can lie wholly between regular
+                    // ribbon ticks. Partition at the same contour rings used
+                    // by geometry, including both moving trails, then refine.
+                    const crossingTimes = slideOutCrossingTimes(
+                        n, target, overlapStart, overlapEnd, _slideOutCrossingTimesScratch,
                     );
+                    for (let j = 1; j < crossingTimes.length; j++) {
+                        if (!(crossingTimes[j] > crossingTimes[j - 1])) continue;
+                        count = hwyFillTrailCrossingWindows(
+                            crossingTimes[j - 1], crossingTimes[j], sampleStep,
+                            trailCrossingFootprintsOverlapAt,
+                            starts, ends, count, crossingMergeFrom,
+                        );
+                    }
                 }
             }
             if (targetTrailEnds) {
@@ -17068,7 +17420,8 @@
             const tremoloReach = n.tr ? ctx.trailW * 0.375 : 0;
             const sweepCenter = (strandBaseX + slideEndX) * 0.5;
             const sweepWidth = Math.abs(slideEndX - strandBaseX)
-                + ctx.trailW + tremoloReach * 2;
+                + ctx.trailW + tremoloReach * 2
+                + (slideOutMarks(n).length > 0 && !ctx.slideSt ? slideOutReach(n) * 2 : 0);
             let count = 0;
             if (priorityTimes) priorityTimes[priorityIndex] = -Infinity;
             // Fret zero is always considered because an open gem spans the
@@ -17647,7 +18000,7 @@
                 // outline + core share the pNote pool, so set geometry explicitly
                 // each frame (a recycled mesh may carry a gradient geometry from a
                 // prior core use). Outline always uses the plain box.
-                outline.geometry = gNote;
+                outline.geometry = n.ghost === true ? gNoteGhost : gNote;
                 const trailYieldGemEvent = trailYieldTargetEvent;
                 const isTrailYieldTarget = !!(trailYieldGemEvent
                     && !trailYieldGemInFront
@@ -17707,7 +18060,9 @@
                 // carried by the outline shell and lateral face fill.
                 core.material = n.ac ? mAccentCore[s] : mStr[s];
                 // Gradient gem body for strings 0..5; flat box otherwise.
-                core.geometry = (!n.ac && gNoteGrad[s]) ? gNoteGrad[s] : gNote;
+                core.geometry = n.ghost === true
+                    ? ((!n.ac && gNoteGhostGrad[s]) ? gNoteGhostGrad[s] : gNoteGhost)
+                    : ((!n.ac && gNoteGrad[s]) ? gNoteGrad[s] : gNote);
                 core.renderOrder = renderOrderForLayerAtZ(noteZ, noteCoreLayer);
                 core.position.set(x, y + techniqueYNow, noteZ + 0.001);
                 core.rotation.z = approachRot;
@@ -17721,6 +18076,12 @@
                     core.scale.set(rimXY, rimXY, 2.5 * rimZ);
                 }
                 if (_hitPunch !== 1) core.scale.multiplyScalar(_hitPunch);   // #3 hit scale-punch
+                if (n.ghost === true && n.f === 0) {
+                    const bodyWidth = NW * Math.max(outline.scale.x, core.scale.x);
+                    const markerScale = core.scale.y / (0.1 * openSlabThickMul);
+                    hwyShapeOpenGhostGeometry(outline, gNoteGhost, bodyWidth, markerScale * 1.1, NW, _ownedSharedGeos);
+                    hwyShapeOpenGhostGeometry(core, core.geometry, bodyWidth, markerScale, NW, _ownedSharedGeos);
+                }
                 _registerIncomingLabelOccluder(core, noteZ, outline);
                 trailYieldRegisterGem(
                     trailYieldGemEvent, noteZ, outline, core, noteFaceMesh,
@@ -17886,6 +18247,7 @@
                             || (Array.isArray(n.bnv) && n.bnv.length > 0)
                             || n.tr
                             || hasTechniqueVibrato
+                            || slideOutMarks(n).length > 0
                         );
                         // Outline material for the sustain trail border — uses the
                         // same materials as the gem border so hit/miss colours are
@@ -18023,6 +18385,10 @@
                                 body.rotation.set(0, 0, 0);
                                 body.position.set(0, 0, 0);
                                 body.material = _ndState ? mGlow[s] : mSus[s];
+                                if (slideOutMarks(n).length > 0 && !slideSt) {
+                                    olMesh.material = slideRibbonFadeMaterial(_susOlMat);
+                                    body.material = slideRibbonFadeMaterial(body.material);
+                                }
                                 slideRibbonUpdatePair(
                                     olMesh.geometry, body.geometry, strandX,
                                     tw + 0.4 * K, th + 0.4 * K,
@@ -18134,6 +18500,21 @@
                 const specialMarkerScale = n.f === 0
                     ? NH * 1.5 * sLbl * openWScale
                     : NH * 1.5 * sLbl;
+                // Legacy direction-only files cannot place a timed trail.
+                // A small on-gem chevron conveys only their known direction.
+                const legacySlideOut = slideOutLegacyDirection(n);
+                if (legacySlideOut && n.f > 0 && validString(s)) {
+                    const direction = legacySlideOut * (_leftyCached ? -1 : 1);
+                    const arrow = pTechPlane.get();
+                    arrow.material = _spriteMat2MeshMat(arrow,
+                        slideArrowMat(direction > 0, darkenHex(activePalette[s], 0.55)));
+                    const size = NH * 1.1 * sLbl;
+                    arrow.scale.set(size, size, 1);
+                    arrow.position.set(x + direction * NW * 1.15, y + techniqueYNow, noteZ + K);
+                    arrow.rotation.z = 0;
+                    arrow.renderOrder = techniqueMarkerRenderOrder;
+                    arrow.material.opacity = 1;
+                }
                 // ── Slide direction arrow (on the note/gem) ─────────────────
                 // A small ›/‹ chevron beside the note pointing toward the
                 // slide's destination fret. Visible for the note's whole
@@ -19172,6 +19553,8 @@
             for (const m of mStr) m?.dispose?.();
             for (const m of mGlow) m?.dispose?.();
             for (const m of mSus) m?.dispose?.();
+            for (const m of _slideRibbonFadeMaterials.values()) m.dispose();
+            _slideRibbonFadeMaterials.clear();
             for (const m of mStrHitOutline) m?.dispose?.();
             for (const m of mAccentOutline) m?.dispose?.();
             for (const m of mAccentCore) m?.dispose?.();
@@ -19274,7 +19657,8 @@
             chordFrameGradTex = chordFrameGradTexArp = null;
             pFretColMarker = null;
             _fretMarkerWaveCache.clear();
-            gNote = gSus = gBeat = gTapChevron = null;
+            gNote = gNoteGhost = gSus = gBeat = gTapChevron = null;
+            gNoteGrad = []; gNoteGhostGrad = [];
             tgtX = curX = xFretMid(CAM_LOCK_CENTER_FRET); tgtDist = curDist = CAM_DIST_BASE; tgtLookY = curLookY = 0; _fretRowFitBoost = 1; nStr = NSTR; _oobStringWarned = false;
             _lookaheadCamX = xFretMid(CAM_LOCK_CENTER_FRET);
             _lookaheadFretSpan = DEFAULT_LOOKAHEAD_FRET_SPAN;

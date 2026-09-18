@@ -494,6 +494,7 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
             {
                 "index": i,
                 "name": a.name,
+                "type": a.type,
                 "smart_name": smart_names[i],
                 "notes": len(a.notes) + sum(len(c.notes) for c in a.chords),
             }
@@ -506,6 +507,7 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
             "artist": song.artist,
             "duration": song.song_length,
             "arrangement": arr.name,
+            "arrangement_type": arr.type,
             "arrangement_smart_name": smart_names[best],
             "arrangement_index": best,
             # Echo the resolved naming mode so highway.js doesn't have to

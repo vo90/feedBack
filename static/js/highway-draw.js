@@ -24,8 +24,9 @@ import {
     _paintGemGlow, _noteState, fillTextReadable, fretX,
 } from './highway-state-primitives.js';
 import {
-    _shimmerNoise, bnvNormalizedPoints, chordHarmonyLabels, project, roundRect,
+    _shimmerNoise, bendToneLabel, bnvNormalizedPoints, chordHarmonyLabels, project, roundRect,
     teachingDegreeLabel, teachingFingerLabel,
+    noteFretLabel,
 } from './highway-geometry.js';
 import {
     BG, CHAIN_GAP_THRESHOLD, CHAIN_RENDER_FULL_MAX, CHORD_FRAME_FRETS, MUTE_BOX_BAR,
@@ -61,6 +62,56 @@ export function strumGroupBuckets(items) {
         byKey.get(ch).push(it);
     }
     return order.map(k => byKey.get(k)).filter(g => g.length >= 2);
+}
+
+// Same source contract as the 3D highway: array presence is authoritative;
+// bounds locate a written segment, never an exact pitch/speed instruction.
+export function slideOutMarks2D(n) {
+    if (!Array.isArray(n?.slide_out_marks) || !Number.isFinite(n.sus) || n.sus <= 0) return [];
+    const out = [];
+    let end = 0;
+    for (const m of n.slide_out_marks) {
+        if (!m || !['up', 'down'].includes(m.direction)
+            || !Number.isFinite(m.start) || !Number.isFinite(m.end)
+            || m.start < end || m.start < 0 || m.end <= m.start || m.end > n.sus + 0.000501) continue;
+        end = Math.min(m.end, n.sus);
+        if (end > m.start) out.push({ direction: m.direction, start: m.start, end });
+    }
+    return out;
+}
+
+function drawSlideOutRibbon2D(hwState, W, H, n, onset = n.t) {
+    if (!Array.isArray(n.slide_out_marks) || !(n.f > 0) || n.sl >= 0 || n.slu >= 0
+        || onset + n.sus < hwState.currentTime || onset > hwState.currentTime + VISIBLE_SECONDS) return;
+    const c = hwState.ctx;
+    for (const mark of slideOutMarks2D(n)) {
+        const start = onset + Math.max(mark.start, mark.end - 0.22);
+        const end = onset + mark.end;
+        if (end <= hwState.currentTime || start > hwState.currentTime + VISIBLE_SECONDS) continue;
+        c.save();
+        c.strokeStyle = hwState.STRING_COLORS[n.s] || '#aaa';
+        c.lineCap = 'butt';
+        let previous = null;
+        for (let i = 0; i <= 16; i++) {
+            const u = i / 16;
+            const t = start + (end - start) * u;
+            const dt = t - hwState.currentTime;
+            const p = project(Math.max(0, dt));
+            if (!p || dt > VISIBLE_SECONDS) { previous = null; continue; }
+            const ease = u * u * (3 - 2 * u);
+            const localWidth = Math.abs(fretX(hwState, n.f, p.scale, W) - fretX(hwState, n.f - 1, p.scale, W));
+            const x = fretX(hwState, n.f, p.scale, W)
+                + (mark.direction === 'up' ? 1 : -1) * localWidth * 0.8 * ease;
+            const y = p.y * H;
+            if (previous && dt >= 0) {
+                c.globalAlpha = 1 - ease;
+                c.lineWidth = Math.max(2, 6 * p.scale) * (1 - 0.28 * ease);
+                c.beginPath(); c.moveTo(previous.x, previous.y); c.lineTo(x, y); c.stroke();
+            }
+            previous = { x, y };
+        }
+        c.restore();
+    }
 }
 
 export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
@@ -118,7 +169,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
         hwState.ctx.font = `bold ${fontSize}px sans-serif`;
         hwState.ctx.textAlign = 'center';
         hwState.ctx.textBaseline = 'middle';
-        fillTextReadable(hwState, '0', W/2, y);
+        fillTextReadable(hwState, noteFretLabel(0, opts), W/2, y);
 
         // Technique labels on open strings — PM, H/P/T, tremolo, and
         // accent markers are all meaningful on fret 0. Bend and slide
@@ -225,7 +276,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     hwState.ctx.font = `bold ${fontSize}px sans-serif`;
     hwState.ctx.textAlign = 'center';
     hwState.ctx.textBaseline = 'middle';
-    fillTextReadable(hwState, String(fret), x, y);
+    fillTextReadable(hwState, noteFretLabel(fret, opts), x, y);
 
     // Bend notation
     if (bend && bend > 0 && sz >= 12) {
@@ -282,13 +333,8 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
             labelTopY = tipY;
         }
 
-        // Bend label: peak magnitude — "full", "1/2", "1 1/2", "2"
-        let label;
-        if (bend === 0.5) label = '½';
-        else if (bend === 1) label = 'full';
-        else if (bend === 1.5) label = '1½';
-        else if (bend === 2) label = '2';
-        else label = bend.toFixed(1);
+        // Conventional whole-tone label for the semitone peak magnitude.
+        const label = bendToneLabel(bend);
 
         hwState.ctx.fillStyle = '#fff';
         hwState.ctx.font = `bold ${Math.max(9, sz * 0.28) | 0}px sans-serif`;
@@ -346,6 +392,18 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
             hwState.ctx.lineTo(x + sz * 0.15, y - dir * sz * 0.15);
             hwState.ctx.stroke();
         }
+    }
+    // Older scalar-only files carry direction but no reliable segment time.
+    // Use a compact on-gem slash, never a timed trail or target fret.
+    if (slide < 0 && slu < 0 && opts?.slide_out_marks === undefined
+        && (opts?.slide_out === 'up' || opts?.slide_out === 'down')) {
+        const direction = opts.slide_out === 'up' ? 1 : -1;
+        hwState.ctx.strokeStyle = '#fff';
+        hwState.ctx.lineWidth = Math.max(2, sz / 10);
+        hwState.ctx.beginPath();
+        hwState.ctx.moveTo(x - sz * 0.25, y + direction * sz * 0.25);
+        hwState.ctx.lineTo(x + sz * 0.25, y - direction * sz * 0.25);
+        hwState.ctx.stroke();
     }
 
     // H/P/T label above note
@@ -494,6 +552,12 @@ export function drawSustains(hwState, W, H) {
             hwState.ctx.lineTo(x1 - sw1, y1);
             hwState.ctx.fill();
         }
+        drawSlideOutRibbon2D(hwState, W, H, n);
+    }
+    const chords = hwState._xfChords !== null ? hwState._xfChords
+        : hwState._filteredChords !== null ? hwState._filteredChords : hwState.chords;
+    for (const chord of chords || []) for (const n of chord.notes || []) {
+        drawSlideOutRibbon2D(hwState, W, H, n, chord.t);
     }
 }
 
@@ -708,7 +772,7 @@ export function drawChords(hwState, W, H) {
                 if (x > xMax) xMax = x;
             }
         }
-        if (allMuted) {
+        if (allMuted && !sorted.some(n => n.ghost === true)) {
             const { boxX, boxW, boxTop, boxH } = _computeChordBox(hwState, p, H, W, sorted, sz, actualSpread, baseFret);
 
             hwState.ctx.strokeStyle = MUTE_BOX_STROKE;
@@ -1105,8 +1169,11 @@ export function bsearchChords(arr, time) {
 // bypass drawNote and so must fall back to the full path whenever a
 // technique flag is present, otherwise authored cues vanish silently.
 export function _noteHasTechniqueFlags(n) {
+    if (n.ghost === true) return true;
     if (n.bn || n.ho || n.po || n.tp || n.pm || n.vb || n.tr || n.ac || n.hm || n.hp || n.mt || n.fhm) return true;
     if (typeof n.sl === 'number' && n.sl >= 0) return true;
+    if ((Array.isArray(n.slide_out_marks) && slideOutMarks2D(n).length > 0) || (n.slide_out_marks === undefined
+        && (n.slide_out === 'up' || n.slide_out === 'down'))) return true;
     return false;
 }
 
