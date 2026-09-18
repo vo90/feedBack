@@ -9,7 +9,7 @@ const start = source.indexOf('Object.assign(_scrChordNote, cn);');
 const end = source.indexOf('drawNote(', start);
 assert.ok(start >= 0 && end > start, 'actual chord scratch preparation must be present');
 const prepare = new Function(`
-    const _linkedBendStarts = new WeakMap();
+    const _linkedBendStarts = new WeakMap(), _linkedBendEnds = new WeakMap();
     return function(_scrChordNote, cn, ch) {
         ${source.slice(start, end)}
         return _scrChordNote;
