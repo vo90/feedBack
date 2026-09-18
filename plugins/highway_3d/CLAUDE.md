@@ -49,6 +49,23 @@ The file is laid out top-to-bottom as:
    - `canvasSize()` — resilient canvas-dimension lookup
    - **Returned API** — `init / draw / resize / destroy` (setRenderer contract)
 
+## Incoming fret-label layout
+
+`_setIncomingFloorLabelMap` top-anchors the three gold incoming-label paths and
+adjacent teaching labels after pool reuse. `_layoutIncomingFretLabels` runs
+**after** `update` (including trail-order finalization) and `camUpdate`. It
+uses cached texture ink bounds for the fixed-row handoff and conservative
+projected core/outline/technique bounds for overlap. Only label priorities are
+lowered; do not replace the shared depth buckets or alter gem/trail orders.
+Register new incoming technique meshes with `_registerIncomingLabelOccluder`.
+The geometry-bound cache assumes their vertices remain static after creation;
+mutable trails must not be registered without invalidating those bounds.
+Per-renderer records and vectors are reused and cleared at teardown. The fret
+row's existing camera fit guard measures glyph bottoms rather than only the
+row centre. At arrival, a partially clipped matching row digit is lifted just
+inside the viewport before handoff; wholly offscreen rows remain ineligible.
+The pool resets that temporary Sprite centre on the next update.
+
 ## Coordinate system
 
 - **+X** runs along the fretboard (low frets → high frets, `fretX(f)` and `fretMid(f)`).

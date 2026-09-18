@@ -29,6 +29,21 @@ A 3D note highway visualization for [FeedBack](https://github.com/got-feedback/f
 
 Most of the visual controls (background style, intensity, audio reactivity, color palette) live on FeedBack's **Settings** screen under the *3D Highway* section.
 
+### Incoming fret numbers
+
+Gold fret numbers sit below the chord-box or note-stem base for chords, single
+notes and arpeggios. They retain the same fret and timing positions. In dense
+passages, overlapping nearer gems and technique symbols render over farther
+numbers, including when sustain effects change a gem's drawing order.
+
+At the play line, a number hands off to the fixed fretboard row only when the
+same fret is visible there and the labels overlap. The fixed number becomes
+gold; missing or offscreen row labels never hide the incoming number. The
+normal camera fit guard accounts for the visible digits and Text size. If a
+matching arrival digit is still partly clipped at the zoom limit, its text is
+lifted just inside the screen before the handoff. Manual camera positioning
+remains under your control.
+
 ### Bend starts and linked slides
 
 An explicit bend sample at note onset sets both the approaching gem's height and
