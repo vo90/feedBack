@@ -17826,7 +17826,10 @@
             // the unconditional sustain trail all share one declaration.
             // For skipBody=true (slide targets), defaults are safe no-ops.
             const openSlabThickMul = n.f === 0 ? 1.5 : 1;
-            const approachRot = n.f > 0 ? Math.max(0, Math.min(1, dt / AHEAD)) * Math.PI / 2 : 0;
+            // RS+ keeps the gem, rim and attached symbols in their landing
+            // orientation for the entire approach. Current retains its turn.
+            const approachRot = !rsPlusNotation && n.f > 0
+                ? Math.max(0, Math.min(1, dt / AHEAD)) * Math.PI / 2 : 0;
             // Ghost preview window: capped to the gap from the previous note
             // on this string so dense passages don't show the preview 0.6 s
             // ahead with no visible gem. Minimum 0.05 s so the ghost isn't
@@ -18717,7 +18720,7 @@
                         const arrowScale = NH * 1.1 * sLbl;
                         arrow.scale.set(arrowScale, arrowScale, 1);
                         arrow.position.set(x + slideDir * NW * 1.15, y + techniqueYNow, noteZ + K);
-                        // No rotation, ever — notes themselves rotate in
+                        // No rotation, ever — Current notes rotate in
                         // (approachRot) as they approach, but that would
                         // tilt the ›/‹ chevron and make its left/right
                         // direction ambiguous. Always flat.

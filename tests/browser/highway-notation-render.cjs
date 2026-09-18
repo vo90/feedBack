@@ -8,6 +8,7 @@
  * recording draw CPU time, finish wait, draw calls, triangles, and GPU identity.
  * --fidelity-only reviews each technique plus open-marker and arpeggio layouts.
  * --chords-only captures and validates just the chord sequence in both styles.
+ * --orientation-only checks stable RS+ gems/markers across approach and live style reuse.
  * --reference captures older notation for comparison without new geometry checks.
  * --detail-filter name,name limits closeups; --times t,t and --fixture-name name
  * select chart poses without changing or importing the source song library.
@@ -30,6 +31,7 @@ const baseline = args.includes('--baseline');
 const quick = args.includes('--quick');
 const fidelityOnly = args.includes('--fidelity-only');
 const chordsOnly = args.includes('--chords-only');
+const orientationOnly = args.includes('--orientation-only');
 const reference = args.includes('--reference');
 const perfOnly=args.includes('--perf-only'),perfRounds=Number(option('--perf-rounds',1));
 const width=Number(option('--width',1280)),height=Number(option('--height',720));
@@ -51,8 +53,16 @@ served = once(served, 'const b = pChordBox.get();', `const b = pChordBox.get();
   if (window.__notationProbe) window.__notationProbe.edges.push({ t:ch.t, dt:chDt, isRepeat, mesh:b });`);
 if(served.includes('const mesh = pRsChordFrame.get();'))served=once(served,'const mesh = pRsChordFrame.get();',`const mesh = pRsChordFrame.get();
   if(window.__notationProbe)window.__notationProbe.roundedFrames.push({mesh,openTop,halo,width,height,rim,z});`);
+if(orientationOnly)for(const [anchor,name,kind] of [
+  ['const l = pTechPlane.get();','l','bend'],
+  ['const face = pTechPlane.get();','face','face'],
+  ['const arrow = pTechPlane.get();','arrow','slide'],
+  ['const halo = pAccentHalo.get();','halo','halo'],
+  ['const edges = pNoteEdge.get();','edges','verdict-edge'],
+])served=once(served,anchor,`${anchor}
+  if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'${kind}',mesh:${name}});`);
 served = once(served, "contextType: 'webgl2',", `__notationAudit() { return {
-  scene, cam, ren, noteG, pNote, pTechPlane, composer:_composer, bloom:_bloom,
+  scene, cam, ren, noteG, pNote, pTechPlane, projMeshArr, composer:_composer, bloom:_bloom,
   style:typeof rsPlusNotation === 'undefined' ? 'current' : rsPlusNotation ? 'rsplus' : 'current',
   settings:{glow:glowMul,vibrancy,cinematic:_cinematic,hitFx:_hitFx,bloom:_bloom},
 }; }, contextType: 'webgl2',`);
@@ -136,11 +146,11 @@ async function main() {
     await page.goto('http://notation-fixture.test/');
     await page.evaluate(()=>{
       window.__probeMaterial=m=>({type:m.type,opacity:m.opacity,transparent:m.transparent,fog:m.fog,color:m.color?.toArray(),emissive:m.emissive?.toArray(),emissiveIntensity:m.emissiveIntensity,vertexColors:m.vertexColors,blending:m.blending,depthTest:m.depthTest,depthWrite:m.depthWrite,uniforms:m.uniforms?Object.fromEntries(Object.entries(m.uniforms).map(([k,v])=>[k,v.value?.toArray?v.value.toArray():v.value])):undefined});
-      window.__probeMesh=m=>({material:__probeMaterial(m.material),geometry:m.geometry.type,triangles:(m.geometry.index?.count||m.geometry.attributes.position.count)/3,position:m.position.toArray(),scale:m.scale.toArray(),renderOrder:m.renderOrder,visible:m.visible});
+      window.__probeMesh=m=>({material:__probeMaterial(m.material),geometry:m.geometry.type,triangles:(m.geometry.index?.count||m.geometry.attributes.position.count)/3,position:m.position.toArray(),rotation:m.rotation.toArray().slice(0,3),scale:m.scale.toArray(),renderOrder:m.renderOrder,visible:m.visible});
       window.__fillAlpha=m=>{const source=m.map?.image;if(!source)return null;const rgba=source.data||source.getContext?.('2d').getImageData(0,0,source.width,source.height).data;if(!rgba)return null;let min=255,max=0;for(let i=3;i<rgba.length;i+=4){min=Math.min(min,rgba[i]);max=Math.max(max,rgba[i]);}return {min,max,width:source.width,height:source.height};};
       window.__captureNotation=()=>{
         const a=r.__notationAudit();
-        window.__notationProbe={notes:[],frames:[],edges:[],roundedFrames:[]};
+        window.__notationProbe={notes:[],frames:[],edges:[],roundedFrames:[],markers:[]};
         a.ren.info.autoReset=false;a.ren.info.reset();r.draw(bundle);
         const p=window.__notationProbe;window.__notationProbe=null;
         const gl=a.ren.getContext();
@@ -149,7 +159,9 @@ async function main() {
           notes:p.notes.map(({note,dt,fromChord,core,outline})=>{const v=core.getWorldPosition(core.position.clone()).project(a.cam);const rgba=new Uint8Array(4);gl.readPixels(Math.round((v.x+1)*a.ren.domElement.width/2),Math.round((v.y+1)*a.ren.domElement.height/2),1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba);return {note,dt,fromChord,core:__probeMesh(core),outline:__probeMesh(outline),screen:[(v.x+1)*innerWidth/2,(1-v.y)*innerHeight/2],centerPixel:Array.from(rgba)};}),
           frames:p.frames.map(({fill,...metadata})=>({...metadata,fill:__probeMesh(fill),textureAlpha:__fillAlpha(fill.material)})),
           edges:p.edges.map(({t,dt,isRepeat,mesh})=>({t,dt,isRepeat,mesh:__probeMesh(mesh)})),
-          roundedFrames:p.roundedFrames.map(({mesh,...rest})=>({...rest,mesh:__probeMesh(mesh)}))};
+          roundedFrames:p.roundedFrames.map(({mesh,...rest})=>({...rest,mesh:__probeMesh(mesh)})),
+          markers:p.markers.map(({mesh,...rest})=>({...rest,mesh:__probeMesh(mesh)})),
+          ghosts:(a.projMeshArr||[]).flat().filter(m=>m.visible).map(__probeMesh)};
       };
     });
     async function init(b,settings) {
@@ -214,8 +226,94 @@ async function main() {
       return chords;
     }
     const styles=baseline?['current']:option('--style')?[option('--style')]:['current','rsplus'];
+    if(orientationOnly){
+      const onset=13,distances=[2.7,1.5,.3,0];
+      const member=n=>({sus:0,sl:-1,slu:-1,bn:0,ho:false,po:false,hm:false,hp:false,
+        pm:false,mt:false,fhm:false,vb:false,tr:false,ac:false,tp:false,slp:false,plk:false,...n});
+      const singles=baseBundle();
+      singles.notes=techniqueFlags.map(([name,flags],i)=>({t:onset,s:i%6,f:name.startsWith('open')?0:3+Math.floor(i/6),...flags,_fixtureName:name}));
+      // Both physical bend directions must survive removal of the decorative roll.
+      singles.notes.push({t:onset,s:0,f:8,bn:1,sus:1},{t:onset,s:5,f:8,bn:1,sus:1});
+      const chord=baseBundle();
+      chord.chordTemplates=[{name:'C',frets:[0,3,5,5,4,3],fingers:[-1,1,3,4,2,1]}];
+      chord.chords=[{t:onset,id:0,notes:[{s:0,f:0},{s:1,f:3,ac:true},{s:2,f:5,ho:true},{s:3,f:5,pm:true},{s:4,f:4,hp:true},{s:5,f:3}].map(member)}];
+      chord.handShapes=[{chord_id:0,start_time:onset,end_time:onset+1.5}];
+      const arp=baseBundle();
+      arp.chordTemplates=[{name:'Am',frets:[-1,0,2,2,1,0],fingers:[-1,-1,2,3,1,-1],arp:true}];
+      arp.handShapes=[{chord_id:0,start_time:onset,end_time:onset+2.6,arp:true}];
+      arp.chords=[{t:onset,id:0,notes:[{s:1,f:0},{s:2,f:2},{s:3,f:2},{s:4,f:1},{s:5,f:0}].map(member)}];
+      arp.notes=[{t:onset,s:1,f:0},{t:onset+.2,s:2,f:2,ac:true},{t:onset+.4,s:3,f:2,ho:true},{t:onset+.6,s:4,f:1},{t:onset+.8,s:5,f:0}];
+      const isZero=rotation=>rotation.every(v=>Math.abs(v)<1e-10);
+      function assertOrientation(proof,label,inverted=false){
+        const modern=proof.style==='rsplus';
+        for(const n of proof.notes){
+          const expected=modern||n.note.f===0?0:Math.max(0,Math.min(1,n.dt/3))*Math.PI/2;
+          for(const part of ['core','outline']){
+            const [x,y,z]=n[part].rotation;
+            check(Math.abs(x)+Math.abs(y)<1e-10&&Math.abs(z-expected)<1e-10,`${label}: ${part} rotated for ${n.note.s}/${n.note.f}/${n.dt}`);
+          }
+        }
+        for(const marker of proof.markers){
+          const {note,kind,mesh}=marker;
+          const visualString=inverted?note.s:5-note.s;
+          const expected=kind==='bend'&&visualString>=2.5?Math.PI:0;
+          check(Math.abs(mesh.rotation[0])+Math.abs(mesh.rotation[1])<1e-10&&Math.abs(mesh.rotation[2]-expected)<1e-10,
+            `${label}: ${kind} marker lost stable orientation/direction for string ${note.s}`);
+        }
+        for(const frame of proof.frames)check(isZero(frame.fill.rotation),`${label}: chord fill rotated`);
+        for(const frame of proof.roundedFrames)check(isZero(frame.mesh.rotation),`${label}: chord/arpeggio rim rotated`);
+        for(const ghost of proof.ghosts)check(isZero(ghost.rotation),`${label}: fretboard projection rotated`);
+      }
+      for(const [name,b] of [['singles',singles],['chord',chord],['arpeggio',arp]]){
+        for(const dt of distances){
+          b.currentTime=onset-dt;
+          const proof=await capture(`orientation-${name}-${dt}`,b,{notationStyle:'rsplus',glow:.25,bloom:true,slideArrowApproachVisible:true},
+            {expectBodies:true,image:dt===1.5||dt===0});
+          assertOrientation(proof,`${name}/${dt}`);
+          if(name==='singles'){
+            check(proof.notes.length===singles.notes.length,`${name}/${dt}: missing technique note coverage`);
+            check(proof.markers.some(m=>m.kind==='face')&&proof.markers.some(m=>m.kind==='bend')&&proof.markers.some(m=>m.kind==='slide')&&proof.markers.some(m=>m.kind==='halo'),`${name}/${dt}: missing attached marker/halo coverage`);
+          }
+          if(name==='chord')check(proof.notes.filter(n=>n.fromChord).length===6&&(dt===0||proof.frames.length>0),`${name}/${dt}: chord fixture missing members/frame`);
+          if(name==='arpeggio')check(proof.roundedFrames.some(f=>f.mesh.material.uniforms.uBracketCap>0),`${name}/${dt}: missing arpeggio brackets`);
+        }
+      }
+      const inverted={...singles,currentTime:onset-1.5,inverted:true,lefty:true};
+      const invertedProof=await capture('orientation-inverted-lefty',inverted,{notationStyle:'rsplus',glow:.25,bloom:false},{expectBodies:true});
+      assertOrientation(invertedProof,'inverted-lefty',true);
+      const scored=await capture('orientation-verdict', {...singles,currentTime:onset}, {notationStyle:'rsplus',glow:.25,bloom:false,scored:true},{expectBodies:true});
+      assertOrientation(scored,'verdict');
+      check(scored.markers.some(m=>m.kind==='verdict-edge'),'Verdict fixture did not exercise edge meshes');
+
+      // Warm both styles before measuring; the same live renderer reuses every pool.
+      const live={...singles,currentTime:onset-1.5};
+      await init(live,{notationStyle:'current',glow:.25,bloom:false});
+      await page.evaluate(()=>{
+        for(const style of ['rsplus','current']){
+          h3dBgSetNotationStyle(style);
+          for(let i=0;i<90;i++)r.draw(bundle);
+        }
+      });
+      const passes=[];
+      for(const style of ['current','rsplus','current','rsplus','current']){
+        const proof=await page.evaluate(style=>{h3dBgSetNotationStyle(style);for(let i=0;i<90;i++)r.draw(bundle);return __captureNotation();},style);
+        check(proof.style===style,`Orientation style setter failed for ${style}`);
+        if(style==='rsplus')assertOrientation(proof,'live-rsplus');
+        else{
+          check(proof.notes.some(n=>n.note.f>0&&n.core.rotation[2]>.5),'Current legacy turn disappeared');
+          for(const n of proof.notes)check(Math.abs(n.core.rotation[2]-(n.note.f>0?Math.PI/4:0))<1e-10,'Current legacy rotation did not restore');
+        }
+        passes.push(proof);
+      }
+      for(const [a,b] of [[1,3],[2,4]]){
+        check(JSON.stringify(passes[a].renderer)===JSON.stringify(passes[b].renderer),`Orientation roundtrip added draw calls/resources for ${passes[a].style}`);
+        const meshes=p=>p.notes.map(n=>({note:n.note,core:n.core,outline:n.outline}));
+        check(JSON.stringify(meshes(passes[a]))===JSON.stringify(meshes(passes[b])),`Orientation roundtrip retained stale pooled state for ${passes[a].style}`);
+      }
+      results.push({name:'orientation-live-style-roundtrip',passes});
+    }
     if(chordsOnly)for(const style of styles)await captureChordSequence(style);
-    if(!chordsOnly&&!perfOnly&&!fidelityOnly)for(const style of styles){
+    if(!orientationOnly&&!chordsOnly&&!perfOnly&&!fidelityOnly)for(const style of styles){
       const effectProofs=[];
       for(const [effect,glow,bloom] of [['zero',0,false],['soft',.25,true],['user',.05,false]]){
         const proof=await capture(`${style}-eight-strings-${effect}`,matrix(),{notationStyle:style,glow,bloom},{expectBodies:true});
@@ -249,7 +347,7 @@ async function main() {
         }
       }
     }
-    if(!chordsOnly&&fidelityOnly){
+    if(!orientationOnly&&!chordsOnly&&fidelityOnly){
       for(const [index,[name,flags]] of techniqueFlags.entries()){
         if(option('--detail-filter')&&!option('--detail-filter').split(',').includes(name))continue;
         const string = name==='tap'?4:name==='half-bend'?2:
@@ -297,7 +395,7 @@ async function main() {
         }
       }
     }
-    if(!chordsOnly&&!baseline&&!perfOnly&&!fidelityOnly){
+    if(!orientationOnly&&!chordsOnly&&!baseline&&!perfOnly&&!fidelityOnly){
       await init(matrix(),{notationStyle:'current',glow:0,bloom:false});
       const controls=await page.evaluate(()=>feedBackViz_highway_3d.panelControls);
       for(const key of ['notationStyle','glow','bloom'])check(controls.some(c=>c.key===key),`Missing panel control ${key}`);
@@ -348,7 +446,7 @@ async function main() {
         await page.evaluate(()=>{for(const x of __splitInstances)x.destroy();delete window.feedBackSplitscreen;window.r=null;const host=document.getElementById('host');host.style.display='block';host.innerHTML='<canvas id="highway"></canvas>';});
       }
     }
-    if(!chordsOnly&&((!quick&&!fidelityOnly)||perfOnly))for(let round=0;round<perfRounds;round++)for(const style of (round%2?[...styles].reverse():styles))for(const [effect,glow,bloom] of (perfOnly?[['zero',0,false],['soft',.25,true]]:[['soft',.25,true]])){
+    if(!orientationOnly&&!chordsOnly&&((!quick&&!fidelityOnly)||perfOnly))for(let round=0;round<perfRounds;round++)for(const style of (round%2?[...styles].reverse():styles))for(const [effect,glow,bloom] of (perfOnly?[['zero',0,false],['soft',.25,true]]:[['soft',.25,true]])){
       await init(denseScene(),{notationStyle:style,glow,bloom});
       const perf=await page.evaluate(async()=>{
         const a=r.__notationAudit(),gl=a.ren.getContext(),samples=[],cpuSamples=[],finishSamples=[];

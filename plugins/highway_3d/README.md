@@ -33,7 +33,7 @@ Most of the visual controls (background style, intensity, audio reactivity, colo
 
 Choose **Current** to retain the existing appearance, or **RS+ inspired** for rounded, solid note faces and sharp technique symbols. Current remains the default. Changing style keeps your saved string colors, background, and effects settings.
 
-In RS+ inspired, ordinary and accented notes have the same full body opacity throughout their approach. Accents use a stronger rim; each chord member follows its own chart accent flag. Chords use pale neutral panels; plain repeats use closed half-height panels. Chords with techniques that need individual notes retain those notes and full-height frames. Hollow neck previews and purple arpeggio guidance remain visually separate from playable attacks.
+In RS+ inspired, ordinary and accented notes have the same full body opacity throughout their approach. Gems, rims and technique symbols keep a fixed orientation as they travel down the highway, including chord and arpeggio notes. Bend and slide paths still follow the chart. Accents use a stronger rim; each chord member follows its own chart accent flag. Chords use pale neutral panels; plain repeats use closed half-height panels. Chords with techniques that need individual notes retain those notes and full-height frames. Hollow neck previews and purple arpeggio guidance remain visually separate from playable attacks.
 
 | Control | RS+ inspired behavior |
 |---|---|
