@@ -60,7 +60,7 @@ function harness(strings = 6, inverted = false, lefty = false) {
                 return n;
             },
             gemOffset(n,now) {
-                const sustained=now>n.t && now<=n.t+(n.sus||0);
+                const dt=n.t-now, hasSus=n.sus>0, susEnd=n.t+(n.sus||0);
                 ${src.match(/const techniqueYNow = [\s\S]*?;/)[0]}
                 return techniqueYNow;
             },

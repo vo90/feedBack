@@ -56,7 +56,7 @@ function harness(nStr = 6, inverted = false) {
                 return n;
             },
             gemOffset(n,now) {
-                const sustained=now>n.t && now<=n.t+(n.sus||0);
+                const dt=n.t-now, hasSus=n.sus>0, susEnd=n.t+(n.sus||0);
                 ${src.match(/const techniqueYNow = [\s\S]*?;/)[0]}
                 return techniqueYNow;
             },
@@ -199,7 +199,7 @@ test('run cache is built with chart-static link data and released with the other
     assert.match(src, /_linkedVibratoRuns = resolveLinkedVibratoRuns\(bendLinks\)/);
     assert.equal((src.match(/_linkedVibratoRuns = new WeakMap\(\)/g)||[]).length,2);
     assert.match(fn('techniqueYOffsetWorld'), /vibratoSemisAtTime\(n, chartTime\)/);
-    assert.match(fn('drawNote'), /techniqueYOffsetWorld\(n, now\)/);
+    assert.match(fn('drawNote'), /techniqueYOffsetWorld\(n, Math\.min\(now, susEnd\)\)/);
     assert.match(src, /const yc = y \+ techniqueYOffsetWorld\(n, Tk\)/,
         'sustain contour calls the shared sampler');
 });

@@ -17719,7 +17719,11 @@
             // and after onset; its sustain and any outgoing slide still render.
             const effSkipBody = hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, dt);
             const hasTechniqueVibrato = noteHasVibrato(n);
-            const techniqueYNow = sustained ? techniqueYOffsetWorld(n, now)
+            // A short sustain can leave its gem visible until the linger
+            // deadline. Hold the final bend/vibrato pose for that remainder,
+            // without extending the authored motion or the gem's lifetime.
+            const techniqueYNow = dt < 0 && hasSus
+                ? techniqueYOffsetWorld(n, Math.min(now, susEnd))
                 : now <= n.t ? prebendOffsetWorld(n) : 0;
             const noteZ = sustained ? 0 : Math.min(0, dZ(dt));
             // Per-note Z-based renderOrder: far notes get a low value (render
