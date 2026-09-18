@@ -10,19 +10,21 @@ function extract(name) {
     const end = src.indexOf('\n        }', start) + '\n        }'.length;
     return src.slice(start,end);
 }
-const sample = new Function(extract('bnvSampleAt')+';return bnvSampleAt;')();
 function offset(n, now, sustained, dir = 1) {
-    // Execute the actual assignment in drawNote, with the real initial-bend
-    // helper when present. Ordinary sustained behavior is an unchanged input.
+    // Execute the actual assignment and envelope used by both the approaching
+    // head and active sustain, including linked-start lookup.
     const assignment = src.match(/const techniqueYNow = [\s\S]*?;/)[0];
-    const helper = src.includes('function prebendOffsetWorld(') ? extract('prebendOffsetWorld') : '';
-    return new Function('n','now','sustained','dir','sample', `
+    const helpers = ['bnvSampleAt','bendCurveStartSemis','bendCurveSemisAt',
+        'bendSemisAtElapsed','bendSemisAtTime','noteHasVibrato','vibratoSemisAtTime',
+        'techniqueYOffsetWorld','prebendOffsetWorld'].map(extract).join('\n');
+    return new Function('n','now','sustained','dir', `
         const BEND_HALFSTEP_WORLD_Y=1, bendVisualDirY=()=>dir;
-        const techniqueYOffsetWorld=(n,t)=>dir*sample(n.bnv,t-n.t);
-        ${helper}
+        const BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.30, VIBRATO_HALF_WAVE_S=.08;
+        const _linkedBendStarts=new WeakMap();
+        ${helpers}
         ${assignment}
         return techniqueYNow;
-    `)(n,now,sustained,dir,sample);
+    `)(n,now,sustained,dir);
 }
 const mamma = {t:86.739,s:5,f:12,sus:.325,bn:2,bnv:[{t:0,v:2},{t:.216003,v:0}]};
 

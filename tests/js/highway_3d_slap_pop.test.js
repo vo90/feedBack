@@ -59,7 +59,13 @@ test('optional attack flags do not leak from one reused chord member to the next
     const start = src.indexOf('Object.assign(_scrChordNote, cn);');
     const end = src.indexOf('drawNote(', start);
     assert.ok(start > 0 && end > start);
-    const copy = new Function('_scrChordNote', 'cn', 'ch', src.slice(start, end) + ';return _scrChordNote;');
+    const copy = new Function(`
+        const _linkedBendStarts = new WeakMap();
+        return function(_scrChordNote, cn, ch) {
+            ${src.slice(start, end)}
+            return _scrChordNote;
+        };
+    `)();
     const scratch = {};
     const slap = Object.freeze({ s: 0, f: 3, slp: true });
     const pop = Object.freeze({ s: 2, f: 5, plk: true });

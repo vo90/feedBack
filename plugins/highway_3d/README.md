@@ -29,6 +29,22 @@ A 3D note highway visualization for [FeedBack](https://github.com/got-feedback/f
 
 Most of the visual controls (background style, intensity, audio reactivity, color palette) live on FeedBack's **Settings** screen under the *3D Highway* section.
 
+### Bend starts and linked slides
+
+An explicit bend sample at note onset sets both the approaching gem's height and
+the trail's starting height. When a curve omits that sample, the renderer uses a
+fallback: an ordinary bend rises from zero to its first timed target; a release
+or pre-bend keeps its first value. A contiguous authored link can instead carry
+the preceding note's ending bend into an ordinary continuation whose curve
+omits its onset. Authored onset
+samples take precedence, including zero. This fills missing visual information
+without changing the chart, note detection, or whether a note must be picked.
+
+For example, a linked slide from fret 22 to 24 followed by a delayed bend target
+remains one continuous gesture with no second attack gem at fret 24. Explicit
+pre-bends still approach at their bent height. Scalar-only bends retain their
+existing synthesized rise/hold/release shape.
+
 ## Contributing / development
 
 For maintainers and AI assistants working on the codebase, see [`CLAUDE.md`](CLAUDE.md) — it's a navigation guide that maps every visual element to where it lives in `screen.js`, plus the gotchas worth knowing before tweaking.
