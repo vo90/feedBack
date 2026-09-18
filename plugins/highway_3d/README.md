@@ -32,7 +32,11 @@ Most of the visual controls (background style, intensity, audio reactivity, colo
 ### Incoming fret numbers
 
 Gold fret numbers sit below the chord-box or note-stem base for chords, single
-notes and arpeggios. They retain the same fret and timing positions. In dense
+notes and arpeggios. Grey beat-reference numbers use the same baseline. When
+a visible gold number identifies the same fret at the same beat, it replaces
+the grey number. Coincident chord and single-note gold numbers also combine
+into one; reference numbers for other frets and beats remain visible.
+They retain the same fret and timing positions. In dense
 passages, overlapping nearer gems and technique symbols render over farther
 numbers, including when sustain effects change a gem's drawing order.
 

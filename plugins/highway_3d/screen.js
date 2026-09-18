@@ -1033,6 +1033,14 @@
         return Math.min(labelOrder, gemOrder - 0.001);
     }
 
+    // Chart times can differ by one millisecond after wire-format rounding.
+    // Do not merge nearby rhythmic events via the broader label-density buckets.
+    function hwySameFretLabelBeat(fretA, timeA, fretB, timeB) {
+        return Number.isInteger(fretA) && fretA > 0 && fretA === fretB
+            && Number.isFinite(timeA) && Number.isFinite(timeB)
+            && Math.abs(timeA - timeB) <= 0.001 + 1e-9;
+    }
+
     function hwyScreenRectsOverlap(a, b) {
         return a.minX <= b.maxX && a.maxX >= b.minX
             && a.minY <= b.maxY && a.maxY >= b.minY;
@@ -6483,6 +6491,8 @@
         // Reused label-layout records; no per-frame geometry or texture creation.
         const _incomingFloorLabels = [], _incomingLabelOccluders = [];
         const _incomingFixedFretLabels = [];
+        const _incomingFretColumnMarkers = [];
+        let _incomingFretColumnMarkerCount = 0;
         let _incomingFloorLabelCount = 0, _incomingLabelOccluderCount = 0;
         let _incomingLabelLayoutFrame = 0;
         let _incomingLabelProbe = null;
@@ -12410,14 +12420,37 @@
 
         // Anchor all incoming text below its chord-box / note-stem foot.
         // World X/Z stay unchanged; pool reuse resets the centre each frame.
-        function _setIncomingFloorLabelMap(sprite, srcMat, fret = 0) {
+        function _setIncomingFloorLabelMap(sprite, srcMat, fret = 0, time = NaN) {
             _setLabelMap(sprite, srcMat);
             sprite.center.set(0.5, 1);
             const i = _incomingFloorLabelCount++;
             const record = _incomingFloorLabels[i]
-                || (_incomingFloorLabels[i] = { sprite: null, fret: 0, rect: _newLabelRect() });
+                || (_incomingFloorLabels[i] = { sprite: null, fret: 0, time: NaN, layoutFrame: -1, rect: _newLabelRect() });
             record.sprite = sprite;
             record.fret = fret;
+            record.time = time;
+        }
+
+        function _registerFretColumnMarker(sprite, fret, time) {
+            // Reference and played-fret numbers share the same floor baseline.
+            sprite.center.set(0.5, 1);
+            const i = _incomingFretColumnMarkerCount++;
+            const record = _incomingFretColumnMarkers[i]
+                || (_incomingFretColumnMarkers[i] = { sprite: null, fret: 0, time: NaN });
+            record.sprite = sprite;
+            record.fret = fret;
+            record.time = time;
+        }
+
+        function _suppressCoincidentFretColumnMarkers(record) {
+            // Called only for a gold label that will render (or hand off to the
+            // fixed row). A missing gold label never removes a reference number.
+            for (let i = 0; i < _incomingFretColumnMarkerCount; i++) {
+                const marker = _incomingFretColumnMarkers[i];
+                if (hwySameFretLabelBeat(record.fret, record.time, marker.fret, marker.time)) {
+                    marker.sprite.visible = false;
+                }
+            }
         }
 
         function _registerIncomingLabelOccluder(mesh, z, outline = null) {
@@ -12479,6 +12512,19 @@
                 const record = _incomingFloorLabels[i], label = record.sprite;
                 if (!label.visible || label.material.opacity <= 0
                     || !_incomingLabelScreenRect(label, record.rect)) continue;
+                // Chord and standalone paths can both identify the same fret.
+                // Keep the first drawable gold label (including its row handoff).
+                for (let j = 0; j < i; j++) {
+                    const previous = _incomingFloorLabels[j];
+                    if (previous.layoutFrame === frame && hwySameFretLabelBeat(
+                        record.fret, record.time, previous.fret, previous.time)) {
+                        label.visible = false;
+                        break;
+                    }
+                }
+                if (!label.visible) continue;
+                record.layoutFrame = frame;
+                _suppressCoincidentFretColumnMarkers(record);
                 let display = label, displayRect = record.rect;
                 const eventZ = label.position.z;
                 // At arrival, combine duplicate fret identities only when they
@@ -12658,6 +12704,7 @@
             if (projMeshArr) for (const arr of projMeshArr) for (const m of arr) m.visible = false;
             _incomingFloorLabelCount = _incomingLabelOccluderCount = 0;
             _incomingFixedFretLabels.fill(null);
+            _incomingFretColumnMarkerCount = 0;
             pFretLbl.reset(); pLane.reset(); pLaneDivider.reset();
             if (pGhostFretLbl) pGhostFretLbl.reset();
             _scrGhostUpcomingCount.fill(0, 0, nStr);
@@ -14790,7 +14837,7 @@
                                 _seenChordFrets.add(f);
                                 const lbl = pNoteFretLabel.get();
                                 const mat = txtMat(f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
-                                _setIncomingFloorLabelMap(lbl, mat, f);
+                                _setIncomingFloorLabelMap(lbl, mat, f, ch.t);
                                 lbl.position.set(xFretMid(f), yMinF, z);
                                 lbl.renderOrder = renderOrderForLayerAtZ(z, 'CHORD_FRET_LABEL');
                                 const _flS = 7.0 * K * (1 + 0.4 * chDt / AHEAD) * _textSizeMul * fretLabelScaleForFret(f);
@@ -15517,6 +15564,7 @@
                         const sp = pFretColMarker.get();
                         const m = txtMat(f, color, false, 'noteFret');
                         _setLabelMap(sp, m);
+                        _registerFretColumnMarker(sp, f, b.time);
                         sp.material.opacity = 0.85 * _colFadeIn;
                         sp.position.set(xFretMid(f), labelY, z);
                         // Z-proportional: sits between chord frame and note gem
@@ -18220,7 +18268,7 @@
                         _frameLabeledKeys.add(_flFrameKey);
                         const fretLabel  = pNoteFretLabel.get();
                         const cachedMat  = txtMat(n.f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
-                        _setIncomingFloorLabelMap(fretLabel, cachedMat, n.f);
+                        _setIncomingFloorLabelMap(fretLabel, cachedMat, n.f, n.t);
                         fretLabel.position.set(x, labelY, noteZ);
                         fretLabel.renderOrder = renderOrderForLayerAtZ(noteZ,
                             _isArpNote
@@ -18279,7 +18327,7 @@
                     const _isArp2   = arpBounds !== null;
                     const fl2 = pNoteFretLabel.get();
                     const cm2 = txtMat(n.f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
-                    _setIncomingFloorLabelMap(fl2, cm2, n.f);
+                    _setIncomingFloorLabelMap(fl2, cm2, n.f, n.t);
                     fl2.position.set(x, _labelY2, noteZ);
                     fl2.renderOrder = renderOrderForLayerAtZ(noteZ,
                         _isArp2
@@ -19164,6 +19212,8 @@
             _incomingLabelProbe = null;
             _incomingFloorLabels.length = _incomingLabelOccluders.length = 0;
             _incomingFixedFretLabels.length = 0;
+            _incomingFretColumnMarkers.length = 0;
+            _incomingFretColumnMarkerCount = 0;
             _incomingFloorLabelCount = _incomingLabelOccluderCount = 0;
             _drawNextByString = null; _drawRecentByString = null;
             _susVerdictLatch.clear();
