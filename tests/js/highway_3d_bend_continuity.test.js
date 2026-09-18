@@ -28,6 +28,7 @@ function harness(strings = 6, inverted = false, lefty = false) {
         const BEND_LINK_TIME_EPS=${constant('BEND_LINK_TIME_EPS')};
         const BEND_HALFSTEP_WORLD_Y=3.2, VIBRATO_HALF_WAVE_S=.08;
         let _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap();
+        const _linkedVibratoRuns=new WeakMap();
         ${['bnvSampleAt','bendCurveStartSemis','bendCurveSemisAt','bendSemisAtElapsed',
             'resolveLinkedBendEnds','resolveLinkedBendStarts','bendSemisAtTime','bendVisualDirY','noteHasVibrato',
             'vibratoSemisAtTime','prebendOffsetWorld','techniqueYOffsetWorld',

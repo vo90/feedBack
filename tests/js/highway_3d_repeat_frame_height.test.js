@@ -38,6 +38,7 @@ const dispatch = new Function('chordNotes', 'options', `
     const _arpApproachFirstNote = options.first || null;
     const firstInShapeRun = false, _scrChordNote = {};
     const _linkedBendStarts = new WeakMap(), _linkedBendEnds = new WeakMap();
+    const _linkedVibratoRuns = new WeakMap();
     const now = 186, ch = { t: 186.460999, id: 1 };
     const usesUnfrettedPosition = () => false;
     const chordCX = 0, chordTailHoldS = 0.75, laneWForOpenStrings = 40;
@@ -79,8 +80,13 @@ const frameSymbols = new Function('chordNotes', 'compactRepeatFrame', `
     ${between('const frameMuteKind =', '} // end if (chDt > 0)')}
     return { fills, lines };
 `);
-const noteMuteSymbols = new Function('n', `
+const hasRsPlusFace = src.includes('function rsPlusTechniqueFlags(');
+const muteMarkerStart = hasRsPlusFace
+    ? 'if (!rsPlusNotation && (n.pm || n.mt || n.fhm)) {'
+    : 'if (n.pm || n.mt || n.fhm) {';
+const noteMuteSymbols = new Function('n', 'rsPlusNotation', `
     'use strict';
+    ${hasRsPlusFace ? fn('rsPlusTechniqueFlags') + fn('rsPlusTechniqueCells') : ''}
     const marks = [];
     const pTechPlane = { get() {
         const mark = { material: {}, scale: { set() {} }, position: { set() {} }, rotation: {} };
@@ -92,8 +98,14 @@ const noteMuteSymbols = new Function('n', `
     const _showHit = false, NW = 1, NH = 1, openWScale = 4, x = 0, y = 0;
     const techniqueYNow = 0, noteZ = -1, K = 1, approachRot = 0, techniqueMarkerRenderOrder = 1;
     const _registerIncomingLabelOccluder = () => {};
-    ${between('if (n.pm || n.mt || n.fhm) {', '// hm / hp')}
-    return marks.map(mark => mark.material.kind);
+    const s = n.s, activePalette = [];
+    const rsPlusNoteFaceMat = flags => rsPlusTechniqueCells(flags).map(cell => cell.kind);
+    ${hasRsPlusFace ? 'if (rsPlusNotation) {'
+        + between('const faceFlags = rsPlusTechniqueFlags(n);', '} else if (n.ho || n.po || n.tp)') + '}' : ''}
+    ${between(muteMarkerStart, '// hm / hp')}
+    return marks.flatMap(mark => mark.material.kind)
+        .map(kind => kind === 'palmMute' ? 'palm' : kind === 'fretHandMute' ? 'fretHand' : kind)
+        .filter(kind => kind === 'palm' || kind === 'fretHand');
 `);
 
 const bbSus2 = () => [
@@ -102,8 +114,13 @@ const bbSus2 = () => [
 function render(notes, options = {}) {
     const output = dispatch(notes, options);
     const frame = frameGeometry(output.isRepeat, output.retainsChordGems, !!options.inverted);
+    const noteSymbols = output.drawn.map(note => noteMuteSymbols(note, false));
+    if (hasRsPlusFace) {
+        assert.deepEqual(output.drawn.map(note => noteMuteSymbols(note, true)), noteSymbols,
+            'RS+ face masks and Current overlays convey the same per-note mute instructions');
+    }
     return { ...output, frame, frameSymbols: frameSymbols(notes, frame.compactRepeatFrame),
-        noteSymbols: output.drawn.map(noteMuteSymbols) };
+        noteSymbols };
 }
 function assertEnclosed(result) {
     assert.ok(result.drawn.length > 0);
