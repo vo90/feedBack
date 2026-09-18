@@ -14850,9 +14850,13 @@
                         }
 
                         // ── Palm-mute strum indicator — pool (fill + lines) ──────────────
+                        // A full chord owns its mute cues on the individual gems.
+                        // Only gemless compact repeats need a frame-wide cue, and
+                        // only when every member shares the same effective mute.
+                        const frameMuteKind = compactRepeatFrame ? chordMuteKind(chordNotes) : 'none';
                         // Per-chord Z-proportional renderOrder: muted fill/lines and
                         // frame edges all use the named layer offsets above.
-                        if (isRepeat && chordNotes.some(cn => cn.pm)) {
+                        if (frameMuteKind === 'palm') {
                             if (pPMXFill) {
                                 const xf = pPMXFill.get();
                                 xf.renderOrder = renderOrderForLayerAtZ(z, 'CHORD_STRUM_FILL');
@@ -14873,7 +14877,7 @@
                         }
 
                         // ── Frethand-mute strum indicator — pool (fill + lines) ───────────
-                        if (isRepeat && chordNotes.some(cn => cn.mt || cn.fhm)) {
+                        if (frameMuteKind === 'fretHand') {
                             if (pFHXFill) {
                                 const xf = pFHXFill.get();
                                 xf.renderOrder = renderOrderForLayerAtZ(z, 'CHORD_STRUM_FILL');
@@ -15944,8 +15948,22 @@
                 || (Array.isArray(n.bnv) && n.bnv.some(p => (Number(p.v) || 0) > 0)));
         }
 
+        function chordMuteKind(chordNotes) {
+            // Matches drawNote: fret-hand mute takes precedence if both flags
+            // are authored. An unmuted member also makes a muted chord mixed.
+            let kind;
+            for (const n of chordNotes) {
+                const memberKind = n.mt || n.fhm ? 'fretHand' : n.pm ? 'palm' : 'none';
+                if (kind !== undefined && memberKind !== kind) return 'mixed';
+                kind = memberKind;
+            }
+            return kind || 'none';
+        }
+
         function repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes) {
             if (!isRepeat || chordLinksSlide) return false;
+            // One strum glyph cannot convey different instructions per string.
+            if (chordMuteKind(chordNotes) === 'mixed') return false;
             return !chordNotes.some(n => noteHasVisibleMotionSustain(n) || noteHasRepeatTechniqueCue(n));
         }
 

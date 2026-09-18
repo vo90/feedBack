@@ -27,6 +27,7 @@ const dispatch = new Function('chordNotes', 'options', `
     ${fn('noteHasVibrato')}
     ${fn('noteHasVisibleMotionSustain')}
     ${fn('noteHasRepeatTechniqueCue')}
+    ${fn('chordMuteKind')}
     ${fn('repeatChordMaySuppressGems')}
     const isRepeat = options.repeat !== false;
     const chordLinksSlide = !!options.slide;
@@ -59,13 +60,50 @@ const frameGeometry = new Function('isRepeat', 'retainsChordGems', 'inverted', `
     return { compactRepeatFrame, yBot, yTop, height, fullChordBoxH, withTopFrame,
         stringY: Array.from({ length: nStr }, (_, s) => sY(s)) };
 `);
+const frameSymbols = new Function('chordNotes', 'compactRepeatFrame', `
+    'use strict';
+    ${fn('chordMuteKind')}
+    const fills = [], lines = [];
+    function pool(kind, output) {
+        return { get() {
+            output.push(kind);
+            return { material: { color: { setHex() {} } }, position: { set() {} },
+                scale: { set() {} }, rotation: { set() {} } };
+        } };
+    }
+    const pPMXFill = pool('palm', fills), pFHXFill = pool('fretHand', fills);
+    const pMuteXLines = pool('palm', lines), pFHXLines = pool('fretHand', lines);
+    const z = -1, cx = 0, cY = 1, K = 1, innerW = 2, innerH = 3, thickZ = 1;
+    const edgeOp = 1, CHORD_BOX_EDGE_ALPHA = 1, baseRimHex = 0xffffff;
+    const renderOrderForLayerAtZ = () => 1;
+    ${between('const frameMuteKind =', '} // end if (chDt > 0)')}
+    return { fills, lines };
+`);
+const noteMuteSymbols = new Function('n', `
+    'use strict';
+    const marks = [];
+    const pTechPlane = { get() {
+        const mark = { material: {}, scale: { set() {} }, position: { set() {} }, rotation: {} };
+        marks.push(mark);
+        return mark;
+    } };
+    const fretHandMuteXSpriteMat = () => 'fretHand', palmMuteXSpriteMat = () => 'palm';
+    const _spriteMat2MeshMat = (mark, kind) => ({ kind });
+    const _showHit = false, NW = 1, NH = 1, openWScale = 4, x = 0, y = 0;
+    const techniqueYNow = 0, noteZ = -1, K = 1, approachRot = 0, techniqueMarkerRenderOrder = 1;
+    const _registerIncomingLabelOccluder = () => {};
+    ${between('if (n.pm || n.mt || n.fhm) {', '// hm / hp')}
+    return marks.map(mark => mark.material.kind);
+`);
 
 const bbSus2 = () => [
     { s: 1, f: 1 }, { s: 2, f: 3 }, { s: 3, f: 3 }, { s: 4, f: 1 }, { s: 5, f: 1 },
 ];
 function render(notes, options = {}) {
     const output = dispatch(notes, options);
-    return { ...output, frame: frameGeometry(output.isRepeat, output.retainsChordGems, !!options.inverted) };
+    const frame = frameGeometry(output.isRepeat, output.retainsChordGems, !!options.inverted);
+    return { ...output, frame, frameSymbols: frameSymbols(notes, frame.compactRepeatFrame),
+        noteSymbols: output.drawn.map(noteMuteSymbols) };
 }
 function assertEnclosed(result) {
     assert.ok(result.drawn.length > 0);
@@ -137,8 +175,71 @@ test('full frame sides, corners and halo geometry use the same compact decision'
     assert.doesNotMatch(edges, /\bisRepeat\b/);
     assert.match(edges, /if \(compactRepeatFrame\)/);
     assert.match(edges, /compactRepeatFrame \? 0\.5 : 0\.25/);
-    // PM/FH strum marks and fret-label suppression remain tied to repetition,
-    // independent of whether an accompanying technique requires a full frame.
-    assert.match(src, /if \(isRepeat && chordNotes\.some\(cn => cn\.pm\)\)/);
-    assert.match(src, /if \(isRepeat && chordNotes\.some\(cn => cn\.mt \|\| cn\.fhm\)\)/);
+    // Full frames carry mute instructions on their retained gems; compact
+    // frames alone may carry a shared strum symbol.
+    assert.match(src, /const frameMuteKind = compactRepeatFrame \? chordMuteKind\(chordNotes\) : 'none'/);
+});
+
+test('Bodom accented muted open and fretted repeats show only their note-level mute symbols', () => {
+    // Are You Dead Yet? lead: 59.530 s (open C5) and 64.535 s (fretted Ab5).
+    for (const shape of [[{ s: 0, f: 0 }, { s: 1, f: 0 }], [{ s: 1, f: 1 }, { s: 2, f: 3 }]]) {
+        const notes = shape.map(n => ({ ...n, sus: 0, pm: true, ac: true, mt: false }));
+        const result = render(notes);
+        assertEnclosed(result);
+        assert.equal(result.drawn.length, 2);
+        assert.ok(result.drawn.every(n => n.ac), 'accent flags remain on both visible heads');
+        assert.deepEqual(result.noteSymbols, [['palm'], ['palm']]);
+        assert.deepEqual(result.frameSymbols, { fills: [], lines: [] });
+    }
+});
+
+test('uniform gemless repeats have exactly one mute symbol with matching fill and outline', () => {
+    for (const [flags, kind] of [[{ pm: true }, 'palm'], [{ mt: true }, 'fretHand'],
+        [{ fhm: true }, 'fretHand'], [{ pm: true, mt: true }, 'fretHand'],
+        [{ pm: true, fhm: true }, 'fretHand']]) {
+        const result = render(bbSus2().map(n => ({ ...n, ...flags })));
+        assert.equal(result.drawn.length, 0);
+        assert.deepEqual(result.frameSymbols, { fills: [kind], lines: [kind] });
+    }
+    assert.deepEqual(render(bbSus2()).frameSymbols, { fills: [], lines: [] });
+});
+
+test('mixed mute instructions retain the entire chord and each member own symbol', () => {
+    for (const [flags, expected] of [
+        [[{ pm: true }, {}], [['palm'], []]],
+        [[{}, { mt: true }], [[], ['fretHand']]],
+        [[{ pm: true }, { fhm: true }], [['palm'], ['fretHand']]],
+        [[{ pm: true }, { pm: true, mt: true }], [['palm'], ['fretHand']]],
+    ]) {
+        // pm/mt are always emitted by the chart wire; fhm is omit-when-false.
+        const result = render(flags.map((flag, s) => ({ s, f: s + 2, pm: false, mt: false, ...flag })));
+        assertEnclosed(result);
+        assert.equal(result.drawn.length, 2);
+        assert.deepEqual(result.noteSymbols, expected);
+        assert.deepEqual(result.frameSymbols, { fills: [], lines: [] });
+    }
+});
+
+test('first muted chords and technique-bearing repeats never add frame mute symbols', () => {
+    for (const flags of [{ pm: true }, { mt: true }, { fhm: true }, { pm: true, mt: true }]) {
+        const notes = bbSus2().map(n => ({ ...n, ...flags }));
+        for (const result of [render(notes, { repeat: false }), render(notes, { slide: true }),
+            render(notes.map(n => ({ ...n, hp: true })))]) {
+            assertEnclosed(result);
+            assert.equal(result.noteSymbols.flat().length, 5);
+            assert.deepEqual(result.frameSymbols, { fills: [], lines: [] });
+        }
+    }
+});
+
+test('mixed muting does not invent attacks for linked continuations or arpeggio deferral', () => {
+    const notes = [{ s: 1, f: 2, pm: true }, { s: 2, f: 4, mt: true }];
+    for (const options of [{ linked: notes }, { defer: true }, { synth: true }]) {
+        const result = render(notes, options);
+        assert.equal(result.drawn.length, 0);
+        assert.deepEqual(result.frameSymbols, { fills: [], lines: [] });
+    }
+    const partial = render(notes, { linked: notes.slice(1) });
+    assert.deepEqual(partial.drawn.map(n => n.s), [1]);
+    assert.deepEqual(partial.frameSymbols, { fills: [], lines: [] });
 });
