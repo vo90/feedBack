@@ -28,6 +28,7 @@ function harness() {
         const CHORD_FRAME_RIM_MIN=.055, CHORD_FRAME_RIM_FRAC_H=.028;
         const BEND_HALFSTEP_WORLD_Y=S_GAP*.8, BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.3;
         const TREMOLO_BUMP_S=.06, VIBRATO_HALF_WAVE_S=.08;
+        const _linkedBendStarts=new WeakMap();
         ${scaleDeclaration}
         ${sampleDeclaration}
         const TRAIL_YIELD_DEFAULTS={minScale:.3};
@@ -42,6 +43,9 @@ function harness() {
         ${fn('bendVisualDirY')}
         ${fn('noteHasVibrato')}
         ${fn('bnvSampleAt')}
+        ${fn('bendCurveStartSemis')}
+        ${fn('bendCurveSemisAt')}
+        ${fn('bendSemisAtElapsed')}
         ${fn('bendSemisAtTime')}
         ${fn('vibratoSemisAtTime')}
         ${fn('techniqueYOffsetWorld')}
