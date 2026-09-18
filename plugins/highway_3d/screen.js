@@ -7441,9 +7441,18 @@
             const marks = names.filter((_, i) => flags & (1 << i));
             const columns = marks.length > 1 ? 2 : 1;
             const rows = Math.max(1, Math.ceil(marks.length / columns));
-            return marks.map((kind, i) => ({ kind,
-                x: (i % columns) / columns, y: Math.floor(i / columns) / rows,
-                w: 1 / columns, h: 1 / rows }));
+            // Uniform scale preserves circles and technique silhouettes. Two
+            // marks can use a little of the transparent cell padding, but
+            // leave enough room for the widest ink (the palm-mute cross).
+            const size = marks.length === 2 ? 0.52 : Math.min(1 / columns, 1 / rows);
+            return marks.map((kind, i) => {
+                const row = Math.floor(i / columns);
+                const rowCount = Math.min(columns, marks.length - row * columns);
+                return { kind,
+                    x: 0.5 + ((i % columns) - (rowCount - 1) / 2) / columns - size / 2,
+                    y: (row + 0.5) / rows - size / 2,
+                    w: size, h: size };
+            });
         }
 
         // Guide-derived proportions use a square world-space plane. In
@@ -7460,20 +7469,14 @@
 
         function drawRsPlusTechniqueGlyph(g, kind, stringHex = 0xffffff) {
             const white = '#fff8f6';
-            const linear = shift => {
-                const v = ((stringHex >>> shift) & 255) / 255;
-                return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-            };
-            const lightFace = linear(16) * 0.2126 + linear(8) * 0.7152 + linear(0) * 0.0722 >= 0.72;
             const keyline = width => {
-                if (!lightFace) return;
-                g.strokeStyle = '#25313d'; g.lineWidth = width;
+                g.strokeStyle = '#18222c'; g.lineWidth = width;
                 g.lineJoin = g.lineCap = 'round'; g.stroke();
             };
             const fill = (color, onFace = true) => {
-                // White/pale custom string colors need a narrow contour to
-                // keep these pale marks identifiable. Saturated guide colors
-                // retain their unoutlined silhouettes; off-face cues do too.
+                // Pale ink stays distinct on bright string colors as well as
+                // custom white faces. Keep this contour in the cached mask;
+                // off-face direction cues retain their solid string color.
                 if (onFace) keyline(0.028);
                 g.fillStyle = color; g.fill();
             };
@@ -7522,8 +7525,8 @@
                     g.moveTo(0.69, 0.50);
                     g.ellipse(0.50, 0.50, 0.19, 0.17, 0, 0, Math.PI * 2);
                 }
-                const width = kind === 'naturalHarmonic' ? 0.070 : 0.035;
-                keyline(width + 0.028);
+                const width = kind === 'naturalHarmonic' ? 0.085 : 0.052;
+                keyline(width + 0.024);
                 g.strokeStyle = white; g.lineWidth = width; g.stroke();
             } else if (kind === 'bend' || kind === 'slideRight' || kind === 'slideLeft') {
                 if (kind === 'bend') {
