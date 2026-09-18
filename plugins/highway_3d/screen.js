@@ -14703,7 +14703,7 @@
                             }
                         }
                     }
-                    // Repeat gems remain visible for technique cues or moving sustains.
+                    // Repeat gems remain visible for technique cues or visible sustains.
                     const suppressRepeatGems = repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes);
                     let retainsChordGems = false;
                     if (!deferChordGems || _deferFallback || suppressSynthChord) {
@@ -16483,7 +16483,13 @@
 
         function repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes) {
             if (!isRepeat || chordLinksSlide) return false;
-            return !chordNotes.some(n => noteHasVisibleMotionSustain(n) || noteHasRepeatTechniqueCue(n));
+            // Match the fretted chord trail's initial visibility cutoff. Use
+            // authored duration, not remaining duration, so an approaching
+            // sustained repeat keeps its full frame and attached note heads.
+            // Open chord members do not emit trails; linked-target attack
+            // suppression is still handled independently by drawNote.
+            return !chordNotes.some(n => (n.f > 0 && Number.isFinite(n.sus) && n.sus > 0.01)
+                || noteHasVisibleMotionSustain(n) || noteHasRepeatTechniqueCue(n));
         }
 
         function bendVisualDirY(stringIdx) {
