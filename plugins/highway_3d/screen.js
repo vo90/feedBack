@@ -1031,6 +1031,19 @@
         return depthRenderOrder + layerIndex / RENDER_ORDER_LAYER_STACK.length;
     }
 
+    /** Labels yield to the actual final order of overlapping nearer gems. */
+    function hwyIncomingLabelBehindGemOrder(labelOrder, labelZ, gemOrder, gemZ) {
+        if (!Number.isFinite(labelOrder) || !Number.isFinite(labelZ)
+            || !Number.isFinite(gemOrder) || !Number.isFinite(gemZ)
+            || gemZ < labelZ) return labelOrder;
+        return Math.min(labelOrder, gemOrder - 0.001);
+    }
+
+    function hwyScreenRectsOverlap(a, b) {
+        return a.minX <= b.maxX && a.maxX >= b.minX
+            && a.minY <= b.maxY && a.maxY >= b.minY;
+    }
+
     /** Inclusive one-dimensional footprint overlap (centres + full sizes). */
     function hwyFootprintsOverlap1D(centerA, sizeA, centerB, sizeB) {
         if (!Number.isFinite(centerA) || !Number.isFinite(sizeA)
@@ -6488,6 +6501,16 @@
         // Object pools
         let pNote, pSus, pLbl, pBeat, pSec;
         let pFretLbl, pLane, pLaneDivider;
+        // Reused label-layout records; no per-frame geometry or texture creation.
+        const _incomingFloorLabels = [], _incomingLabelOccluders = [];
+        const _incomingFixedFretLabels = [];
+        let _incomingFloorLabelCount = 0, _incomingLabelOccluderCount = 0;
+        let _incomingLabelLayoutFrame = 0;
+        let _incomingLabelProbe = null;
+        function _newLabelRect() {
+            return { minX: 0, maxX: 0, minY: 0, maxY: 0 };
+        }
+
         // Shared materials/geometry for the lane stripes — see initScene().
         // Hoisted so draw() can reference them when assigning per-stripe.
         let mLaneOdd = null, mLaneEven = null, gLanePlane = null;
@@ -7129,6 +7152,19 @@
                 depthTest: false,
                 depthWrite: false,
             });
+            if (sName === 'fretRow' || sName === 'noteFret') {
+                // Optical bounds exclude transparent canvas padding. Cache once
+                // with the texture so arrival handoff needs no pixel readback.
+                const metrics = x.measureText(str), pad = (sp.strokeW || 0) * 0.5;
+                if (Number.isFinite(metrics.actualBoundingBoxAscent)) {
+                    mat.map.userData.hwyLabelInk = {
+                        minX: (drawX - metrics.actualBoundingBoxLeft - pad) / w,
+                        maxX: (drawX + metrics.actualBoundingBoxRight + pad) / w,
+                        minY: 1 - (drawY + metrics.actualBoundingBoxDescent + pad) / h,
+                        maxY: 1 - (drawY - metrics.actualBoundingBoxAscent - pad) / h,
+                    };
+                }
+            }
             txtCache[k] = mat;
             return mat;
         }
@@ -12799,6 +12835,127 @@
             if (nullnessChanged) m.needsUpdate = true;
         }
 
+        // Anchor all incoming text below its chord-box / note-stem foot.
+        // World X/Z stay unchanged; pool reuse resets the centre each frame.
+        function _setIncomingFloorLabelMap(sprite, srcMat, fret = 0) {
+            _setLabelMap(sprite, srcMat);
+            sprite.center.set(0.5, 1);
+            const i = _incomingFloorLabelCount++;
+            const record = _incomingFloorLabels[i]
+                || (_incomingFloorLabels[i] = { sprite: null, fret: 0, rect: _newLabelRect() });
+            record.sprite = sprite;
+            record.fret = fret;
+        }
+
+        function _registerIncomingLabelOccluder(mesh, z, outline = null) {
+            const i = _incomingLabelOccluderCount++;
+            const record = _incomingLabelOccluders[i]
+                || (_incomingLabelOccluders[i] = { mesh: null, outline: null, z: 0, frame: -1, rect: _newLabelRect(), outlineRect: _newLabelRect() });
+            record.mesh = mesh;
+            record.outline = outline;
+            record.z = z;
+        }
+
+        // Conservative screen bounds, cached per occluder for this frame.
+        function _incomingLabelScreenRect(object, out, inkOnly = false) {
+            const v = _incomingLabelProbe || (_incomingLabelProbe = new T.Vector3());
+            object.updateWorldMatrix(true, false);
+            if (object.isSprite) {
+                const e = object.matrixWorld.elements;
+                v.set(e[12], e[13], e[14]).applyMatrix4(cam.matrixWorldInverse);
+                if (v.z >= -cam.near) return false;
+                const sx = Math.hypot(e[0], e[1], e[2]) * cam.projectionMatrix.elements[0] / -v.z;
+                const sy = Math.hypot(e[4], e[5], e[6]) * cam.projectionMatrix.elements[5] / -v.z;
+                v.applyMatrix4(cam.projectionMatrix);
+                out.minX = v.x - object.center.x * sx;
+                out.maxX = out.minX + sx;
+                out.minY = v.y - object.center.y * sy;
+                out.maxY = out.minY + sy;
+                out.spriteHeight = sy;
+                const ink = inkOnly && object.material.map?.userData.hwyLabelInk;
+                if (ink) {
+                    out.maxX = out.minX + ink.maxX * sx;
+                    out.minX += ink.minX * sx;
+                    out.maxY = out.minY + ink.maxY * sy;
+                    out.minY += ink.minY * sy;
+                }
+
+            } else {
+                const geometry = object.geometry;
+                if (!geometry.boundingBox) geometry.computeBoundingBox();
+                const box = geometry.boundingBox;
+                out.minX = out.minY = Infinity;
+                out.maxX = out.maxY = -Infinity;
+                for (let i = 0; i < 8; i++) {
+                    v.set(i & 1 ? box.max.x : box.min.x,
+                        i & 2 ? box.max.y : box.min.y,
+                        i & 4 ? box.max.z : box.min.z)
+                        .applyMatrix4(object.matrixWorld).project(cam);
+                    out.minX = Math.min(out.minX, v.x); out.maxX = Math.max(out.maxX, v.x);
+                    out.minY = Math.min(out.minY, v.y); out.maxY = Math.max(out.maxY, v.y);
+                }
+            }
+            return Number.isFinite(out.minX + out.maxX + out.minY + out.maxY);
+        }
+
+        function _layoutIncomingFretLabels() {
+            if (!_incomingFloorLabelCount) return;
+            cam.updateMatrixWorld();
+            const frame = ++_incomingLabelLayoutFrame;
+            for (let i = 0; i < _incomingFloorLabelCount; i++) {
+                const record = _incomingFloorLabels[i], label = record.sprite;
+                if (!label.visible || label.material.opacity <= 0
+                    || !_incomingLabelScreenRect(label, record.rect)) continue;
+                let display = label, displayRect = record.rect;
+                const eventZ = label.position.z;
+                // At arrival, combine duplicate fret identities only when they
+                // overlap. An absent/offscreen row never hides an incoming label.
+                const row = record.fret > 0 ? _incomingFixedFretLabels[record.fret] : null;
+                if (row && row.visible && row.material.opacity > 0) {
+                    const rr = row.userData.incomingLabelRect
+                        || (row.userData.incomingLabelRect = _newLabelRect());
+                    if (_incomingLabelScreenRect(row, rr, true)
+                        && rr.minX >= -1 && rr.maxX <= 1 && rr.maxY > -1
+                        && hwyScreenRectsOverlap(record.rect, rr)) {
+                        // At the zoom cap, a partially clipped arrival digit can
+                        // be lifted just inside the viewport without moving the
+                        // camera or the note. Fully offscreen rows remain ineligible.
+                        if (rr.minY < -0.98 && rr.spriteHeight > 0) {
+                            row.center.y -= (-0.98 - rr.minY) / rr.spriteHeight;
+                            _incomingLabelScreenRect(row, rr, true);
+                        }
+                        if (rr.minY >= -1 && rr.maxY <= 1) {
+                            row.material = txtMat(record.fret, FRET_LABEL_GOLD_HEX, false, 'fretRow');
+                            row.material.opacity = 1;
+                            label.visible = false;
+                            display = row;
+                            displayRect = rr;
+                        }
+                    }
+                }
+                for (let j = 0; j < _incomingLabelOccluderCount; j++) {
+                    const occluder = _incomingLabelOccluders[j], mesh = occluder.mesh;
+                    if (!mesh.visible || mesh.material.opacity <= 0 || occluder.z < eventZ) continue;
+                    const order = Math.min(mesh.renderOrder, occluder.outline?.renderOrder ?? Infinity);
+                    if (display.renderOrder < order) continue;
+                    if (occluder.frame !== frame) {
+                        occluder.frame = frame;
+                        occluder.valid = _incomingLabelScreenRect(mesh, occluder.rect);
+                        if (occluder.outline && occluder.outline.visible
+                            && _incomingLabelScreenRect(occluder.outline, occluder.outlineRect)) {
+                            const r = occluder.rect, o = occluder.outlineRect;
+                            r.minX = Math.min(r.minX, o.minX); r.maxX = Math.max(r.maxX, o.maxX);
+                            r.minY = Math.min(r.minY, o.minY); r.maxY = Math.max(r.maxY, o.maxY);
+                        }
+                    }
+                    if (occluder.valid && hwyScreenRectsOverlap(displayRect, occluder.rect)) {
+                        display.renderOrder = hwyIncomingLabelBehindGemOrder(
+                            display.renderOrder, eventZ, order, occluder.z);
+                    }
+                }
+            }
+        }
+
         let _chartPrewarmed = false;
         let _rsPrewarmBundle = null, _rsPrewarmState = null;
         let _rsPrewarmLabelModes = 0;
@@ -13003,6 +13160,8 @@
             pNote.reset(); pNoteEdge.reset(); pSus.reset(); pSusOutline.reset(); pSusRibbon.reset(); pSusRibbonOl.reset(); pTapChevron.reset(); pAccentHalo.reset(); pLbl.reset();
             pBeat.reset(); pSec.reset();
             if (projMeshArr) for (const arr of projMeshArr) for (const m of arr) m.visible = false;
+            _incomingFloorLabelCount = _incomingLabelOccluderCount = 0;
+            _incomingFixedFretLabels.fill(null);
             pFretLbl.reset(); pLane.reset(); pLaneDivider.reset();
             if (pGhostFretLbl) pGhostFretLbl.reset();
             _scrGhostUpcomingCount.fill(0, 0, nStr);
@@ -15161,7 +15320,7 @@
                                 _seenChordFrets.add(f);
                                 const lbl = pNoteFretLabel.get();
                                 const mat = txtMat(f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
-                                _setLabelMap(lbl, mat);
+                                _setIncomingFloorLabelMap(lbl, mat, f);
                                 lbl.position.set(xFretMid(f), yMinF, z);
                                 lbl.renderOrder = renderOrderForLayerAtZ(z, 'CHORD_FRET_LABEL');
                                 const _flS = 7.0 * K * (1 + 0.4 * chDt / AHEAD) * _textSizeMul * fretLabelScaleForFret(f);
@@ -15743,6 +15902,7 @@
                     const scale = 5.95 * _textSizeMul * fretLabelScaleForFret(f);
                     lb.scale.set(scale * K, scale * K, 1);
                     lb.renderOrder = 1000;
+                    _incomingFixedFretLabels[f] = lb;
                 }
             }
 
@@ -18067,6 +18227,7 @@
                     core.scale.set(rimXY, rimXY, 2.5 * rimZ);
                 }
                 if (_hitPunch !== 1) core.scale.multiplyScalar(_hitPunch);   // #3 hit scale-punch
+                _registerIncomingLabelOccluder(core, noteZ, outline);
                 trailYieldRegisterGem(
                     trailYieldGemEvent, noteZ, outline, core, noteFaceMesh, noteHaloMesh,
                 );
@@ -18514,6 +18675,7 @@
                         // direction ambiguous. Always flat.
                         arrow.rotation.z = 0;
                         arrow.renderOrder = techniqueMarkerRenderOrder;
+                        _registerIncomingLabelOccluder(arrow, noteZ);
                         arrow.material.opacity = 1;
                     }
                 }
@@ -18538,6 +18700,7 @@
                     l.position.set(x, y + techniqueYNow + bendDir * NH * 1.1, noteZ + K);
                     l.rotation.z = approachRot + (bendDir < 0 ? Math.PI : 0);
                     l.renderOrder = techniqueMarkerRenderOrder;
+                    _registerIncomingLabelOccluder(l, noteZ);
                     // Only an upward bend occupies the upper label stack.
                     if (bendDir > 0) yo = Math.max(yo, y + techniqueYNow + NH * 2.5);
                 }
@@ -18555,6 +18718,7 @@
                         face.position.set(x, y + techniqueYNow, noteZ + K);
                         face.rotation.z = approachRot;
                         face.renderOrder = techniqueMarkerRenderOrder;
+                        _registerIncomingLabelOccluder(face, noteZ);
                     }
                 } else if (n.ho || n.po || n.tp) {
                     if (n.ho || n.po) {
@@ -18567,6 +18731,7 @@
                         tri.position.set(x, y + techniqueYNow, noteZ + K);
                         tri.rotation.z = approachRot;
                         tri.renderOrder = techniqueMarkerRenderOrder;
+                        _registerIncomingLabelOccluder(tri, noteZ);
                         // Reserve stack space above the triangle for stacked labels.
                         yo = Math.max(yo, y + techniqueYNow + NH * 1.0);
                     } else {
@@ -18576,6 +18741,7 @@
                         chevron.rotation.z = approachRot;
                         chevron.scale.set(chevronScale, chevronScale, 1);
                         chevron.renderOrder = techniqueMarkerRenderOrder;
+                        _registerIncomingLabelOccluder(chevron, noteZ);
                     }
                 }
                 if (!rsPlusNotation && (n.slp || n.plk)) {
@@ -18590,6 +18756,7 @@
                         attackMark.position.set(x, y + techniqueYNow + attackOffset, noteZ + K);
                         attackMark.rotation.z = approachRot;
                         attackMark.renderOrder = techniqueMarkerRenderOrder;
+                        _registerIncomingLabelOccluder(attackMark, noteZ);
                     }
                 }
                 // Tremolo label ('~~~') removed — trail shape already conveys it visually.
@@ -18610,6 +18777,7 @@
                     _pmMark.position.set(x, y + techniqueYNow, noteZ + K);
                     _pmMark.rotation.z = approachRot;
                     _pmMark.renderOrder = techniqueMarkerRenderOrder;
+                    _registerIncomingLabelOccluder(_pmMark, noteZ);
                 }
                 // hm / hp — PlaneGeometry overlay sized like the palm-mute X,
                 // so the symbol only appears on the front face and matches
@@ -18624,6 +18792,7 @@
                     harmMark.position.set(x, y + techniqueYNow, noteZ + K);
                     harmMark.rotation.z = approachRot;
                     harmMark.renderOrder = techniqueMarkerRenderOrder;
+                    _registerIncomingLabelOccluder(harmMark, noteZ);
                 }
 
                 // ── Per-note fret connector label ─────────────────────────
@@ -18675,7 +18844,7 @@
                         _frameLabeledKeys.add(_flFrameKey);
                         const fretLabel  = pNoteFretLabel.get();
                         const cachedMat  = txtMat(n.f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
-                        _setLabelMap(fretLabel, cachedMat);
+                        _setIncomingFloorLabelMap(fretLabel, cachedMat, n.f);
                         fretLabel.position.set(x, labelY, noteZ);
                         fretLabel.renderOrder = renderOrderForLayerAtZ(noteZ,
                             _isArpNote
@@ -18700,7 +18869,7 @@
                             if (!text) return;
                             const spr = pTeachMarkLbl.get();
                             const m = txtMat(text, colorHex, false, cacheKey);
-                            _setLabelMap(spr, m);
+                            _setIncomingFloorLabelMap(spr, m);
                             spr.position.set(x + dx, labelY, noteZ);
                             spr.renderOrder = renderOrderForLayerAtZ(noteZ,
                                 _isArpNote ? 'ARP_NOTE_FRET_LABEL' : 'NOTE_FRET_LABEL');
@@ -18734,7 +18903,7 @@
                     const _isArp2   = arpBounds !== null;
                     const fl2 = pNoteFretLabel.get();
                     const cm2 = txtMat(n.f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
-                    _setLabelMap(fl2, cm2);
+                    _setIncomingFloorLabelMap(fl2, cm2, n.f);
                     fl2.position.set(x, _labelY2, noteZ);
                     fl2.renderOrder = renderOrderForLayerAtZ(noteZ,
                         _isArp2
@@ -19377,7 +19546,19 @@
                 const _rowY = Math.min(sY(0), sY(nStr - 1)) - S_GAP * 1.4;
                 _probe.set(curX, _rowY, 0.5 * K);
                 _probe.project(cam);                              // _probe.y → NDC; < -1 = off the bottom
-                const _rowNdcY = _probe.y;
+                let _rowNdcY = _probe.y;
+                // Fit the visible digits, including large text and the sloping
+                // ends of the row. A centre-only probe can leave their bottoms
+                // clipped and prevents a readable incoming-label handoff.
+                for (const row of _incomingFixedFretLabels) {
+                    if (!row || !row.visible || row.material.opacity <= 0) continue;
+                    const rect = row.userData.incomingLabelRect
+                        || (row.userData.incomingLabelRect = _newLabelRect());
+                    if (_incomingLabelScreenRect(row, rect, true)
+                        && rect.minX >= -1 && rect.maxX <= 1) {
+                        _rowNdcY = Math.min(_rowNdcY, rect.minY);
+                    }
+                }
                 if (_rowNdcY < FRET_ROW_FIT_NDC_MIN) {
                     // Row below the safe line → pull back promptly, proportional to
                     // the deficit so it converges in a few frames without overshoot.
@@ -19657,6 +19838,10 @@
             lyricsCanvas = lyricsCtx = null;
             projMeshArr = null;
             _probe = null;
+            _incomingLabelProbe = null;
+            _incomingFloorLabels.length = _incomingLabelOccluders.length = 0;
+            _incomingFixedFretLabels.length = 0;
+            _incomingFloorLabelCount = _incomingLabelOccluderCount = 0;
             _drawNextByString = null; _drawRecentByString = null;
             _susVerdictLatch.clear();
             _drawChordTemplates = null;
@@ -19957,6 +20142,7 @@
                 }
                 update(bundle);
                 camUpdate(bundle);
+                _layoutIncomingFretLabels();
 
                 // Background animations (#13). Compute frame dt once,
                 // read audio bands when reactivity is on, delegate to

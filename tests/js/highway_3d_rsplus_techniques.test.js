@@ -210,21 +210,25 @@ test('RS+ bend direction renders one tinted chevron for fractional chart amounts
     const run = new Function('f', 'dir', 'peak', `
         const rsPlusNotation=true, _bendPeak=peak, NH=1, NW=2, K=.1, x=5, y=10,
             techniqueYNow=.5, noteZ=-1, approachRot=.2, s=0;
-        const activePalette=[0x22aaff], techniqueMarkerRenderOrder=20, meshes=[];
+        const activePalette=[0x22aaff], techniqueMarkerRenderOrder=20, meshes=[], registrations=[];
+        const _registerIncomingLabelOccluder=(mesh,z)=>registrations.push({mesh,z});
         const pTechPlane={get:()=>{ const m={ material:{}, scale:{set(){}},
             position:{set(x,y,z){this.x=x;this.y=y;}}, rotation:{} }; meshes.push(m); return m; }};
         const rsPlusTechniqueMat=f.mat, _spriteMat2MeshMat=(m,sm)=>sm, bendVisualDirY=()=>dir;
         let yo=11;
         ${src.slice(start, end)}
-        return meshes;
+        return {meshes,registrations};
     `);
     for (const direction of [-1, 1]) {
         for (const peak of [0.25, 0.5, 1.5, 2.25]) {
-            const meshes = run(f, direction, peak);
+            const {meshes,registrations} = run(f, direction, peak);
             assert.equal(meshes.length, 1, 'no unreferenced bend-amount label beside the gem');
             const chevron = meshes[0];
             assert.equal(Math.sign(chevron.position.y - 10.5), direction);
             assert.equal(chevron.material.map.image.context.calls.find(c => c.method === 'fill').fill, '#22aaff');
+            assert.equal(registrations.length,1);
+            assert.equal(registrations[0].mesh,chevron, 'the actual chevron protects its pixels from nearer labels');
+            assert.equal(registrations[0].z,-1, 'clearance uses the note event depth, not the forward marker plane');
         }
     }
 });
@@ -241,12 +245,20 @@ test('the rendered face keeps circular markers square and does not stretch them 
             noteZ=-10, approachRot=.2, techniqueMarkerRenderOrder=20;
         const mesh={scale:{set(x,y,z){this.x=x;this.y=y;}}, position:{set(){}}, rotation:{}};
         const pTechPlane={get:()=>mesh};
+        const registrations=[];
+        const _registerIncomingLabelOccluder=(mesh,z)=>registrations.push({mesh,z});
         ${src.slice(start, end)}
-        return mesh;
+        return {mesh,registrations};
     `);
-    const fretted = render(f, { f: 5, hm: true }), open = render(f, { f: 0, hm: true });
+    const frettedResult = render(f, { f: 5, hm: true }), openResult = render(f, { f: 0, hm: true });
+    const fretted = frettedResult.mesh, open = openResult.mesh;
     assert.equal(fretted.scale.x, fretted.scale.y, 'the guide circle must remain circular');
     assert.equal(open.scale.x, fretted.scale.x, 'an open bar does not enlarge the technique symbol');
     assert.equal(open.scale.y, fretted.scale.y);
     assert.equal(fretted.material, open.material, 'open and fretted notes share the cached glyph');
+    for (const result of [frettedResult,openResult]) {
+        assert.equal(result.registrations.length,1);
+        assert.equal(result.registrations[0].mesh,result.mesh, 'compound RS+ faces participate in label clearance');
+        assert.equal(result.registrations[0].z,-10);
+    }
 });

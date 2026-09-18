@@ -66,6 +66,8 @@ function harness() {
         const trailYieldRegisterGem = () => {}, trailOrderRegisterUpcomingGem = () => {};
         return function draw(options = {}) {
             pools.forEach(p => p.reset());
+            const registrations = [];
+            const _registerIncomingLabelOccluder = (mesh, z, outline) => registrations.push({mesh,z,outline});
             const rsPlusNotation = options.style !== 'current';
             const nStr = options.strings ?? 6, s = options.string ?? 0;
             const sY = index => (options.inverted ? nStr-1-index : index) * S_GAP;
@@ -92,7 +94,7 @@ function harness() {
             const showDropLine = options.drop !== false, skipBody = !!options.skipBody;
             const explicitLinkTarget = !!options.linked;
             ${between('const _wantDropLine =', '// ── Board ghost:')}
-            return {outline, core, halo:noteHaloMesh, edges:noteFaceMesh,
+            return {outline, core, halo:noteHaloMesh, edges:noteFaceMesh, registrations,
                 connectors:groups.connectors.meshes.filter(m => m.visible),
                 drops:groups.drops.meshes.filter(m => m.visible),
                 counts:Object.fromEntries(Object.entries(groups).map(([k,g])=>[k,g.meshes.length])),
@@ -124,6 +126,10 @@ test('RS+ open bars keep opaque bodies and thin stems inside the playable width 
             assert.equal(r.core.material.toneMapped, false);
             assert.equal(r.core.material.vertexColors, true);
             close(r.core.scale.y*3, accent ? .675 : .45);
+            assert.equal(r.registrations.length, 1);
+            assert.equal(r.registrations[0].mesh, r.core, 'label clearance includes the whole horizontal bar');
+            assert.equal(r.registrations[0].outline, r.outline, 'label clearance also includes the thin floor stem');
+            close(r.registrations[0].z, -10*dt);
         }
     }
 });
@@ -168,10 +174,16 @@ test('shared gem pools restore Current and fretted RS+ geometry and materials af
         assert.equal(open.outline,reused);
         const fretted = draw({fret:4,accent});
         assert.equal(fretted.outline,reused);
+        assert.equal(fretted.registrations[0].mesh,fretted.core);
+        assert.equal(fretted.registrations[0].outline,fretted.outline);
         assert.equal(fretted.outline.geometry.name,'rounded');
         assert.notEqual(fretted.outline.material,fretted.materials.stem);
         close(fretted.outline.position.x,30);
-        assert.equal(snapshot(draw({style:'current',accent})),before);
+        const restored = draw({style:'current',accent});
+        assert.equal(snapshot(restored),before);
+        assert.equal(restored.registrations.length,1, 'pool reuse does not retain a previous frame registration');
+        assert.equal(restored.registrations[0].mesh,restored.core);
+        assert.equal(restored.registrations[0].outline,restored.outline);
         assert.equal(draw().counts.notes,2, 'no extra mesh is allocated for the open stem');
     }
 });

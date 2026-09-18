@@ -165,7 +165,7 @@ test('real text cache separates RS+ sRGB labels while Current and other text sty
             actualBoundingBoxRight:100,actualBoundingBoxAscent:100,actualBoundingBoxDescent:20};}},
             {get(target,key){return key in target?target[key]:(()=>{});}});
         const document={createElement(){return {width:0,height:0,getContext(){return context;}};}};
-        const T={SRGBColorSpace:'srgb',CanvasTexture:class{constructor(image){this.image=image;this.colorSpace='';}},
+        const T={SRGBColorSpace:'srgb',CanvasTexture:class{constructor(image){this.image=image;this.colorSpace='';this.userData={};}},
             SpriteMaterial:class{constructor(props){Object.assign(this,props);}}};
         ${src.slice(stylesStart,stylesEnd)}
         ${fn('txtMat')}
@@ -180,10 +180,18 @@ test('real text cache separates RS+ sRGB labels while Current and other text sty
         assert.equal(rs.map.colorSpace,'srgb');
         assert.equal(h.get(false,style),current);
         assert.equal(h.get(true,style),rs);
+        if (style !== 'chord') {
+            const ink = current.map.userData.hwyLabelInk;
+            assert.ok(ink && Object.values(ink).every(Number.isFinite), 'floor labels cache measured optical bounds');
+            assert.ok(ink.minX < ink.maxX && ink.minY < ink.maxY);
+            assert.deepEqual(rs.map.userData.hwyLabelInk,ink, 'sRGB conversion does not alter glyph clearance bounds');
+            assert.equal(h.get(false,style).map.userData.hwyLabelInk,ink, 'cached text reuses its optical bounds');
+        } else assert.equal(rs.map.userData.hwyLabelInk,undefined);
     }
     for(const style of ['technique','section','open']) {
         const current=h.get(false,style);
         assert.equal(h.get(true,style),current,'unrelated labels retain their original texture');
         assert.equal(current.map.colorSpace,'');
+        assert.equal(current.map.userData.hwyLabelInk,undefined, 'unrelated labels do not acquire floor-layout metadata');
     }
 });
