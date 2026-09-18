@@ -2235,7 +2235,7 @@
                                 const previous = bendLinks.get(destination);
                                 const contiguous = Number.isFinite(source.sus) && source.sus > 0
                                     && Math.abs(lane[i].time + source.sus - nextTime)
-                                        <= BEND_LINK_TIME_EPS;
+                                        <= BEND_LINK_TIME_EPS + 1e-9;
                                 // Ambiguous coincident sources stay unresolved;
                                 // never pick a bend height by chart array order.
                                 if (!bendLinks.has(destination)) {
@@ -5959,6 +5959,7 @@
         let _linkNextTargetNotesRef = null;
         let _linkNextTargetChordsRef = null;
         let _linkedBendStarts = new WeakMap();
+        let _linkedBendEnds = new WeakMap();
 
         // Per-fret onset index for localized sustain yielding. Rebuilt once per
         // arrangement; drawNote scans only conservative footprint buckets and
@@ -12895,7 +12896,8 @@
             if (notes !== _linkNextTargetNotesRef || bundle.chords !== _linkNextTargetChordsRef) {
                 const bendLinks = new Map();
                 _linkNextTargetSet = hwyLinkNextTargetNotes(notes, bundle.chords, 1e-6, bendLinks);
-                _linkedBendStarts = resolveLinkedBendStarts(bendLinks);
+                _linkedBendEnds = resolveLinkedBendEnds(bendLinks);
+                _linkedBendStarts = resolveLinkedBendStarts(bendLinks, _linkedBendEnds);
                 _linkNextTargetNotesRef = notes;
                 _linkNextTargetChordsRef = bundle.chords;
             }
@@ -14240,6 +14242,7 @@
                             // its authored member. Replace the cached start on
                             // every reuse, including an ordinary zero start.
                             _linkedBendStarts.set(_scrChordNote, _linkedBendStarts.get(cn) || 0);
+                            _linkedBendEnds.set(_scrChordNote, _linkedBendEnds.get(cn));
                             // Same stale-scratch hazard for the teaching marks
                             // (§6.2.2): fg/sd are omit-when-default on the wire,
                             // so a chord note without them must reset to -1 or it
@@ -16031,7 +16034,7 @@
             return Number.isFinite(value) ? Math.max(0, value) : 0;
         }
 
-        function bendSemisAtElapsed(n, elapsed, inheritedStart = 0) {
+        function bendSemisAtElapsed(n, elapsed, inheritedStart = 0, linkedEnd = undefined) {
             if (!(n?.sus > 0)) return 0;
             // When the note carries an authoritative bend curve (§6.2.1),
             // sample its real shape at the elapsed time so the gem's Y gesture
@@ -16052,23 +16055,57 @@
             if (p < RISE) env = p / RISE;
             else if (p < 1 - REL) env = 1;
             else env = (1 - p) / REL;
+            // A linked continuation with an authored initial bend supplies the
+            // missing endpoint of a scalar bend. Keep the same rise and hold,
+            // then meet that pitch instead of inventing a release to zero.
+            if (p >= 1 - REL && Number.isFinite(linkedEnd)
+                && linkedEnd >= 0 && linkedEnd <= bn) {
+                return linkedEnd + (bn - linkedEnd) * Math.max(0, Math.min(1, env));
+            }
             return bn * Math.max(0, Math.min(1, env));
         }
 
+        /** Resolve only an unambiguous authored onset across a validated link. */
+        function resolveLinkedBendEnds(links) {
+            const destinations = new Map();
+            for (const [destination, link] of links) {
+                if (!link) continue;
+                const source = link.source;
+                // Even equal-pitch duplicate destinations are ambiguous. Do not
+                // pick an endpoint from array order or an unrelated later note.
+                destinations.set(source, destinations.has(source) ? null : destination);
+            }
+            const ends = new WeakMap();
+            for (const [source, destination] of destinations) {
+                if (!destination || !(source.sus > 0) || !Number.isFinite(source.sus)
+                    || !Number.isFinite(source.bn) || !(source.bn > 0)
+                    || (Array.isArray(source.bnv) && source.bnv.length)
+                    || !(destination.sus > 0) || !Number.isFinite(destination.sus)) continue;
+                const first = Array.isArray(destination.bnv) ? destination.bnv[0] : null;
+                if (!first || !Number.isFinite(first.t) || first.t < 0
+                    || !Number.isFinite(first.v) || first.v < 0 || first.v > source.bn) continue;
+                // A delayed ordinary target is not an authored starting pitch.
+                if (first.t > 1e-6 && destination.bt !== 1
+                    && destination.bt !== 2 && destination.bt !== 3) continue;
+                ends.set(source, first.v);
+            }
+            return ends;
+        }
+
         /** Links arrive in chronological order within each string's lane. */
-        function resolveLinkedBendStarts(links) {
+        function resolveLinkedBendStarts(links, ends = new WeakMap()) {
             const starts = new WeakMap();
             for (const [destination, link] of links) {
                 if (!link) continue;
                 const inherited = starts.get(link.source) || 0;
-                const end = bendSemisAtElapsed(link.source, link.source.sus, inherited);
+                const end = bendSemisAtElapsed(link.source, link.source.sus, inherited, ends.get(link.source));
                 if (end > 0) starts.set(destination, end);
             }
             return starts;
         }
 
         function bendSemisAtTime(n, chartTime) {
-            return bendSemisAtElapsed(n, chartTime - n.t, _linkedBendStarts.get(n) || 0);
+            return bendSemisAtElapsed(n, chartTime - n.t, _linkedBendStarts.get(n) || 0, _linkedBendEnds.get(n));
         }
 
         function vibratoSemisAtTime(n, chartTime) {
@@ -17152,6 +17189,7 @@
             if (isUnpitchedMute(n)) {
                 n = { ...n, f: 0 };
                 _linkedBendStarts.set(n, _linkedBendStarts.get(sourceNote) || 0);
+                _linkedBendEnds.set(n, _linkedBendEnds.get(sourceNote));
             }
             const nxFrame = _drawNextByString && _drawNextByString[s];
             const dt = n.t - now;
@@ -19259,6 +19297,7 @@
             _linkNextTargetNotesRef = null;
             _linkNextTargetChordsRef = null;
             _linkedBendStarts = new WeakMap();
+            _linkedBendEnds = new WeakMap();
             trailVisibilityReleaseChartReferences();
         }
 
