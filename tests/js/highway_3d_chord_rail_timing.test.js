@@ -22,13 +22,13 @@ const helpers = src.match(/const CHORD_ANCHOR_TIME_EPS = [^;]+;/)[0]
 const anchorStart = src.indexOf('const chDtEarly = ch.t - now;');
 const anchorEnd = src.indexOf('const chAncB =', anchorStart);
 assert.ok(anchorStart >= 0 && anchorEnd > anchorStart);
-const selectAnchor = new Function('anchors', 'ch', 'now', 'maxSus',
+const selectAnchor = new Function('anchors', 'ch', 'now', 'maxSus', '_chGuideEnd',
     helpers + src.slice(anchorStart, anchorEnd) + 'return chAnc;');
 const endAt = new Function(helpers + 'return chordRailEndAt;')();
-const railStart = src.indexOf('const _effSus = maxSus > 0');
+const railStart = src.indexOf('const _effSus = _chGuideEnd == null && maxSus > 0');
 const railEnd = src.indexOf('if (_railLen > 0.001)', railStart);
 assert.ok(railStart >= 0 && railEnd > railStart);
-const project = new Function('anchors', 'ch', 'now', 'maxSus', '_rawSus',
+const project = new Function('anchors', 'ch', 'now', 'maxSus', '_rawSus', '_chGuideEnd',
     helpers + 'const chDt = ch.t - now, AHEAD = 5; const dZ = t => -t * 1.725;'
     + src.slice(railStart, railEnd)
     + 'return {end: now + _dtSusEndRail, length: _railLen, visible: _railLen > 0.001};'
@@ -104,7 +104,7 @@ test('repeat segments meet and the authored hand-shape end is preserved', () => 
     });
 });
 
-test('the reported last-repeat gap at 2:09 is not extended to the next position', () => {
+test('rail projection alone preserves authored end when no continuity endpoint is supplied', () => {
     const anchors = [{ time: 129.533005, fret: 12 }, { time: 130.041, fret: 14 }];
     const ch = { t: 129.787 }, end = 129.914001;
     for (const now of [129.6, 129.8, 129.92, 130]) {
