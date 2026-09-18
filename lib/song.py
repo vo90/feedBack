@@ -71,6 +71,10 @@ class Note:
     # []) is authoritative over the older direction-only scalar.
     slide_out: str | None = None
     slide_out_marks: list | None = None
+    # A slide-in knows only its destination onset, relative to this attack.
+    # Tied segments may add later endpoints without adding another attack.
+    # A present array (including []) is authoritative; no start is inferred.
+    slide_in_marks: list | None = None
 
 
 @dataclass
@@ -303,6 +307,8 @@ def note_to_wire(n: Note) -> dict:
         out["slide_out"] = n.slide_out
     if n.slide_out_marks is not None:
         out["slide_out_marks"] = _sanitize_slide_out_marks(n.slide_out_marks, n.sustain)
+    if n.slide_in_marks is not None:
+        out["slide_in_marks"] = _sanitize_slide_in_marks(n.slide_in_marks, n.sustain)
     return out
 
 
@@ -558,6 +564,35 @@ def _sanitize_slide_out_marks(raw, sustain: float) -> list:
     return out
 
 
+def _sanitize_slide_in_marks(raw, sustain: float) -> list:
+    """Keep ordered destination endpoints, never synthesize a source fret/time.
+
+    Invalid entries are dropped individually. Zero is a valid onset even for
+    a note without sustain; later endpoints describe tied segments. Preserve
+    source precision within the same half-millisecond tolerance as slide-outs.
+    """
+    if not isinstance(raw, list) or not math.isfinite(sustain) or sustain < 0:
+        return []
+    out = []
+    previous_time = -1.0
+    for mark in raw:
+        if not isinstance(mark, dict) or mark.get("direction") not in ("up", "down"):
+            continue
+        time = mark.get("time")
+        if not isinstance(time, (int, float)) or isinstance(time, bool):
+            continue
+        try:
+            time = float(time)
+        except OverflowError:
+            continue
+        if (not math.isfinite(time) or time < 0 or time <= previous_time
+                or time > sustain + 0.000501):
+            continue
+        out.append({"direction": mark["direction"], "time": time})
+        previous_time = time
+    return out
+
+
 def note_from_wire(d: dict, time: float | None = None) -> Note:
     return Note(
         time=float(d.get("t", time if time is not None else 0.0)),
@@ -600,6 +635,8 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         slide_out=d.get("slide_out") if d.get("slide_out") in ("up", "down") else None,
         slide_out_marks=(_sanitize_slide_out_marks(d["slide_out_marks"], float(d.get("sus", 0)))
                          if "slide_out_marks" in d else None),
+        slide_in_marks=(_sanitize_slide_in_marks(d["slide_in_marks"], float(d.get("sus", 0)))
+                        if "slide_in_marks" in d else None),
     )
 
 
