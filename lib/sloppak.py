@@ -14,6 +14,7 @@ See the format spec in the project's sloppak plan for the full layout.
 from __future__ import annotations
 
 import logging
+import json
 import math
 import os
 import shutil
@@ -52,7 +53,7 @@ FULL_MIX_STEM_ID = "full"
 
 import yaml
 
-from jsonc import load_json
+from jsonc import load_json, parse_jsonc
 from safepath import safe_join
 from song import (
     Song,
@@ -988,6 +989,16 @@ def _resolve_drum_parts(
     return drum_tab_data, parts
 
 
+def _arrangement_source_fields(entry: dict) -> tuple[str, bool, bool]:
+    """Shared manifest routing for loader and library arrangement indices."""
+    rel_raw = entry.get("file")
+    rel = rel_raw.strip() if isinstance(rel_raw, str) else ""
+    notation_raw = entry.get("notation")
+    has_notation = isinstance(notation_raw, str) and bool(notation_raw.strip())
+    is_drums = str(entry.get("type") or "").strip().lower() in ("drums", "drum")
+    return rel, has_notation, is_drums
+
+
 def load_song(
     filename: str,
     dlc_root: Path,
@@ -1015,12 +1026,7 @@ def load_song(
         if not isinstance(entry, dict):
             log.warning("sloppak: non-dict arrangement entry skipped (%r)", type(entry).__name__)
             continue
-        rel_raw = entry.get("file")
-        rel = rel_raw.strip() if isinstance(rel_raw, str) else ""
-        notation_raw = entry.get("notation")
-        has_notation_key = isinstance(notation_raw, str) and bool(notation_raw.strip())
-        _etype = str(entry.get("type") or "").strip().lower()
-        is_drums = _etype in ("drums", "drum")
+        rel, has_notation_key, is_drums = _arrangement_source_fields(entry)
         # A drums-typed entry MUST NEVER become a fretted Arrangement (grading
         # invariant, spec §5.2/§7.5): route on `type` FIRST, not on file
         # absence — a malformed drums entry that also carries a note file/
@@ -1532,13 +1538,40 @@ def _role_tuning_for_meta(arrangements_manifest: list[dict], role: str) -> list[
     return None
 
 
+def _indexed_arrangement_entries(path: Path, entries: list[dict]):
+    """Yield entries that occupy a loaded arrangement index, in load order.
+
+    Match the loader's routing and missing/unparseable chart skips without
+    unpacking the archive, reading stems, or constructing individual notes.
+    Notation-only parts occupy a placeholder even if their notation is bad.
+    """
+    for entry in entries:
+        rel, has_notation, is_drums = _arrangement_source_fields(entry)
+        if is_drums or (not rel and not has_notation):
+            continue
+        if rel:
+            raw = read_member_bytes(path, rel)
+            if raw is None:
+                continue
+            try:
+                text = raw.decode("utf-8")
+                if rel.lower().endswith(".jsonc"):
+                    parse_jsonc(text)
+                else:
+                    json.loads(text)
+            except (UnicodeError, ValueError):
+                continue
+        yield entry
+
+
 def extract_meta(path: Path) -> dict:
-    """Fast metadata for the library scanner. Reads only the manifest."""
+    """Library metadata; chart JSON validation keeps selectable indices exact."""
     manifest = load_manifest(path)
-    arr_list = manifest.get("arrangements", []) or []
+    arr_list = [entry for entry in (manifest.get("arrangements", []) or [])
+                if isinstance(entry, dict)]
 
     arrangements = []
-    for i, entry in enumerate(arr_list):
+    for i, entry in enumerate(_indexed_arrangement_entries(path, arr_list)):
         arrangements.append(
             {
                 "index": i,
@@ -1550,7 +1583,7 @@ def extract_meta(path: Path) -> dict:
     # Sort like archive path: Lead > Combo > Rhythm > Bass
     priority = {"Lead": 0, "Combo": 1, "Rhythm": 2, "Bass": 3}
     arrangements.sort(key=lambda a: priority.get(a["name"], 99))
-    # Index remains the manifest/load_song index, even if display order differs.
+    # Index remains the loaded arrangement index, even if display order differs.
 
     has_lyrics = bool(manifest.get("lyrics"))
     tuning_offsets = _tuning_for_meta(arr_list)

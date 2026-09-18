@@ -1,6 +1,8 @@
 """Pack loader, scanner and library contracts for named source arrangements."""
 import json
+import zipfile
 
+import pytest
 import yaml
 
 from metadata_db import MetadataDB
@@ -97,3 +99,63 @@ def test_explicit_role_tuning_does_not_borrow_a_misleading_part_name(tmp_path):
     assert raw["bass_tuning_offsets"] == [-2] * 4
     assert raw["rhythm_tuning_offsets"] is None
     assert raw["tuning_offsets"] == [-1] * 6
+
+
+@pytest.mark.parametrize("zipped", [False, True])
+def test_indices_follow_loader_skips_in_mixed_drum_guitar_and_keys_pack(tmp_path, zipped, monkeypatch):
+    root = _pack(tmp_path)
+    manifest = yaml.safe_load((root / "manifest.yaml").read_text())
+    rain, fire, aether = manifest["arrangements"]
+    fire["name"] = "Lead"  # force metadata's display sort to differ from load order
+    fire["file"] = "./fire.jsonc"
+    (root / "fire.jsonc").write_text('// Valid JSONC\n{"notes":[{"t":1,"s":0,"f":8}]}')
+    (root / "bad.json").write_text('{not valid JSON')
+    (root / "drums.json").write_text(json.dumps({
+        "version": 1, "kit": [{"id": "kick", "name": "Kick"}],
+        "hits": [{"t": 1, "p": "kick", "v": 100}],
+    }))
+    (root / "keys.json").write_text(json.dumps({"version": 1, "staves": [], "measures": []}))
+    manifest["arrangements"] = [
+        None,
+        {"id": "drums", "name": "Drums", "type": " DRUMS ", "drum_tab": "drums.json"},
+        rain,
+        {"id": "empty", "name": "Empty", "file": " ", "notation": " "},
+        {"id": "wrong-pointer", "name": "Wrong pointer", "type": "bass", "drum_tab": "drums.json"},
+        {"id": "missing", "name": "Missing chart", "file": "missing.json", "notation": "keys.json"},
+        {"id": "bad", "name": "Broken chart", "file": "bad.json"},
+        {"id": "unsafe", "name": "Unsafe chart", "file": "../outside.json"},
+        {"id": "keys", "name": "Keys", "type": "piano", "notation": "keys.json"},
+        fire,
+        {"id": "drum-note", "name": "Drum note file", "type": "drum", "file": "1.json"},
+        aether,
+        # The loader retains this placeholder even though notation is absent.
+        {"id": "missing-notation", "name": "Missing notation", "type": "keys", "notation": "absent.json"},
+    ]
+    (root / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+    path = root
+    if zipped:
+        path = tmp_path / "mixed.feedpak"
+        with zipfile.ZipFile(path, "w") as archive:
+            for file in root.iterdir():
+                archive.write(file, file.name)
+    import sloppak
+    reads = []
+    original_read = sloppak.read_member_bytes
+    def recording_read(path, rel):
+        reads.append(rel)
+        return original_read(path, rel)
+    with monkeypatch.context() as scan_patch:
+        scan_patch.setattr(sloppak, "read_member_bytes", recording_read)
+        scan_patch.setattr(sloppak, "resolve_source_dir", lambda *args: pytest.fail("scanner must not unpack"))
+        meta = _extract_meta_sloppak(path)
+    assert reads == ["0.json", "missing.json", "bad.json", "../outside.json", "./fire.jsonc", "2.json"]
+    loaded = load_song(path.name, path.parent, tmp_path / "cache")
+    assert [a.name for a in loaded.song.arrangements] == ["Rain", "Keys", "Lead", "Aether", "Missing notation"]
+    assert [(a["name"], a["index"]) for a in meta["arrangements"]] == [
+        ("Lead", 2), ("Rain", 0), ("Keys", 1), ("Aether", 3), ("Missing notation", 4),
+    ]
+    for entry in meta["arrangements"]:
+        actual = loaded.song.arrangements[entry["index"]]
+        assert actual.name == entry["name"]
+        assert actual.type == entry["type"]
+    assert meta["arrangements"][1]["smart_name"] == "Bass"

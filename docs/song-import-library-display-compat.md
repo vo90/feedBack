@@ -9,8 +9,10 @@ direction-only slide rendering are maintained separately.
   naming and role filters can identify it, and bass/rhythm tuning summaries
   use the appropriate part. XML path flags retain their existing precedence;
   legacy parts without an explicit role still use their names.
-- Sorting the library's arrangement metadata preserves original manifest
-  indices. Choosing a sorted entry therefore opens the matching loaded part.
+- Sorting the library's arrangement metadata preserves loaded arrangement
+  indices. Drum pointers and skipped chart files do not occupy those indices;
+  notation-only keys parts do. Choosing a sorted entry therefore opens the
+  matching loaded part.
 - An anchorless 2D chart frames its visible notes, sustained notes, chord
   members/templates and known slide destinations. It reads the active
   difficulty/transform views and expands immediately when a high fret enters
@@ -26,6 +28,11 @@ direction-only slide rendering are maintained separately.
 
 Already indexed songs need a metadata rescan to acquire the newly recorded
 roles and corrected indices. This change does not rewrite the source packs.
+Initial scans and rescans read and parse the small chart JSON/JSONC members
+to match the loader's missing/unparseable-file exclusions. They do not unpack
+archives, read audio/artwork, or construct individual notes. Existing scan
+caching is unchanged; malformed chart schemas that abort playback remain a
+loader error rather than being repaired by the scanner.
 
 ## Verification
 
