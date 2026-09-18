@@ -23,6 +23,7 @@ function extractFn(src, name) {
 
 const maySuppress = new Function(
     '"use strict";' +
+    screenSrc.slice(screenSrc.indexOf('    function slideTrailEnd('), screenSrc.indexOf('    // Camera tgtDist building blocks')) +
     extractFn(screenSrc, 'noteHasVibrato') +
     extractFn(screenSrc, 'noteHasVisibleMotionSustain') +
     extractFn(screenSrc, 'noteHasRepeatTechniqueCue') +

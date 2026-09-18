@@ -37,12 +37,14 @@ const openCoreSizing = src.slice(coreSizingStart, coreSizingEnd);
 const harness = new Function('assert', `
     const NFRETS = 24;
     const ACCENT_RIM_XY_SCALE_MUL = 1.2;
+    const NW = 10;
     const OPEN_NOTE_PAD_X = 1;
     let _drawAnchors = [];
     let curX = 0;
     let rsPlusNotation = false;
+    let openLaneWidth = 40;
     const xFret = fret => fret * 10;
-    const openNoteLaneBoxW = () => 40;
+    const openNoteLaneBoxW = () => openLaneWidth;
     ${extractFn(src, 'getChartAnchorAt')}
     ${extractFn(src, 'laneBoundsFromAnchor')}
     ${extractFn(src, 'anchorPlayedFretInclusiveSpan')}
@@ -51,9 +53,10 @@ const harness = new Function('assert', `
     ${extractFn(src, 'trailYieldAddTargetXBounds')}
     ${extractFn(src, 'trailYieldOpenTargetXBounds')}
     return {
-        resolve(event, anchors, rsPlus = false) {
+        resolve(event, anchors, rsPlus = false, laneWidth = 40) {
             _drawAnchors = anchors;
             rsPlusNotation = rsPlus;
+            openLaneWidth = laneWidth;
             const bounds = new Float64Array(2);
             assert.equal(trailYieldOpenTargetXBounds(event, bounds), true);
             return Array.from(bounds);
@@ -138,5 +141,45 @@ test('Current open footprint policy survives a style round trip', () => {
         const expectedWidth = 48 * (accent ? 1.2 : 1);
         assert.ok(Math.abs(before[0] - (45 - expectedWidth / 2)) < 1e-10);
         assert.ok(Math.abs(before[1] - (45 + expectedWidth / 2)) < 1e-10);
+    }
+});
+
+test('open ghost footprints use body width plus fixed-size parentheses, including accents', () => {
+    const wideAnchor = [{ time: 0, fret: 3, width: 10 }];
+    for (const accent of [false, true]) {
+        const bounds = resolver({
+            t: 1, standalone: false, accent, ghost: true,
+            chordMeta: {size: 2, minF: 3, maxF: 7},
+        }, wideAnchor);
+        const actualWidth = 100 * 0.96 * (accent ? 1.2 : 1) + 10 * 0.48 * 1.1;
+        assert.ok(Math.abs((bounds[1] - bounds[0]) - actualWidth) < 1e-9);
+        assert.equal((bounds[0] + bounds[1]) * 0.5, 70);
+    }
+    const standalone = resolver({t: 1, standalone: true, ghost: true}, []);
+    assert.ok(Math.abs(standalone[1] - standalone[0] - (40 * 0.96 + 10 * 0.48 * 1.1)) < 1e-9);
+});
+
+test('narrow open ghost lanes respect the actual minimum slab scale', () => {
+    const expectedWidth = 10 * 8 * .22 + 10 * .48 * 1.1;
+    const standalone = resolver({t:1, standalone:true, ghost:true}, [], false, 2);
+    assert.ok(Math.abs(standalone[1]-standalone[0]-expectedWidth)<1e-9);
+    const chord = resolver({t:1, standalone:false, ghost:true,
+        chordMeta:{size:2,minF:3,maxF:3}}, [{time:0,fret:3,width:1}]);
+    assert.ok(Math.abs(chord[1]-chord[0]-expectedWidth)<1e-9);
+    const ordinary = resolver({t:1, standalone:true}, [], false, 2);
+    assert.ok(Math.abs(ordinary[1]-ordinary[0]-2*.96)<1e-9,
+        'this ghost fix does not widen unmarked note footprints');
+});
+
+test('RS+ open ghost bounds include core parentheses while preserving the bar width', () => {
+    const wideAnchor = [{ time: 0, fret: 3, width: 10 }];
+    for (const accent of [false, true]) {
+        const bounds = resolver({
+            t: 1, standalone: false, accent, ghost: true,
+            chordMeta: { size: 2, minF: 3, maxF: 7 },
+        }, wideAnchor, true);
+        const width = 100 * 0.96 + 10 * 0.48 * (accent ? 1.5 : 1);
+        assert.ok(Math.abs(bounds[1] - bounds[0] - width) < 1e-9);
+        assert.equal((bounds[0] + bounds[1]) / 2, 70);
     }
 });

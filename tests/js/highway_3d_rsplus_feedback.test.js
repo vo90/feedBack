@@ -21,6 +21,7 @@ test('bulk settings reload retints after the complete palette/vibrancy/glow snap
         constructor(hex = 0) { this.setHex(hex); }
         setHex(hex) { this.r = (hex >> 16 & 255) / 255; this.g = (hex >> 8 & 255) / 255; this.b = (hex & 255) / 255; return this; }
         copy(c) { this.r = c.r; this.g = c.g; this.b = c.b; return this; }
+        clone() { return new Color().copy(this); }
         lerp(c, t) { this.r += (c.r - this.r) * t; this.g += (c.g - this.g) * t; this.b += (c.b - this.b) * t; return this; }
     }
     const values = { notationStyle: 'current', palette: 'default', style: 'particles',
@@ -37,6 +38,7 @@ test('bulk settings reload retints after the complete palette/vibrancy/glow snap
     const colorAttribute = { value: null, setXYZ(_, ...value) { this.value = value; ctx.colorWrites++; } };
     ctx.gRsNoteGrad = [{ attributes: { position: { count: 1, getY: () => 0 },
         normal: { getZ: () => 1 }, color: colorAttribute } }];
+    ctx.gRsNoteGhostGrad = [{ attributes: { position: { count: 0 }, normal: {}, color: {} } }];
     for (const key of ['mRsRim', 'mRsAccentRim', 'mRsHitRim', 'mRsSus', 'mRsSusHit', 'mRsSusEdge', 'mRsHalo']) {
         ctx[key] = [{ color: new Color() }];
     }

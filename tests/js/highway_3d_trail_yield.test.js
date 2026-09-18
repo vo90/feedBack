@@ -1166,8 +1166,8 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
     assert.notEqual(ribbonEnd, -1);
     assert.doesNotMatch(
         src.slice(ribbonStart, ribbonEnd),
-        /\.material\s*=|\.opacity\s*=|\.color\s*\./,
-        'the taper must modify geometry only, never trail color or opacity',
+        /\.material\s*=|\.opacity\s*=|\.color\s*\.\s*(?:set|copy|lerp)/,
+        'visibility taper must never mutate shared material color or opacity; authored slide-out fade uses geometry alpha',
     );
 });
 

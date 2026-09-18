@@ -15,7 +15,8 @@ function fn(name) {
     }
     throw new Error('Unclosed function ' + name);
 }
-const suppress = new Function(fn('noteHasRepeatTechniqueCue')
+const sourceGestures = src.slice(src.indexOf('    function slideTrailEnd('), src.indexOf('    // Camera tgtDist building blocks'));
+const suppress = new Function(sourceGestures + fn('noteHasRepeatTechniqueCue')
     + fn('chordMuteKind')
     + fn('noteHasVibrato') + fn('noteHasVisibleMotionSustain')
     + fn('repeatChordMaySuppressGems') + ';return repeatChordMaySuppressGems;')();

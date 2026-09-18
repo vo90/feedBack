@@ -30,6 +30,7 @@ function harness() {
         const TREMOLO_BUMP_S=.06, VIBRATO_HALF_WAVE_S=.08;
         const _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap();
         const _linkedVibratoRuns=new WeakMap();
+        const _slideRibbonTimesScratch=[];
         ${scaleDeclaration}
         ${sampleDeclaration}
         const TRAIL_YIELD_DEFAULTS={minScale:.3};
@@ -39,8 +40,7 @@ function harness() {
         const anchorLaneBoundsAt=()=>null, openNoteLaneBoxW=()=>80;
         const _trailCrossingTargetBases=new Float64Array(2), _trailYieldMatchContext={};
         let _trailCrossingTargetBaseCount=0;
-        ${fn('slideTrailEnd')}
-        ${fn('slideOffsetWorldX')}
+        ${src.slice(src.indexOf('    function slideTrailEnd('), src.indexOf('    // Camera tgtDist building blocks'))}
         ${fn('bendVisualDirY')}
         ${fn('noteHasVibrato')}
         ${fn('bnvSampleAt')}
@@ -54,13 +54,14 @@ function harness() {
         ${fn('tremoloOffsetWorldX')}
         ${fn('sustainTrailCenterXAt')}
         ${fn('trailCrossingTargetStrands')}
+        ${fn('ensureSlideRibbonCapacity')}
         ${fn('slideRibbonUpdatePair')}
         function dimensions(n, openWScale=1, susTrailMatchArpFrame=false) {
             const openSlabThickMul=1;
             ${sizing}
             return {tw,th,outlineW:tw+trailEdgePad,outlineH:th+trailEdgePad};
         }
-        const geometry=()=>({attributes:{position:{array:new Float64Array((SLIDE_RIBBON_SAMPLES+1)*12)}}});
+        const geometry=()=>({userData:{},setDrawRange(){},attributes:{position:{count:(SLIDE_RIBBON_SAMPLES+1)*4,array:new Float64Array((SLIDE_RIBBON_SAMPLES+1)*12)}}});
         const outline=geometry(), body=geometry();
         return {
             size(style,n,openWidth=1,arp=false) {

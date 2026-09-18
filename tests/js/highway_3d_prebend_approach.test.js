@@ -38,6 +38,8 @@ const alignment = new Function('n', 'now', 'nStr', '_invertedCached', `
     const BEND_HALFSTEP_WORLD_Y=1, BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.3;
     const VIBRATO_HALF_WAVE_S=.08, SLIDE_RIBBON_SAMPLES=8;
     const _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap();
+    const _linkedVibratoRuns=new WeakMap(), _slideRibbonTimesScratch=[];
+    ${src.slice(src.indexOf('    function slideTrailEnd('), src.indexOf('    // Camera tgtDist building blocks'))}
     const TRAIL_YIELD_DEFAULTS={minScale:.3};
     const dZ=t=>-t*10, sustainTrailCenterXAt=(n,x)=>x;
     ${extract('bendVisualDirY')}
@@ -50,11 +52,12 @@ const alignment = new Function('n', 'now', 'nStr', '_invertedCached', `
     ${extract('vibratoSemisAtTime')}
     ${extract('prebendOffsetWorld')}
     ${extract('techniqueYOffsetWorld')}
+    ${extract('ensureSlideRibbonCapacity')}
     ${extract('slideRibbonUpdatePair')}
     const sustained=now>n.t && now<=n.t+n.sus;
     ${src.match(/const techniqueYNow = [\s\S]*?;/)[0]}
     const y=10, susStart=Math.max(n.t,now);
-    const geometry=()=>({attributes:{position:{array:new Float64Array((SLIDE_RIBBON_SAMPLES+1)*12)}}});
+    const geometry=()=>({userData:{},setDrawRange(){},attributes:{position:{count:(SLIDE_RIBBON_SAMPLES+1)*4,array:new Float64Array((SLIDE_RIBBON_SAMPLES+1)*12)}}});
     const outline=geometry(), body=geometry();
     slideRibbonUpdatePair(outline,body,5,1,.4,.8,.2,y,
         n.t+n.sus-susStart,susStart,now,n,null);
