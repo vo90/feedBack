@@ -44,6 +44,39 @@ export function bnvNormalizedPoints(bnv, sus) {
     return bnv.map(p => ({ x: span > 0 ? (p.t - t0) / span : 0, v: p.v }));
 }
 
+// Wire bend values are semitones; conventional bend labels count whole tones.
+export function bendToneLabel(semitones) {
+    if (!Number.isFinite(semitones) || semitones <= 0) return '';
+    const labels = { 0.5: '¼', 1: '½', 1.5: '¾', 2: 'full', 3: '1½', 4: '2' };
+    return labels[semitones] || String(Math.round(semitones * 50) / 100);
+}
+
+// Anchorless imports still need room for visible attacks, held notes and
+// known slide destinations. Direction-only gestures do not imply a fret.
+export function maxNoteFretInWindow(notes, chords, templates, time, ahead) {
+    let max = 0;
+    const collect = (note, onset) => {
+        if (onset + (Number(note.sus) || 0) < time - 2) return;
+        for (const fret of [note.f, note.sl, note.slu]) {
+            // 127 is an imported unpitched mute sentinel, not a fret to frame.
+            if (Number.isFinite(fret) && fret !== 127 && fret > max) max = fret;
+        }
+    };
+    for (const note of notes || []) {
+        if (note.t > time + ahead) break;
+        collect(note, note.t);
+    }
+    for (const chord of chords || []) {
+        if (chord.t > time + ahead) break;
+        if (Array.isArray(chord.notes) && chord.notes.length) {
+            for (const note of chord.notes) collect(note, chord.t);
+        } else if (chord.t >= time - 2) {
+            for (const fret of templates?.[chord.id]?.frets || []) collect({ f: fret }, chord.t);
+        }
+    }
+    return max;
+}
+
 export function teachingFingerLabel(fg) {
     if (!Number.isInteger(fg) || fg < 0 || fg > 4) return '';
     return fg === 0 ? 'T' : String(fg);

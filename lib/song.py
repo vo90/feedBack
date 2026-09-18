@@ -801,7 +801,8 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
 
     Path-type resolution (first match wins):
     1. XML <arrangementProperties> flags (path_lead / path_rhythm / path_bass)
-    2. Name-based fallback when ALL three flags are zero — keeps sloppak /
+    2. Explicit manifest role (lead / rhythm / bass), independent of display name.
+    3. Name-based fallback when ALL three flags are zero — keeps sloppak /
        GP-imported sources and custom song with unset flags working by mapping
        "Lead" / "Rhythm" / "Bass" / "Combo" → the matching path. Anything
        outside that set (Vocals, ShowLights, …) → None.
@@ -850,6 +851,11 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
             return "path_rhythm", bool(a.bonus_arr)
         if a.path_bass:
             return "path_bass", bool(a.bonus_arr)
+        role = str(a.type or "").strip().lower()
+        if role in ("lead", "rhythm", "bass"):
+            return "path_" + role, bool(a.bonus_arr)
+        if role in ("piano", "keys", "drums", "vocals"):
+            return None, bool(a.bonus_arr)
         name = a.name if isinstance(a.name, str) else ""
         entry = _NAME_FALLBACK.get(name.strip().lower())
         if entry is None:

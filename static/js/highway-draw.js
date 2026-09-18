@@ -24,7 +24,7 @@ import {
     _paintGemGlow, _noteState, fillTextReadable, fretX,
 } from './highway-state-primitives.js';
 import {
-    _shimmerNoise, bnvNormalizedPoints, chordHarmonyLabels, project, roundRect,
+    _shimmerNoise, bendToneLabel, bnvNormalizedPoints, chordHarmonyLabels, project, roundRect,
     teachingDegreeLabel, teachingFingerLabel,
     noteFretLabel,
 } from './highway-geometry.js';
@@ -333,13 +333,8 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
             labelTopY = tipY;
         }
 
-        // Bend label: peak magnitude — "full", "1/2", "1 1/2", "2"
-        let label;
-        if (bend === 0.5) label = '½';
-        else if (bend === 1) label = 'full';
-        else if (bend === 1.5) label = '1½';
-        else if (bend === 2) label = '2';
-        else label = bend.toFixed(1);
+        // Conventional whole-tone label for the semitone peak magnitude.
+        const label = bendToneLabel(bend);
 
         hwState.ctx.fillStyle = '#fff';
         hwState.ctx.font = `bold ${Math.max(9, sz * 0.28) | 0}px sans-serif`;

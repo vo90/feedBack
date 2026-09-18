@@ -132,6 +132,25 @@ def test_bass_instrument_routes_to_bass_arrangement(make_client):
     assert idx == 1
 
 
+def test_named_arrangement_exposes_authoritative_type_for_visualization(make_client):
+    server = make_client(instrument="bass")
+    pak = _write_multi_arr_sloppak(server._get_dlc_dir())
+    manifest = yaml.safe_load((pak / "manifest.yaml").read_text())
+    manifest["arrangements"][1].update(name="Rain", type="bass")
+    (pak / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+    with TestClient(server.app) as client:
+        with client.websocket_connect("/ws/highway/multi.sloppak?arrangement=1") as ws:
+            for _ in range(200):
+                msg = ws.receive_json()
+                if msg.get("type") == "song_info":
+                    assert msg["arrangement_type"] == "bass"
+                    active = next(a for a in msg["arrangements"] if a["index"] == msg["arrangement_index"])
+                    assert active["type"] == "bass" and active["name"] == "Rain"
+                    break
+            else:
+                pytest.fail("No song_info frame")
+
+
 def test_guitar_instrument_keeps_default(make_client):
     server = make_client(instrument="guitar")
     _write_multi_arr_sloppak(server._get_dlc_dir())
