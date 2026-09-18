@@ -33,7 +33,7 @@ Most of the visual controls (background style, intensity, audio reactivity, colo
 
 Choose **Current** to retain the existing appearance, or **RS+ inspired** for rounded, solid note faces and sharp technique symbols. Current remains the default. Changing style keeps your saved string colors, background, and effects settings.
 
-In RS+ inspired, ordinary and accented notes have the same full body opacity throughout their approach. Accents use a stronger rim; each chord member follows its own chart accent flag. Repeated chords use shorter frames, while chords with techniques that need individual notes retain those notes. Hollow neck previews and purple arpeggio guidance remain visually separate from playable attacks.
+In RS+ inspired, ordinary and accented notes have the same full body opacity throughout their approach. Accents use a stronger rim; each chord member follows its own chart accent flag. Chords use pale neutral panels; plain repeats use closed half-height panels. Chords with techniques that need individual notes retain those notes and full-height frames. Hollow neck previews and purple arpeggio guidance remain visually separate from playable attacks.
 
 | Control | RS+ inspired behavior |
 |---|---|
@@ -41,14 +41,20 @@ In RS+ inspired, ordinary and accented notes have the same full body opacity thr
 | Glow | Scales decorative highway glow. Zero keeps crisp notes, accent rims, technique symbols, and guidance visible. |
 | Soft glow | Adds restrained outer halos without blurring note faces. Requires Glow above zero and works in split-screen. |
 | Hit feedback intensity | Controls strike animation and flashes; zero retains the basic verdict cue. |
-| Text size | Scales text labels; face symbols keep their fit inside notes. |
+| Text size | Scales text labels; technique symbols retain their own proportions. |
 | Preview visibility | Controls the neck guidance separately from the incoming notes. |
 
 Current retains its existing Glow behavior and full-scene **Glow bloom**, which is disabled in split-screen. RS+ inspired uses local edge halos instead. Background decorations and 2D score effects have separate controls.
 
 The split-screen panel's **3D settings** expose notation style, Glow, and Soft glow / bloom independently for each panel. Global settings apply wherever no panel override is saved.
 
-The note and technique vocabulary follows [Ubisoft's RS+ notehead guide](https://www.ubisoft.com/en-gb/game/rocksmith/plus/news-updates/11LCT7xGpOMZrwjrRMbZbS/rocksmith-notehead-guide). This is an original visual approximation with deliberate readability choices, including no approach-distance dimming of playable notes. It does not change chart data, timing, scoring, or technique paths. Bend amount labels use chart semitones, including fractional values.
+The note and technique vocabulary follows [Ubisoft's RS+ notehead guide](https://www.ubisoft.com/en-gb/game/rocksmith/plus/news-updates/11LCT7xGpOMZrwjrRMbZbS/rocksmith-notehead-guide). This is an original visual approximation with deliberate readability choices, including no approach-distance dimming of playable notes. It does not change chart data, timing or scoring. Bend chevrons use the string color, without an added amount label; fractional bend values still drive the complete curve. Pre-bent gems meet the trail at its initial pitch, including imported curves whose first point follows note onset.
+
+Open strings use colored bars with a vertical pale marker rather than a stretched gem outline. Sustains have narrower colored strokes; full-height purple side brackets with short caps identify arpeggio guidance. With no saved arrow preference, RS+ slides use the trail alone. Explicitly enabled slide arrows remain available, and switching to Current restores its usual defaults. Very light custom note colors receive a thin contour around pale technique marks to keep them readable.
+
+With the **Default** highway theme, RS+ inspired uses a graphite floor, grey inner fret dividers, cyan outer rails, muted inlays and grey idle fret labels. Named highway themes keep their chosen colors, and background settings remain independent.
+
+Across RS+ highway themes, active and per-note fret labels render their intended gold without the previous cream washout; chord names are white.
 
 ## Contributing / development
 

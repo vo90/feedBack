@@ -22,12 +22,17 @@ function extractFn(source, name) {
     throw new Error(`unbalanced braces extracting ${name}`);
 }
 
-// Use the drawing path's real rim scale as the comparison, so a future
-// geometry change cannot silently leave the overlap matcher too narrow.
+// Use the drawing path's body + outline union as the comparison, so a future
+// geometry change cannot silently leave the overlap matcher too narrow. In
+// RS+ the outline mesh is a narrow stem inside the open bar's width.
 const sizingStart = src.indexOf('const ndRim =');
 const sizingEnd = src.indexOf('// ── Lateral face fill', sizingStart);
 assert.ok(sizingStart >= 0 && sizingEnd > sizingStart);
 const openRimSizing = src.slice(sizingStart, sizingEnd);
+const coreSizingStart = src.indexOf('if (n.f === 0)', src.indexOf('const core = pNote.get();'));
+const coreSizingEnd = src.indexOf('if (_hitPunch !== 1)', coreSizingStart);
+assert.ok(coreSizingStart >= 0 && coreSizingEnd > coreSizingStart);
+const openCoreSizing = src.slice(coreSizingStart, coreSizingEnd);
 
 const harness = new Function('assert', `
     const NFRETS = 24;
@@ -55,15 +60,24 @@ const harness = new Function('assert', `
         },
         renderedOpenWidth(laneWidth, accent, rsPlus) {
             rsPlusNotation = rsPlus;
-            const K = 1, NW = 8;
+            const K = 1, NW = 8, NH = 3, S_GAP = 4, nStr = 6;
             const n = { f: 0, ac: accent };
+            const x = 0, y = 0, noteZ = 0, techniqueYNow = 0;
+            const fromChord = true, _leftyCached = false, rsMiss = false, rsHit = false;
+            const sY = s => s * S_GAP, gNote = {}, mRsOpenStem = {};
             const rimXY = !rsPlusNotation && n.ac ? ACCENT_RIM_XY_SCALE_MUL : 1;
             const rimZ = 1, openSlabThickMul = 1;
             const openWScale = laneWidth * 0.96 / 40;
-            let rimWidth = 0;
-            const outline = { scale: { set(x) { rimWidth = NW * x; } } };
+            let rimWidth = 0, rimX = 0, coreWidth = 0;
+            const outline = {
+                position: { set(x) { rimX = x; } },
+                scale: { set(x) { rimWidth = NW * x; } },
+            };
+            const core = { scale: { set(x) { coreWidth = NW * x; } } };
             ${openRimSizing}
-            return rimWidth;
+            ${openCoreSizing}
+            return Math.max(coreWidth / 2, rimX + rimWidth / 2)
+                - Math.min(-coreWidth / 2, rimX - rimWidth / 2);
         },
     };
 `)(assert);
@@ -92,7 +106,7 @@ test('covered open chord footprints retain the authored anchor wires', () => {
     }, anchor), [21, 69]);
 });
 
-test('RS+ open footprints reach the actual ordinary and accent rims in every lane placement', () => {
+test('RS+ open footprints reach the actual ordinary and accent bar/stem union in every lane placement', () => {
     const placements = [
         { standalone: true, laneWidth: 40, center: 45 },
         { chordMeta: { size: 2, minF: 3, maxF: 7 }, laneWidth: 50, center: 45 },

@@ -6,6 +6,11 @@
  * --compare <baseline-output-dir> checks matching Current PNGs byte for byte.
  * --perf-only --perf-rounds 3 runs alternating styles, Glow0 and soft glow,
  * recording draw CPU time, finish wait, draw calls, triangles, and GPU identity.
+ * --fidelity-only reviews each technique plus open-marker and arpeggio layouts.
+ * --chords-only captures and validates just the chord sequence in both styles.
+ * --reference captures older notation for comparison without new geometry checks.
+ * --detail-filter name,name limits closeups; --times t,t and --fixture-name name
+ * select chart poses without changing or importing the source song library.
  * PLAYWRIGHT_MODULE may point at a preinstalled Playwright package. All browser
  * requests are fulfilled from this checkout; external requests are rejected.
  * Instrumentation exists only in the served source, never in production code.
@@ -23,6 +28,9 @@ const repo = path.resolve(option('--repo', path.join(__dirname, '../..')));
 const out = path.resolve(option('--out', path.join(repo, 'test-results/highway-notation')));
 const baseline = args.includes('--baseline');
 const quick = args.includes('--quick');
+const fidelityOnly = args.includes('--fidelity-only');
+const chordsOnly = args.includes('--chords-only');
+const reference = args.includes('--reference');
 const perfOnly=args.includes('--perf-only'),perfRounds=Number(option('--perf-rounds',1));
 const width=Number(option('--width',1280)),height=Number(option('--height',720));
 const dpr=Number(option('--dpr',1)),renderScale=Number(option('--scale',1));
@@ -38,7 +46,7 @@ function once(text, marker, replacement) {
 let served = once(source, 'const core = pNote.get();', `const core = pNote.get();
   if (window.__notationProbe) window.__notationProbe.notes.push({ note: {...n}, dt, fromChord, core, outline });`);
 served = once(served, 'const fill = pChordFrameFill.get();', `const fill = pChordFrameFill.get();
-  if (window.__notationProbe) window.__notationProbe.frames.push({ t:ch.t, dt:chDt, isRepeat, isArpeggioFrame, fill });`);
+  if (window.__notationProbe) window.__notationProbe.frames.push({ t:ch.t, dt:chDt, isRepeat, isArpeggioFrame, compactRepeatFrame, palmMuted:chordNotes.some(cn=>cn.pm), fill });`);
 served = once(served, 'const b = pChordBox.get();', `const b = pChordBox.get();
   if (window.__notationProbe) window.__notationProbe.edges.push({ t:ch.t, dt:chDt, isRepeat, mesh:b });`);
 if(served.includes('const mesh = pRsChordFrame.get();'))served=once(served,'const mesh = pRsChordFrame.get();',`const mesh = pRsChordFrame.get();
@@ -71,6 +79,7 @@ const techniqueFlags = [
   ['half-bend',{bn:.5,sus:1.3}],['prebend-release',{bn:1,bt:1,sus:1.3,bnv:[{t:0,v:1},{t:.7,v:1},{t:1.3,v:0}]}],
   ['accent-hammer',{ac:true,ho:true}],['accent-palm',{ac:true,pm:true}],
   ['accent-harmonic',{ac:true,hp:true}],['open',{}],['open-accent',{ac:true}],
+  ['sustain',{sus:1.3}],
 ];
 function techniqueScene(offset=0) {
   const b=baseBundle();
@@ -83,7 +92,12 @@ function techniqueScene(offset=0) {
 function chordScene() {
   const b=baseBundle();
   b.chordTemplates=[{name:'A5',frets:[5,7,7,-1,-1,-1],fingers:[1,3,4,-1,-1,-1]}];
-  const members=()=>[{s:0,f:5},{s:1,f:7},{s:2,f:7}];
+  // Match lib/song.py note_to_wire: legacy flags are emitted even when false.
+  // Sparse fixture members otherwise inherit the reused chord scratch's flags.
+  const members=()=>[{s:0,f:5},{s:1,f:7},{s:2,f:7}].map(n=>({
+    sus:0,sl:-1,slu:-1,bn:0,ho:false,po:false,hm:false,hp:false,
+    pm:false,mt:false,vb:false,tr:false,ac:false,tp:false,...n
+  }));
   b.chords=[{t:10.4,id:0,notes:members()}, {t:10.8,id:0,hd:true,notes:members()},
     {t:11.2,id:0,hd:true,notes:members().map(n=>({...n,ac:true}))},
     {t:11.6,id:0,hd:true,notes:members().map(n=>({...n,pm:true}))},
@@ -133,7 +147,7 @@ async function main() {
         return {style:a.style,settings:a.settings,canvas:[a.ren.domElement.width,a.ren.domElement.height],
           renderer:{calls:a.ren.info.render.calls,triangles:a.ren.info.render.triangles,memory:{...a.ren.info.memory}},
           notes:p.notes.map(({note,dt,fromChord,core,outline})=>{const v=core.getWorldPosition(core.position.clone()).project(a.cam);const rgba=new Uint8Array(4);gl.readPixels(Math.round((v.x+1)*a.ren.domElement.width/2),Math.round((v.y+1)*a.ren.domElement.height/2),1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba);return {note,dt,fromChord,core:__probeMesh(core),outline:__probeMesh(outline),screen:[(v.x+1)*innerWidth/2,(1-v.y)*innerHeight/2],centerPixel:Array.from(rgba)};}),
-          frames:p.frames.map(({t,dt,isRepeat,isArpeggioFrame,fill})=>({t,dt,isRepeat,isArpeggioFrame,fill:__probeMesh(fill),textureAlpha:__fillAlpha(fill.material)})),
+          frames:p.frames.map(({fill,...metadata})=>({...metadata,fill:__probeMesh(fill),textureAlpha:__fillAlpha(fill.material)})),
           edges:p.edges.map(({t,dt,isRepeat,mesh})=>({t,dt,isRepeat,mesh:__probeMesh(mesh)})),
           roundedFrames:p.roundedFrames.map(({mesh,...rest})=>({...rest,mesh:__probeMesh(mesh)}))};
       };
@@ -171,8 +185,37 @@ async function main() {
       console.log(`Captured ${name}: ${proof.notes.length} cores, ${proof.frames.length} frames`);
       return proof;
     }
+    async function captureChordSequence(style) {
+      const chords=await capture(`${style}-chord-sequence`,chordScene(),{notationStyle:style,glow:.05,bloom:false},{expectBodies:true});
+      check(chords.frames.some(f=>f.isRepeat),`${style}: chord sequence did not exercise repeats`);
+      const first=chords.notes.filter(n=>n.fromChord&&n.note.t===10.4);
+      const muted=chords.notes.filter(n=>n.fromChord&&n.note.t===11.6);
+      const accented=chords.notes.filter(n=>n.fromChord&&n.note.t===11.2);
+      check(first.length===3&&first.every(n=>!n.note.pm&&!n.note.mt&&!n.note.fhm&&!n.note.ac&&!n.note.ho),`${style}: first plain chord inherited a later technique/accent`);
+      check(chords.frames.some(f=>f.t===10.4&&!f.isRepeat),`${style}: first chord was incorrectly reduced to a repeat`);
+      check(muted.length===0&&chords.frames.some(f=>f.t===11.6&&f.palmMuted&&f.compactRepeatFrame),`${style}: palm-muted repeat lost its compact frame mute cue`);
+      check(accented.length===3&&accented.every(n=>n.note.ac===true&&!n.note.pm),`${style}: accented repeat did not retain its own three notes`);
+      check(chords.frames.some(f=>f.t===10.4&&!f.compactRepeatFrame&&!f.palmMuted),`${style}: first plain chord frame is not full and unmuted`);
+      if(style==='rsplus'&&!reference){
+        check(chords.frames.every(f=>f.fill.material.opacity===1),'RS+ chord fill opacity changed with distance/repeat');
+        check(chords.frames.every(f=>f.textureAlpha&&f.textureAlpha.max<=64),'RS+ frame fill texture is not lightly translucent');
+        check(chords.roundedFrames.filter(f=>!f.halo).every(f=>f.mesh.material.uniforms.uOpacity===1),'RS+ frame rim opacity changed with distance/repeat');
+        const rims=chords.roundedFrames.filter(f=>!f.halo);
+        const full=rims.reduce((a,b)=>a.height>b.height?a:b),compact=rims.reduce((a,b)=>a.height<b.height?a:b);
+        check(rims.every(f=>!f.openTop),'RS+ modern repeat panels should have a closed top');
+        check(full&&compact&&Math.abs(compact.height/full.height-.5)<1e-6,'RS+ ordinary repeat frame is not half height');
+      }
+      const palmBundle=chordScene();
+      palmBundle.chords=[{t:10.4,id:0,notes:palmBundle.chords[0].notes.map(n=>({...n,pm:true}))}];
+      const palm=await capture(`${style}-chord-palm-full`,palmBundle,{notationStyle:style,glow:.05,bloom:false},{expectBodies:true});
+      const palmNotes=palm.notes.filter(n=>n.fromChord&&n.note.t===10.4);
+      check(palmNotes.length===3&&palmNotes.every(n=>n.note.pm===true&&!n.note.ac),`${style}: full palm-muted chord did not retain its own three note markers`);
+      check(palm.frames.some(f=>f.t===10.4&&f.palmMuted&&!f.isRepeat&&!f.compactRepeatFrame),`${style}: full palm-muted chord was incorrectly reduced to a repeat`);
+      return chords;
+    }
     const styles=baseline?['current']:option('--style')?[option('--style')]:['current','rsplus'];
-    if(!perfOnly)for(const style of styles){
+    if(chordsOnly)for(const style of styles)await captureChordSequence(style);
+    if(!chordsOnly&&!perfOnly&&!fidelityOnly)for(const style of styles){
       const effectProofs=[];
       for(const [effect,glow,bloom] of [['zero',0,false],['soft',.25,true],['user',.05,false]]){
         const proof=await capture(`${style}-eight-strings-${effect}`,matrix(),{notationStyle:style,glow,bloom},{expectBodies:true});
@@ -191,15 +234,7 @@ async function main() {
         }
       }
       await capture(`${style}-low-vibrancy-cinematic`,matrix(6),{notationStyle:style,glow:0,bloom:false,vibrancy:0,cinematic:true},{expectBodies:true});
-      const chords=await capture(`${style}-chord-sequence`,chordScene(),{notationStyle:style,glow:.05,bloom:false},{expectBodies:true});
-      check(chords.frames.some(f=>f.isRepeat),`${style}: chord sequence did not exercise repeats`);
-      if(style==='rsplus'){
-        check(chords.frames.every(f=>f.fill.material.opacity===1),'RS+ chord fill opacity changed with distance/repeat');
-        check(chords.frames.every(f=>f.textureAlpha&&f.textureAlpha.max<=64),'RS+ frame fill texture is not lightly translucent');
-        check(chords.roundedFrames.filter(f=>!f.halo).every(f=>f.mesh.material.uniforms.uOpacity===1),'RS+ frame rim opacity changed with distance/repeat');
-        const full=chords.roundedFrames.find(f=>!f.openTop&&!f.halo),compact=chords.roundedFrames.find(f=>f.openTop&&!f.halo);
-        check(full&&compact&&Math.abs(compact.height/full.height-.5)<1e-6,'RS+ ordinary repeat frame is not half height');
-      }
+      await captureChordSequence(style);
       for(const offset of quick?[0]:[0,6,12,18])await capture(`${style}-techniques-${offset}`,techniqueScene(offset),{notationStyle:style,glow:0,bloom:false},{expectBodies:true});
       if(!quick){const b=chordScene();b.currentTime=10.4;b.chords[0].notes=b.chords[0].notes.map((n,i)=>({...n,ac:true,...(i===1?{ho:true}: {})}));await capture(`${style}-chord-verdict-onset`,b,{notationStyle:style,glow:0,bloom:false,scored:true},{expectBodies:true});}
       if(!quick)for(const [name,count,lefty,inverted] of [['four-string-lefty',4,true,false],['seven-string-inverted',7,false,true],['eight-string-lefty-inverted',8,true,true]]){
@@ -208,13 +243,61 @@ async function main() {
       }
       if(option('--fixture')){
         const raw=JSON.parse(fs.readFileSync(option('--fixture'),'utf8'));
-        for(const currentTime of [33.9,63,183]){
+        for(const currentTime of option('--times','33.9,63,183').split(',').map(Number)){
           const b={...baseBundle(),...raw,handShapes:raw.handshapes||raw.handShapes,chordTemplates:raw.templates||raw.chordTemplates,currentTime};
-          await capture(`${style}-airbourne-${currentTime}`,b,{notationStyle:style,glow:.05,bloom:false},{expectBodies:true});
+          await capture(`${style}-${option('--fixture-name','airbourne')}-${currentTime}`,b,{notationStyle:style,glow:.05,bloom:false},{expectBodies:true});
         }
       }
     }
-    if(!baseline&&!perfOnly){
+    if(!chordsOnly&&fidelityOnly){
+      for(const [index,[name,flags]] of techniqueFlags.entries()){
+        if(option('--detail-filter')&&!option('--detail-filter').split(',').includes(name))continue;
+        const string = name==='tap'?4:name==='half-bend'?2:
+          ['pop','tremolo','vibrato'].includes(name)?3:0;
+        const b=baseBundle();
+        b.notes=[{t:10.22,s:string,f:name.startsWith('open')?0:5,...flags,_fixtureName:name}];
+        const proof=await capture(`detail-${name}`,b,{notationStyle:'rsplus',glow:0,bloom:false},{expectBodies:true});
+        const [px,py]=proof.notes[0].screen;
+        const clipWidth=Math.min(width,name.startsWith('open')?560:360),clipHeight=Math.min(height,350);
+        const clip={x:Math.max(0,Math.min(width-clipWidth,Math.round(px-clipWidth*.5))),y:Math.max(0,Math.min(height-clipHeight,Math.round(py-clipHeight*.70))),width:clipWidth,height:clipHeight};
+        await page.screenshot({path:path.join(out,`detail-${name}-close.png`),clip});
+      }
+      // A real render/pool check: the open marker fits within its colored bar,
+      // its stem mirrors, and ordinary/accented open attacks stay fully opaque.
+      for(const lefty of [false,true])for(const inverted of [false,true]){
+        const b=baseBundle();b.lefty=lefty;b.inverted=inverted;
+        b.notes=[{t:10.3,s:0,f:0},{t:11.2,s:2,f:0,ac:true},{t:12.1,s:5,f:0}];
+        const proof=await capture(`open-layout-${lefty}-${inverted}`,b,{notationStyle:'rsplus',glow:0,bloom:false},{expectBodies:true});
+        for(const n of proof.notes){
+          const bodyW=n.core.scale[0],stemW=n.outline.scale[0];
+          check(stemW<bodyW*.05,'Open stem is still a stretched horizontal outline');
+          check(Math.sign(n.outline.position[0]-n.core.position[0])===(lefty?1:-1),'Open stem did not mirror with lefty layout');
+          check(n.outline.material.opacity===1,'Open marker became translucent with distance');
+        }
+      }
+      await capture('rsplus-white-techniques',techniqueScene(6),{
+        notationStyle:'rsplus',glow:0,bloom:false,customColors:Array(8).fill('#ffffff'),
+      },{expectBodies:true});
+      for(const now of [10,10.8,11.6]){
+        const b=baseBundle();b.currentTime=now;
+        b.anchors=[{time:0,fret:1,width:4}];
+        b.chordTemplates=[{name:'Am',frets:[-1,0,2,2,1,0],fingers:[-1,-1,2,3,1,-1],arp:true}];
+        b.handShapes=[{chord_id:0,start_time:10.4,end_time:13,arp:true}];
+        b.chords=[{t:10.4,id:0,notes:[{s:1,f:0},{s:2,f:2},{s:3,f:2},{s:4,f:1},{s:5,f:0}]}];
+        b.notes=[{t:10.4,s:1,f:0},{t:10.8,s:2,f:2},{t:11.2,s:3,f:2},{t:11.6,s:4,f:1},{t:12,s:5,f:0},{t:12.4,s:3,f:2}];
+        const proof=await capture(`rsplus-arpeggio-${now}`,b,{notationStyle:'rsplus',glow:0,bloom:false},{expectBodies:true});
+        check(proof.roundedFrames.some(f=>f.mesh.material.uniforms.uBracketCap>0),'Arpeggio fixture did not render rounded bracket pairs');
+        check(proof.roundedFrames.filter(f=>f.mesh.material.uniforms.uBracketCap>0).every(f=>!f.halo),'Arpeggio guide gained an unwanted halo');
+      }
+      if(option('--fixture')){
+        const raw=JSON.parse(fs.readFileSync(option('--fixture'),'utf8'));
+        for(const currentTime of option('--times','21,22.172001,22.8').split(',').map(Number)){
+          const b={...baseBundle(),...raw,handShapes:raw.handshapes||raw.handShapes,chordTemplates:raw.templates||raw.chordTemplates,currentTime};
+          await capture(`rsplus-${option('--fixture-name','aerosmith')}-${currentTime}`,b,{notationStyle:'rsplus',glow:.05,bloom:false},{expectBodies:true});
+        }
+      }
+    }
+    if(!chordsOnly&&!baseline&&!perfOnly&&!fidelityOnly){
       await init(matrix(),{notationStyle:'current',glow:0,bloom:false});
       const controls=await page.evaluate(()=>feedBackViz_highway_3d.panelControls);
       for(const key of ['notationStyle','glow','bloom'])check(controls.some(c=>c.key===key),`Missing panel control ${key}`);
@@ -265,7 +348,7 @@ async function main() {
         await page.evaluate(()=>{for(const x of __splitInstances)x.destroy();delete window.feedBackSplitscreen;window.r=null;const host=document.getElementById('host');host.style.display='block';host.innerHTML='<canvas id="highway"></canvas>';});
       }
     }
-    if(!quick||perfOnly)for(let round=0;round<perfRounds;round++)for(const style of (round%2?[...styles].reverse():styles))for(const [effect,glow,bloom] of (perfOnly?[['zero',0,false],['soft',.25,true]]:[['soft',.25,true]])){
+    if(!chordsOnly&&((!quick&&!fidelityOnly)||perfOnly))for(let round=0;round<perfRounds;round++)for(const style of (round%2?[...styles].reverse():styles))for(const [effect,glow,bloom] of (perfOnly?[['zero',0,false],['soft',.25,true]]:[['soft',.25,true]])){
       await init(denseScene(),{notationStyle:style,glow,bloom});
       const perf=await page.evaluate(async()=>{
         const a=r.__notationAudit(),gl=a.ren.getContext(),samples=[],cpuSamples=[],finishSamples=[];
@@ -286,7 +369,7 @@ async function main() {
       }
     }
     check(errors.length===0,`Browser errors: ${errors.join('\n')}`);
-    const report={repo,git,sourceSha256:sha(source),baseline,viewport:[width,height],deviceScaleFactor:dpr,renderScale,comparisons,results,errors,failures};
+    const report={repo,git,sourceSha256:sha(source),baseline,reference,viewport:[width,height],deviceScaleFactor:dpr,renderScale,comparisons,results,errors,failures};
     fs.writeFileSync(path.join(out,'results.json'),JSON.stringify(report,null,2));
     console.log(JSON.stringify({output:out,cases:results.length,errors,failures},null,2));
     if(failures.length)process.exitCode=1;

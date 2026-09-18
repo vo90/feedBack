@@ -32,6 +32,7 @@ test('bulk settings reload retints after the complete palette/vibrancy/glow snap
         _h3dHexToInt: value => /^#[0-9a-f]{6}$/i.test(value) ? parseInt(value.slice(1), 16) : null,
         _bgMemFallback: {}, BG_DEFAULTS: {}, localStorage: { getItem: () => null },
         _applyCinematic() {}, _applyVibrancy() {}, _applyGlow() {}, trailYieldSettings: {}, vibrancy: 0.1, glowMul: 0.8,
+        _prewarmRsNotation() {}, _rsPrewarmBundle: null,
         rsNotationPaletteSig: '', colorWrites: 0, paletteWrites: 0 };
     const colorAttribute = { value: null, setXYZ(_, ...value) { this.value = value; ctx.colorWrites++; } };
     ctx.gRsNoteGrad = [{ attributes: { position: { count: 1, getY: () => 0 },
@@ -104,6 +105,7 @@ test('bulk style round-trip restores shared Current sustain colors and hit inten
         _bgHasStored: () => true, PALETTES: { default: palette }, activePalette: palette,
         _bgPaletteSig: palette.join(','), _bgMemFallback: {}, BG_DEFAULTS: {},
         localStorage: { getItem: () => null }, _applyCinematic() {}, _applyRsNotationPalette() {},
+        _prewarmRsNotation() {}, _rsPrewarmBundle: null,
         _applyPaletteToMaterials() { throw new Error('unchanged palette should be skipped'); },
         trailYieldSettings: {}, vibrancy: 0.2, glowMul: 0.3, _hitFx: 0.8,
         _paletteColorTmp: null, mStr: [{}], mSus: [{}], mGlow: [{ color: new Color() }],

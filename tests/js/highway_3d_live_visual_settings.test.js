@@ -13,6 +13,7 @@ function listenerHarness() {
         const _bgLoadSettings = () => loads++;
         const _bgRebuild = () => rebuilds++;
         const _applyVibrancy = () => {}, _applyGlow = () => {};
+        const _applyBgTheme = () => {};
         ${src.slice(start, end)}
         return { emit(key) { _bgListener(key); return { loads, rebuilds }; } };
     `)();

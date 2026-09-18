@@ -29,7 +29,7 @@ function color() {
         lerp(value, amount) { this.mix = amount; return this; } };
 }
 function mesh() {
-    const uniforms = Object.fromEntries(['uRim', 'uRadius', 'uPad', 'uOpenTop',
+    const uniforms = Object.fromEntries(['uRim', 'uRadius', 'uPad', 'uOpenTop', 'uBracketCap',
         'uHalo', 'uOpacity'].map(key => [key, { value: 0 }]));
     uniforms.uSize = { value: vector() };
     uniforms.uColor = { value: color() };
@@ -76,7 +76,8 @@ function frameHarness() {
             const CHORD_FRAME_RIM_Z_MIN = .048, CHORD_FRAME_RIM_Z_SCAL = .68;
             const chordHighwayLavenderArpVisual = !!options.arpeggio;
             const ARPEGGIO_RIM_BLUE_HEX = 0xa58aff, CHORD_BOX_TEAL_HEX = 0x00d2d5;
-            const chordFrameGradTex = 'teal', chordFrameGradTexArp = 'purple';
+            const RSPLUS_CHORD_RIM_HEX = 0xb3c3cd;
+            const chordFrameGradTex = 'teal', chordFrameGradTexArp = 'purple', chordFrameGradTexRs = 'neutral';
             ${between('const fade = rsPlusNotation', '// Capture the neutral frame color')}
             ${between('const repDim =', 'const chordName = chordTemplateLabel')}
             return Object.fromEntries(Object.entries(groups).map(([name, group]) =>
@@ -95,11 +96,13 @@ test('RS+ frame edge and interior contrast stay constant across distance and pla
             assert.equal(result.rounded.length, 1);
             assert.equal(result.rounded[0].material.uniforms.uOpacity.value, 1);
             assert.equal(result.fills[0].material.opacity, 1);
+            assert.equal(result.fills[0].material.map, 'neutral');
+            assert.equal(result.rounded[0].material.uniforms.uColor.value.hex, 0xb3c3cd);
         }
     }
 });
 
-test('rounded frames keep exact anchor bounds and compact repeats retain an open top', () => {
+test('rounded frames keep exact anchor bounds and modern compact repeats have a closed top', () => {
     const render = frameHarness();
     for (const width of [8, 30, 65]) {
         for (const repeat of [false, true]) {
@@ -108,7 +111,7 @@ test('rounded frames keep exact anchor bounds and compact repeats retain an open
             assert.deepEqual(frame.scale.values, [width, height, 1]);
             assert.deepEqual(frame.position.values.slice(0, 2), [17, 2 + height / 2]);
             assert.deepEqual(frame.material.uniforms.uSize.value.values, [width, height]);
-            assert.equal(frame.material.uniforms.uOpenTop.value, repeat ? 1 : 0);
+            assert.equal(frame.material.uniforms.uOpenTop.value, 0);
             assert.ok(frame.material.uniforms.uRadius.value <= Math.min(width, height) * .18);
         }
     }
@@ -153,6 +156,7 @@ test('Current style round trips preserve its bars, accent halo and opacity polic
     assert.equal(render({ glow: 1, soft: true }).currentRims.length, 0);
     const after = render(options);
     assert.equal(after.rounded.length, 0);
+    assert.equal(after.fills[0].material.map, 'teal');
     assert.deepEqual({ rims: after.currentRims.length, halos: after.currentHalos.length,
         edge: after.currentRims[0].material.opacity, fill: after.fills[0].material.opacity }, baseline);
     assert.equal(frameHarness()({ glow: 0 }).rounded.length, 1, 'a second panel owns independent pools');
@@ -163,6 +167,96 @@ test('event tail multiplier still retires frame effects without a distance fade'
     assert.equal(result.fills[0].material.opacity, .25);
     assert.equal(result.rounded[0].material.uniforms.uOpacity.value, .25);
     assert.equal(result.rounded[1].material.uniforms.uOpacity.value, .075);
+});
+
+test('explicit arpeggio frames have short open bracket caps and keep named depth ordering', () => {
+    const render = frameHarness();
+    for (const dt of [.02, 1.5, 2.99]) {
+        for (const width of [8, 30, 65]) {
+            const result = render({ arpeggio: true, dt, width, glow: 1, soft: true });
+            assert.equal(result.rounded.length, 1, 'arpeggio guidance has no halo pass');
+            const frame = result.rounded[0], u = frame.material.uniforms;
+            assert.deepEqual(frame.scale.values, [width,24,1]);
+            assert.deepEqual(frame.position.values, [17,14,-dt*2]);
+            assert.equal(u.uBracketCap.value,width*.12);
+            assert.equal(u.uOpenTop.value,0);
+            assert.equal(u.uOpacity.value,1);
+            assert.equal(frame.renderOrder,-dt*200+1, 'full handshape frames use the CHORD_FRAME layer at their own depth');
+            assert.notEqual(frame.renderOrder,18, 'per-note overlay ordering must not leak to the full handshape frame');
+        }
+    }
+    const ordinary = render({ arpeggio:false }).rounded[0];
+    assert.equal(ordinary.material.uniforms.uBracketCap.value,0,'pooled arpeggio mode must reset for the next normal frame');
+});
+
+function bracketHarness() {
+    return new Function('mesh', `
+        ${blockAt('function pool(')}
+        const bars = { meshes: [], add(m) { this.meshes.push(m); } };
+        const frames = { meshes: [], add(m) { this.meshes.push(m); } };
+        const pArpBracket = pool(bars, mesh), pRsChordFrame = pool(frames, mesh);
+        let rsPlusNotation = true;
+        const NW = 5, NH = 3, K = 1, AHEAD = 3;
+        const ARPEGGIO_RIM_BLUE_HEX = 0x454bb6, activePalette = [0xee0022];
+        const dZ = dt => -dt * 10;
+        function notationSoftGlow() { return 1; }
+        function renderOrderForLayerAtZ() { return 10; }
+        ${blockAt('function drawRsPlusChordFrame(')}
+        ${blockAt('function drawArpBrackets(')}
+        return function render(options = {}) {
+            pArpBracket.reset(); pRsChordFrame.reset();
+            rsPlusNotation = options.style !== 'current';
+            if (options.chord) drawRsPlusChordFrame(2, 4, -5, 30, 24, .5, false, 0x00d2d5, 1);
+            else drawArpBrackets(2, 4, options.dt ?? 1, options.end ?? 6,
+                options.now ?? 4, 0, !!options.open, options.open ? 9 : null);
+            return { bars: bars.meshes.filter(m => m.visible),
+                frames: frames.meshes.filter(m => m.visible) };
+        };
+    `)(mesh);
+}
+
+test('RS+ arpeggio guidance uses one rounded purple bracket pair with an open centre and no halo', () => {
+    const render = bracketHarness();
+    for (const dt of [.02, 1.5, 2.99]) {
+        const result = render({ dt });
+        assert.equal(result.bars.length, 0);
+        assert.equal(result.frames.length, 1, 'guidance remains quiet even when soft glow is on');
+        const bracket = result.frames[0], u = bracket.material.uniforms;
+        for (const [i, expected] of [9.95, 3.6, 1].entries()) {
+            assert.ok(Math.abs(bracket.scale.values[i] - expected) < 1e-12);
+        }
+        assert.deepEqual(bracket.position.values, [2, 4, -dt * 10 + .006]);
+        assert.equal(u.uColor.value.hex, 0x454bb6);
+        assert.equal(u.uBracketCap.value, 2.325);
+        assert.ok(u.uBracketCap.value < u.uSize.value.values[0] * .5, 'top and bottom never join across the centre');
+        assert.ok(u.uRadius.value > u.uRim.value, 'corners have a rounded inner edge');
+        assert.equal(u.uOpenTop.value, 0);
+        assert.equal(u.uHalo.value, 0);
+        assert.equal(u.uOpacity.value, 1);
+        assert.equal(bracket.renderOrder, 18);
+    }
+    const retiring = render({ dt: -.9, now: 5.9 }).frames[0];
+    assert.ok(Math.abs(retiring.material.uniforms.uOpacity.value - .4) < 1e-12);
+    assert.equal(retiring.position.values[2], .006);
+    assert.equal(render({ dt: -3, now: 6.1 }).frames.length, 0);
+    assert.equal(render({ dt: 3 }).frames.length, 0);
+});
+
+test('pooled arpeggio bracket mode resets for chords while Current bars and open chevrons stay unchanged', () => {
+    const render = bracketHarness();
+    const current = render({ style: 'current' });
+    assert.equal(current.bars.length, 6);
+    assert.equal(current.frames.length, 0);
+    assert.ok(current.bars.every(b => b.material.color.hex === 0xee0022));
+    render();
+    const chord = render({ chord: true });
+    assert.equal(chord.frames.length, 2);
+    assert.ok(chord.frames.every(f => f.material.uniforms.uBracketCap.value === 0));
+    assert.equal(render({ style: 'current' }).bars.length, 6);
+    const open = render({ open: true });
+    assert.equal(open.bars.length, 4);
+    assert.equal(open.frames.length, 0);
+    assert.ok(open.bars.every(b => b.material.color.hex === 0x454bb6));
 });
 
 const flashStart = src.indexOf('// ── Fret-wire hit flash (apply)');

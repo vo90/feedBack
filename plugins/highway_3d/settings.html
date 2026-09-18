@@ -952,7 +952,8 @@
         </label>
         <p class="text-[10px] text-gray-500 mt-1 ml-6">
             A small ›/‹ arrow beside a sliding note's gem, pointing toward
-            the slide's destination fret.
+            the slide's destination fret. RS+ uses the slide trail alone by
+            default; these optional arrows can be enabled with either notation style.
         </p>
     </div>
     <div class="mt-4">
@@ -1361,9 +1362,6 @@
             let storedFpsVisible = null;
             let storedProjectionVisible = null;
             let storedFretDividersVisible = null;
-            let storedSlideArrowApproachVisible = null;
-            let storedSlideArrowNeckVisible = null;
-            let storedSlideArrowChainPreviewVisible = null;
             try {
                 storedStyle = localStorage.getItem('h3d_bg_style');
                 storedBgTheme = localStorage.getItem('h3d_bg_bgTheme');
@@ -1400,9 +1398,6 @@
                 storedFpsVisible = localStorage.getItem('h3d_bg_fpsVisible');
                 storedProjectionVisible = localStorage.getItem('h3d_bg_projectionVisible');
                 storedFretDividersVisible = localStorage.getItem('h3d_bg_fretDividersVisible');
-                storedSlideArrowApproachVisible = localStorage.getItem('h3d_bg_slideArrowApproachVisible');
-                storedSlideArrowNeckVisible = localStorage.getItem('h3d_bg_slideArrowNeckVisible');
-                storedSlideArrowChainPreviewVisible = localStorage.getItem('h3d_bg_slideArrowChainPreviewVisible');
                 storedCustomImageDataUrl = localStorage.getItem('h3d_bg_customImageDataUrl');
                 storedCustomImageName = localStorage.getItem('h3d_bg_customImageName');
                 storedCustomVideoName = localStorage.getItem('h3d_bg_customVideoName');
@@ -1480,14 +1475,25 @@
             const fpsVisible = coerceBool(storedFpsVisible, DEFAULTS.fpsVisible);
             const projectionVisible = coerceBool(storedProjectionVisible, DEFAULTS.projectionVisible);
             const fretDividersVisible = coerceBool(storedFretDividersVisible, DEFAULTS.fretDividersVisible);
-            const slideArrowApproachVisible = coerceBool(storedSlideArrowApproachVisible, DEFAULTS.slideArrowApproachVisible);
-            const slideArrowNeckVisible = coerceBool(storedSlideArrowNeckVisible, DEFAULTS.slideArrowNeckVisible);
-            const slideArrowChainPreviewVisible = coerceBool(storedSlideArrowChainPreviewVisible, DEFAULTS.slideArrowChainPreviewVisible);
             const customImageDataUrl = (typeof storedCustomImageDataUrl === 'string') ? storedCustomImageDataUrl : DEFAULTS.customImageDataUrl;
             const customImageName    = (typeof storedCustomImageName === 'string')    ? storedCustomImageName    : DEFAULTS.customImageName;
             const customVideoName    = (typeof storedCustomVideoName === 'string')    ? storedCustomVideoName    : DEFAULTS.customVideoName;
 
             const notationSelect = document.getElementById('h3d-notation-style');
+            const notationSlideArrows = [
+                ['h3d-slide-arrow-approach-visible', 'slideArrowApproachVisible'],
+                ['h3d-slide-arrow-neck-visible', 'slideArrowNeckVisible'],
+                ['h3d-slide-arrow-chain-preview-visible', 'slideArrowChainPreviewVisible'],
+            ].map(([id, key]) => {
+                const element = document.getElementById(id);
+                let saved = null;
+                try { saved = localStorage.getItem('h3d_bg_' + key); } catch (_) {}
+                const item = { element, saved };
+                // Keep the in-session choice when storage is unavailable, as
+                // the renderer's global setting writer does.
+                element?.addEventListener('change', () => { item.saved = String(element.checked); });
+                return item;
+            });
             const notationDescriptions = [
                 ['h3d-vibrancy-description', 'Adjusts string-colour saturation. Playable note faces always stay fully opaque; accents and distance do not change their opacity.'],
                 ['h3d-glow-description', 'Scales decorative highway glow on notes, chord frames, sustains, strings, fret wires and previews. Off removes luminous extras while keeping sharp notes, accent rims, symbols and guidance visible. Background and score effects have separate controls.'],
@@ -1498,6 +1504,11 @@
                 return { element, current: element?.innerHTML, rsplus };
             });
             function showNotationDescription(value) {
+                for (const item of notationSlideArrows) {
+                    if (!item.element) continue;
+                    item.element.checked = item.saved == null ? value !== 'rsplus'
+                        : !(item.saved === 'false' || item.saved === '0');
+                }
                 for (const item of notationDescriptions) {
                     if (!item.element) continue;
                     if (value === 'rsplus') item.element.textContent = item.rsplus;
@@ -1572,9 +1583,6 @@
             const hco   = document.getElementById('h3d-headstock-color');
             const fpv   = document.getElementById('h3d-fps-visible');
             const pgh   = document.getElementById('h3d-projection-visible');
-            const saav  = document.getElementById('h3d-slide-arrow-approach-visible');
-            const sanv  = document.getElementById('h3d-slide-arrow-neck-visible');
-            const sacpv = document.getElementById('h3d-slide-arrow-chain-preview-visible');
             const fileInput = document.getElementById('h3d-bg-custom-image-file');
             const clearBtn  = document.getElementById('h3d-bg-custom-image-clear');
             const nameP     = document.getElementById('h3d-bg-custom-image-name');
@@ -1641,9 +1649,6 @@
             if (pgh)   pgh.checked  = projectionVisible;
             const fdv = document.getElementById('h3d-fret-dividers-visible');
             if (fdv)   fdv.checked  = fretDividersVisible;
-            if (saav)  saav.checked = slideArrowApproachVisible;
-            if (sanv)  sanv.checked = slideArrowNeckVisible;
-            if (sacpv) sacpv.checked = slideArrowChainPreviewVisible;
             if (slhi)  slhi.checked = sectionLabelsOnHighway;
             if (shvi)  shvi.checked = sectionHudVisible;
             if (shpos) shpos.value  = sectionHudPosition;

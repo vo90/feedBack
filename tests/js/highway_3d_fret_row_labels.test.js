@@ -46,10 +46,9 @@ test('non-main frets outside anchor range are skipped (continue)', () => {
 });
 
 test('in-anchor frets use FRET_LABEL_GOLD_HEX color', () => {
-    assert.match(
-        src(),
-        /isInAnchor\s*\?\s*FRET_LABEL_GOLD_HEX\s*:\s*FRET_LABEL_IDLE_HEX/,
-        'fret row color must be FRET_LABEL_GOLD_HEX when in anchor, FRET_LABEL_IDLE_HEX otherwise',
+    assert.ok(
+        /isInAnchor\s*\?\s*FRET_LABEL_GOLD_HEX\s*:\s*_highwayReferenceLabelColor\(FRET_LABEL_IDLE_HEX\)/.test(src()),
+        'active fret rows keep gold; idle rows pass the existing idle color through the style-aware reference helper',
     );
 });
 
