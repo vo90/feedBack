@@ -65,6 +65,13 @@ row's existing camera fit guard measures glyph bottoms rather than only the
 row centre. At arrival, a partially clipped matching row digit is lifted just
 inside the viewport before handoff; wholly offscreen rows remain ineligible.
 The pool resets that temporary Sprite centre on the next update.
+`_registerFretColumnMarker` gives grey reference markers the same top anchor.
+After confirming a gold label is visible/projectable, layout suppresses grey
+markers for the same positive fret within 1 ms of the authored onset. Store
+actual `ch.t`/`n.t` and `b.time`; keep only the first drawable gold identity
+across chord and note paths each layout frame. Do not use clamped render Z or 40 ms density
+buckets. Teaching marks have no fret/time identity and never suppress a marker.
+Marker records are per renderer, reused, reset each update and cleared at teardown.
 
 ## Coordinate system
 
