@@ -18,6 +18,7 @@ function offset(n, now, sustained, dir = 1) {
         'bendSemisAtElapsed','bendSemisAtTime','noteHasVibrato','vibratoSemisAtTime',
         'techniqueYOffsetWorld','prebendOffsetWorld'].map(extract).join('\n');
     return new Function('n','now','sustained','dir', `
+        const dt=n.t-now, hasSus=n.sus>0, susEnd=n.t+(n.sus||0);
         const BEND_HALFSTEP_WORLD_Y=1, bendVisualDirY=()=>dir;
         const BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.30, VIBRATO_HALF_WAVE_S=.08;
         const _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap();
@@ -54,7 +55,7 @@ const alignment = new Function('n', 'now', 'nStr', '_invertedCached', `
     ${extract('techniqueYOffsetWorld')}
     ${extract('ensureSlideRibbonCapacity')}
     ${extract('slideRibbonUpdatePair')}
-    const sustained=now>n.t && now<=n.t+n.sus;
+    const dt=n.t-now, hasSus=n.sus>0, susEnd=n.t+(n.sus||0);
     ${src.match(/const techniqueYNow = [\s\S]*?;/)[0]}
     const y=10, susStart=Math.max(n.t,now);
     const geometry=()=>({userData:{},setDrawRange(){},attributes:{position:{count:(SLIDE_RIBBON_SAMPLES+1)*4,array:new Float64Array((SLIDE_RIBBON_SAMPLES+1)*12)}}});
