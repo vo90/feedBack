@@ -16,6 +16,7 @@ function fn(name) {
     throw new Error('Unclosed function ' + name);
 }
 const suppress = new Function(fn('noteHasRepeatTechniqueCue')
+    + fn('chordMuteKind')
     + fn('noteHasVibrato') + fn('noteHasVisibleMotionSustain')
     + fn('repeatChordMaySuppressGems') + ';return repeatChordMaySuppressGems;')();
 
