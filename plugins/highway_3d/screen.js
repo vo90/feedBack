@@ -2626,6 +2626,25 @@
         return lo === 0 ? anchorArr[0] : anchorArr[lo - 1];
     }
 
+    // Chord onsets are rounded to milliseconds by chord_to_wire; anchors keep
+    // their source precision. Treat the half-millisecond round-trip difference
+    // as the same onset, without shifting the chart's actual lane boundaries.
+    const CHORD_ANCHOR_TIME_EPS = 0.000501;
+
+    function chordRailEndAt(anchorArr, onset, end) {
+        if (!anchorArr || !anchorArr.length) return end;
+        let lo = 0, hi = anchorArr.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (anchorArr[mid].time <= onset + CHORD_ANCHOR_TIME_EPS) lo = mid + 1;
+            else hi = mid;
+        }
+        // Before the first anchor, getChartAnchorAt already uses that anchor.
+        // The next boundary is therefore the second anchor, not the first.
+        const next = Math.max(1, lo);
+        return next < anchorArr.length ? Math.min(end, anchorArr[next].time) : end;
+    }
+
     /** @returns {{ dMin: number, dMax: number } | null} */
     function laneBoundsFromAnchor(anc) {
         if (!anc) return null;
@@ -14114,7 +14133,7 @@
                     }
 
                     // Anchor selection for chord frame + open-string X + sustain rails:
-                    // • Upcoming (chDtEarly > 0): onset time — frame previews the correct
+                    // • Upcoming or at onset: onset time — frame previews the correct
                     //   neck region before the chord hits the line.
                     // • Past, actively sustaining (now < ch.t + maxSus): onset time — frame
                     //   stays at the frets where the chord was struck. Using `now` here
@@ -14125,8 +14144,11 @@
                     //   — brief fade-out frame tracks the current lane position so it
                     //   doesn't visibly drift while the lane has already transitioned.
                     const chDtEarly = ch.t - now;
-                    const _chAnchorT = chDtEarly > 0 ? ch.t
-                        : (maxSus > 0 && now < ch.t + maxSus) ? ch.t
+                    // Match the rail's onset tolerance, including the tiny interval
+                    // between a rounded chord onset and its source-precision anchor.
+                    const _chAnchorT = chDtEarly >= -CHORD_ANCHOR_TIME_EPS
+                        || (maxSus > 0 && now < ch.t + maxSus)
+                        ? ch.t + CHORD_ANCHOR_TIME_EPS
                         : now;
                     const chAnc = getChartAnchorAt(anchors, _chAnchorT);
                     const chAncB = laneBoundsFromAnchor(chAnc);
@@ -15198,22 +15220,9 @@
                             // correctly per-anchor; a single-segment rail at fixed X would
                             // visually "invade" the neighbouring region when anchors change
                             // within the sustain window.
-                            let _dtSusEndRail = _dtSusEnd;
-                            if (anchors && anchors.length) {
-                                const _susAbsT = chDt > 0 ? ch.t : now;
-                                if (getChartAnchorAt(anchors, _susAbsT) !==
-                                    getChartAnchorAt(anchors, now + _dtSusEnd)) {
-                                    // Binary search: first anchor starting strictly after _susAbsT.
-                                    let _lo = 0, _hi = anchors.length;
-                                    while (_lo < _hi) {
-                                        const _mid = (_lo + _hi) >>> 1;
-                                        if (anchors[_mid].time <= _susAbsT) _lo = _mid + 1;
-                                        else _hi = _mid;
-                                    }
-                                    if (_lo < anchors.length)
-                                        _dtSusEndRail = anchors[_lo].time - now;
-                                }
-                            }
+                            // Resolve from the chord onset, never from playback time:
+                            // crossing a boundary must not resurrect a clipped rail.
+                            const _dtSusEndRail = chordRailEndAt(anchors, ch.t, ch.t + _effSus) - now;
                             const _zNear = chDt > 0 ? dZ(chDt) : 0;
                             const _zFar  = dZ(Math.min(_dtSusEndRail, AHEAD));
                             const _railLen = _zNear - _zFar;
