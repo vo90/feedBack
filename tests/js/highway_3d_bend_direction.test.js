@@ -21,9 +21,11 @@ function marker(string, inverted, stringCount = 6) {
         const _bendPeak=2, NH=1, K=.1, x=5, y=10, techniqueYNow=.5, noteZ=-1, approachRot=.2;
         const activePalette=Array(nStr).fill(0xffffff), pTechPlane={get:()=>mesh};
         const bendChevronMat=()=>({}), _spriteMat2MeshMat=()=>({}), techniqueMarkerRenderOrder=20;
+        const registrations=[];
+        const _registerIncomingLabelOccluder=(registeredMesh,z)=>registrations.push({mesh:registeredMesh,z});
         let yo=11;
         ${src.slice(start,end)}
-        return {dir:bendVisualDirY(s), y:mesh.position.y, rotation:mesh.rotation.z, yo};
+        return {dir:bendVisualDirY(s), y:mesh.position.y, rotation:mesh.rotation.z, yo, mesh, registrations};
     `);
     return fn(string, inverted, stringCount, mesh);
 }
@@ -35,6 +37,9 @@ for (const count of [4, 6, 7, 8]) {
                 const m=marker(s,inverted,count);
                 assert.equal(Math.sign(m.y-10.5),m.dir);
                 assert.ok(Math.abs(Math.cos(m.rotation-.2)-m.dir)<1e-9);
+                assert.equal(m.registrations.length,1,'the rendered bend mark participates in label clearance');
+                assert.equal(m.registrations[0].mesh,m.mesh,'registration uses the actual pooled bend mesh');
+                assert.equal(m.registrations[0].z,-1,'clearance compares the mark at its note event depth');
                 if(m.dir<0) assert.equal(m.yo,11,'downward chevron does not reserve upper label space');
             }
         });
