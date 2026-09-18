@@ -46,7 +46,7 @@ function helpers(lefty = false) {
         + block + fn('sustainTrailCenterXAt') + fn('ensureSlideRibbonCapacity')
         + fn('slideRibbonUpdatePair') + fn('trailOrderStrandBoundsAtZ')
         + fn('noteHasVibrato') + fn('noteHasVisibleMotionSustain')
-        + fn('noteHasRepeatTechniqueCue') + fn('repeatChordMaySuppressGems')
+        + fn('noteHasRepeatTechniqueCue') + fn('chordMuteKind') + fn('repeatChordMaySuppressGems')
         + `return { slideOutMarks, slideOutCueAt, slideOutAlphaAt, slideOutWidthScaleAt,
             slideOutOffsetWorldX, slideOutLegacyDirection, sustainTrailCenterXAt,
             slideRibbonSampleTimes, slideOutCrossingTimes, hwyFillTrailCrossingWindows, slideRibbonUpdatePair, trailOrderStrandBoundsAtZ,

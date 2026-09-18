@@ -39,6 +39,7 @@ const dispatch = new Function('chordNotes', 'options', `
     const _arpApproachFirstNote = options.first || null;
     const firstInShapeRun = false, _scrChordNote = {};
     const _linkedBendStarts = new WeakMap(), _linkedBendEnds = new WeakMap();
+    const _linkedVibratoRuns = new WeakMap();
     const now = 186, ch = { t: 186.460999, id: 1 };
     const usesUnfrettedPosition = () => false;
     const chordCX = 0, chordTailHoldS = 0.75, laneWForOpenStrings = 40;

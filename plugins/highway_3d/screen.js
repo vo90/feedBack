@@ -6167,6 +6167,7 @@
         let _linkNextTargetChordsRef = null;
         let _linkedBendStarts = new WeakMap();
         let _linkedBendEnds = new WeakMap();
+        let _linkedVibratoRuns = new WeakMap();
 
         // Per-fret onset index for localized sustain yielding. Rebuilt once per
         // arrangement; drawNote scans only conservative footprint buckets and
@@ -13136,6 +13137,7 @@
                 _linkNextTargetSet = hwyLinkNextTargetNotes(notes, bundle.chords, 1e-6, bendLinks);
                 _linkedBendEnds = resolveLinkedBendEnds(bendLinks);
                 _linkedBendStarts = resolveLinkedBendStarts(bendLinks, _linkedBendEnds);
+                _linkedVibratoRuns = resolveLinkedVibratoRuns(bendLinks);
                 _linkNextTargetNotesRef = notes;
                 _linkNextTargetChordsRef = bundle.chords;
             }
@@ -14484,6 +14486,7 @@
                             _linkedBendEnds.set(_scrChordNote, _linkedBendEnds.get(cn));
                             _scrChordNote.slide_out = cn.slide_out;
                             _scrChordNote.slide_out_marks = cn.slide_out_marks;
+                            _linkedVibratoRuns.set(_scrChordNote, _linkedVibratoRuns.get(cn));
                             // Same stale-scratch hazard for the teaching marks
                             // (§6.2.2): fg/sd are omit-when-default on the wire,
                             // so a chord note without them must reset to -1 or it
@@ -16428,8 +16431,74 @@
             return bendSemisAtElapsed(n, chartTime - n.t, _linkedBendStarts.get(n) || 0, _linkedBendEnds.get(n));
         }
 
+        /** Cache continuous vibrato runs from the same validated links as bends. */
+        function resolveLinkedVibratoRuns(links) {
+            const outgoing = new Map();
+            for (const [destination, link] of links) {
+                if (!link) continue;
+                // A fork cannot supply a unique visual continuation.
+                outgoing.set(link.source, outgoing.has(link.source) ? null : { destination, ...link });
+            }
+            const incoming = new Map(), times = new Map();
+            for (const [source, edge] of outgoing) {
+                const destination = edge?.destination;
+                if (!destination || source.ln !== true
+                    || !Number.isFinite(source.sus) || !(source.sus > 0)
+                    || !Number.isFinite(destination.sus) || !(destination.sus > 0)
+                    || !Number.isFinite(edge.sourceTime) || !Number.isFinite(edge.targetTime)
+                    || !(edge.targetTime > edge.sourceTime)
+                    || Math.abs(edge.sourceTime + source.sus - edge.targetTime) > BEND_LINK_TIME_EPS + 1e-9) {
+                    outgoing.set(source, null);
+                    continue;
+                }
+                incoming.set(destination, edge);
+                times.set(source, edge.sourceTime);
+                times.set(destination, edge.targetTime);
+            }
+            const contexts = new WeakMap();
+            for (const [head, time] of times) {
+                if (!noteHasVibrato(head) || noteHasVibrato(incoming.get(head)?.source)) continue;
+                const members = [];
+                let note = head, onset = time, duration = 0, exit = null;
+                while (noteHasVibrato(note)) {
+                    members.push({ note, onset, offset: duration });
+                    duration += note.sus;
+                    exit = outgoing.get(note);
+                    if (!exit) break;
+                    note = exit.destination;
+                    onset = exit.targetTime;
+                }
+                // Fade only at an actual linked transition to/from non-vibrato.
+                // A half-run bound keeps the two fades from crossing on tiny runs.
+                const fade = Math.min(VIBRATO_HALF_WAVE_S, duration * 0.5);
+                const run = { duration, fadeIn: incoming.has(head) ? fade : 0,
+                    fadeOut: exit && !noteHasVibrato(exit.destination) ? fade : 0 };
+                for (const member of members) {
+                    contexts.set(member.note, { onset: member.onset, offset: member.offset, run });
+                }
+            }
+            return contexts;
+        }
+
         function vibratoSemisAtTime(n, chartTime) {
             if (!noteHasVibrato(n) || !(n?.sus > 0)) return 0;
+            const context = _linkedVibratoRuns.get(n);
+            if (context) {
+                // Chart-time sampling is seek-safe; rounding-sized link gaps do
+                // not restart phase. Chord members use their chord's cached onset.
+                const elapsed = context.offset + Math.max(0, Math.min(n.sus, chartTime - context.onset));
+                const run = context.run;
+                let envelope = 1;
+                if (run.fadeIn > 0 && elapsed < run.fadeIn) {
+                    const p = Math.max(0, elapsed / run.fadeIn);
+                    envelope *= p * p * (3 - 2 * p);
+                }
+                if (run.fadeOut > 0 && elapsed > run.duration - run.fadeOut) {
+                    const p = Math.max(0, (run.duration - elapsed) / run.fadeOut);
+                    envelope *= p * p * (3 - 2 * p);
+                }
+                return Math.sin(elapsed * Math.PI / VIBRATO_HALF_WAVE_S) * envelope;
+            }
             const elapsed = Math.max(0, chartTime - n.t);
             return Math.sin(elapsed * Math.PI / VIBRATO_HALF_WAVE_S);
         }
@@ -17567,6 +17636,7 @@
                 n = { ...n, f: 0 };
                 _linkedBendStarts.set(n, _linkedBendStarts.get(sourceNote) || 0);
                 _linkedBendEnds.set(n, _linkedBendEnds.get(sourceNote));
+                _linkedVibratoRuns.set(n, _linkedVibratoRuns.get(sourceNote));
             }
             const nxFrame = _drawNextByString && _drawNextByString[s];
             const dt = n.t - now;
@@ -19706,6 +19776,7 @@
             _linkNextTargetChordsRef = null;
             _linkedBendStarts = new WeakMap();
             _linkedBendEnds = new WeakMap();
+            _linkedVibratoRuns = new WeakMap();
             trailVisibilityReleaseChartReferences();
         }
 

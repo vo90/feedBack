@@ -21,6 +21,7 @@ function offset(n, now, sustained, dir = 1) {
         const BEND_HALFSTEP_WORLD_Y=1, bendVisualDirY=()=>dir;
         const BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.30, VIBRATO_HALF_WAVE_S=.08;
         const _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap();
+        const _linkedVibratoRuns=new WeakMap();
         ${helpers}
         ${assignment}
         return techniqueYNow;

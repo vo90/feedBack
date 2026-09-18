@@ -149,7 +149,7 @@ test('open ghost curves keep readable proportions around a thin slab and follow 
 
 test('repeat simplification retains ghost cues but does not manufacture tied attacks', () => {
     const fns = ['noteHasVibrato', 'noteHasVisibleMotionSustain', 'noteHasRepeatTechniqueCue',
-        'repeatChordMaySuppressGems', 'hwyShouldSuppressNoteBody'];
+        'chordMuteKind', 'repeatChordMaySuppressGems', 'hwyShouldSuppressNoteBody'];
     const slideHelpers = screen.slice(screen.indexOf('    function slideTrailEnd('),
         screen.indexOf('    // Camera tgtDist building blocks'));
     const api = new Function(slideHelpers + fns.map(n => extract(screen, n)).join('\n')
