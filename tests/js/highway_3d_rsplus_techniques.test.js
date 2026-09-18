@@ -53,13 +53,14 @@ function factory() {
     `)(document, T);
 }
 
-test('compound attack marks retain every supported family without intersecting face cells', () => {
+test('compound attack marks retain every supported family and square proportions', () => {
     const f = factory();
     const note = Object.freeze({ po: true, ho: true, tp: true, slp: true, plk: true,
         pm: true, fhm: true, hm: true, hp: true });
     const cells = f.cells(f.flags(note));
     assert.deepEqual(cells.map(c => c.kind), ['pullOff', 'slap', 'pop', 'fretHandMute', 'naturalHarmonic']);
     for (const a of cells) {
+        assert.equal(a.w, a.h, 'uniform scale preserves the glyph proportions');
         assert.ok(a.x >= 0 && a.y >= 0 && a.x + a.w <= 1 && a.y + a.h <= 1);
         for (const b of cells) {
             if (a === b) continue;
@@ -69,6 +70,69 @@ test('compound attack marks retain every supported family without intersecting f
         }
     }
     assert.equal(f.flags({ ac: true, bn: 1, tr: true }), 0, 'accent and sustain flags do not invent attack glyphs');
+});
+
+// Conservative bounds of the actual paths, including rounded stroke caps.
+// Cell padding may overlap; the painted symbols must not intersect or clip.
+function inkBounds(calls) {
+    let pathBounds;
+    const result = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    const point = (x, y) => {
+        pathBounds.minX = Math.min(pathBounds.minX, x);
+        pathBounds.minY = Math.min(pathBounds.minY, y);
+        pathBounds.maxX = Math.max(pathBounds.maxX, x);
+        pathBounds.maxY = Math.max(pathBounds.maxY, y);
+    };
+    for (const { method, args, width } of calls) {
+        if (method === 'beginPath') pathBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+        else if (method === 'moveTo' || method === 'lineTo') point(...args);
+        else if (method === 'quadraticCurveTo') { point(...args.slice(0, 2)); point(...args.slice(2, 4)); }
+        else if (method === 'arc' || method === 'ellipse') {
+            const [x, y, rx] = args, ry = method === 'arc' ? rx : args[3];
+            point(x - rx, y - ry); point(x + rx, y + ry);
+        } else if (method === 'stroke' || method === 'fill') {
+            const pad = method === 'stroke' ? width / 2 : 0;
+            result.minX = Math.min(result.minX, pathBounds.minX - pad);
+            result.minY = Math.min(result.minY, pathBounds.minY - pad);
+            result.maxX = Math.max(result.maxX, pathBounds.maxX + pad);
+            result.maxY = Math.max(result.maxY, pathBounds.maxY + pad);
+        }
+    }
+    return result;
+}
+
+test('every supported 2–5 symbol combination stays square with separate unclipped ink', () => {
+    const f = factory(), seenCounts = new Set();
+    for (const attack of [{}, { ho: true }, { po: true }, { tp: true }]) {
+        for (const slp of [false, true]) for (const plk of [false, true]) {
+            for (const mute of [{}, { pm: true }, { fhm: true }]) {
+                for (const harmonic of [{}, { hm: true }, { hp: true }]) {
+                    const cells = f.cells(f.flags({ ...attack, slp, plk, ...mute, ...harmonic }));
+                    if (cells.length < 2) continue;
+                    seenCounts.add(cells.length);
+                    const ink = cells.map(cell => {
+                        assert.equal(cell.w, cell.h, cell.kind);
+                        const bounds = inkBounds(f.mat(cell.kind, 0xffcc00).map.image.context.calls);
+                        return { minX: cell.x + bounds.minX * cell.w, maxX: cell.x + bounds.maxX * cell.w,
+                            minY: cell.y + bounds.minY * cell.h, maxY: cell.y + bounds.maxY * cell.h };
+                    });
+                    for (const a of ink) {
+                        assert.ok(a.minX > 0.005 && a.minY > 0.005 && a.maxX < 0.995 && a.maxY < 0.995,
+                            'painted ink needs antialiasing room at the texture edges');
+                        for (const b of ink) if (a !== b) {
+                            assert.ok(a.maxX < b.minX || b.maxX < a.minX || a.maxY < b.minY || b.maxY < a.minY,
+                                'painted techniques must remain separate');
+                        }
+                    }
+                    if (cells.length % 2 === 1) {
+                        const last = cells.at(-1);
+                        assert.equal(last.x + last.w / 2, 0.5, 'center an incomplete final row');
+                    }
+                }
+            }
+        }
+    }
+    assert.deepEqual([...seenCounts].sort(), [2, 3, 4, 5]);
 });
 
 test('tap stays angular while slap and pop have opposite curved silhouettes', () => {
@@ -96,7 +160,8 @@ test('triangles are opposite solid pale string tints and tap keeps its own strin
         assert.ok(Math.abs(ho[i].args[1] + po[i].args[1] - 1) < 1e-12);
     }
     assert.equal(calls('hammerOn').find(c => c.method === 'fill').fill, '#fac1c6');
-    assert.equal(calls('hammerOn').some(c => c.method === 'stroke'), false, 'no dark border around the pale triangle');
+    assert.equal(calls('hammerOn').find(c => c.method === 'stroke').stroke, '#18222c',
+        'a thin dark contour protects the pale triangle');
     const greenTap = f.mat('tap', 0x22cc44).map.image.context.calls.find(c => c.method === 'fill').fill;
     assert.equal(greenTap, '#b4eebf');
     for (const kind of ['slap', 'pop']) {
@@ -108,7 +173,7 @@ test('mute masks distinguish an outlined string-dark PM from a solid pale FH, wi
     const f = factory();
     const strokes = kind => f.mat(kind, 0xff0000).map.image.context.calls.filter(c => c.method === 'stroke');
     assert.deepEqual(strokes('palmMute').map(c => c.stroke), ['#fff8f6', '#610000']);
-    assert.deepEqual(strokes('fretHandMute').map(c => c.stroke), ['#fff8f6']);
+    assert.deepEqual(strokes('fretHandMute').map(c => c.stroke), ['#18222c', '#fff8f6']);
     const pm = f.mat('palmMute').map.image.context.calls.find(c => c.method === 'moveTo');
     const fh = f.mat('fretHandMute').map.image.context.calls.find(c => c.method === 'moveTo');
     assert.ok(pm.args[0] < fh.args[0], 'PM spans wider than FH');
@@ -148,21 +213,22 @@ test('RS+ masks reuse per-palette textures and preserve their sharp material pol
     assert.equal(restored.toneMapped, true);
 });
 
-test('very light note colors get a thin contrast contour without changing saturated guide masks', () => {
+test('pale face marks keep their ink over a narrow dark contour across bright and dark palettes', () => {
     const f = factory();
     for (const kind of ['hammerOn', 'pullOff', 'tap', 'slap', 'pop', 'fretHandMute',
         'naturalHarmonic', 'pinchHarmonic']) {
         const calls = hex => f.mat(kind, hex).map.image.context.calls;
-        assert.equal(calls(0xee2233).some(c => c.method === 'stroke' && c.stroke === '#25313d'), false, kind);
-        for (const pale of [0xffffff, 0xf5eeee, 0xddeeff]) {
-            const outline = calls(pale).find(c => c.method === 'stroke' && c.stroke === '#25313d');
-            assert.ok(outline, kind + ' stays identifiable on a pale face');
-            const ink = calls(pale).filter(c => c.method === 'stroke' || c.method === 'fill');
+        for (const color of [0xee2233, 0xffcc00, 0xff8800, 0x44cc44, 0xaa44dd,
+            0xffffff, 0xf5eeee, 0xddeeff, 0x111111, 0]) {
+            const outline = calls(color).find(c => c.method === 'stroke' && c.stroke === '#18222c');
+            assert.ok(outline, kind + ' stays identifiable across face colors');
+            const ink = calls(color).filter(c => c.method === 'stroke' || c.method === 'fill');
             const last = ink.at(-1);
-            assert.notEqual(last[last.method], '#25313d', 'keyline must not replace the pale mark');
+            assert.notEqual(last[last.method], '#18222c', 'keyline must not replace the pale mark');
             if (kind.endsWith('Harmonic')) {
-                assert.equal(calls(pale).some(c => c.method === 'fill'), false, 'the harmonic center remains open');
-                assert.ok(outline.width - ink.at(-1).width <= 0.0281, 'contour stays narrow');
+                assert.equal(calls(color).some(c => c.method === 'fill'), false, 'the harmonic center remains open');
+                assert.ok(Math.abs(outline.width - last.width - 0.024) < 1e-12, 'contour stays narrow');
+                assert.equal(last.width, kind === 'naturalHarmonic' ? 0.085 : 0.052);
             }
         }
     }
