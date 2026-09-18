@@ -32,9 +32,9 @@ test('bend labels use whole tones while curve and pitch values remain semitones'
 test('actual 2D drawNote labels a two-semitone bend as full and one as half', () => {
     const labels = [];
     const ctx = new Proxy({}, { get: (o, key) => o[key] || (() => {}), set: (o, k, v) => (o[k] = v, true) });
-    const draw = new Function('bendToneLabel', 'bnvNormalizedPoints', 'roundRect', '_paintGemGlow', 'fillTextReadable',
+    const draw = new Function('bendToneLabel', 'noteFretLabel', 'bnvNormalizedPoints', 'roundRect', '_paintGemGlow', 'fillTextReadable',
         extract(drawSource, 'drawNote') + '; return drawNote;')(
-        bendToneLabel, load(geometry, 'bnvNormalizedPoints'), () => {}, () => {}, (_state, text) => labels.push(text));
+        bendToneLabel, load(geometry, 'noteFretLabel'), load(geometry, 'bnvNormalizedPoints'), () => {}, () => {}, (_state, text) => labels.push(text));
     const state = { ctx, STRING_COLORS: ['#f00'], STRING_DIM: ['#500'], STRING_BRIGHT: ['#f88'] };
     draw(state, 1000, 900, 500, 500, 1, 0, 7, { bn: 2 }, null);
     assert.ok(labels.includes('full'));
