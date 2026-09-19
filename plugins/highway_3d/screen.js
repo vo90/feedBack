@@ -2487,7 +2487,7 @@
      * used by the chord loop's `_chFilterSus` check; parent nodes store the
      * maximum end in their range, allowing whole expired ranges to be skipped.
      */
-    function _buildChordCullIndex(chords, ahead, stringCount) {
+    function _buildChordCullIndex(chords, ahead, stringCount, guideEnds = null) {
         const count = Array.isArray(chords) ? chords.length : 0;
         let leafBase = 1;
         while (leafBase < count) leafBase <<= 1;
@@ -2512,7 +2512,7 @@
             maxSustains[i] = maxSus;
             if (!hasValidNote) continue;
 
-            const cullEnd = ch.t + (maxSus > 0 ? maxSus : ahead);
+            const cullEnd = Math.max(ch.t + (maxSus > 0 ? maxSus : ahead), guideEnds?.get(ch) ?? -Infinity);
             if (!Number.isNaN(cullEnd)) maxEndTree[leafBase + i] = cullEnd;
         }
         for (let i = leafBase - 1; i > 0; i--) {
@@ -2665,6 +2665,83 @@
             else hi = mid;
         }
         return lo === 0 ? anchorArr[0] : anchorArr[lo - 1];
+    }
+
+    // Chord onsets are rounded to milliseconds by chord_to_wire; anchors keep
+    // their source precision. Treat the half-millisecond round-trip difference
+    // as the same onset, without shifting the chart's actual lane boundaries.
+    const CHORD_ANCHOR_TIME_EPS = 0.000501;
+
+    function chordRailEndAt(anchorArr, onset, end) {
+        if (!anchorArr || !anchorArr.length) return end;
+        let lo = 0, hi = anchorArr.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (anchorArr[mid].time <= onset + CHORD_ANCHOR_TIME_EPS) lo = mid + 1;
+            else hi = mid;
+        }
+        // Before the first anchor, getChartAnchorAt already uses that anchor.
+        // The next boundary is therefore the second anchor, not the first.
+        const next = Math.max(1, lo);
+        return next < anchorArr.length ? Math.min(end, anchorArr[next].time) : end;
+    }
+
+    function chordGuideTimedRowAt(rows, t) {
+        let lo = 0, hi = rows.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (rows[mid].time <= t) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo - 1;
+    }
+
+    // Use the actual local beat, including tempo/time-signature changes. No
+    // guessed BPM when beat data has not arrived: bridging is then disabled.
+    function chordGuideHalfBeat(beats, t) {
+        if (!beats || beats.length < 2) return 0;
+        const i = Math.max(0, Math.min(beats.length - 2, chordGuideTimedRowAt(beats, t)));
+        const dt = beats[i + 1].time - beats[i].time;
+        return Number.isFinite(dt) && dt > 0 ? dt * 0.5 : 0;
+    }
+
+    function chordGuideEndAt(anchors, onset, end) {
+        if (!anchors || !anchors.length) return end;
+        const i = Math.max(0, chordGuideTimedRowAt(anchors, onset + CHORD_ANCHOR_TIME_EPS));
+        const first = laneBoundsFromAnchor(anchors[i]);
+        for (let j = i + 1; j < anchors.length && anchors[j].time < end; j++) {
+            const bounds = laneBoundsFromAnchor(anchors[j]);
+            // Repeated metadata for the same region is not a position change.
+            if (bounds.dMin !== first.dMin || bounds.dMax !== first.dMax) return anchors[j].time;
+        }
+        return end;
+    }
+
+    function chordGuideHasSectionBreak(sections, start, end) {
+        if (!sections || !sections.length) return false;
+        const first = Math.max(0, chordGuideTimedRowAt(sections, start));
+        for (let i = first; i < sections.length && sections[i].time < end; i++) {
+            const name = String(sections[i].name || '').toLowerCase().replace(/[\s_-]/g, '');
+            if (name === 'noguitar' || name === 'silence' || name === 'rest') return true;
+        }
+        return false;
+    }
+
+    function chordGuideHasInterveningNote(notes, ch, next, stringCount) {
+        if (!notes || !notes.length) return false;
+        for (let i = lowerBoundT(notes, ch.t - CHORD_ANCHOR_TIME_EPS); i < notes.length; i++) {
+            const n = notes[i];
+            if (n.t > next.t + CHORD_ANCHOR_TIME_EPS) break;
+            if (!Number.isInteger(n.s) || n.s < 0 || n.s >= stringCount || !isRenderableNote(n)) continue;
+            // Some charts repeat chord members in the standalone stream. Only
+            // exact string/fret matches at an endpoint are duplicates; nearby
+            // attacks and unrelated simultaneous notes still break the run.
+            const owner = Math.abs(n.t - ch.t) <= CHORD_ANCHOR_TIME_EPS ? ch
+                : Math.abs(n.t - next.t) <= CHORD_ANCHOR_TIME_EPS ? next : null;
+            if (owner && owner.notes.some(cn => cn.s === n.s && cn.f === n.f)) continue;
+            return true;
+        }
+        return false;
     }
 
     /** @returns {{ dMin: number, dMax: number } | null} */
@@ -6164,6 +6241,8 @@
         let _chordCullIndex = null;
         let _chordCullIndexChordsRef = null;
         let _chordCullIndexStringCount = -1;
+        let _chordCullIndexGuideEnds = null;
+        let _chordGuideCache = null;
         const _chordPredecessorStateScratch = {
             runSigPrev: null,
             prevAnyChordTime: -Infinity,
@@ -6174,13 +6253,17 @@
             _chordCullIndex = null;
             _chordCullIndexChordsRef = null;
             _chordCullIndexStringCount = -1;
+            _chordCullIndexGuideEnds = null;
+            _chordGuideCache = null;
         }
-        function _ensureChordCullIndex(chords, ahead, stringCount) {
+        function _ensureChordCullIndex(chords, ahead, stringCount, guideEnds = null) {
             if (_chordCullIndexChordsRef !== chords
-                || _chordCullIndexStringCount !== stringCount) {
-                _chordCullIndex = _buildChordCullIndex(chords, ahead, stringCount);
+                || _chordCullIndexStringCount !== stringCount
+                || _chordCullIndexGuideEnds !== guideEnds) {
+                _chordCullIndex = _buildChordCullIndex(chords, ahead, stringCount, guideEnds);
                 _chordCullIndexChordsRef = chords;
                 _chordCullIndexStringCount = stringCount;
+                _chordCullIndexGuideEnds = guideEnds;
             }
             return _chordCullIndex;
         }
@@ -12255,6 +12338,54 @@
             return result;
         }
 
+        // Guide durations belong to the chart, not the playback clock. Cache
+        // them once per chart revision so a seek produces the same spans and
+        // no note/beat/hand-shape searches run in the frame's chord loop.
+        function _ensureChordGuideEnds(chords, bundle) {
+            const { notes, handShapes, chordTemplates, beats, sections, anchors } = bundle;
+            const old = _chordGuideCache;
+            if (old && old.chords === chords && old.notes === notes && old.handShapes === handShapes
+                && old.chordTemplates === chordTemplates && old.beats === beats
+                && old.sections === sections && old.anchors === anchors && old.stringCount === nStr) return old.ends;
+            const ends = new WeakMap();
+            const rows = (chords || []).map(ch => {
+                if (!ch || ch.h3dSynth || !Number.isFinite(ch.t) || !Array.isArray(ch.notes)) return null;
+                const members = filterValidNotes(ch.notes);
+                const shape = mergeChordShape(ch, members, chordTemplates);
+                if (shape.size < 2) return null;
+                const hint = chordHandShapeArpeggioHint(ch, handShapes, chordTemplates);
+                if (hint.explicit || chordTemplateMarkedArpeggio(ch.id, chordTemplates)) return null;
+                const timeWin = hint.hs ? { tLo: hsStart(hint.hs) - 0.06, tHi: hsEnd(hint.hs) + 0.06 } : null;
+                if ((!hint.hs || handShapeChartSpanSec(hint.hs) >= ARP_INFER_MIN_HAND_SHAPE_SPAN_S)
+                    && inferArpeggioFromNotePattern(ch, shape, notes, timeWin, handShapes,
+                        timeWin ? null : nextStrictlyLaterChordTime(bundle.chords, ch.t),
+                        timeWin ? null : hint.fallbackInferenceStopBefore)) return null;
+                return { ch, end: hsEnd(hint.hs) };
+            });
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                if (!row || !Number.isFinite(row.end) || row.end <= row.ch.t) continue;
+                const ch = row.ch;
+                // Ambiguous coincident chord rows must not invent a continuation.
+                if ((i > 0 && Math.abs(chords[i - 1].t - ch.t) <= CHORD_ANCHOR_TIME_EPS)
+                    || (i + 1 < rows.length && Math.abs(chords[i + 1].t - ch.t) <= CHORD_ANCHOR_TIME_EPS)) continue;
+                const next = rows[i + 1];
+                let end = Math.min(row.end, chords[i + 1]?.t ?? Infinity);
+                if (next && next.ch.t > row.end) {
+                    const gap = next.ch.t - row.end;
+                    const halfBeat = chordGuideHalfBeat(beats, row.end);
+                    if (Array.isArray(notes) && halfBeat > 0 && gap <= halfBeat + CHORD_ANCHOR_TIME_EPS
+                        && !chordGuideHasInterveningNote(notes, ch, next.ch, nStr)
+                        && !chordGuideHasSectionBreak(sections, ch.t, next.ch.t)) end = next.ch.t;
+                }
+                // Keep the old position up to the next position's onset, never
+                // across an earlier authored anchor change or an arpeggio.
+                ends.set(ch, chordGuideEndAt(anchors, ch.t, end));
+            }
+            _chordGuideCache = { chords, notes, handShapes, chordTemplates, beats, sections, anchors, stringCount: nStr, ends };
+            return ends;
+        }
+
         /** Build ``ch.notes`` from ``chordTemplates[cid].frets`` (-1 omitted). */
         function chordNotesFromTemplate(cid, templates) {
             if (templates == null || cid == null) return [];
@@ -13638,7 +13769,8 @@
                 _mergeCacheHsRef = bundle.handShapes;
                 _mergeCacheTplRef = bundle.chordTemplates;
             }
-            _ensureChordCullIndex(chords, AHEAD, nStr);
+            const chordGuideEnds = _ensureChordGuideEnds(chords, bundle);
+            _ensureChordCullIndex(chords, AHEAD, nStr, chordGuideEnds);
 
             let arpGhostHsInfer = null;
             const hsForArpGhost = bundle.handShapes;
@@ -14655,7 +14787,8 @@
                     // visual artifact despite staying in the loop longer.
                     // ndVerdictT0 extends the window when a note-detect provider is
                     // attached so async verdicts still land while drawable.
-                    const _chFilterSus = maxSus > 0 ? maxSus : AHEAD;
+                    const _chGuideEnd = chordGuideEnds.get(ch);
+                    const _chFilterSus = Math.max(maxSus > 0 ? maxSus : AHEAD, (_chGuideEnd ?? ch.t) - ch.t);
                     if (ch.t + _chFilterSus < ndVerdictT0) continue;
                     if (ch.t > t1) break;
 
@@ -14676,7 +14809,7 @@
                     }
 
                     // Anchor selection for chord frame + open-string X + sustain rails:
-                    // • Upcoming (chDtEarly > 0): onset time — frame previews the correct
+                    // • Upcoming or at onset: onset time — frame previews the correct
                     //   neck region before the chord hits the line.
                     // • Past, actively sustaining (now < ch.t + maxSus): onset time — frame
                     //   stays at the frets where the chord was struck. Using `now` here
@@ -14687,8 +14820,11 @@
                     //   — brief fade-out frame tracks the current lane position so it
                     //   doesn't visibly drift while the lane has already transitioned.
                     const chDtEarly = ch.t - now;
-                    const _chAnchorT = chDtEarly > 0 ? ch.t
-                        : (maxSus > 0 && now < ch.t + maxSus) ? ch.t
+                    // Match the rail's onset tolerance, including the tiny interval
+                    // between a rounded chord onset and its source-precision anchor.
+                    const _chAnchorT = chDtEarly >= -CHORD_ANCHOR_TIME_EPS
+                        || (maxSus > 0 && now < ch.t + maxSus) || now < _chGuideEnd
+                        ? ch.t + CHORD_ANCHOR_TIME_EPS
                         : now;
                     const chAnc = getChartAnchorAt(anchors, _chAnchorT);
                     const chAncB = laneBoundsFromAnchor(chAnc);
@@ -15732,14 +15868,14 @@
 
                     }
 
-                    // ── Chord sustain length indicator — 3D plane rails ─────────────
+                    // ── Chord hand-position guides — shared by both styles ──────────
                     // Left + right rail as plane meshes (PlaneGeometry +
                     // MeshBasicMaterial) in the WebGL scene so they respect
                     // renderOrder (16) and never occlude note gems (20/21).
                     // isRepeat chords also draw their rail: each repeat shows a
                     // segment from its own onset to the next chord's onset (or the
-                    // handshape end, whichever is shorter), chaining together to
-                    // cover the full handshape duration visually.
+                    // handshape end at a run's finish), chaining together with
+                    // approved short gaps bridged by the chart-static guide cache.
                     if (chShape.size > 1 && chordOpenBoxW != null && chDt < AHEAD) {
                         // Cap handshape-derived sustain at the gap to the next chord.
                         // Each chord (including repeats) only extends to the next
@@ -15769,13 +15905,17 @@
                             && ch.h3dSynthEnd != null)
                             ? Math.max(0, ch.h3dSynthEnd - ch.t)
                             : 0;
-                        const _rawSus = maxSus > 0 ? maxSus : Math.max(_hsSus, _synthSus);
-                        // Apply the 0.4 s visual-minimum only to chords with an
-                        // explicit note sustain (maxSus > 0). Handshape-derived
-                        // sustain (_hsSus, already capped at _nextChordGap) must
+                        // Ordinary authored shapes describe hand-position guides,
+                        // independently of how long any individual note rings.
+                        const _rawSus = _chGuideEnd != null ? Math.max(0, _chGuideEnd - ch.t)
+                            : maxSus > 0 ? maxSus : Math.max(_hsSus, _synthSus);
+                        // Legacy sustain-only rails retain the 0.4 s minimum.
+                        // Authored hand-position guides use their own end instead.
+                        // Handshape-derived sustain (_hsSus, already capped at
+                        // _nextChordGap) must
                         // not be inflated — that would undo the gallop cap and
                         // cause the rail to reappear at the old anchor position.
-                        const _effSus = maxSus > 0
+                        const _effSus = _chGuideEnd == null && maxSus > 0
                             ? Math.max(_rawSus, 0.4)
                             : _rawSus;
                         const _dtSusEnd  = chDt + _effSus;
@@ -15785,22 +15925,9 @@
                             // correctly per-anchor; a single-segment rail at fixed X would
                             // visually "invade" the neighbouring region when anchors change
                             // within the sustain window.
-                            let _dtSusEndRail = _dtSusEnd;
-                            if (anchors && anchors.length) {
-                                const _susAbsT = chDt > 0 ? ch.t : now;
-                                if (getChartAnchorAt(anchors, _susAbsT) !==
-                                    getChartAnchorAt(anchors, now + _dtSusEnd)) {
-                                    // Binary search: first anchor starting strictly after _susAbsT.
-                                    let _lo = 0, _hi = anchors.length;
-                                    while (_lo < _hi) {
-                                        const _mid = (_lo + _hi) >>> 1;
-                                        if (anchors[_mid].time <= _susAbsT) _lo = _mid + 1;
-                                        else _hi = _mid;
-                                    }
-                                    if (_lo < anchors.length)
-                                        _dtSusEndRail = anchors[_lo].time - now;
-                                }
-                            }
+                            // Resolve from the chord onset, never from playback time:
+                            // crossing a boundary must not resurrect a clipped rail.
+                            const _dtSusEndRail = (_chGuideEnd ?? chordRailEndAt(anchors, ch.t, ch.t + _effSus)) - now;
                             const _zNear = chDt > 0 ? dZ(chDt) : 0;
                             const _zFar  = dZ(Math.min(_dtSusEndRail, AHEAD));
                             const _railLen = _zNear - _zFar;
