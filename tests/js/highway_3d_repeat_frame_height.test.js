@@ -35,6 +35,7 @@ const dispatch = new Function('chordNotes', 'options', `
     const deferChordGems = !!options.defer;
     const _deferFallback = !!options.fallback;
     const suppressSynthChord = !!options.synth;
+    const sharedChordHold = options.sharedChordHold || null;
     const _linkNextTargetSet = new Set(options.linked || []);
     const _arpApproachFirstNote = options.first || null;
     const firstInShapeRun = false, _scrChordNote = {};

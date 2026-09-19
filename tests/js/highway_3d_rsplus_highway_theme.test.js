@@ -96,29 +96,31 @@ test('live Current / RS+ / Current restores existing shared materials and divide
     assert.deepEqual(themed,h.apply(false,'forest'),'leaving default restores ordinary dot and divider styling');
 });
 
-test('both lane layouts keep cyan boundaries and select grey only for RS+ default interior dividers', () => {
-    const assignments=[...src.matchAll(/div\.material = _usesRsDefaultHighway\(\)[\s\S]*?;/g)].map(m=>m[0]);
+test('both lane layouts use subdued positional edges and grey RS+ default interior dividers', () => {
+    const assignments=[...src.matchAll(/div\.material = f === fDiv(?:0|A)[\s\S]*?;/g)].map(m=>m[0]);
     assert.equal(assignments.length,2,'anchor segments and fallback lane must share the rule');
     for (const assignment of assignments) {
         const choose=new Function('rsPlusNotation','hwThemeId','f',`
             ${fn('_usesRsDefaultHighway')}
             const fDiv0=2,fDiv1=6,fDivA=2,fDivB=6;
-            const div={},mLaneDivider='cyan',mRsLaneDivider='grey';
+            const div={},mLaneDivider='cyan',mRsLaneDivider='grey',mHandPositionEdge='position';
             ${assignment}
             return div.material;
         `);
         for (let f=2;f<=6;f++) {
-            assert.equal(choose(true,'default',f),f===2||f===6?'cyan':'grey');
-            assert.equal(choose(false,'default',f),'cyan');
-            assert.equal(choose(true,'forest',f),'cyan');
+            assert.equal(choose(true,'default',f),f===2||f===6?'position':'grey');
+            assert.equal(choose(false,'default',f),f===2||f===6?'position':'cyan');
+            assert.equal(choose(true,'forest',f),f===2||f===6?'position':'cyan');
         }
     }
 });
 
 test('the additional divider uses cached shared ownership and is released on teardown', () => {
-    assert.ok(/_ownedSharedMats\.push\(mLaneDivider, mLaneDividerArp, mLaneDividerExt, mRsLaneDivider\)/.test(src));
+    assert.ok(/_ownedSharedMats\.push\(mLaneDivider, mLaneDividerExt, mRsLaneDivider\)/.test(src));
+    assert.ok(/_ownedSharedMats\.push\(mHandPositionEdge, mHandPositionFill\)/.test(src));
     assert.ok(/for \(const m of _ownedSharedMats\) m\?\.dispose\?\.\(\)/.test(src));
-    assert.ok(/mLaneDividerArp = mRsLaneDivider = gLanePlane/.test(src));
+    assert.ok(/mLaneDivider = mRsLaneDivider = gLanePlane/.test(src));
+    assert.ok(/mHandPositionEdge = mHandPositionFill = null/.test(src));
 });
 
 test('idle and scrolling reference numbers are light grey only for the RS+ default highway', () => {

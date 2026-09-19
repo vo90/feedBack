@@ -54,9 +54,37 @@ Open strings use colored bars with a vertical pale marker rather than a stretche
 
 Pale face symbols have a narrow dark contour so they stay distinct on bright string colors. Natural and pinch harmonics keep their hollow ring shapes with stronger strokes. Combined technique marks retain their proportions and share the face without overlapping or clipping. Palm-mute marks keep their pale edge and string-dark center; bend and slide arrows keep their string color. These masks remain sharp with Glow at zero and add no rendering passes.
 
-With the **Default** highway theme, RS+ inspired uses a graphite floor, grey inner fret dividers, cyan outer rails, muted inlays and grey idle fret labels. Named highway themes keep their chosen colors, and background settings remain independent.
+With the **Default** highway theme, RS+ inspired uses a graphite floor, grey inner fret dividers, thin teal position edges, muted inlays and grey idle fret labels. Named highway themes keep their chosen floor colors, and background settings remain independent.
 
 Across RS+ highway themes, active and per-note fret labels render their intended gold without the previous cream washout; chord names are white.
+
+### Chord holds and hand positions
+
+Both notation styles distinguish two kinds of guidance:
+
+- **Thick pale rails with a short end cap** mark a shared chord hold. When all
+  chord members have the same positive sustain, the rails use that exact duration.
+  They remain at the chord's original position even if the hand-position guide moves.
+- **Thin teal edges and quiet floor shading** identify the suggested fret region.
+  This guidance can continue during picked passages, arpeggios or preparation for
+  another chord; its length does not tell you how long every string should ring.
+
+Older charts often omit chord-member durations. An ordinary chord can then use
+an authored hand shape with the same string/fret voicing as its legacy hold cue,
+even if it has a different template ID. This is the chart's convention, not proof
+of an exact mute instruction. A real gap is left visible, and short holds are not
+stretched to a minimum display length.
+
+Shared holds replace redundant straight member trails. Different member lengths,
+bends, slides and linked continuations keep their individual colored trails,
+including open strings. Muted attacks and picked or partial shapes do not acquire
+invented ringing holds. If neither explicit timing nor a matching ordinary hand
+shape exists, the chord remains a normal readable attack with position guidance;
+the renderer does not guess a release time from the next note.
+
+Hold rails are crisp, restrained and independent of decorative glow. Their timing
+does not change when a chord approaches, reaches the play line or becomes a repeat.
+This display change does not alter chart files, note detection or scoring.
 
 ### Incoming fret numbers
 

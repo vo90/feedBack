@@ -149,6 +149,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in that mode.
 
 ### Changed
+- **3D Highway 3.36.0: separate chord holds from hand-position guidance.**
+  Thick pale rails show a shared chord hold, using exact common member sustains
+  or a matching ordinary hand shape for legacy charts. Thin teal edges describe
+  position independently. Shared holds no longer gain a minimum duration, bridge
+  chart gaps, disappear with repeated chord frames, or clip at a later anchor.
+  Different durations and moving/linked techniques retain individual trails,
+  including open chord strings. Muted, picked, partial and duration-unspecified
+  chords do not gain invented full-chord holds. Applies to both notation styles;
+  no chart conversion, new setting or scoring change is required.
 - **`GET /api/song/{f}?stems=1`** (new, opt-in) — returns the pack's playable stem
   list (`[{id, url, default}]` + `full_mix_url`), the same list the highway's WS
   `ready` sends. The stems plugin could only learn it from that WS message, which
