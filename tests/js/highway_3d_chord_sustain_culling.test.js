@@ -128,7 +128,8 @@ test('a guide outliving a short note sustain stays indexed without extending not
     const filterEnd = src.indexOf('if (ch.t > t1) break;', filterStart);
     assert.ok(filterStart >= 0 && filterEnd > filterStart);
     const passesExactCull = new Function('ch', 'maxSus', 'AHEAD', 'chordGuideEnds', 'ndVerdictT0',
-        'for (let once = 0; once < 1; once++) {' + src.slice(filterStart, filterEnd)
+        'const _chordGuideCache = { model: { byChord: new Map() } };'
+        + 'for (let once = 0; once < 1; once++) {' + src.slice(filterStart, filterEnd)
         + 'return true;} return false;');
     assert.equal(passesExactCull(chords[0], 0.2, AHEAD, guideEnds, 14), true);
     assert.equal(passesExactCull(chords[0], 0.2, AHEAD, guideEnds, 14.5001), false);

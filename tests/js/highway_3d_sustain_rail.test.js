@@ -1,10 +1,5 @@
-// Pins the chord sustain-length rail indicator in plugins/highway_3d/screen.js
-// (PR #303). The rails are left/right edge plane meshes showing how long a
-// chord shape is held, including repeated strums. Pins the chord gate,
-// arpeggio/teal color choice and renderOrder; timing regressions are exercised
-// by highway_3d_chord_rail_timing.test.js.
-//
-// Source-level only — same strategy as the other tests/js/ files.
+// Shared chord hold rails stay below strings and note-level timing geometry.
+// Resolver and actual renderer tests cover eligibility, interval and appearance.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -12,27 +7,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const SCREEN_JS = path.join(__dirname, '..', '..', 'plugins', 'highway_3d', 'screen.js');
-
-test('sustain rails are gated on multi-note chords with a known box width within AHEAD', () => {
-    // Each chord in a sequence (including repeats) draws a rail from its onset
-    // to the next chord's onset, chaining together to cover the full handshape
-    // duration visually. Single notes have no chord frame to anchor a rail to.
-    const src = fs.readFileSync(SCREEN_JS, 'utf8');
-    assert.match(
-        src,
-        /if\s*\(\s*chShape\.size\s*>\s*1\s*&&\s*chordOpenBoxW\s*!=\s*null\s*&&\s*chDt\s*<\s*AHEAD\s*\)/,
-        'sustain-rail block must stay gated on chShape.size > 1, chordOpenBoxW and chDt < AHEAD',
-    );
-});
-
-test('sustain rails pick arpeggio color for arpeggio frames, teal otherwise', () => {
-    const src = fs.readFileSync(SCREEN_JS, 'utf8');
-    assert.match(
-        src,
-        /chordHighwayLavenderArpVisual\s*\?\s*ARPEGGIO_RIM_BLUE_HEX\s*:\s*CHORD_BOX_TEAL_HEX/,
-        'rail color must select ARPEGGIO_RIM_BLUE_HEX for arpeggio frames and CHORD_BOX_TEAL_HEX for chords',
-    );
-});
 
 test('sustain-rail pool meshes keep renderOrder 5 so strings (7) stay on top', () => {
     // renderOrder 5 sits below string-line glows (7) so strings render on top

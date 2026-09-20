@@ -274,6 +274,13 @@ Fret and string indexes use max-end trees to skip expired ranges, including thos
 behind an old long-running target. Keep these indexes chart-static, retain bounded
 visible-window queries, and avoid scanning complete linked chains each frame.
 
+When chord-hold guidance suppresses member ribbons,
+`hwyBuildIndependentTrailOrigins` excludes them from linked paths and the hold
+model excludes them from trail obstacles. Independent open chord members remain
+eligible. `trailOpenLayoutAt` must match the actual chord/standalone rail spans,
+including fallback bounds and rounded anchor timing. Rebuild this metadata when
+the cached hold model changes; never infer a rendered trail from sustain alone.
+
 ## Object pools
 
 Pools live as closure refs (`pNote`, `pSus`, `pLbl`, `pBeat`, `pSec`, `pFretLbl`, `pLane`, `pLaneDivider`, `pChordBox`, `pChordLbl`, `pBarreLine`, `pNoteFretLabel`, `pConnectorLine`, `pDropLine`, `pSusOutline`).

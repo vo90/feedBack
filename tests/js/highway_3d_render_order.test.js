@@ -13,7 +13,6 @@
 //    1   lane quads
 //    2   fret dividers
 //    3   fret inlay dots (above the lane so it no longer hides them)
-//    4   sus-rail bloom (pSusRailBloom seed)           ← highway_3d_sustain_bloom.test.js
 //    5   sus-rail core (pSusRail seed)                 ← highway_3d_sustain_rail.test.js
 //    7   string-line glows (in-lane glow lines)
 //   14   board-projection frame
