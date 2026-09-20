@@ -19,12 +19,12 @@ const names = [
     'isPlayableFret', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
     'laneBoundsFromAnchor', 'anchorLaneBoundsAt', 'anchorPlayedFretInclusiveSpan',
     'playedFretSpanCoversShape', 'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes',
-    'hwyBuildChordHoldGuidance', 'chordGuideTimedRowAt', 'hwyUncoveredHandPositionGuides',
+    'slideInMarks', 'hwyBuildChordHoldGuidance', 'chordGuideTimedRowAt', 'hwyUncoveredHandPositionGuides',
     'hwyBuildIndependentTrailOrigins', 'hwyBuildLinkedTrailPaths',
     'openNoteLaneBoxW', 'trailOpenLayoutAt',
 ];
 const constants = ['CHORD_ANCHOR_TIME_EPS', 'BEND_LINK_TIME_EPS']
-    .map(name => source.match(new RegExp('const ' + name + ' = [^;]+;'))[0]).join('\n');
+    .map(name => source.match(new RegExp('const ' + name + ' = [^;]+;'))[0]).join('\n') + '\nconst _slideInMarkCache = new WeakMap(), SLIDE_OUT_EMPTY_MARKS = Object.freeze([]);';
 const eventStart = source.indexOf('    function hwyFootprintsOverlap1D(');
 const eventEnd = source.indexOf('    /** Fixed pre-impact ramp window', eventStart);
 const h = new Function(`
@@ -111,4 +111,16 @@ test('reused open notes with different render origins are rejected as ambiguous 
     assert.equal(origins.drawable.has(note),true);
     assert.equal(origins.openOrigins.get(note),false);
     assert.deepEqual(Object.keys(note).sort(),['f','s','sus','t']);
+});
+
+test('incoming techniques bypass shared holds in actual trail origins and crossing events', () => {
+    const ch = chord([2, 2]);
+    ch.notes[1].slide_in_marks = [{ direction: 'up', time: 0 }];
+    const model = modelFor([ch]);
+    assert.equal(model.byChord.get(ch), undefined);
+    const origins = h.hwyBuildIndependentTrailOrigins([], [ch], model.byChord, 6);
+    for (const n of ch.notes) assert.equal(origins.drawable.has(n), true);
+    for (const bucket of eventsFor([ch])) for (const event of bucket || []) {
+        assert.equal(event.trailVisible, true);
+    }
 });

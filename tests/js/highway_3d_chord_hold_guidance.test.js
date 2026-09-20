@@ -18,11 +18,11 @@ function extract(name) {
 const helpers = [
     'isPlayableFret', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
     'laneBoundsFromAnchor', 'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape',
-    'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes', 'hwyBuildChordHoldGuidance',
+    'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks', 'hwyBuildChordHoldGuidance',
     'chordGuideTimedRowAt', 'hwyUncoveredHandPositionGuides',
 ];
 const constants = ['CHORD_ANCHOR_TIME_EPS', 'NEXT_ON_STRING_T_EPS', 'BEND_LINK_TIME_EPS']
-    .map(name => source.match(new RegExp('const ' + name + ' = [^;]+;'))[0]).join('\n');
+    .map(name => source.match(new RegExp('const ' + name + ' = [^;]+;'))[0]).join('\n') + '\nconst _slideInMarkCache = new WeakMap(), SLIDE_OUT_EMPTY_MARKS = Object.freeze([]);';
 const build = new Function('const NFRETS = 24;\n' + constants + '\n'
     + helpers.map(extract).join('\n') + '\nreturn hwyBuildChordHoldGuidance;')();
 const uncoveredGuides = new Function('const NFRETS = 24;\n' + constants + '\n'
@@ -350,4 +350,36 @@ test('independent guides survive a later anchor moving away and back to identica
     assert.deepEqual(uncoveredGuides(model.guides, anchors).map(g => [g.start, g.end, g.dMin, g.dMax]),
         [[11, 12, 2, 6]]);
     assert.deepEqual(uncoveredGuides(model.guides, []).map(g => [g.start, g.end]), [[10, 13]]);
+});
+
+test('valid incoming chord techniques keep their independent ribbons for both directions', () => {
+    for (const direction of ['up', 'down']) for (const time of [0, 0.7]) {
+        const ch = chord(10, [3, 5], 1);
+        ch.notes[0].slide_in_marks = [{ direction, time }];
+        const before = JSON.stringify(ch);
+        const result = resolve([ch], [hs()], [template(ch)]);
+        assert.equal(result.holds.length, 0, `${direction} at ${time}`);
+        assert.equal(result.guides.length, 1);
+        assert.equal(result.byChord.get(ch), undefined);
+        assert.equal(JSON.stringify(ch), before, 'notation never rewrites authored timing');
+    }
+});
+
+test('zero-sustain incoming chord cannot inherit a legacy shared hold', () => {
+    const ch = chord(10, [3, 5], 0);
+    ch.notes[0].slide_in_marks = [{ direction: 'down', time: 0 }];
+    assert.equal(resolve([ch], [hs()], [template(ch)]).holds.length, 0);
+});
+
+test('invalid and open-only incoming metadata do not cancel ordinary shared holds', () => {
+    for (const marks of [[], [{ direction: 'up', time: -1 }], [{ direction: 'up', time: true }],
+        [{ direction: 'up', time: 2 }], [{ direction: 'left', time: 0 }]]) {
+        const ch = chord(10, [3, 5], 1);
+        ch.notes[0].slide_in_marks = marks;
+        assert.equal(resolve([ch]).byChord.get(ch).suppressMemberTrails, true);
+    }
+    const ch = chord(10, [0, 5], 1);
+    ch.notes[0].slide_in_marks = [{ direction: 'up', time: 0 }];
+    assert.equal(resolve([ch]).byChord.get(ch).suppressMemberTrails, true,
+        'open destinations do not draw an incoming fret approach');
 });

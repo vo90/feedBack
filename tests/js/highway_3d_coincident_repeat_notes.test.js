@@ -108,9 +108,25 @@ test('renderer caches the chart-static set and skips matching note events', () =
     );
     assert.match(
         screenSrc,
-        /const n = notes\[_ni\];[\s\S]*?if \(n\.t > t1\) break;[\s\S]*?if \(_coincidentRepeatNoteSet\.has\(n\)\) continue;/,
-        'the sorted-loop cutoff must run before the deduplication continue',
+        /const n = notes\[_ni\];[\s\S]*?if \(n\.t > t1 \+ SLIDE_IN_CUE_SECONDS\) break;[\s\S]*?if \(_coincidentRepeatNoteSet\.has\(n\)\) continue;/,
+        'the bounded incoming-cue cutoff must run before the deduplication continue',
     );
+});
+
+test('incoming horizon visits keep the sorted cutoff and coincident-note exclusion', () => {
+    const start=screenSrc.indexOf('const n = notes[_ni];',screenSrc.indexOf('const _noteRenderLo ='));
+    const end=screenSrc.indexOf('if (isPlayableFret(n.f)',start);
+    assert.ok(start>=0 && end>start);
+    const prefix=screenSrc.slice(start,end);
+    const walk=new Function('notes','_coincidentRepeatNoteSet','drawSlideInHorizonNote',
+        `const t1=13,now=10,SLIDE_IN_CUE_SECONDS=.22,visible=[],validString=()=>true,isRenderableNote=()=>true;
+         for(let _ni=0;_ni<notes.length;_ni++){${prefix}visible.push(n);}return visible;`);
+    const ordinary={t:12},duplicate={t:12.1},incoming={t:13.1},incomingDuplicate={t:13.15};
+    const unreachable={get t(){throw Error('sorted suffix must not be scanned');}};
+    const horizon=[];
+    assert.deepEqual(walk([ordinary,duplicate,incoming,incomingDuplicate,{t:13.3},unreachable],
+        new Set([duplicate,incomingDuplicate]),n=>horizon.push(n)),[ordinary]);
+    assert.deepEqual(horizon,[incoming]);
 });
 
 test('dedup lifecycle stays on merge-independent renderer anchors', () => {

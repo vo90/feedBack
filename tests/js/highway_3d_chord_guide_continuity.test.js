@@ -17,10 +17,10 @@ function fn(name) {
     throw new Error('Unbalanced function: ' + name);
 }
 const constants = ['CHORD_ANCHOR_TIME_EPS', 'NEXT_ON_STRING_T_EPS', 'BEND_LINK_TIME_EPS']
-    .map(name => src.match(new RegExp('const ' + name + ' = [^;]+;'))[0]).join('\n');
+    .map(name => src.match(new RegExp('const ' + name + ' = [^;]+;'))[0]).join('\n') + '\nconst _slideInMarkCache = new WeakMap(), SLIDE_OUT_EMPTY_MARKS = Object.freeze([]);';
 const functions = ['isPlayableFret', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
     'laneBoundsFromAnchor', 'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape',
-    'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes', 'hwyBuildChordHoldGuidance',
+    'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks', 'hwyBuildChordHoldGuidance',
     'chordGuideTimedRowAt', 'hwyUncoveredHandPositionGuides', '_ensureChordGuideEnds', 'firstVisibleChordGuide'];
 function makeHelpers() {
     return new Function(`
