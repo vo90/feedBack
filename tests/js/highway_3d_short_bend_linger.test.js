@@ -43,6 +43,7 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
         const GHOST_HOLD_AFTER_ONSET = ${constant('CHORD_HWY_LINGER_S')};
         const BEND_HALFSTEP_WORLD_Y = 3.2;
         const _drawNextByString = null, sY = s => s;
+        const slideInVisualStart = n => n.t; // These pose cases contain no incoming cues.
         const _scrEventTimesLen = _scrEventTimes.length;
         const _susVerdictLatch = new Map();
         const _ndHasProvider = verdict !== undefined;

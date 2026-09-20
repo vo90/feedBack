@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Destination-only slide-in cues in both highways.** Valid incoming-slide
+  marks now survive FeedPak loading and appear as short approaches into their
+  authored destination. Linked sustain visibility retains its continuous width;
+  decorative approaches do not add attacks, extend release times, or invent a
+  connection to a preceding note. 3D Highway updated to 3.34.15.
 - **Core reader for source rigs (feedpak 1.18.0).** A pack can declare what a
   MIDI part should sound like by binding a rig; core now reads that binding and
   hands it to the client instead of dropping it. Three parts: the

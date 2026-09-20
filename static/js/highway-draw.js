@@ -80,6 +80,59 @@ export function slideOutMarks2D(n) {
     return out;
 }
 
+// Destination-only marks can land at the attack or a later tied segment.
+// Validate source ordering before clipping accepted wire rounding for display.
+export function slideInMarks2D(n) {
+    if (!Array.isArray(n?.slide_in_marks) || !Number.isFinite(n.sus) || n.sus < 0) return [];
+    const out = [];
+    let previousTime = -1;
+    for (const m of n.slide_in_marks) {
+        if (!m || !['up', 'down'].includes(m.direction) || !Number.isFinite(m.time)
+            || m.time < 0 || m.time <= previousTime || m.time > n.sus + 0.000501) continue;
+        previousTime = m.time;
+        out.push({ direction: m.direction, time: Math.min(m.time, n.sus) });
+    }
+    return out;
+}
+
+function drawSlideInRibbon2D(hwState, W, H, n, onset = n.t) {
+    if (!Array.isArray(n.slide_in_marks) || !(n.f > 0) || !Number.isFinite(onset)) return;
+    const c = hwState.ctx;
+    let previousEnd = onset;
+    for (const mark of slideInMarks2D(n)) {
+        const end = onset + mark.time;
+        // This short approach is a display convention, not authored duration.
+        // Later tied endpoints stay within this note and after the prior cue.
+        const start = Math.max(0, end - 0.22, mark.time > 0 ? previousEnd : 0);
+        previousEnd = end;
+        const visibleStart = Math.max(start, hwState.currentTime - 0.05);
+        const visibleEnd = Math.min(end, hwState.currentTime + VISIBLE_SECONDS);
+        if (visibleStart >= visibleEnd) continue;
+        c.save();
+        c.strokeStyle = hwState.STRING_COLORS[n.s] || '#aaa';
+        c.lineCap = 'butt';
+        let previous = null;
+        for (let i = 0; i <= 16; i++) {
+            const t = visibleStart + (visibleEnd - visibleStart) * i / 16;
+            const p = project(t - hwState.currentTime);
+            if (!p) { previous = null; continue; }
+            const u = (t - start) / (end - start);
+            const ease = u * u * (3 - 2 * u);
+            const localWidth = Math.abs(fretX(hwState, n.f, p.scale, W) - fretX(hwState, n.f - 1, p.scale, W));
+            const x = fretX(hwState, n.f, p.scale, W)
+                - (mark.direction === 'up' ? 1 : -1) * localWidth * 0.8 * (1 - ease);
+            const y = p.y * H;
+            if (previous) {
+                c.globalAlpha = ease;
+                c.lineWidth = Math.max(2, 6 * p.scale) * (0.72 + 0.28 * ease);
+                c.beginPath(); c.moveTo(previous.x, previous.y); c.lineTo(x, y); c.stroke();
+            }
+            previous = { x, y };
+        }
+        c.restore();
+    }
+}
+
 function drawSlideOutRibbon2D(hwState, W, H, n, onset = n.t) {
     if (!Array.isArray(n.slide_out_marks) || !(n.f > 0) || n.sl >= 0 || n.slu >= 0
         || onset + n.sus < hwState.currentTime || onset > hwState.currentTime + VISIBLE_SECONDS) return;
@@ -462,6 +515,8 @@ export function drawSustains(hwState, W, H) {
     const src = hwState._xfNotes !== null ? hwState._xfNotes
         : hwState._filteredNotes !== null ? hwState._filteredNotes : hwState.notes;
     for (const n of src) {
+        // Incoming cues precede the attack and also exist without sustain.
+        drawSlideInRibbon2D(hwState, W, H, n);
         if (n.sus <= 0.01) continue;
         const end = n.t + n.sus;
         if (end < hwState.currentTime || n.t > hwState.currentTime + VISIBLE_SECONDS) continue;
@@ -557,6 +612,7 @@ export function drawSustains(hwState, W, H) {
     const chords = hwState._xfChords !== null ? hwState._xfChords
         : hwState._filteredChords !== null ? hwState._filteredChords : hwState.chords;
     for (const chord of chords || []) for (const n of chord.notes || []) {
+        drawSlideInRibbon2D(hwState, W, H, n, chord.t);
         drawSlideOutRibbon2D(hwState, W, H, n, chord.t);
     }
 }
@@ -1172,6 +1228,7 @@ export function _noteHasTechniqueFlags(n) {
     if (n.ghost === true) return true;
     if (n.bn || n.ho || n.po || n.tp || n.pm || n.vb || n.tr || n.ac || n.hm || n.hp || n.mt || n.fhm) return true;
     if (typeof n.sl === 'number' && n.sl >= 0) return true;
+    if (Array.isArray(n.slide_in_marks) && slideInMarks2D(n).length > 0) return true;
     if ((Array.isArray(n.slide_out_marks) && slideOutMarks2D(n).length > 0) || (n.slide_out_marks === undefined
         && (n.slide_out === 'up' || n.slide_out === 'down'))) return true;
     return false;
