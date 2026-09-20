@@ -40,7 +40,8 @@ served = once(served, 'tr.scale.set(tw, th, segLen);', `tr.scale.set(tw, th, seg
  window.__trailProbe.strands.push({kind:'box',note:{...n},nominalBodyWidth:tr.scale.x,nominalOutlineWidth:trOut.scale.x,samples:[sample(now-(zCenter+segLen/2)/TS,zCenter+segLen/2,tr.scale.x,tr.scale.y,trOut.scale.x,trOut.scale.y),sample(now-(zCenter-segLen/2)/TS,zCenter-segLen/2,tr.scale.x,tr.scale.y,trOut.scale.x,trOut.scale.y)]});}`);
 served = once(served, 'const core = pNote.get();', `const core = pNote.get();
  if(window.__trailProbe)window.__trailProbe.gems.push({note:{...n},fromChord});`);
-served = once(served, 'function trailYieldRegisterGem(event, worldZ, outline, core, face) {', `function trailYieldRegisterGem(event, worldZ, outline, core, face) {
+const gemRegistrar=served.match(/function trailYieldRegisterGem\([^)]*\) \{/)[0];
+served = once(served, gemRegistrar, `${gemRegistrar}
  if(window.__trailProbe&&event)window.__trailProbe.orders.push({kind:'gem',t:event.t,s:event.s,f:event.f,meshes:[outline,core,face].filter(Boolean)});`);
 served = once(served, 'function trailYieldRegisterTargetTrail(event, outline, body) {', `function trailYieldRegisterTargetTrail(event, outline, body) {
  if(window.__trailProbe&&event)window.__trailProbe.orders.push({kind:'trail',t:event.t,s:event.s,f:event.f,meshes:[outline,body]});`);
