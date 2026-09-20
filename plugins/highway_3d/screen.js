@@ -2327,7 +2327,16 @@
 
     // ── 3D preview: lookahead fret bounds + smoothed focal X / span ─────────
     /** User-selectable via `cameraMode`. Legacy `classic` in storage maps to `steady`. */
-    const CAMERA_MODE_IDS = ['steady', 'lookahead'];
+    const CAMERA_MODE_IDS = ['steady', 'lookahead', 'stable'];
+    const STABLE_CAMERA_PRESETS = ['straight', 'angled'];
+    // The experimental controller has one lens and orientation per preset.
+    // Projection shift puts the play line low without tilting the camera as
+    // distance changes. This is deliberately independent of legacy framing.
+    const STABLE_CAMERA_FOV = 60;
+    const STABLE_CAMERA_PITCH = 25 * Math.PI / 180;
+    const STABLE_CAMERA_YAW = 14 * Math.PI / 180;
+    const STABLE_CAMERA_SHIFT = 0.48;
+    let _stableCameraResetSerial = 0;
     const CAM_LOOKAHEAD_SEC = 3.0;       // fallback when no beats/measures are available
     const CAM_LOOKAHEAD_MEASURES = 9;    // lookahead window = N measures ahead
     const CAM_FOCUS_BLEND_RATE = 0.7;
@@ -4342,7 +4351,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { notationStyle: 'current', style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration };
+    const BG_DEFAULTS = { notationStyle: 'current', style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -4753,7 +4762,7 @@
     // means (fall back to default rather than silently flipping to
     // false). Add new boolean keys to BG_DEFAULTS and they pick this
     // up via the dispatch below.
-    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront', 'trailYieldIncludeTrails']);
+    const _BG_BOOL_KEYS = new Set(['reactive', 'showFretOnNote', 'cameraLockLow', 'stableCameraFollow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront', 'trailYieldIncludeTrails']);
     function _bgCoerceBool(val, fallback) {
         if (val === 'true' || val === '1') return true;
         if (val === 'false' || val === '0') return false;
@@ -4794,6 +4803,7 @@
             return ['tl', 'tr', 'bl', 'br'].includes(val) ? val : BG_DEFAULTS.sectionHudPosition;
         if (key === 'toneHudPosition')
             return ['tl', 'tr', 'bl', 'br'].includes(val) ? val : BG_DEFAULTS.toneHudPosition;
+        if (key === 'stableCameraPreset') return STABLE_CAMERA_PRESETS.includes(val) ? val : BG_DEFAULTS.stableCameraPreset;
         if (key === 'cameraMode') {
             if (val === 'classic') val = 'steady';
             return CAMERA_MODE_IDS.includes(val) ? val : BG_DEFAULTS.cameraMode;
@@ -4899,6 +4909,9 @@
     window.h3dBgSetTiltSmoothing = (v) => _bgWriteGlobal('tiltSmoothing', v);
     window.h3dBgSetCameraLockLow = (v) => _bgWriteGlobal('cameraLockLow', !!v);
     window.h3dBgSetCameraLockZoom = (v) => _bgWriteGlobal('cameraLockZoom', v);
+    window.h3dBgSetStableCameraPreset = (v) => _bgWriteGlobal('stableCameraPreset', _bgCoerce('stableCameraPreset', v));
+    window.h3dBgSetStableCameraFollow = (v) => _bgWriteGlobal('stableCameraFollow', !!v);
+    window.h3dStableCameraReset = () => { ++_stableCameraResetSerial; };
     window.h3dBgSetCameraMode = (v) => {
         let s = String(v);
         if (s === 'classic') s = 'steady';
@@ -7047,6 +7060,9 @@
         let cameraLockZoom = 0.5;
         /** 'steady' = recency-weighted centroid + hysteresis (#34); 'lookahead' = wide preview window + smooth focal. */
         let cameraMode = BG_DEFAULTS.cameraMode;
+        let stableCameraPreset = BG_DEFAULTS.stableCameraPreset;
+        let stableCameraFollow = BG_DEFAULTS.stableCameraFollow;
+        let _stableNoteRelevant = true;
         // Global text-size multiplier for in-scene text sprites (chord
         // names, fret labels, section banners, technique markers, etc.).
         // Slider is 0..1; mapped to a 0.5..1.5× multiplier with 0.5 = 1.0×
@@ -8707,20 +8723,24 @@
             pbBeg = pbEnd = pbReportTick = function () {};
         }
 
-        function pool(parent, mk) {
+        function pool(parent, mk, cameraRelevant = null) {
             const a = [];
             let n = 0;
             return {
                 get() {
                     if (n < a.length) {
                         const o = a[n++];
+                        if (cameraRelevant) o.userData.stableCameraRelevant = cameraRelevant();
                         o.visible = true;
                         if (o.center && o.center.isVector2) o.center.set(0.5, 0.5);
                         return o;
                     }
-                    const o = mk(); parent.add(o); a.push(o); n++; return o;
+                    const o = mk(); parent.add(o); a.push(o); n++;
+                    if (cameraRelevant) o.userData.stableCameraRelevant = cameraRelevant();
+                    return o;
                 },
                 reset() { for (let i = 0; i < n; i++) a[i].visible = false; n = 0; },
+                forEachActive(fn) { for (let i = 0; i < n; i++) if (a[i].visible) fn(a[i]); },
                 // Pre-allocate `cap` slots at construction so the first dense
                 // playback frames don't pay the new-Mesh allocation cost
                 // mid-RAF (felt as a stall on 7/8-string charts where the
@@ -10068,7 +10088,7 @@
             }));
 
             // ── Pools ──────────────────────────────────────────────────────
-            pNote = pool(noteG, () => new T.Mesh(gNote, mStr[0]));
+            pNote = pool(noteG, () => new T.Mesh(gNote, mStr[0]), () => _stableNoteRelevant);
             // Pool default is the always-invisible mEdgeTransparent — every
             // consumer reassigns .material before render (to a verdict edge
             // material array), so the placeholder is never displayed.
@@ -10181,7 +10201,7 @@
                 }));
                 m.renderOrder = 1000;
                 return m;
-            });
+            }, () => _stableNoteRelevant);
 
             // ── InstancedMesh temporaries ──────────────────────────────────────
             _imM4    = new T.Matrix4();
@@ -11001,6 +11021,7 @@
                     changedKey === 'cameraSmoothing' || changedKey === 'zoomSmoothing' ||
                     changedKey === 'tiltSmoothing' || changedKey === 'cameraLockLow' ||
                     changedKey === 'cameraLockZoom' || changedKey === 'cameraMode' ||
+                    changedKey === 'stableCameraPreset' || changedKey === 'stableCameraFollow' ||
                     changedKey === 'textSize' ||
                     changedKey === 'chordDiagramSize' || changedKey === 'chordDiagramPosition' ||
                     changedKey === 'fretColumnMarkerCadence' ||
@@ -11318,6 +11339,8 @@
             cameraLockLow = _bgReadSetting(panelKey, 'cameraLockLow');
             cameraLockZoom = _bgReadSetting(panelKey, 'cameraLockZoom');
             cameraMode = _bgReadSetting(panelKey, 'cameraMode');
+            stableCameraPreset = _bgReadSetting(panelKey, 'stableCameraPreset');
+            stableCameraFollow = _bgReadSetting(panelKey, 'stableCameraFollow');
             textSize             = _bgReadSetting(panelKey, 'textSize');
             vibrancy             = _bgReadSetting(panelKey, 'vibrancy');
             glowMul              = _bgReadSetting(panelKey, 'glow');
@@ -16961,7 +16984,10 @@
                 }
             }
 
-            if (bootstrapHoldActive) {
+            if (cameraMode === 'stable') {
+                // Targets are solved from this frame's rendered geometry below.
+                lockActive = false;
+            } else if (bootstrapHoldActive) {
                 // Keep the chart-load target intact until the ordinary live
                 // path can compute the same phrase. Camera Director still
                 // layers its free-camera transform in camUpdate().
@@ -18966,6 +18992,7 @@
         }
 
         function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false) {
+            _stableNoteRelevant = n.t + Math.max(0.03, n.sus || 0) >= now;
             const s = n.s;
             // Belt + suspenders: callers already gate via validString(),
             // but drawNote is also entered through { ...cn } chord-note
@@ -20763,8 +20790,298 @@
             return Math.max(floor, Math.min(base, vfov));
         }
 
+        // Stable comparison camera. Consume only objects the renderer actually
+        // drew, so hidden link heads, suppressed chord tails, the nut, scenery
+        // and the rest of the neck cannot pull the camera away from a passage.
+        // 32 depth bins bound the solver cost independently of chart length.
+        const _stableCam = {
+            active: false, initialized: false, x: 0, distance: 100 * K,
+            lastTime: NaN, lastWall: NaN, rate: 1, rateTime: NaN, rateWall: NaN, preset: '', lefty: false, strings: 0,
+            reset: -1, song: null, notes: null, chords: null, aspect: 0,
+            quietZoomTime: 0, pointCount: 0, minX: 0, maxX: 0,
+            targetX: 0, targetDistance: 0, correction: false,
+        };
+        const _stableBins = Array.from({ length: 32 }, () => ({
+            minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity,
+            minZ: Infinity, maxZ: -Infinity,
+        }));
+        const _stablePoints = new Float64Array(32 * 8 * 3);
+        const _stableBasis = { bx: 0, by: 0, bz: 1, rx: 1, rz: 0, ux: 0, uy: 1, uz: 0, y: 0 };
+        const _stableInterval = { min: 0, max: 0, valid: true };
+        const _stableFit = { x: 0, distance: 0 };
+        let _stableVector = null;
+
+        function stableAddPoint(x, y, z) {
+            if (!Number.isFinite(x + y + z) || z > 8 * K || z < dZ(AHEAD) - 8 * K) return;
+            z = Math.max(dZ(AHEAD), z);
+            const bin = _stableBins[Math.max(0, Math.min(31, Math.floor(-z / (TS * AHEAD) * 32)))];
+            bin.minX = Math.min(bin.minX, x); bin.maxX = Math.max(bin.maxX, x);
+            bin.minY = Math.min(bin.minY, y); bin.maxY = Math.max(bin.maxY, y);
+            bin.minZ = Math.min(bin.minZ, z); bin.maxZ = Math.max(bin.maxZ, z);
+        }
+
+        function stableCollectObject(object) {
+            if (!object || !object.visible || object.material?.opacity === 0
+                || object.userData.stableCameraRelevant === false) return;
+            if (object.material?.uniforms?.uHalo?.value > 0) return;
+            const v = _stableVector || (_stableVector = new T.Vector3());
+            object.updateWorldMatrix(true, false);
+            if (object.isSprite) {
+                const e = object.matrixWorld.elements;
+                const sx = Math.hypot(e[0], e[1], e[2]);
+                const sy = Math.hypot(e[4], e[5], e[6]);
+                const b = _stableBasis;
+                for (let i = 0; i < 4; i++) {
+                    const dx = ((i & 1 ? 1 : 0) - object.center.x) * sx;
+                    const dy = ((i & 2 ? 1 : 0) - object.center.y) * sy;
+                    stableAddPoint(e[12] + b.rx * dx + b.ux * dy,
+                        e[13] + b.uy * dy, e[14] + b.rz * dx + b.uz * dy);
+                }
+                return;
+            }
+            const geometry = object.geometry;
+            if (!geometry) return;
+            if (Number.isFinite(geometry.userData.ribbonSlices)) {
+                // Ribbon storage is pooled and can be larger than the current
+                // draw range. Read only this frame's populated vertices; never
+                // trust a stale bounding box from a previous bend or slide.
+                const attr = geometry.attributes.position;
+                const count = Math.min(attr.count, (geometry.userData.ribbonSlices + 1) * 4);
+                for (let i = 0; i < count; i++) {
+                    v.fromBufferAttribute(attr, i).applyMatrix4(object.matrixWorld);
+                    stableAddPoint(v.x, v.y, v.z);
+                }
+                return;
+            }
+            if (!geometry.boundingBox) geometry.computeBoundingBox();
+            const box = geometry.boundingBox;
+            if (!box) return;
+            // Static mesh bounds are cached, but their current transform is
+            // always used (open slabs, pre-bent gems and chord frames included).
+            for (let i = 0; i < 8; i++) {
+                v.set(i & 1 ? box.max.x : box.min.x,
+                    i & 2 ? box.max.y : box.min.y,
+                    i & 4 ? box.max.z : box.min.z).applyMatrix4(object.matrixWorld);
+                stableAddPoint(v.x, v.y, v.z);
+            }
+        }
+
+        function stableCollectGeometry() {
+            for (const bin of _stableBins) {
+                bin.minX = bin.minY = bin.minZ = Infinity;
+                bin.maxX = bin.maxY = bin.maxZ = -Infinity;
+            }
+            pNote?.forEachActive(stableCollectObject);
+            pSus?.forEachActive(stableCollectObject);
+            pSusRibbon?.forEachActive(stableCollectObject);
+            pChordBox?.forEachActive(stableCollectObject);
+            pRsChordFrame?.forEachActive(stableCollectObject);
+            pArpBracket?.forEachActive(stableCollectObject);
+            pSusRail?.forEachActive(stableCollectObject);
+            pTechPlane?.forEachActive(stableCollectObject);
+            for (let i = 0; i < _incomingFloorLabelCount; i++) {
+                const record = _incomingFloorLabels[i];
+                if (record.time < _frameNow - 0.03) continue;
+                stableCollectObject(record.sprite);
+            }
+            // Reserve the readable number band below nearby playable frets,
+            // not every reference digit across the full neck.
+            const rowY = Math.min(sY(0), sY(nStr - 1)) - (S_GAP * 1.4 + 4 * K * _textSizeMul);
+            for (const bin of _stableBins) {
+                if (!Number.isFinite(bin.minX) || bin.maxZ < dZ(Math.min(AHEAD, 1.2 * _stableCam.rate))) continue;
+                const lo = bin.minX, hi = bin.maxX, z = bin.maxZ;
+                stableAddPoint(lo - 3 * K, rowY, z);
+                stableAddPoint(hi + 3 * K, rowY, z);
+            }
+            let count = 0;
+            _stableCam.minX = Infinity; _stableCam.maxX = -Infinity;
+            for (const bin of _stableBins) {
+                if (!Number.isFinite(bin.minX)) continue;
+                _stableCam.minX = Math.min(_stableCam.minX, bin.minX);
+                _stableCam.maxX = Math.max(_stableCam.maxX, bin.maxX);
+                for (let i = 0; i < 8; i++) {
+                    _stablePoints[count++] = i & 1 ? bin.maxX : bin.minX;
+                    _stablePoints[count++] = i & 2 ? bin.maxY : bin.minY;
+                    _stablePoints[count++] = i & 4 ? bin.maxZ : bin.minZ;
+                }
+            }
+            _stableCam.pointCount = count;
+        }
+
+        // Intersect a*x <= b with the feasible camera-centre interval. With a
+        // fixed orientation each perspective-frustum plane is linear in X;
+        // this avoids iterative project/move feedback and camera oscillation.
+        function stableConstrain(a, b) {
+            if (Math.abs(a) < 1e-10) {
+                if (b < 0) _stableInterval.valid = false;
+            } else if (a > 0) _stableInterval.max = Math.min(_stableInterval.max, b / a);
+            else _stableInterval.min = Math.max(_stableInterval.min, b / a);
+        }
+
+        function stableIntervalAt(distance, prediction, margin, fixedX = null) {
+            const out = _stableInterval, b = _stableBasis;
+            out.min = fixedX === null ? -Infinity : fixedX;
+            out.max = fixedX === null ? Infinity : fixedX;
+            out.valid = true;
+            const tan = Math.tan(STABLE_CAMERA_FOV * Math.PI / 360);
+            const horizontal = tan * cam.aspect * margin;
+            const top = tan * (0.90 + STABLE_CAMERA_SHIFT);
+            const bottom = tan * (0.90 - STABLE_CAMERA_SHIFT);
+            for (let i = 0; i < _stableCam.pointCount; i += 3) {
+                const x = _stablePoints[i], y = _stablePoints[i + 1] - b.y;
+                const z = Math.max(_stablePoints[i + 2], Math.min(0, _stablePoints[i + 2] + prediction * TS));
+                const depth = distance - (b.bx * x + b.by * y + b.bz * z);
+                const right = b.rx * x + b.rz * z;
+                const up = b.ux * x + b.uy * y + b.uz * z;
+                stableConstrain(-b.rx - horizontal * b.bx, horizontal * depth - right);
+                stableConstrain(b.rx - horizontal * b.bx, horizontal * depth + right);
+                stableConstrain(-b.ux - top * b.bx, top * depth - up);
+                stableConstrain(b.ux - bottom * b.bx, bottom * depth + up);
+                stableConstrain(-b.bx, depth - 0.02);
+                if (!out.valid || out.min > out.max) { out.valid = false; break; }
+            }
+            return out;
+        }
+
+        function stableSolve(preferredX, baseDistance, prediction, margin, fixedCentre = false) {
+            let low = baseDistance, high = low;
+            const fixed = fixedCentre ? preferredX : null;
+            let interval = stableIntervalAt(high, prediction, margin, fixed);
+            if (!interval.valid) {
+                // Exponential bracket + bounded bisection: no per-frame chart
+                // scans and no dependency on the previous frame's fit result.
+                for (let i = 0; i < 10 && !interval.valid; i++) {
+                    high *= 1.5;
+                    interval = stableIntervalAt(high, prediction, margin, fixed);
+                }
+                for (let i = 0; i < 16; i++) {
+                    const mid = (low + high) / 2;
+                    if (stableIntervalAt(mid, prediction, margin, fixed).valid) high = mid;
+                    else low = mid;
+                }
+                interval = stableIntervalAt(high, prediction, margin, fixed);
+            }
+            _stableFit.x = Math.max(interval.min, Math.min(interval.max, preferredX));
+            _stableFit.distance = high;
+            return _stableFit;
+        }
+
+        function stableApplyPose() {
+            const s = _stableCam, b = _stableBasis;
+            let tx = s.x, ty = b.y, vx = b.bx * s.distance;
+            let vy = b.by * s.distance, vz = b.bz * s.distance;
+            const ctl = _freeCamFor(highwayCanvas);
+            if (ctl?.enabled) {
+                const finite = (value, fallback) => Number.isFinite(value) ? value : fallback;
+                const distance = Math.max(0.05, finite(ctl.distMul, 1));
+                const height = Math.max(0.05, finite(ctl.heightMul, 1));
+                const yaw = finite(ctl.yaw, 0), c = Math.cos(yaw), sn = Math.sin(yaw);
+                const rx = vx * c - vz * sn, rz = vx * sn + vz * c;
+                vx = rx * distance; vz = rz * distance; vy *= distance * height;
+                tx += finite(ctl.panX, 0) * K;
+                ty += finite(ctl.panY, 0) * K;
+                // Convert the bridge's target-height adjustment at the neutral
+                // distance to a fixed angular offset. Dolly changes then retain
+                // the personal tilt rather than quietly changing it again.
+                const pitch = Math.atan2(finite(ctl.pitch, 0) * K, 100 * K);
+                const horizontal = Math.hypot(vx, vz);
+                const p = Math.atan2(vy, horizontal) - pitch;
+                const radius = Math.hypot(horizontal, vy);
+                const factor = radius * Math.cos(p) / Math.max(horizontal, 1e-8);
+                vx *= factor; vz *= factor; vy = radius * Math.sin(p);
+            }
+            if (cam.fov !== STABLE_CAMERA_FOV || cam.projectionMatrix.elements[9] !== STABLE_CAMERA_SHIFT) {
+                cam.fov = STABLE_CAMERA_FOV;
+                cam.updateProjectionMatrix();
+                cam.projectionMatrix.elements[9] = STABLE_CAMERA_SHIFT;
+                cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+            }
+            cam.position.set(tx + vx, ty + vy, vz);
+            cam.up.set(0, 1, 0);
+            cam.lookAt(tx, ty, 0);
+            cam.updateMatrixWorld();
+            curX = tgtX = s.x; curDist = tgtDist = s.distance;
+            _fretRowFitBoost = 1;
+        }
+
+        function stableCamUpdate(bundle) {
+            const s = _stableCam, b = _stableBasis;
+            const wall = performance.now() / 1000;
+            const elapsed = Number.isFinite(s.lastWall) ? Math.max(0, wall - s.lastWall) : 0;
+            const dt = Math.min(0.25, elapsed);
+            const now = Number(bundle.currentTime) || 0;
+            const advance = now - s.lastTime;
+            const seek = Number.isFinite(s.lastTime) && ((bundle.isPlaying === false && Math.abs(advance) > 0.0001) || advance < -0.04
+                || Math.abs(advance - elapsed * s.rate) > Math.max(0.4, elapsed * 2));
+            // Audio time often arrives in 20–23ms steps. Estimate speed across
+            // a quarter-second sample, never from one render frame (which
+            // would alternate between zero and an inflated playback rate).
+            if (!Number.isFinite(s.rateWall) || seek || bundle.isPlaying === false) {
+                s.rateWall = wall; s.rateTime = now;
+            } else if (wall - s.rateWall >= 0.25) {
+                const rate = (now - s.rateTime) / (wall - s.rateWall);
+                if (rate >= 0.1 && rate <= 4) s.rate += (rate - s.rate) * 0.6;
+                s.rateWall = wall; s.rateTime = now;
+            }
+            const declaredRate = bundle.playbackRate ?? bundle.speed;
+            if (Number.isFinite(declaredRate) && declaredRate >= 0.1 && declaredRate <= 4) s.rate = declaredRate;
+            const reset = !s.active || s.reset !== _stableCameraResetSerial
+                || s.preset !== stableCameraPreset || s.lefty !== _leftyCached || s.strings !== nStr
+                || s.song !== _songKey || s.notes !== bundle.notes || s.chords !== bundle.chords;
+            const resize = s.aspect !== cam.aspect;
+            s.active = true; s.lastWall = wall; s.lastTime = now;
+            s.reset = _stableCameraResetSerial; s.preset = stableCameraPreset;
+            s.lefty = _leftyCached; s.strings = nStr; s.song = _songKey;
+            s.notes = bundle.notes; s.chords = bundle.chords; s.aspect = cam.aspect;
+            const yaw = stableCameraPreset === 'angled' ? STABLE_CAMERA_YAW * (_leftyCached ? -1 : 1) : 0;
+            const cp = Math.cos(STABLE_CAMERA_PITCH), sp = Math.sin(STABLE_CAMERA_PITCH);
+            b.bx = Math.sin(yaw) * cp; b.by = sp; b.bz = Math.cos(yaw) * cp;
+            b.rx = Math.cos(yaw); b.rz = -Math.sin(yaw);
+            b.ux = -Math.sin(yaw) * sp; b.uy = cp; b.uz = -Math.cos(yaw) * sp;
+            b.y = (sY(0) + sY(nStr - 1)) / 2;
+            stableCollectGeometry();
+            const baseDistance = Math.max(100 * K, (Math.abs(sY(0) - sY(nStr - 1)) + 14 * K) * 2.3);
+            const snap = reset || !s.initialized || (seek && stableCameraFollow);
+            s.correction = false;
+            if (snap) {
+                const centre = s.pointCount > 0 ? (s.minX + s.maxX) / 2
+                    : s.initialized ? s.x : curX;
+                const fit = stableSolve(centre, baseDistance, Math.min(AHEAD, 1.2 * s.rate), 0.68);
+                s.x = fit.x; s.distance = fit.distance;
+                s.quietZoomTime = 0; s.initialized = true;
+            } else if (resize) {
+                // A resize can change distance, but never the held centre or
+                // viewing angle, even with following switched off.
+                const fit = stableSolve(s.x, baseDistance, 0, 0.90, true);
+                s.distance = fit.distance; s.quietZoomTime = 0;
+            } else if (stableCameraFollow && bundle.isPlaying !== false && s.pointCount > 0 && !seek) {
+                const fit = stableSolve(s.x, baseDistance, Math.min(AHEAD, 1.2 * s.rate), 0.68);
+                s.targetX = fit.x; s.targetDistance = fit.distance;
+                const panAlpha = 1 - Math.exp(-dt / (0.14 + cameraSmoothing * 0.42));
+                s.x += (fit.x - s.x) * panAlpha;
+                if (fit.distance >= s.distance * 0.97) s.quietZoomTime = 0;
+                else s.quietZoomTime += dt;
+                if (fit.distance > s.distance || s.quietZoomTime > 0.65 + zoomSmoothing * 0.6) {
+                    const tau = fit.distance > s.distance ? 0.16 : 0.65 + zoomSmoothing * 1.1;
+                    s.distance += (fit.distance - s.distance) * (1 - Math.exp(-dt / tau));
+                }
+                // Last-resort visibility guard uses actual geometry, not the
+                // prediction. An unexpectedly large frame step cannot leave a
+                // playable note outside the view while damping catches up.
+                const safe = stableSolve(s.x, s.distance, 0, 0.92);
+                s.correction = Math.abs(safe.x - s.x) > 1e-7 || safe.distance > s.distance + 1e-7;
+                s.x = safe.x; s.distance = safe.distance;
+            }
+            stableApplyPose();
+        }
+
         /* ── Camera smooth lerp ──────────────────────────────────────────── */
         function camUpdate(bundle) {
+            if (cameraMode === 'stable') { stableCamUpdate(bundle); return; }
+            if (_stableCam.active) {
+                _stableCam.active = false;
+                cam.updateProjectionMatrix(); // clear the experimental lens shift
+            }
             const bpm = computeBPM(bundle.beats, bundle.currentTime);
             const lerp = CAM_LERP_BASE * Math.max(bpm, 60) / 120;
 
@@ -21017,6 +21334,10 @@
 
         /* ── Teardown ────────────────────────────────────────────────────── */
         function teardown() {
+            _stableCam.active = _stableCam.initialized = false;
+            _stableCam.lastTime = _stableCam.lastWall = NaN;
+            _stableCam.rate = 1; _stableCam.rateTime = _stableCam.rateWall = NaN;
+            _stableCam.notes = _stableCam.chords = null;
             _resetChordCullIndex();
             // Background animations (#13). Drop the listener first so any
             // mid-teardown settings change doesn't try to rebuild a torn-
@@ -21811,6 +22132,14 @@
     // removed — per-string colors are set via the core "Highway String Colors"
     // UI, which drives both highways by named string.
     window.feedBackViz_highway_3d.panelControls = [
+        { key: 'cameraMode', label: 'Camera view', type: 'select',
+            options: [{ id: 'lookahead', label: 'Wide ahead' }, { id: 'steady', label: 'Steady & close' },
+                { id: 'stable', label: 'Stable comparison' }], default: BG_DEFAULTS.cameraMode },
+        { key: 'stableCameraPreset', label: 'Stable viewing angle', type: 'select',
+            options: [{ id: 'straight', label: 'Straight' }, { id: 'angled', label: 'RS+-inspired' }],
+            default: BG_DEFAULTS.stableCameraPreset },
+        { key: 'stableCameraFollow', label: 'Follow hand position (Stable)', type: 'toggle',
+            default: BG_DEFAULTS.stableCameraFollow },
         {
             key: 'notationStyle', label: 'Notation style', type: 'select',
             options: [{ id: 'current', label: 'Current' }, { id: 'rsplus', label: 'RS+ inspired' }],
@@ -21829,13 +22158,13 @@
         },
         {
             key: 'cameraLockLow',
-            label: 'Lock camera at frets 1-12',
+            label: 'Lock camera at frets 1-12 (legacy views)',
             type: 'toggle',
             default: BG_DEFAULTS.cameraLockLow,
         },
         {
             key: 'cameraLockZoom',
-            label: 'Locked zoom (In ↔ Out)',
+            label: 'Locked zoom (legacy views)',
             type: 'range',
             min: 0,
             max: 1,

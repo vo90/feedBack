@@ -149,6 +149,7 @@ Each entry names the function or banner you should grep for, plus key sub-blocks
 - **Reference values** → `CAM_H_BASE`, `CAM_DIST_BASE`, `REF_ASPECT`, `FOCUS_D`, `CAM_LERP_BASE` in the constants block.
 - **Smooth lerp + look-at** → `camUpdate()`. BPM-scaled lerp speed (`CAM_LERP_BASE * bpm/120`).
 - **Self-correcting framing** → bottom half of `camUpdate()`. Projects the fretboard mid-Y to NDC, nudges `tgtLookY` until that point sits at NDC Y ≈ `DESIRED_NDC_Y` (lower third of frame). This is what lets the camera adapt automatically to ultra-wide split-screen panels.
+- **Stable comparison camera** (opt-in) uses `stableCamUpdate()` instead of the legacy lookahead/tilt loops. See [STABLE_CAMERA.md](STABLE_CAMERA.md) for the two presets, rendered-geometry fit, pause/seek rules, Camera Director semantics and acceptance harness. Keep the existing camera defaults when changing this experiment.
 - **Aspect compensation** → `aspectScale = Math.max(1, REF_ASPECT / Math.max(cam.aspect, 0.5))` in `applySize()`. Clamped to ≥ 1 so wide panels keep baseline depth (don't dolly in flat). Removing the `Math.max(1, …)` is the bug we already fixed; don't reintroduce it.
 
 ### Beats and sections

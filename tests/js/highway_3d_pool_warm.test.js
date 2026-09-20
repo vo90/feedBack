@@ -44,7 +44,7 @@ test('pool factory exposes warm(cap)', () => {
     // method. Scope the match to the factory body so an unrelated
     // future `warm(cap)` helper elsewhere in the file can't satisfy
     // this guard.
-    const poolBody = extractBlock(src, 'function pool(parent, mk)');
+    const poolBody = extractBlock(src, 'function pool(parent, mk, cameraRelevant = null)');
     assert.match(poolBody, /\bwarm\s*\(\s*cap\s*\)\s*\{/, 'pool factory must expose warm(cap)');
 });
 
@@ -52,7 +52,7 @@ test('pool.warm coerces cap to a non-negative integer', () => {
     const src = fs.readFileSync(SCREEN_JS, 'utf8');
     // Same scoping discipline as above — the coercion must live
     // inside the pool factory's warm() body, not anywhere else.
-    const poolBody = extractBlock(src, 'function pool(parent, mk)');
+    const poolBody = extractBlock(src, 'function pool(parent, mk, cameraRelevant = null)');
     assert.match(
         poolBody,
         /warm\s*\(\s*cap\s*\)\s*\{[\s\S]*?Math\.max\(\s*0\s*,\s*cap\s*\|\s*0\s*\)/,
