@@ -64,6 +64,18 @@ remains one continuous gesture with no second attack gem at fret 24. Explicit
 pre-bends still approach at their bent height. Scalar-only bends retain their
 existing synthesized rise/hold/release shape.
 
+### Linked trail visibility
+
+When a sustained note continues into a linked slide, bend or another sustained
+segment, trail visibility follows the complete connected path. Narrowing remains
+local to notes and trails that need visibility; an internal chart segment boundary
+is not a release point and does not reset the trail to full width.
+
+Only unambiguous authored links with continuous timing qualify. Independent
+attacks, real gaps and ambiguous chart records retain their existing behavior.
+The sustain trail visibility controls still apply, and the chart's technique
+shapes and release times remain authoritative.
+
 ## Contributing / development
 
 For maintainers and AI assistants working on the codebase, see [`CLAUDE.md`](CLAUDE.md) — it's a navigation guide that maps every visual element to where it lives in `screen.js`, plus the gotchas worth knowing before tweaking.

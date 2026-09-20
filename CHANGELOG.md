@@ -318,6 +318,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine (`app.js`, `highway.js`, `playSong`, `showScreen`, the capability registry).
 
 ### Fixed
+
+- **Continuous widths across linked sustain trails.** Visibility narrowing follows
+  a validated linked note path through slides and other techniques, so an
+  internal chart boundary cannot create a pinched trail followed by a wider
+  continuation. Hidden continuation attacks do not become phantom obstacles;
+  real note and trail overlaps still receive local visibility narrowing.
 - **3D Highway respects authored linked-note continuations.** A `linkNext`
   destination no longer reappears as a newly struck gem at the hit line. The
   renderer follows explicit per-string links for standalone and chord-member

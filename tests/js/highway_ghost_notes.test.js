@@ -231,7 +231,8 @@ test('rotated ghost bounds enter the actual upcoming-gem ordering index', () => 
 });
 
 test('the chart footprint index retains a ghost on either coincident source', () => {
-    const build = new Function('const NFRETS=24;' + extract(screen, 'hwyBuildTrailYieldEvents')
+    const build = new Function('const NFRETS=24;' + extract(screen, 'hwyBuildTrailEventEndIndex')
+        + extract(screen, 'hwyBuildTrailYieldEvents')
         + '; return hwyBuildTrailYieldEvents;')();
     const a = build([{t: 1, s: 0, f: 7}], [{t: 1, notes: [{s: 0, f: 7, ghost: true}]}], 6);
     assert.equal(a[7].length, 1);

@@ -1079,7 +1079,7 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
     assert.match(src, /hwyTrailYieldGemLayer\([\s\S]{0,140}?'NOTE_OUTLINE',\s*'NOTE_OUTLINE_BEHIND_TRAIL'/);
     assert.match(src, /hwyTrailYieldGemLayer\([\s\S]{0,140}?'NOTE_CORE',\s*'NOTE_CORE_BEHIND_TRAIL'/);
     assert.doesNotMatch(src, /trailYieldSettings\.gemInFront\s*\?\s*'NOTE_(?:OUTLINE|CORE)'/);
-    assert.match(src, /hwyFillTrailYieldTimes\([\s\S]{0,420}?trailYieldEventMatchesRenderedFootprint,\s*trailYieldMarkTarget,/);
+    assert.match(src, /hwyFillTrailYieldTimes\([\s\S]{0,420}?trailYieldEventMatchesRenderedFootprint,\s*ctx\.path\s*\?\s*null\s*:\s*trailYieldMarkTarget,/);
     const registerGemStart = src.indexOf('        function trailYieldRegisterGem(');
     const registerGemEnd = src.indexOf('        function trailYieldSweepMayReachFret(', registerGemStart);
     assert.notEqual(registerGemStart, -1);
@@ -1096,7 +1096,7 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
     );
     assert.match(
         src,
-        /trailOcclusionRegisterRelationships\(\s*trailYieldTargetEvent,\s*strandMatchedEvents,\s*null,\s*strandMatchedEventCount,\s*ribbonRenderOrder,\s*TRAIL_OCCLUSION_GEM/,
+        /trailOcclusionRegisterRelationships\(\s*trailYieldTargetEvent,\s*strandMatchedEvents,\s*null,\s*visibilityPath\s*\?\s*0\s*:\s*strandMatchedEventCount,\s*ribbonRenderOrder,\s*TRAIL_OCCLUSION_GEM/,
         'exact lower-string footprint matching controls the gem while physical ordering owns trails',
     );
     assert.match(
@@ -1129,11 +1129,13 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
         /trailYieldRegisterTargetTrail\(\s*trailYieldTargetEvent,\s*olMesh,\s*body,/,
         'moving and yielding ribbon trails must participate in the same rule',
     );
-    assert.match(src, /hwyTrailPriorityWorldZ\([\s\S]{0,180}?strandYieldStarts,\s*strandYieldCount,[\s\S]{0,100}?trailYieldGemInFront,\s*TS/);
-    assert.match(src, /const\s+matchingVisibleEnd\s*=\s*visibleEnd/);
+    assert.match(src, /hwyTrailPriorityWorldZ\([\s\S]{0,180}?strandYieldStarts,\s*orderingYieldCount,[\s\S]{0,100}?trailYieldGemInFront,\s*TS/);
+    assert.match(src, /const\s+matchingVisibleEnd\s*=\s*Math\.min\(sourceEnd,\s*geometryEnd\s*\+\s*Math\.max\(cfg\.leadTime,\s*cfg\.endLeadTime\)\)/);
+    assert.match(src, /ctx\.path\s*\?\s*null\s*:\s*priorityTimes/,
+        'linked width queries must not scan the entire chain for cached mode-3 priority');
     assert.match(
         src,
-        /hwyFillTrailYieldTimes\([\s\S]{0,420}?priorityTimes,\s*priorityIndex/,
+        /hwyFillTrailYieldTimes\([\s\S]{0,700}?ctx\.path\s*\?\s*null\s*:\s*priorityTimes,\s*priorityIndex/,
         'mode 3 must retain one future endpoint depth without materializing its taper',
     );
     assert.match(src, /const\s+occlusionVisibleEnd\s*=\s*visibleYieldEnd/);
@@ -1270,7 +1272,12 @@ test('rendering and eligibility share one rendered footprint model', () => {
     assert.match(matcherBody, /if\s*\(!visuallyBelow\)\s*return false/);
     assert.doesNotMatch(matcherBody, /techniqueMovesY|techniqueYOffsetWorld/);
     assert.match(matcherBody, /Math\.min\(event\.t,\s*ctx\.susEnd\)/);
-    assert.match(matcherBody, /sustainTrailCenterXAt\(/);
+    assert.match(matcherBody, /trailVisibilitySourceCenterXAt\(/);
+    const pathCenterDecl = src.indexOf('        function trailVisibilitySourceCenterXAt(');
+    assert.notEqual(pathCenterDecl, -1);
+    const pathCenterBody = src.slice(pathCenterDecl, src.indexOf('\n        }', pathCenterDecl) + 10);
+    assert.match(pathCenterBody, /sustainTrailCenterXAt\(/,
+        'the linked-piece sampler must reuse the actual rendered center model');
     assert.match(matcherBody, /trailYieldOpenTargetXBounds\(/);
     assert.match(matcherBody, /hwyTrailFootprintsCanOcclude\(/);
     assert.doesNotMatch(matcherBody, /trailYieldSettings\.(?:gemInFront|includeTrails)/);
