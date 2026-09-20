@@ -43,6 +43,7 @@ function helpers(lefty = false) {
     const block = source.slice(source.indexOf('    function slideTrailEnd('), source.indexOf('    // Camera tgtDist building blocks'));
     return new Function('T', globals + fn('hwySmoothstep01') + fn('hwyTrailYieldAmountAt')
         + fn('hwyAppendTrailCrossingWindow') + fn('hwyFillTrailCrossingWindows')
+        + fn('hwyAppendTrailYieldContourTimes')
         + block + fn('sustainTrailCenterXAt') + fn('ensureSlideRibbonCapacity')
         + fn('slideRibbonUpdatePair') + fn('trailOrderStrandBoundsAtZ')
         + fn('noteHasVibrato') + fn('noteHasVisibleMotionSustain')

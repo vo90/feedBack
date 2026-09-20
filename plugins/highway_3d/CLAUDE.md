@@ -230,6 +230,32 @@ const noteState = {
 
 Anything that indexes a per-string array MUST be guarded by `validString(s)`. The function checks that `s` is an integer in `[0, nStr)` (returning `false` otherwise so the caller can skip), warns once when an out-of-range index is seen, and keeps the `mStr / mGlow / mSus / projMeshArr` lookups safe. It does NOT clamp — out-of-range strings are dropped, not silently mapped to a valid one. `filterValidNotes(notes)` is the chord-note equivalent (allocates only when something would actually be dropped).
 
+## Linked sustain visibility
+
+`hwyBuildLinkedTrailPaths` builds renderer-only paths once when chart arrays change,
+using the strict `bendLinks` entries from `hwyLinkNextTargetNotes`. The broader
+continuation-head suppression set is deliberately independent: a suppressed head
+alone does not prove a continuous drawable trail. Do not mutate chart notes or
+reuse these paths for scoring or authored sustain duration.
+
+`_linkedTrailPaths.byNote` carries membership through temporary chord-note and
+mute-normalization objects. Reset or delete that membership when reusing scratch
+objects, and clear the graph on teardown. Piece lookup is binary and must work
+when seeking backward or when the path's original attack is off screen.
+
+Visibility samples each piece through the existing `sustainTrailCenterXAt` model,
+and only the path's final endpoint is terminal. Body and outline must use the same
+visibility envelope at joins. The local query includes taper/recovery margins;
+mode-3 future depth priority remains independently cached per original event.
+
+Obstacle indexes distinguish visible attack heads from emitted trails. Hidden
+continuations contribute no phantom gem, while an emitted continuation trail may
+still overlap another trail. The trail-eligibility callback is the extension point
+for renderers that suppress member trails or emit open chord-member trails.
+Fret and string indexes use max-end trees to skip expired ranges, including those
+behind an old long-running target. Keep these indexes chart-static, retain bounded
+visible-window queries, and avoid scanning complete linked chains each frame.
+
 ## Object pools
 
 Pools live as closure refs (`pNote`, `pSus`, `pLbl`, `pBeat`, `pSec`, `pFretLbl`, `pLane`, `pLaneDivider`, `pChordBox`, `pChordLbl`, `pBarreLine`, `pNoteFretLabel`, `pConnectorLine`, `pDropLine`, `pSusOutline`).

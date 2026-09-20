@@ -147,7 +147,7 @@ test('only emitted upcoming gems and visible sustain strands enter the resolver'
     );
     assert.match(
         source,
-        /slideRibbonUpdatePair\(\s*olMesh\.geometry, body\.geometry[\s\S]{0,600}?trailOrderRegisterStrand\(\s*olMesh, body/,
+        /slideRibbonUpdatePair\(\s*olMesh\.geometry, body\.geometry[\s\S]{0,800}?trailOrderRegisterStrand\(\s*olMesh, body/,
         'slides, bends, vibrato, and tremolo ribbons use the same resolver',
     );
 });
