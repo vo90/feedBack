@@ -1,9 +1,8 @@
 // Pins the chord sustain-length rail indicator in plugins/highway_3d/screen.js
 // (PR #303). The rails are left/right edge plane meshes showing how long a
-// chord is held. A refactor that drops the !isRepeat gate, mixes up the
-// arpeggio/teal color choice, or changes the rail renderOrder would silently
-// regress the indicator (rails on every repeat frame, wrong tint, or rails
-// occluding note gems).
+// chord shape is held, including repeated strums. Pins the chord gate,
+// arpeggio/teal color choice and renderOrder; timing regressions are exercised
+// by highway_3d_chord_rail_timing.test.js.
 //
 // Source-level only — same strategy as the other tests/js/ files.
 

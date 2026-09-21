@@ -63,6 +63,14 @@ class Note:
     # finger); spelled-out `hand` on the wire because `rh` is taken.
     # Default-omitted on the wire; older readers ignore it.
     hand: str | None = None
+    # Authored quiet/parenthesized attack, independent of dead-note mute or tie.
+    ghost: bool = False
+    # Targetless slide-outs retain direction without manufacturing a fret.
+    # Mark intervals are seconds relative to this attack, identifying the
+    # authored segment, not a measured slide speed. A present array (including
+    # []) is authoritative over the older direction-only scalar.
+    slide_out: str | None = None
+    slide_out_marks: list | None = None
 
 
 @dataclass
@@ -256,6 +264,8 @@ def note_to_wire(n: Note) -> dict:
     }
     if n.link_next:
         out["ln"] = True
+    if n.ghost is True:
+        out["ghost"] = True
     if n.fret_hand_mute:
         out["fhm"] = True
     if n.pluck:
@@ -289,6 +299,10 @@ def note_to_wire(n: Note) -> dict:
     # directly-constructed Note can't put junk ('LH', True, …) on the wire.
     if n.hand in ("lh", "rh"):
         out["hand"] = n.hand
+    if n.slide_out in ("up", "down"):
+        out["slide_out"] = n.slide_out
+    if n.slide_out_marks is not None:
+        out["slide_out_marks"] = _sanitize_slide_out_marks(n.slide_out_marks, n.sustain)
     return out
 
 
@@ -515,6 +529,35 @@ def note_pitch_midi(arr: "Arrangement", note: "Note") -> int | None:
                            arr.tuning or [], note.string, note.fret)
 
 
+def _sanitize_slide_out_marks(raw, sustain: float) -> list:
+    """Validate source segment bounds; never infer timing from a scalar.
+
+    Reject malformed/overlapping/out-of-order marks individually. The empty
+    result remains present, preventing legacy scalar fallback after bad data.
+    Tolerate at most half a wire millisecond beyond the rounded sustain end.
+    """
+    if not isinstance(raw, list) or not math.isfinite(sustain) or sustain < 0:
+        return []
+    out = []
+    previous_end = 0.0
+    for mark in raw:
+        if not isinstance(mark, dict) or mark.get("direction") not in ("up", "down"):
+            continue
+        start, end = mark.get("start"), mark.get("end")
+        if (not isinstance(start, (int, float)) or isinstance(start, bool)
+                or not isinstance(end, (int, float)) or isinstance(end, bool)
+                or not math.isfinite(start) or not math.isfinite(end)
+                or start < previous_end or not 0 <= start < end
+                or end > sustain + 0.000501):
+            continue
+        # Preserve accepted authored precision. The display clips its geometry
+        # to sustain; transport must not rewrite a source boundary because the
+        # older wire sustain field rounded it to milliseconds.
+        out.append({"direction": mark["direction"], "start": float(start), "end": float(end)})
+        previous_end = end
+    return out
+
+
 def note_from_wire(d: dict, time: float | None = None) -> Note:
     return Note(
         time=float(d.get("t", time if time is not None else 0.0)),
@@ -523,6 +566,7 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         sustain=float(d.get("sus", 0.0)),
         slide_to=int(d.get("sl", -1)),
         slide_unpitch_to=int(d.get("slu", -1)),
+        ghost=d.get("ghost") is True,
         bend=float(d.get("bn", 0.0)),
         bend_intent=_wire_int_optional(d.get("bt"), 0),
         bend_values=_sanitize_bend_curve(d.get("bnv")),
@@ -553,6 +597,9 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         # (junk, wrong case, bools) falls back to unassigned rather than
         # poisoning downstream hand-split/practice logic.
         hand=d.get("hand") if d.get("hand") in ("lh", "rh") else None,
+        slide_out=d.get("slide_out") if d.get("slide_out") in ("up", "down") else None,
+        slide_out_marks=(_sanitize_slide_out_marks(d["slide_out_marks"], float(d.get("sus", 0)))
+                         if "slide_out_marks" in d else None),
     )
 
 
@@ -754,7 +801,8 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
 
     Path-type resolution (first match wins):
     1. XML <arrangementProperties> flags (path_lead / path_rhythm / path_bass)
-    2. Name-based fallback when ALL three flags are zero — keeps sloppak /
+    2. Explicit manifest role (lead / rhythm / bass), independent of display name.
+    3. Name-based fallback when ALL three flags are zero — keeps sloppak /
        GP-imported sources and custom song with unset flags working by mapping
        "Lead" / "Rhythm" / "Bass" / "Combo" → the matching path. Anything
        outside that set (Vocals, ShowLights, …) → None.
@@ -803,6 +851,11 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
             return "path_rhythm", bool(a.bonus_arr)
         if a.path_bass:
             return "path_bass", bool(a.bonus_arr)
+        role = str(a.type or "").strip().lower()
+        if role in ("lead", "rhythm", "bass"):
+            return "path_" + role, bool(a.bonus_arr)
+        if role in ("piano", "keys", "drums", "vocals"):
+            return None, bool(a.bonus_arr)
         name = a.name if isinstance(a.name, str) else ""
         entry = _NAME_FALLBACK.get(name.strip().lower())
         if entry is None:

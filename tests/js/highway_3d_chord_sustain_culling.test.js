@@ -76,10 +76,10 @@ function cutoffAt(now, hasNoteStateProvider) {
     return now - (hasNoteStateProvider ? Math.max(BEHIND, VERDICT_WINDOW) : BEHIND);
 }
 
-function carryOverCandidates(chords, now, hasNoteStateProvider) {
+function carryOverCandidates(chords, now, hasNoteStateProvider, guideEnds = null) {
     const cutoff = cutoffAt(now, hasNoteStateProvider);
     const recentLo = helpers.lowerBoundT(chords, cutoff - AHEAD);
-    const index = helpers._buildChordCullIndex(chords, AHEAD, STRING_COUNT);
+    const index = helpers._buildChordCullIndex(chords, AHEAD, STRING_COUNT, guideEnds);
     const found = [];
     for (let ci = helpers._nextChordCullCandidate(index, 0, recentLo, cutoff);
         ci < recentLo;
@@ -112,6 +112,26 @@ test('mixed member sustains keep the chord indexed through the longest member', 
     // the 1 s member can expire independently while the 7 s member remains.
     assert.match(src, /_scrChordNote\.sus\s*=\s*cn\.sus\s*\|\|\s*0/);
     assert.match(src, /const cnSustainOk = chOnsetInWin \|\| \(chSusActive && ch\.t \+ \(cn\.sus \|\| 0\) >= now\)/);
+});
+
+test('a guide outliving a short note sustain stays indexed without extending note sustains', () => {
+    const chords = [chord(10, [0.1, 0.2])];
+    const guideEnds = new WeakMap([[chords[0], 14.5]]);
+    assert.deepEqual(carryOverCandidates(chords, 14, false).found, []);
+    const extended = carryOverCandidates(chords, 14, false, guideEnds);
+    assert.deepEqual(extended.found, [0]);
+    assert.equal(extended.index.maxSustains[0], 0.2);
+    assert.deepEqual(chords[0].notes.map(n => n.sus), [0.1, 0.2]);
+    assert.deepEqual(carryOverCandidates(chords, 15.0001, false, guideEnds).found, []);
+
+    const filterStart = src.indexOf('const _chGuideEnd = chordGuideEnds.get(ch);');
+    const filterEnd = src.indexOf('if (ch.t > t1) break;', filterStart);
+    assert.ok(filterStart >= 0 && filterEnd > filterStart);
+    const passesExactCull = new Function('ch', 'maxSus', 'AHEAD', 'chordGuideEnds', 'ndVerdictT0',
+        'for (let once = 0; once < 1; once++) {' + src.slice(filterStart, filterEnd)
+        + 'return true;} return false;');
+    assert.equal(passesExactCull(chords[0], 0.2, AHEAD, guideEnds, 14), true);
+    assert.equal(passesExactCull(chords[0], 0.2, AHEAD, guideEnds, 14.5001), false);
 });
 
 test('carry-over lookup honors normal and note-state-provider cutoff windows', () => {
@@ -292,6 +312,8 @@ test('cull cache reuses, rebuilds, and resets at every ownership boundary', () =
         let _chordCullIndex = { count: 1 };
         let _chordCullIndexChordsRef = [{}];
         let _chordCullIndexStringCount = 7;
+        let _chordCullIndexGuideEnds = null;
+        let _chordGuideCache = { stale: true };
         ${extractFunction('_resetChordCullIndex')}
         ${extractFunction('_ensureChordCullIndex')}
 
@@ -311,11 +333,16 @@ test('cull cache reuses, rebuilds, and resets at every ownership boundary', () =
             notes: [{ s: 0, f: 9, sus: 2 }],
         }];
         const chartChanged = _ensureChordCullIndex(replacementChords, 3, 7);
+        const guideEnds = new WeakMap([[replacementChords[0], 25]]);
+        const guidesChanged = _ensureChordCullIndex(replacementChords, 3, 7, guideEnds);
+        const guidesReused = _ensureChordCullIndex(replacementChords, 3, 7, guideEnds);
         _resetChordCullIndex();
         const cleared = {
             index: _chordCullIndex,
             chordsRef: _chordCullIndexChordsRef,
             stringCount: _chordCullIndexStringCount,
+            guideEnds: _chordCullIndexGuideEnds,
+            guideCache: _chordGuideCache,
         };
         const afterReset = _ensureChordCullIndex(replacementChords, 3, 7);
 
@@ -326,6 +353,9 @@ test('cull cache reuses, rebuilds, and resets at every ownership boundary', () =
             sevenStringSustain: countChanged.maxSustains[0],
             chartRebuilt: chartChanged !== countChanged,
             replacementSustain: chartChanged.maxSustains[0],
+            guidesRebuilt: guidesChanged !== chartChanged,
+            guidesReused: guidesReused === guidesChanged,
+            guideCullEnd: guidesChanged.maxEndTree[guidesChanged.leafBase],
             cleared,
             resetRebuilt: afterReset !== chartChanged,
         };
@@ -338,7 +368,10 @@ test('cull cache reuses, rebuilds, and resets at every ownership boundary', () =
         sevenStringSustain: 7,
         chartRebuilt: true,
         replacementSustain: 2,
-        cleared: { index: null, chordsRef: null, stringCount: -1 },
+        guidesRebuilt: true,
+        guidesReused: true,
+        guideCullEnd: 25,
+        cleared: { index: null, chordsRef: null, stringCount: -1, guideEnds: null, guideCache: null },
         resetRebuilt: true,
     });
     assert.match(
@@ -347,7 +380,7 @@ test('cull cache reuses, rebuilds, and resets at every ownership boundary', () =
         'string-count changes reset the cull index after shared chord caches',
     );
     assert.match(extractFunction('teardown'), /_resetChordCullIndex\(\);/);
-    assert.match(src, /_ensureChordCullIndex\(chords, AHEAD, nStr\);/);
+    assert.match(src, /_ensureChordCullIndex\(chords, AHEAD, nStr, chordGuideEnds\);/);
 });
 
 test('renderer restores both predecessor states on initial and later indexed gaps', () => {
@@ -366,10 +399,10 @@ test('renderer restores both predecessor states on initial and later indexed gap
 test('renderer wires the sustain index ahead of the existing exact cull check', () => {
     assert.match(
         extractFunction('_ensureChordCullIndex'),
-        /_chordCullIndex\s*=\s*_buildChordCullIndex\(chords, ahead, stringCount\)/,
+        /_chordCullIndex\s*=\s*_buildChordCullIndex\(chords, ahead, stringCount, guideEnds\)/,
     );
-    assert.match(src, /_ensureChordCullIndex\(chords, AHEAD, nStr\);/);
+    assert.match(src, /_ensureChordCullIndex\(chords, AHEAD, nStr, chordGuideEnds\);/);
     assert.match(src, /const _chordsRecentLoIdx = lowerBoundT\(chords, ndVerdictT0 - AHEAD\)/);
     assert.match(src, /_nextChordCullCandidate\([\s\S]{0,120}_chordsRecentLoIdx, ndVerdictT0/);
-    assert.match(src, /const _chFilterSus = maxSus > 0 \? maxSus : AHEAD;\s*if \(ch\.t \+ _chFilterSus < ndVerdictT0\) continue;/);
+    assert.match(src, /const _chFilterSus = Math\.max\(maxSus > 0 \? maxSus : AHEAD, \(_chGuideEnd \?\? ch\.t\) - ch\.t\);\s*if \(ch\.t \+ _chFilterSus < ndVerdictT0\) continue;/);
 });

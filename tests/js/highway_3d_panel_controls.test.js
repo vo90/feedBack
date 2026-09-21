@@ -12,7 +12,7 @@ const SCREEN_JS = path.join(__dirname, '..', '..', 'plugins', 'highway_3d', 'scr
 
 // 'palette' was removed — per-string colors are now set via the core
 // "Highway String Colors" UI, which drives both highways by named string.
-const REQUIRED_KEYS = ['cameraSmoothing', 'cameraLockLow', 'cameraLockZoom'];
+const REQUIRED_KEYS = ['notationStyle', 'glow', 'bloom', 'cameraSmoothing', 'cameraLockLow', 'cameraLockZoom'];
 const FORBIDDEN_KEYS = ['customImageDataUrl', 'customImageName', 'customVideoName'];
 const VALID_TYPES = new Set(['select', 'range', 'toggle']);
 
@@ -91,7 +91,7 @@ test('3D Highway exposes static panelControls descriptors for per-panel hosts', 
     const controls = cloneJson(factory.panelControls);
     const defaults = cloneJson(window.__h3dTestExports.BG_DEFAULTS);
     const keys = controls.map((control) => control && control.key);
-    assert.deepEqual(keys, REQUIRED_KEYS, 'panelControls must expose exactly the issue #247 control set');
+    assert.deepEqual(keys, REQUIRED_KEYS, 'panelControls must expose the curated notation, effects, and camera controls');
     const duplicateKeys = keys.filter((key, index) => keys.indexOf(key) !== index);
     assert.deepEqual(duplicateKeys, [], 'panelControls keys must be unique');
 
@@ -158,6 +158,15 @@ test('3D Highway exposes static panelControls descriptors for per-panel hosts', 
     for (const key of FORBIDDEN_KEYS) {
         assert.ok(!controlsByKey.has(key), `panelControls must not expose global-only asset key ${key}`);
     }
+
+    const notationStyle = controlsByKey.get('notationStyle');
+    assert.equal(notationStyle.type, 'select');
+    assert.equal(notationStyle.default, 'current', 'existing users retain Current until they opt in');
+    assert.deepEqual(notationStyle.options.map(optionValue), ['current', 'rsplus']);
+    assert.equal(controlsByKey.get('glow').type, 'range');
+    assert.equal(controlsByKey.get('glow').min, 0);
+    assert.equal(controlsByKey.get('glow').max, 1);
+    assert.equal(controlsByKey.get('bloom').type, 'toggle');
 
     const cameraSmoothing = controlsByKey.get('cameraSmoothing');
     assert.equal(cameraSmoothing.type, 'range', 'cameraSmoothing must be a range control');

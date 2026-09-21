@@ -958,6 +958,12 @@
     /** Lane quad alpha: base + highwayIntensity * scale (readable on dark floor). */
     const HWY_LANE_STRIPE_OP_BASE = 1.0;
     const HWY_LANE_STRIPE_OP_INT  = 0;
+    const RSPLUS_DEFAULT_HIGHWAY = Object.freeze({
+        board: 0x08090a, lane: 0x34373c, laneDim: 0x292c31, laneOpacity: 0.55,
+        divider: 0xb4b7ba, dividerOpacity: 0.34,
+        extension: 0x464b50, extensionOpacity: 0.24,
+        inlay: 0x4b4e54, inlayOpacity: 0.55,
+    });
     /** Venue mode: slight near-lane contrast boost (visual only). */
     const VENUE_LANE_OP_BOOST = 1.1;
     /** Venue mode: gem emissive pop (~12%, visual only). */
@@ -1023,6 +1029,27 @@
             Math.round(RENDER_ORDER_AT_Z_ZERO + worldZ / K)
         );
         return depthRenderOrder + layerIndex / RENDER_ORDER_LAYER_STACK.length;
+    }
+
+    /** Labels yield to the actual final order of overlapping nearer gems. */
+    function hwyIncomingLabelBehindGemOrder(labelOrder, labelZ, gemOrder, gemZ) {
+        if (!Number.isFinite(labelOrder) || !Number.isFinite(labelZ)
+            || !Number.isFinite(gemOrder) || !Number.isFinite(gemZ)
+            || gemZ < labelZ) return labelOrder;
+        return Math.min(labelOrder, gemOrder - 0.001);
+    }
+
+    // Chart times can differ by one millisecond after wire-format rounding.
+    // Do not merge nearby rhythmic events via the broader label-density buckets.
+    function hwySameFretLabelBeat(fretA, timeA, fretB, timeB) {
+        return Number.isInteger(fretA) && fretA > 0 && fretA === fretB
+            && Number.isFinite(timeA) && Number.isFinite(timeB)
+            && Math.abs(timeA - timeB) <= 0.001 + 1e-9;
+    }
+
+    function hwyScreenRectsOverlap(a, b) {
+        return a.minX <= b.maxX && a.maxX >= b.minX
+            && a.minY <= b.maxY && a.maxY >= b.minY;
     }
 
     /** Inclusive one-dimensional footprint overlap (centres + full sizes). */
@@ -1297,6 +1324,120 @@
         return priorityRank * TRAIL_YIELD_STRING_ORDER_STEP;
     }
 
+    /** One bounded shared mesh: ordinary box plus two curved parentheses.
+     * Local extents are 1.48 * width by 1.16 * height by depth, also used by
+     * the trail matcher. No text, per-frame geometry or additional draw calls.
+     */
+    function hwyGhostNoteOutlineGeometry(T, width, height, depth) {
+        const body = new T.Shape();
+        body.moveTo(-width / 2, -height / 2);
+        body.lineTo(width / 2, -height / 2);
+        body.lineTo(width / 2, height / 2);
+        body.lineTo(-width / 2, height / 2);
+        body.closePath();
+        const shapes = [body];
+        for (const side of [-1, 1]) {
+            const bracket = new T.Shape();
+            // Outer then inner path; 16 segments retain a rounded silhouette
+            // at both approach rotation extremes without font/texture scaling.
+            for (let i = 0; i <= 16; i++) {
+                const u = i / 16;
+                const x = side * width * (0.62 + 0.12 * Math.sin(Math.PI * u));
+                const y = height * 1.16 * (u - 0.5);
+                if (i === 0) bracket.moveTo(x, y);
+                else bracket.lineTo(x, y);
+            }
+            for (let i = 16; i >= 0; i--) {
+                const u = i / 16;
+                bracket.lineTo(side * width * (0.55 + 0.12 * Math.sin(Math.PI * u)),
+                    height * 1.16 * (u - 0.5));
+            }
+            bracket.closePath();
+            shapes.push(bracket);
+        }
+        const geometry = new T.ExtrudeGeometry(shapes, { depth, bevelEnabled: false, steps: 1 });
+        geometry.translate(0, 0, -depth / 2);
+        geometry.computeBoundingBox();
+        geometry.computeBoundingSphere();
+        return geometry;
+    }
+
+    // Retain the selected style's body and append only the shared curved
+    // parentheses. This is built once, not an extra mesh or per-note draw call.
+    function hwyGhostNoteWithBodyGeometry(T, body, ghost, width) {
+        const bracketVertices = [];
+        const gp = ghost.attributes.position;
+        for (let i = 0; i < gp.count; i += 3) {
+            if (Math.abs(gp.getX(i)) > width * 0.51) bracketVertices.push(i, i + 1, i + 2);
+        }
+        const geometry = new T.BufferGeometry();
+        for (const name of ['position', 'normal', 'uv']) {
+            const from = body.attributes[name], brackets = ghost.attributes[name];
+            const values = new Float32Array((from.count + bracketVertices.length) * from.itemSize);
+            values.set(from.array);
+            let offset = from.array.length;
+            for (const i of bracketVertices) {
+                for (let component = 0; component < from.itemSize; component++) {
+                    values[offset++] = brackets.array[i * from.itemSize + component];
+                }
+            }
+            geometry.setAttribute(name, new T.BufferAttribute(values, from.itemSize));
+        }
+        geometry.computeBoundingBox();
+        geometry.computeBoundingSphere();
+        return geometry;
+    }
+
+    // Open notes are wide, thin slabs. Compensate only the parentheses for
+    // that aspect ratio while the original box vertices keep the slab shape.
+    // One owned geometry per pooled mesh bounds the cache at the pool's peak.
+    function hwyShapeOpenGhostGeometry(mesh, template, bodyWidth, markerScale, width, owned) {
+        let g = mesh.userData.openGhostGeometry;
+        if (!g) {
+            g = template.clone();
+            g.userData = {};
+            mesh.userData.openGhostGeometry = g;
+            owned.push(g);
+        }
+        // A pooled mesh can switch between rounded RS+ and Current bodies.
+        // Reuse its owned BufferGeometry while replacing incompatible topology.
+        if (g.attributes.position.count !== template.attributes.position.count) {
+            g.dispose();
+            g.copy(template);
+            g.userData = {};
+        }
+        const color = template.attributes.color;
+        if (color && (g.userData.colorSource !== color || g.userData.colorVersion !== color.version)) {
+            if (!g.attributes.color) g.setAttribute('color', color.clone());
+            else g.attributes.color.copyArray(color.array);
+            g.attributes.color.needsUpdate = true;
+            g.userData.colorSource = color;
+            g.userData.colorVersion = color.version;
+        }
+        if (g.userData.openWidth !== bodyWidth || g.userData.markerScale !== markerScale
+            || g.userData.meshScaleX !== mesh.scale.x || g.userData.meshScaleY !== mesh.scale.y) {
+            const from = template.attributes.position;
+            const to = g.attributes.position;
+            for (let i = 0; i < from.count; i++) {
+                const x = from.getX(i), y = from.getY(i);
+                if (Math.abs(x) > width * 0.51) {
+                    to.setXYZ(i, Math.sign(x) * (bodyWidth * 0.5
+                        + (Math.abs(x) - width * 0.5) * markerScale) / mesh.scale.x,
+                    y * markerScale / mesh.scale.y, from.getZ(i));
+                } else to.setXYZ(i, x, y, from.getZ(i));
+            }
+            to.needsUpdate = true;
+            g.computeVertexNormals();
+            g.computeBoundingBox();
+            g.computeBoundingSphere();
+            g.userData.openWidth = bodyWidth;
+            g.userData.markerScale = markerScale;
+            g.userData.meshScaleX = mesh.scale.x;
+            g.userData.meshScaleY = mesh.scale.y;
+        }
+        mesh.geometry = g;
+    }
+
     /** Chart-static fret index; rebuilt only when arrangement arrays change. */
     function hwyBuildTrailYieldEvents(notes, chords, stringCount) {
         const byFret = new Array(NFRETS + 1);
@@ -1309,12 +1450,14 @@
             (byFret[f] || (byFret[f] = [])).push({
                 t, s, f, end: t + duration,
                 accent: !!accent,
+                ghost: pathNote?.ghost === true,
                 standalone: chordMeta === null,
                 chordMeta,
                 // The event is also the allocation-free path descriptor used
                 // for trail-to-trail crossings. Keep only fields that affect X.
                 sl: Number.isFinite(pathNote?.sl) ? pathNote.sl : -1,
                 slu: Number.isFinite(pathNote?.slu) ? pathNote.slu : -1,
+                slide_out_marks: pathNote?.slide_out_marks,
                 tr: !!pathNote?.tr,
                 sus: duration,
             });
@@ -1366,10 +1509,12 @@
                     && cur.s === prev.s) {
                     prev.end = Math.max(prev.end, cur.end);
                     prev.accent = prev.accent || cur.accent;
+                    prev.ghost = prev.ghost || cur.ghost;
                     prev.standalone = prev.standalone || cur.standalone;
                     if (!prev.chordMeta && cur.chordMeta) prev.chordMeta = cur.chordMeta;
                     if (!(prev.sl >= 0) && cur.sl >= 0) prev.sl = cur.sl;
                     if (!(prev.slu >= 0) && cur.slu >= 0) prev.slu = cur.slu;
+                    if (prev.slide_out_marks === undefined) prev.slide_out_marks = cur.slide_out_marks;
                     prev.tr = prev.tr || cur.tr;
                     prev.sus = Math.max(prev.sus, cur.sus);
                     continue;
@@ -1937,6 +2082,7 @@
     const BEND_ENV_RISE_FRAC = 0.35;
     const BEND_ENV_RELEASE_FRAC = 0.30;
     const TREMOLO_BUMP_S = 0.06;
+    const RSPLUS_SUSTAIN_STROKE_SCALE = 0.5;
 
     /** Longitudinal samples for sustain-technique prism (indexed BufferGeometry). */
     const SLIDE_RIBBON_SAMPLES = 96;
@@ -2144,7 +2290,12 @@
      * tolerance. Zero/omitted sustains retain authored-link compatibility.
      * These checks keep later attacks and partial-chord HO/PO gems visible.
      */
-    function hwyLinkNextTargetNotes(notes, chords, onsetTolerance = 1e-6) {
+    // Wire times/sustains can be rounded to milliseconds. Bend inheritance is
+    // stricter than attack suppression: overlapping or expired sustains must
+    // not supply an unrelated starting pitch.
+    const BEND_LINK_TIME_EPS = 0.001;
+
+    function hwyLinkNextTargetNotes(notes, chords, onsetTolerance = 1e-6, bendLinks = null) {
         const targets = new Set();
         const lanes = new Map();
         const eps = Number.isFinite(onsetTolerance) && onsetTolerance >= 0
@@ -2205,6 +2356,22 @@
                         const destination = lane[j].note;
                         if (destination.f === (slideTarget >= 0 ? slideTarget : source.f)) {
                             targets.add(destination);
+                            if (bendLinks) {
+                                const previous = bendLinks.get(destination);
+                                const contiguous = Number.isFinite(source.sus) && source.sus > 0
+                                    && Math.abs(lane[i].time + source.sus - nextTime)
+                                        <= BEND_LINK_TIME_EPS + 1e-9;
+                                // Ambiguous coincident sources stay unresolved;
+                                // never pick a bend height by chart array order.
+                                if (!bendLinks.has(destination)) {
+                                    bendLinks.set(destination, contiguous
+                                        ? { source, sourceTime: lane[i].time, targetTime: nextTime }
+                                        : null);
+                                } else if (!previous || previous.source !== source
+                                    || previous.sourceTime !== lane[i].time) {
+                                    bendLinks.set(destination, null);
+                                }
+                            }
                         }
                     }
                 }
@@ -2262,7 +2429,7 @@
                 case 'ho': case 'po': case 'hm': case 'hp':
                 case 'pm': case 'mt': case 'vb': case 'tr':
                 case 'ac': case 'tp': case 'ln': case 'fhm':
-                case 'plk': case 'slp': case 'ig':
+                case 'plk': case 'slp': case 'ig': case 'ghost':
                     if (v === false) continue;
                     return true;
                 case 'bnv':
@@ -2320,7 +2487,7 @@
      * used by the chord loop's `_chFilterSus` check; parent nodes store the
      * maximum end in their range, allowing whole expired ranges to be skipped.
      */
-    function _buildChordCullIndex(chords, ahead, stringCount) {
+    function _buildChordCullIndex(chords, ahead, stringCount, guideEnds = null) {
         const count = Array.isArray(chords) ? chords.length : 0;
         let leafBase = 1;
         while (leafBase < count) leafBase <<= 1;
@@ -2345,7 +2512,7 @@
             maxSustains[i] = maxSus;
             if (!hasValidNote) continue;
 
-            const cullEnd = ch.t + (maxSus > 0 ? maxSus : ahead);
+            const cullEnd = Math.max(ch.t + (maxSus > 0 ? maxSus : ahead), guideEnds?.get(ch) ?? -Infinity);
             if (!Number.isNaN(cullEnd)) maxEndTree[leafBase + i] = cullEnd;
         }
         for (let i = leafBase - 1; i > 0; i--) {
@@ -2500,6 +2667,83 @@
         return lo === 0 ? anchorArr[0] : anchorArr[lo - 1];
     }
 
+    // Chord onsets are rounded to milliseconds by chord_to_wire; anchors keep
+    // their source precision. Treat the half-millisecond round-trip difference
+    // as the same onset, without shifting the chart's actual lane boundaries.
+    const CHORD_ANCHOR_TIME_EPS = 0.000501;
+
+    function chordRailEndAt(anchorArr, onset, end) {
+        if (!anchorArr || !anchorArr.length) return end;
+        let lo = 0, hi = anchorArr.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (anchorArr[mid].time <= onset + CHORD_ANCHOR_TIME_EPS) lo = mid + 1;
+            else hi = mid;
+        }
+        // Before the first anchor, getChartAnchorAt already uses that anchor.
+        // The next boundary is therefore the second anchor, not the first.
+        const next = Math.max(1, lo);
+        return next < anchorArr.length ? Math.min(end, anchorArr[next].time) : end;
+    }
+
+    function chordGuideTimedRowAt(rows, t) {
+        let lo = 0, hi = rows.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (rows[mid].time <= t) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo - 1;
+    }
+
+    // Use the actual local beat, including tempo/time-signature changes. No
+    // guessed BPM when beat data has not arrived: bridging is then disabled.
+    function chordGuideHalfBeat(beats, t) {
+        if (!beats || beats.length < 2) return 0;
+        const i = Math.max(0, Math.min(beats.length - 2, chordGuideTimedRowAt(beats, t)));
+        const dt = beats[i + 1].time - beats[i].time;
+        return Number.isFinite(dt) && dt > 0 ? dt * 0.5 : 0;
+    }
+
+    function chordGuideEndAt(anchors, onset, end) {
+        if (!anchors || !anchors.length) return end;
+        const i = Math.max(0, chordGuideTimedRowAt(anchors, onset + CHORD_ANCHOR_TIME_EPS));
+        const first = laneBoundsFromAnchor(anchors[i]);
+        for (let j = i + 1; j < anchors.length && anchors[j].time < end; j++) {
+            const bounds = laneBoundsFromAnchor(anchors[j]);
+            // Repeated metadata for the same region is not a position change.
+            if (bounds.dMin !== first.dMin || bounds.dMax !== first.dMax) return anchors[j].time;
+        }
+        return end;
+    }
+
+    function chordGuideHasSectionBreak(sections, start, end) {
+        if (!sections || !sections.length) return false;
+        const first = Math.max(0, chordGuideTimedRowAt(sections, start));
+        for (let i = first; i < sections.length && sections[i].time < end; i++) {
+            const name = String(sections[i].name || '').toLowerCase().replace(/[\s_-]/g, '');
+            if (name === 'noguitar' || name === 'silence' || name === 'rest') return true;
+        }
+        return false;
+    }
+
+    function chordGuideHasInterveningNote(notes, ch, next, stringCount) {
+        if (!notes || !notes.length) return false;
+        for (let i = lowerBoundT(notes, ch.t - CHORD_ANCHOR_TIME_EPS); i < notes.length; i++) {
+            const n = notes[i];
+            if (n.t > next.t + CHORD_ANCHOR_TIME_EPS) break;
+            if (!Number.isInteger(n.s) || n.s < 0 || n.s >= stringCount || !isRenderableNote(n)) continue;
+            // Some charts repeat chord members in the standalone stream. Only
+            // exact string/fret matches at an endpoint are duplicates; nearby
+            // attacks and unrelated simultaneous notes still break the run.
+            const owner = Math.abs(n.t - ch.t) <= CHORD_ANCHOR_TIME_EPS ? ch
+                : Math.abs(n.t - next.t) <= CHORD_ANCHOR_TIME_EPS ? next : null;
+            if (owner && owner.notes.some(cn => cn.s === n.s && cn.f === n.f)) continue;
+            return true;
+        }
+        return false;
+    }
+
     /** @returns {{ dMin: number, dMax: number } | null} */
     function laneBoundsFromAnchor(anc) {
         if (!anc) return null;
@@ -2575,6 +2819,7 @@
 
     /** Default chord-box rim / fill gradient (teal family). */
     const CHORD_BOX_TEAL_HEX = 0x00d2d5;
+    const RSPLUS_CHORD_RIM_HEX = 0xb3c3cd;
     const CHORD_BOX_TEAL_DARK_HEX = 0x003c3d;
     /** Frame edge quads: premultiplied-ish alpha match (~128/255). */
     const CHORD_BOX_EDGE_ALPHA = 128 / 255;
@@ -2598,6 +2843,7 @@
     /** Fret-number label tints — gold on approaching/active notes, muted blue when idle. */
     const FRET_LABEL_GOLD_HEX = '#D8A636';
     const FRET_LABEL_IDLE_HEX = '#9ab8cc';
+    const FRET_LABEL_RS_IDLE_HEX = '#c0c3c7';
 
     /** 3D chord-box rim bars (thin on all chords, including repeats in a sequence). */
     const CHORD_FRAME_RIM_MIN = 0.055;       // × K — floor thickness
@@ -2742,6 +2988,113 @@
             ? 1 - Math.sin((1 - p) * Math.PI / 2)
             : Math.pow(Math.sin(p * Math.PI / 2), 3);
         return (endX - startX) * w;
+    }
+
+    // A targetless slide is a direction cue, never a synthetic target fret.
+    // Its short flourish occupies the final <=220ms of the written segment;
+    // this is a display convention, not an inferred duration/pitch trajectory.
+    const SLIDE_OUT_CUE_SECONDS = 0.22;
+    const SLIDE_OUT_TIP_SCALE = 0.72;
+    const SLIDE_OUT_EMPTY_MARKS = Object.freeze([]);
+    const _slideOutMarkCache = new WeakMap();
+    function slideOutMarks(n) {
+        const raw = n?.slide_out_marks;
+        if (!Array.isArray(raw) || !Number.isFinite(n.sus) || !(n.sus > 0)) return SLIDE_OUT_EMPTY_MARKS;
+        const cached = _slideOutMarkCache.get(raw);
+        if (cached?.sus === n.sus) return cached.marks;
+        const marks = [];
+        let previousEnd = 0;
+        for (const mark of raw) {
+            if (!mark || (mark.direction !== 'up' && mark.direction !== 'down')
+                || !Number.isFinite(mark.start) || !Number.isFinite(mark.end)
+                || mark.start < previousEnd || !(mark.start >= 0 && mark.end > mark.start)
+                || mark.end > n.sus + 0.000501) continue;
+            const end = Math.min(mark.end, n.sus);
+            if (end <= mark.start) continue;
+            marks.push({ direction: mark.direction, start: mark.start, end });
+            previousEnd = end;
+        }
+        _slideOutMarkCache.set(raw, { sus: n.sus, marks });
+        return marks;
+    }
+    function slideOutCueAt(n, chartTime) {
+        // Known-target slides retain their established geometry.
+        if (slideTrailEnd(n) || !(n.f > 0)) return 0;
+        const elapsed = chartTime - n.t;
+        for (const mark of slideOutMarks(n)) {
+            const start = Math.max(mark.start, mark.end - SLIDE_OUT_CUE_SECONDS);
+            if (elapsed < start - 1e-9 || elapsed > mark.end + 1e-9) continue;
+            // Signed (1 + progress): no object allocation in the ribbon loop.
+            return (mark.direction === 'up' ? 1 : -1) * (1 + Math.max(0, Math.min(1,
+                (elapsed - start) / Math.max(mark.end - start, 1e-9))));
+        }
+        return 0;
+    }
+    function slideOutWidthScaleAt(n, chartTime) {
+        const cue = slideOutCueAt(n, chartTime);
+        return cue ? 1 - (1 - SLIDE_OUT_TIP_SCALE) * hwySmoothstep01(Math.abs(cue) - 1) : 1;
+    }
+    function slideOutAlphaAt(n, chartTime) {
+        const cue = slideOutCueAt(n, chartTime);
+        if (cue) return 1 - hwySmoothstep01(Math.abs(cue) - 1);
+        // Invisible return ring disconnects a middle-segment flourish from
+        // later, unmarked sustain without drawing a sideways return stroke.
+        if (!slideTrailEnd(n)) for (const mark of slideOutMarks(n)) {
+            const delta = chartTime - n.t - mark.end;
+            if (delta > 0 && delta <= 1.1e-7) return 0;
+        }
+        return 1;
+    }
+    function slideOutReach(n) {
+        // A local visual span only: deliberately never convert this to a fret
+        // or reuse it for pitch/grading/camera target calculations.
+        return n?.f > 0 ? Math.abs(fretX(n.f) - fretX(n.f - 1)) * 0.8 : 0;
+    }
+    function slideOutOffsetWorldX(n, chartTime) {
+        const cue = slideOutCueAt(n, chartTime);
+        return cue ? Math.sign(cue)
+            * slideOutReach(n) * hwySmoothstep01(Math.abs(cue) - 1) : 0;
+    }
+    function slideOutLegacyDirection(n) {
+        // Presence is authoritative, even an empty/malformed array. Never
+        // reinterpret a scalar fallback as source-timed slide placement.
+        if (n?.slide_out_marks !== undefined || slideTrailEnd(n)) return 0;
+        return n?.slide_out === 'up' ? 1 : n?.slide_out === 'down' ? -1 : 0;
+    }
+    function noteHasSlideOutCue(n) {
+        return !slideTrailEnd(n) && (slideOutLegacyDirection(n) !== 0 || slideOutMarks(n).length > 0);
+    }
+    function appendSlideOutContourTimes(n, start, end, out) {
+        if (slideTrailEnd(n) || !(n.f > 0)) return;
+        for (const mark of slideOutMarks(n)) {
+            const cueEnd = n.t + mark.end;
+            const cueStart = n.t + Math.max(mark.start, mark.end - SLIDE_OUT_CUE_SECONDS);
+            if (cueStart > end || cueEnd < start) continue;
+            // Every short gesture gets its full contour even if it falls
+            // between the regular long-sustain samples.
+            for (let i = 0; i <= 8; i++) {
+                const t = cueStart + (cueEnd - cueStart) * i / 8;
+                if (t >= start && t <= end) out.push(t);
+            }
+            if (cueEnd + 1e-7 > start && cueEnd + 1e-7 < end) out.push(cueEnd + 1e-7);
+            if (cueEnd + 2e-7 > start && cueEnd + 2e-7 < end) out.push(cueEnd + 2e-7);
+        }
+    }
+    function slideRibbonSampleTimes(n, start, duration, out) {
+        out.length = 0;
+        const end = start + duration;
+        for (let i = 0; i <= SLIDE_RIBBON_SAMPLES; i++) out.push(start + duration * i / SLIDE_RIBBON_SAMPLES);
+        appendSlideOutContourTimes(n, start, end, out);
+        if (out.length > SLIDE_RIBBON_SAMPLES + 1) out.sort((a, b) => a - b);
+        return out;
+    }
+    function slideOutCrossingTimes(source, target, start, end, out) {
+        out.length = 0;
+        out.push(start, end);
+        appendSlideOutContourTimes(source, start, end, out);
+        appendSlideOutContourTimes(target, start, end, out);
+        out.sort((a, b) => a - b);
+        return out;
     }
 
     // Camera tgtDist building blocks. Both the dynamic (camera-follow)
@@ -3536,7 +3889,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration };
+    const BG_DEFAULTS = { notationStyle: 'current', style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -3544,6 +3897,7 @@
     // mount outside that flow and settings.html (which can't represent 'venue')
     // would be unable to switch back. BG_STYLES still has a 'venue' renderer entry.
     const BG_STYLE_IDS = ['off', 'particles', 'silhouettes', 'lights', 'geometric', 'butterchurn', 'image', 'video'];
+    const NOTATION_STYLE_IDS = ['current', 'rsplus'];
     // Scene color themes — TWO INDEPENDENT AXES sharing one palette family.
     // The combined `BG_THEMES` table below is the single source of truth; each
     // entry carries the colors for BOTH axes, but the two axes are selected and
@@ -3976,6 +4330,7 @@
         }
         if (_BG_BOOL_KEYS.has(key)) return _bgCoerceBool(val, BG_DEFAULTS[key]);
         if (key === 'style') return BG_STYLE_IDS.includes(val) ? val : BG_DEFAULTS.style;
+        if (key === 'notationStyle') return NOTATION_STYLE_IDS.includes(val) ? val : BG_DEFAULTS.notationStyle;
         if (key === 'palette') return (PALETTE_IDS.includes(val) || val === 'custom') ? val : BG_DEFAULTS.palette;
         if (key === 'bgTheme') return BG_THEME_IDS.includes(val) ? val : BG_DEFAULTS.bgTheme;
         // Highway axis shares the same id-set as the background axis.
@@ -4048,6 +4403,7 @@
     // Settings.html setters — global keys; per-panel overrides via direct
     // localStorage edits today, runtime UI in a follow-up.
     window.h3dBgSetStyle = (v) => _bgWriteGlobal('style', v);
+    window.h3dBgSetNotationStyle = (v) => _bgWriteGlobal('notationStyle', _bgCoerce('notationStyle', v));
     window.h3dBgSetIntensity = (v) => _bgWriteGlobal('intensity', v);
     window.h3dBgSetReactive = (v) => _bgWriteGlobal('reactive', !!v);
     window.h3dBgSetPalette = (v) => _bgWriteGlobal('palette', v);
@@ -5648,10 +6004,15 @@
         let _canvasReplacedHandler = null;
         let ambLight = null, dirLight = null;
         let fretG = null, tuningLblG = null, noteG = null, beatG = null, lblG = null;
-        let gNote = null, gSus = null, gBeat = null, gTapChevron = null;
+        let gNote = null, gNoteGhost = null, gSus = null, gBeat = null, gTapChevron = null;
         // Per-string gradient gem geometries (index 0..5). Built in initScene
         // from sampled colour PNGs; each carries a per-vertex colour attribute.
-        let gNoteGrad = [];
+        let gNoteGrad = [], gNoteGhostGrad = [];
+        let gRsNote = null, gRsNoteGhost = null, gRsNoteGrad = [], gRsNoteGhostGrad = [], gRsNoteHalo = null, rsHaloTexture = null;
+        let mRsBody = [], mRsRim = [], mRsAccentRim = [], mRsHitRim = [], mRsHalo = [];
+        let mRsSus = [], mRsSusHit = [], mRsSusEdge = [];
+        let mRsMissRim = null, mRsOpenStem = null;
+        let rsNotationPaletteSig = '';
         let mStr = [], mGlow = [], mSus = [], mStrHitOutline = [], mAccentOutline = [], mAccentCore = [], mAccentHaloNear = [], mAccentHaloMid = [], mAccentHaloFar = [];
         // Pre-built accent-halo shell descriptors per string. Populated after
         // mAccentHaloFar/Mid/Near are materialised; consumed in drawNote()'s
@@ -5660,6 +6021,24 @@
         // by a stable read. Index 0 = outer, 1 = mid, 2 = near.
         let _accentShellsByString = [];
         let mWhiteOutline = null, mSusOutline = null;
+        // Shared source materials remain untouched. RGBA vertex colors supply
+        // a local fade, with one reusable material variant per existing style.
+        const _slideRibbonFadeMaterials = new Map();
+        function slideRibbonFadeMaterial(source) {
+            let material = _slideRibbonFadeMaterials.get(source);
+            if (!material) {
+                material = source.clone();
+                material.vertexColors = true;
+                _slideRibbonFadeMaterials.set(source, material);
+            }
+            material.color.copy(source.color);
+            if (material.emissive && source.emissive) {
+                material.emissive.copy(source.emissive);
+                material.emissiveIntensity = source.emissiveIntensity;
+            }
+            material.opacity = source.opacity;
+            return material;
+        }
         // Dedicated sustain-trail outline material for the hit verdict.
         // Drawn at opacity 0.45 — lower than mSusOutline (0.75) so the
         // bright green emissive doesn't tint the body interior, and the
@@ -5862,6 +6241,8 @@
         let _chordCullIndex = null;
         let _chordCullIndexChordsRef = null;
         let _chordCullIndexStringCount = -1;
+        let _chordCullIndexGuideEnds = null;
+        let _chordGuideCache = null;
         const _chordPredecessorStateScratch = {
             runSigPrev: null,
             prevAnyChordTime: -Infinity,
@@ -5872,13 +6253,17 @@
             _chordCullIndex = null;
             _chordCullIndexChordsRef = null;
             _chordCullIndexStringCount = -1;
+            _chordCullIndexGuideEnds = null;
+            _chordGuideCache = null;
         }
-        function _ensureChordCullIndex(chords, ahead, stringCount) {
+        function _ensureChordCullIndex(chords, ahead, stringCount, guideEnds = null) {
             if (_chordCullIndexChordsRef !== chords
-                || _chordCullIndexStringCount !== stringCount) {
-                _chordCullIndex = _buildChordCullIndex(chords, ahead, stringCount);
+                || _chordCullIndexStringCount !== stringCount
+                || _chordCullIndexGuideEnds !== guideEnds) {
+                _chordCullIndex = _buildChordCullIndex(chords, ahead, stringCount, guideEnds);
                 _chordCullIndexChordsRef = chords;
                 _chordCullIndexStringCount = stringCount;
+                _chordCullIndexGuideEnds = guideEnds;
             }
             return _chordCullIndex;
         }
@@ -5916,6 +6301,9 @@
         let _linkNextTargetSet = null;
         let _linkNextTargetNotesRef = null;
         let _linkNextTargetChordsRef = null;
+        let _linkedBendStarts = new WeakMap();
+        let _linkedBendEnds = new WeakMap();
+        let _linkedVibratoRuns = new WeakMap();
 
         // Per-fret onset index for localized sustain yielding. Rebuilt once per
         // arrangement; drawNote scans only conservative footprint buckets and
@@ -6137,6 +6525,7 @@
         // Board (fretboard/highway-surface) plane material — kept so the theme
         // can recolor it live without rebuilding the board. Set in buildBoard().
         let _boardPlaneMat = null;
+        let _boardDotMat = null;
         // Per-render opt-out for plugins borrowing the highway as a viz: when the
         // mount bundle sets bgReactive === false, suppress the audio-reactive
         // background for THIS instance only (no shared h3d_bg_* write). Captured
@@ -6204,6 +6593,9 @@
         // _vibrancyIdleOp / _vibrancyProjOp are cached so
         // updateStringHighlights() and drawNote() don't recompute the
         // linear blend every frame.
+        let rsPlusNotation      = false;
+        // Local, bounded halos replace luminance-threshold bloom in this style.
+        function notationSoftGlow() { return rsPlusNotation && _bloom ? glowMul : 0; }
         let vibrancy            = BG_DEFAULTS.vibrancy;
         let glowMul             = BG_DEFAULTS.glow;
         let _hitFx              = BG_DEFAULTS.hitFx;
@@ -6445,11 +6837,24 @@
         // Object pools
         let pNote, pSus, pLbl, pBeat, pSec;
         let pFretLbl, pLane, pLaneDivider;
+        // Reused label-layout records; no per-frame geometry or texture creation.
+        const _incomingFloorLabels = [], _incomingLabelOccluders = [];
+        const _incomingFixedFretLabels = [];
+        const _incomingFretColumnMarkers = [];
+        let _incomingFretColumnMarkerCount = 0;
+        let _incomingFloorLabelCount = 0, _incomingLabelOccluderCount = 0;
+        let _incomingLabelLayoutFrame = 0;
+        let _incomingLabelProbe = null;
+        function _newLabelRect() {
+            return { minX: 0, maxX: 0, minY: 0, maxY: 0 };
+        }
+
         // Shared materials/geometry for the lane stripes — see initScene().
         // Hoisted so draw() can reference them when assigning per-stripe.
         let mLaneOdd = null, mLaneEven = null, gLanePlane = null;
         /** Lane fret dividers: default white vs arpeggio frame tint on outer wires only. */
         let mLaneDivider = null, mLaneDividerArp = null, mLaneDividerExt = null;
+        let mRsLaneDivider = null;
         /** Shared XY plane for ghost fret digits (lies on board like proj, not billboarding). */
         let gGhostFretPlane = null, pGhostFretLbl = null;
         // Anchor-driven lane scratch buffers. Per-frame the loop builds up
@@ -6474,11 +6879,13 @@
         let pNoteFretLabel, pConnectorLine, pDropLine, pTapChevron, pAccentHalo;
         let pTeachMarkLbl;  // teaching marks fg/sd label sprites (§6.2.2)
         let pHaloBar = null, gHaloBar = null; // gradient halo bar geometry — replaces per-shell pChordAccentHalo
+        let pRsChordFrame = null, gRsChordFrame = null; // rounded rims and bounded outside-only glow
         let gArpBracket = null; // shared 1×1×1 box geometry for pArpBracket; built once, disposed in teardown
         let pSusRibbon = null, pSusRibbonOl = null;
         let pFretColMarker;
         /** Horizontal gradient for chord box interior fill. */
         let chordFrameGradTex = null;
+        let chordFrameGradTexRs = null;
         /** Lavender gradient for arpeggio box interior (cyan × lavender blend — fades back to cyan). */
         let chordFrameGradTexArp = null;
 
@@ -6937,7 +7344,8 @@
 
         function txtMat(text, col, wide, style) {
             const sName = style || 'technique';
-            const k = sName + '|' + (wide ? 'W' : '') + text + '|' + col;
+            const rsColor = rsPlusNotation && (sName === 'noteFret' || sName === 'fretRow' || sName === 'chord');
+            const k = sName + '|' + (wide ? 'W' : '') + text + '|' + col + (rsColor ? '|srgb' : '');
             if (txtCache[k]) return txtCache[k];
             const sp = TXT_STYLES[sName] || TXT_STYLES.technique;
             const h  = sp.srcH;
@@ -7066,8 +7474,12 @@
             }
             x.fillStyle = col;
             x.fillText(str, drawX, drawY);
+            const texture = new T.CanvasTexture(c);
+            // Gold fret numbers must remain gold after display encoding.
+            // Separate cache entries preserve Current's existing appearance.
+            if (rsColor) texture.colorSpace = T.SRGBColorSpace;
             const mat = new T.SpriteMaterial({
-                map: new T.CanvasTexture(c),
+                map: texture,
                 transparent: true,
                 // depthTest:false means later geometry never *fails* depth
                 // against these sprites, but without depthWrite:false the
@@ -7078,8 +7490,180 @@
                 depthTest: false,
                 depthWrite: false,
             });
+            if (sName === 'fretRow' || sName === 'noteFret') {
+                // Optical bounds exclude transparent canvas padding. Cache once
+                // with the texture so arrival handoff needs no pixel readback.
+                const metrics = x.measureText(str), pad = (sp.strokeW || 0) * 0.5;
+                if (Number.isFinite(metrics.actualBoundingBoxAscent)) {
+                    mat.map.userData.hwyLabelInk = {
+                        minX: (drawX - metrics.actualBoundingBoxLeft - pad) / w,
+                        maxX: (drawX + metrics.actualBoundingBoxRight + pad) / w,
+                        minY: 1 - (drawY + metrics.actualBoundingBoxDescent + pad) / h,
+                        maxY: 1 - (drawY - metrics.actualBoundingBoxAscent - pad) / h,
+                    };
+                }
+            }
             txtCache[k] = mat;
             return mat;
+        }
+
+        // RS+ face marks use one sharp mask per combination. Multiple authored
+        // techniques share the face instead of painting over one another. Keep
+        // the existing precedence for contradictory flags (PO over HO, FH over
+        // PM, natural over pinch); slap + pop remain two distinct marks.
+        function rsPlusTechniqueFlags(n) {
+            return (n.po ? 2 : n.ho ? 1 : n.tp ? 4 : 0)
+                | (n.slp ? 8 : 0) | (n.plk ? 16 : 0)
+                | (n.mt || n.fhm ? 64 : n.pm ? 32 : 0)
+                | (n.hm ? 128 : n.hp ? 256 : 0);
+        }
+
+        function rsPlusTechniqueCells(flags) {
+            const names = ['hammerOn', 'pullOff', 'tap', 'slap', 'pop',
+                'palmMute', 'fretHandMute', 'naturalHarmonic', 'pinchHarmonic'];
+            const marks = names.filter((_, i) => flags & (1 << i));
+            const columns = marks.length > 1 ? 2 : 1;
+            const rows = Math.max(1, Math.ceil(marks.length / columns));
+            // Uniform scale preserves circles and technique silhouettes. Two
+            // marks can use a little of the transparent cell padding, but
+            // leave enough room for the widest ink (the palm-mute cross).
+            const size = marks.length === 2 ? 0.52 : Math.min(1 / columns, 1 / rows);
+            return marks.map((kind, i) => {
+                const row = Math.floor(i / columns);
+                const rowCount = Math.min(columns, marks.length - row * columns);
+                return { kind,
+                    x: 0.5 + ((i % columns) - (rowCount - 1) / 2) / columns - size / 2,
+                    y: (row + 0.5) / rows - size / 2,
+                    w: size, h: size };
+            });
+        }
+
+        // Guide-derived proportions use a square world-space plane. In
+        // particular, the natural-harmonic ring must not stretch with the gem's
+        // rectangular face. These colors are baked only on a cache miss, with
+        // no blur, lighting, or emissive contribution in the texture.
+        function rsPlusTechniqueColor(hex, whiteMix = 0, shade = 1) {
+            const h = (hex >>> 0) & 0xffffff;
+            const channel = shift => Math.round((((h >> shift) & 255) * (1 - whiteMix)
+                + 255 * whiteMix) * shade);
+            return '#' + ((channel(16) << 16) | (channel(8) << 8) | channel(0))
+                .toString(16).padStart(6, '0');
+        }
+
+        function drawRsPlusTechniqueGlyph(g, kind, stringHex = 0xffffff) {
+            const white = '#fff8f6';
+            const keyline = width => {
+                g.strokeStyle = '#18222c'; g.lineWidth = width;
+                g.lineJoin = g.lineCap = 'round'; g.stroke();
+            };
+            const fill = (color, onFace = true) => {
+                // Pale ink stays distinct on bright string colors as well as
+                // custom white faces. Keep this contour in the cached mask;
+                // off-face direction cues retain their solid string color.
+                if (onFace) keyline(0.028);
+                g.fillStyle = color; g.fill();
+            };
+            g.beginPath();
+            if (kind === 'hammerOn' || kind === 'pullOff') {
+                const y = v => kind === 'pullOff' ? 1 - v : v;
+                g.moveTo(0.28, y(0.23)); g.lineTo(0.72, y(0.23));
+                g.lineTo(0.50, y(0.78)); g.closePath();
+                fill(rsPlusTechniqueColor(stringHex, 0.72));
+            } else if (kind === 'tap') {
+                g.moveTo(0.065, 0.18); g.lineTo(0.50, 0.59); g.lineTo(0.935, 0.18);
+                g.lineTo(0.935, 0.40); g.lineTo(0.50, 0.81); g.lineTo(0.065, 0.40);
+                g.closePath(); fill(rsPlusTechniqueColor(stringHex, 0.66));
+            } else if (kind === 'slap' || kind === 'pop') {
+                const y = v => kind === 'pop' ? 1 - v : v;
+                g.moveTo(0.075, y(0.24));
+                g.quadraticCurveTo(0.34, y(0.22), 0.50, y(0.54));
+                g.quadraticCurveTo(0.66, y(0.22), 0.925, y(0.24));
+                g.lineTo(0.925, y(0.44));
+                g.quadraticCurveTo(0.67, y(0.42), 0.50, y(0.78));
+                g.quadraticCurveTo(0.33, y(0.42), 0.075, y(0.44));
+                g.closePath();
+                // Both bass-attack examples use warm gold despite different
+                // string colors; tap has the separate string-tinted angular V.
+                fill('#ffe593');
+            } else if (kind === 'palmMute' || kind === 'fretHandMute') {
+                const palm = kind === 'palmMute';
+                const left = palm ? 0.10 : 0.26, right = 1 - left;
+                g.moveTo(left, 0.25); g.lineTo(right, 0.75);
+                g.moveTo(right, 0.25); g.lineTo(left, 0.75);
+                g.lineCap = 'round';
+                if (!palm) keyline(0.168);
+                g.strokeStyle = white;
+                g.lineWidth = palm ? 0.12 : 0.14; g.stroke();
+                if (palm) {
+                    g.strokeStyle = rsPlusTechniqueColor(stringHex, 0, 0.38);
+                    g.lineWidth = 0.072; g.stroke();
+                }
+            } else if (kind === 'naturalHarmonic' || kind === 'pinchHarmonic') {
+                if (kind === 'naturalHarmonic') {
+                    g.arc(0.50, 0.50, 0.25, 0, Math.PI * 2);
+                } else {
+                    g.ellipse(0.43, 0.50, 0.31, 0.22, 0, 0, Math.PI * 2);
+                    g.moveTo(0.88, 0.50);
+                    g.ellipse(0.57, 0.50, 0.31, 0.22, 0, 0, Math.PI * 2);
+                    g.moveTo(0.69, 0.50);
+                    g.ellipse(0.50, 0.50, 0.19, 0.17, 0, 0, Math.PI * 2);
+                }
+                const width = kind === 'naturalHarmonic' ? 0.085 : 0.052;
+                keyline(width + 0.024);
+                g.strokeStyle = white; g.lineWidth = width; g.stroke();
+            } else if (kind === 'bend' || kind === 'slideRight' || kind === 'slideLeft') {
+                if (kind === 'bend') {
+                    g.moveTo(0.12, 0.53); g.lineTo(0.50, 0.22); g.lineTo(0.88, 0.53);
+                    g.lineTo(0.88, 0.78); g.lineTo(0.50, 0.49); g.lineTo(0.12, 0.78);
+                } else {
+                    const x = v => kind === 'slideLeft' ? 1 - v : v;
+                    g.moveTo(x(0.26), 0.14); g.lineTo(x(0.76), 0.50); g.lineTo(x(0.26), 0.86);
+                    g.lineTo(x(0.26), 0.63); g.lineTo(x(0.45), 0.50); g.lineTo(x(0.26), 0.37);
+                }
+                g.closePath(); fill(rsPlusTechniqueColor(stringHex), false);
+            }
+        }
+
+        function rsPlusTechniqueMat(kind, stringHex = 0xffffff) {
+            const hex = (stringHex >>> 0) & 0xffffff;
+            const code = typeof kind === 'number' ? kind
+                : kind === 'bend' ? 512 : kind === 'slideRight' ? 513 : kind === 'slideLeft' ? 514
+                : kind === 'hammerOn' ? 1 : kind === 'pullOff' ? 2 : kind === 'tap' ? 4
+                : kind === 'slap' ? 8 : kind === 'pop' ? 16 : kind === 'palmMute' ? 32
+                : kind === 'fretHandMute' ? 64 : kind === 'naturalHarmonic' ? 128 : 256;
+            // Negative packed keys cannot collide with Current's positive
+            // keys. The shared cache owns teardown and avoids allocating keys,
+            // arrays, canvases, or materials in the per-note/per-frame hot path.
+            const key = -(hex * 1024 + code + 1);
+            const cached = _techMatCache.get(key);
+            if (cached) return cached;
+            const c = document.createElement('canvas');
+            c.width = c.height = 512;
+            const g = c.getContext('2d');
+            g.scale(512, 512);
+            const cells = typeof kind === 'number'
+                ? rsPlusTechniqueCells(kind) : [{ kind, x: 0, y: 0, w: 1, h: 1 }];
+            for (const cell of cells) {
+                g.save();
+                g.translate(cell.x, cell.y);
+                g.scale(cell.w, cell.h);
+                drawRsPlusTechniqueGlyph(g, cell.kind, hex);
+                g.restore();
+            }
+            const texture = new T.CanvasTexture(c);
+            // Canvas CSS colors are sRGB. Treating them as linear would make a
+            // string-colored bend brighter than its matching note face.
+            texture.colorSpace = T.SRGBColorSpace;
+            const mat = new T.SpriteMaterial({
+                map: texture, transparent: true, opacity: 1,
+                depthTest: false, depthWrite: false, fog: false, toneMapped: false,
+            });
+            _techMatCache.set(key, mat);
+            return mat;
+        }
+
+        function rsPlusNoteFaceMat(flags, stringHex) {
+            return rsPlusTechniqueMat(flags, stringHex);
         }
 
         function pinchHarmonicMat(col) {
@@ -7440,6 +8024,8 @@
                 base = new T.MeshBasicMaterial({
                     map: sm.map,
                     transparent: true,
+                    fog: sm.fog !== false,
+                    toneMapped: sm.toneMapped !== false,
                     // depthTest: false — cross-note Z ordering is handled by
                     // per-note renderOrderForLayerAtZ(...) calls rather than the
                     // depth buffer. This is necessary because close notes often use
@@ -8694,6 +9280,7 @@
             };
             _onCtxRestored = () => {
                 _ctxLost = false;
+                _resetRsNotationPrewarm();
                 console.warn('[3D-Hwy] WebGL context restored — resuming render.');
                 try { const s = canvasSize(highwayCanvas); if (s.w > 0 && s.h > 0) applySize(s.w, s.h); } catch (err) {}
             };
@@ -8737,6 +9324,11 @@
 
             // Rectangular note geometry
             gNote = new T.BoxGeometry(NW, NH, ND);
+            // The parentheses are part of the same outline mesh, not a label
+            // or extra overlay. They inherit its rotation, movement, material,
+            // pool lifetime and every physical trail-order correction.
+            gNoteGhost = hwyGhostNoteOutlineGeometry(T, NW, NH, ND);
+            _ownedSharedGeos.push(gNoteGhost);
             // Per-string vertical gradient gems — colours sampled from the
             // original colour PNGs (top highlight → deeper bottom). Each gradient
             // string gets its own BoxGeometry clone carrying a per-vertex colour
@@ -8762,6 +9354,15 @@
                 _ownedSharedGeos.push(g);
                 return g;
             });
+            gNoteGhostGrad = gNoteGrad.map(() => {
+                const g = gNoteGhost.clone();
+                g.setAttribute('color', new T.BufferAttribute(
+                    new Float32Array(g.attributes.position.count * 3), 3,
+                ));
+                _ownedSharedGeos.push(g);
+                return g;
+            });
+            _initRsNotation();
             // Seed gem colors from whatever palette is active at mount (custom
             // colors recolor the gem bodies just like the strings/trails).
             _recolorGemGradients();
@@ -9046,6 +9647,9 @@
                     normals[o + 9] = -SQRT_HALF; normals[o + 10] =  SQRT_HALF; normals[o + 11] = 0;
                 }
                 g.setAttribute('normal', new T.Float32BufferAttribute(normals, 3));
+                const colors = new Float32Array(nVert * 4);
+                colors.fill(1);
+                g.setAttribute('color', new T.Float32BufferAttribute(colors, 4));
                 return g;
             };
             // Ribbon meshes mutate vertex positions every frame in
@@ -9260,7 +9864,11 @@
             mLaneDividerExt = new T.MeshBasicMaterial({
                 color: 0x364D5F, transparent: true, opacity: 0.4, fog: false, depthWrite: false,
             });
-            _ownedSharedMats.push(mLaneDivider, mLaneDividerArp, mLaneDividerExt);
+            mRsLaneDivider = new T.MeshBasicMaterial({
+                color: RSPLUS_DEFAULT_HIGHWAY.divider, transparent: true,
+                opacity: RSPLUS_DEFAULT_HIGHWAY.dividerOpacity, fog: false, depthWrite: false,
+            });
+            _ownedSharedMats.push(mLaneDivider, mLaneDividerArp, mLaneDividerExt, mRsLaneDivider);
             pLaneDivider = pool(noteG, () => new T.Mesh(gLaneDivider, mLaneDivider));
 
             // Chord frame palette (frame alpha 128, fill gradient alpha 32; MeshBasic).
@@ -9282,6 +9890,18 @@
             // as sRGB so the chord-box hex values match other sRGB color textures.
             chordFrameGradTex.colorSpace = T.SRGBColorSpace;
             chordFrameGradTex.needsUpdate = true;
+
+            // Quiet neutral panels leave the cyan active-lane rails distinct.
+            // Keep a cached non-null map so style changes need no shader rebuild.
+            chordFrameGradTexRs = new T.DataTexture(
+                new Uint8Array([82, 88, 96, aFill, 31, 33, 37, aFill, 82, 88, 96, aFill]),
+                3, 1, T.RGBAFormat);
+            chordFrameGradTexRs.magFilter = T.LinearFilter;
+            chordFrameGradTexRs.minFilter = T.LinearFilter;
+            chordFrameGradTexRs.wrapS = T.ClampToEdgeWrapping;
+            chordFrameGradTexRs.wrapT = T.ClampToEdgeWrapping;
+            chordFrameGradTexRs.colorSpace = T.SRGBColorSpace;
+            chordFrameGradTexRs.needsUpdate = true;
 
             const arR = ARPEGGIO_BOX_BLUE_HEX >> 16 & 255;
             const arG = ARPEGGIO_BOX_BLUE_HEX >> 8 & 255;
@@ -9323,6 +9943,60 @@
                     side: T.DoubleSide, forceSinglePass: true,
                 }),
             ));
+
+            // A unit plane keeps rounded corners circular in world coordinates:
+            // dimensions live in uniforms rather than stretching a cached ring.
+            // The second pass is optional, bounded outside the frame, and cannot
+            // brighten the chord interior or any note face inside it.
+            gRsChordFrame = new T.PlaneGeometry(1, 1);
+            pRsChordFrame = pool(noteG, () => new T.Mesh(gRsChordFrame, new T.ShaderMaterial({
+                uniforms: {
+                    uSize: { value: new T.Vector2(1, 1) },
+                    uRim: { value: 0.01 }, uRadius: { value: 0.03 },
+                    uPad: { value: 0 }, uOpenTop: { value: 0 }, uBracketCap: { value: 0 },
+                    uHalo: { value: 0 }, uOpacity: { value: 1 },
+                    uColor: { value: new T.Color(CHORD_BOX_TEAL_HEX) },
+                },
+                vertexShader: `
+                    varying vec2 vUv;
+                    void main() {
+                        vUv = uv;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }`,
+                fragmentShader: `
+                    varying vec2 vUv;
+                    uniform vec2 uSize;
+                    uniform float uRim, uRadius, uPad, uOpenTop, uBracketCap, uHalo, uOpacity;
+                    uniform vec3 uColor;
+                    void main() {
+                        vec2 p = (vUv - 0.5) * (uSize + 2.0 * uPad);
+                        // An open repeat panel extends its side strokes to the
+                        // top edge instead of rounding into a hidden top bar.
+                        if (uOpenTop > 0.5) p.y = min(p.y, uSize.y * 0.5 - uRadius);
+                        vec2 q = abs(p) - uSize * 0.5 + uRadius;
+                        float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - uRadius;
+                        float aa = max(fwidth(d), 0.000001);
+                        float coverage;
+                        if (uHalo > 0.5) {
+                            coverage = step(0.0, d) * pow(1.0 - smoothstep(0.0, uPad, d), 2.0);
+                        } else {
+                            coverage = (1.0 - smoothstep(-aa, aa, d))
+                                * smoothstep(-uRim - aa, -uRim + aa, d);
+                        }
+                        // Arpeggio guidance keeps just the rounded ends of the
+                        // ring: no top or bottom stroke joins the bracket pair.
+                        if (uBracketCap > 0.0) {
+                            coverage *= smoothstep(uSize.x * 0.5 - uBracketCap - aa,
+                                uSize.x * 0.5 - uBracketCap + aa, abs(p.x));
+                        }
+                        if (coverage * uOpacity < 0.001) discard;
+                        gl_FragColor = vec4(uColor, coverage * uOpacity);
+                        #include <tonemapping_fragment>
+                        #include <colorspace_fragment>
+                    }`,
+                transparent: true, depthWrite: false, depthTest: false,
+                fog: false, side: T.DoubleSide, forceSinglePass: true,
+            })));
 
             // PM strum X fill — 4 corner regions + centre; the 4 arms (L,R,T,B) are left empty.
             // 16 vertices, 14 triangles.
@@ -9792,6 +10466,7 @@
             pTeachMarkLbl.warm(_WARM_NOTE);
             pChordFrameFill.warm(_WARM_CHORD);
             pChordBox.warm(_WARM_CHORD);
+            pRsChordFrame.warm(_WARM_CHORD * 2);
             pChordLbl.warm(_WARM_CHORD);
             pBarreLine.warm(_WARM_CHORD);
             pArpBracket.warm(_WARM_CHORD);
@@ -9846,6 +10521,13 @@
                     // so it re-lays-out for the new spacing; per-frame note
                     // geometry reads fretX live and needs no rebuild.
                     if (fretG) buildBoard();
+                    return;
+                }
+                if (changedKey === 'notationStyle') {
+                    _bgLoadSettings();
+                    _applyVibrancy();
+                    _applyGlow();
+                    _applyBgTheme();
                     return;
                 }
                 if (changedKey === 'inlayLabelsVisible') {
@@ -10129,6 +10811,8 @@
 
         function _bgLoadSettings() {
             const panelKey = _bgPanelKey(highwayCanvas);
+            const previousNotationStyle = rsPlusNotation;
+            rsPlusNotation = _bgReadSetting(panelKey, 'notationStyle') === 'rsplus';
             bgStyleId = _bgReadSetting(panelKey, 'style');
             bgIntensity = _bgReadSetting(panelKey, 'intensity');
             bgReactive = _bgReadSetting(panelKey, 'reactive');
@@ -10228,9 +10912,14 @@
             nutColor               = _bgReadSetting(panelKey, 'nutColor');
             headstockColor         = _bgReadSetting(panelKey, 'headstockColor');
             projectionVisible      = _bgReadSetting(panelKey, 'projectionVisible');
-            slideArrowApproachVisible = _bgReadSetting(panelKey, 'slideArrowApproachVisible');
-            slideArrowNeckVisible     = _bgReadSetting(panelKey, 'slideArrowNeckVisible');
-            slideArrowChainPreviewVisible = _bgReadSetting(panelKey, 'slideArrowChainPreviewVisible');
+            // RS+ slides use the path alone by default. An explicit global or
+            // panel preference still wins, including a previously enabled cue.
+            slideArrowApproachVisible = rsPlusNotation && !_bgHasStored(panelKey, 'slideArrowApproachVisible')
+                ? false : _bgReadSetting(panelKey, 'slideArrowApproachVisible');
+            slideArrowNeckVisible = rsPlusNotation && !_bgHasStored(panelKey, 'slideArrowNeckVisible')
+                ? false : _bgReadSetting(panelKey, 'slideArrowNeckVisible');
+            slideArrowChainPreviewVisible = rsPlusNotation && !_bgHasStored(panelKey, 'slideArrowChainPreviewVisible')
+                ? false : _bgReadSetting(panelKey, 'slideArrowChainPreviewVisible');
             trailYieldSettings.enabled = _bgReadSetting(panelKey, 'trailYieldEnabled');
             trailYieldSettings.gemInFront = _bgReadSetting(panelKey, 'trailYieldGemInFront');
             trailYieldSettings.includeTrails = _bgReadSetting(panelKey, 'trailYieldIncludeTrails');
@@ -10281,6 +10970,17 @@
             } catch (_) {
                 bgCustomVideoName = (memVideoName !== undefined) ? memVideoName : BG_DEFAULTS.customVideoName;
             }
+            // Bulk resets and panel override clears also reload this path.
+            // Retint only after the complete palette/vibrancy/glow snapshot.
+            _applyRsNotationPalette();
+            if (previousNotationStyle !== rsPlusNotation) {
+                // A bulk rebuild can bypass the notationStyle listener. Restore
+                // shared Current materials too, including active sustain colors
+                // and hit-outline intensity, after the new values are loaded.
+                _applyVibrancy();
+                _applyGlow();
+            }
+            _prewarmRsNotation(_rsPrewarmBundle);
         }
         // Live-swap palette by mutating existing materials in place.
         // Three.js colors propagate to all sharing meshes on the next
@@ -10347,6 +11047,127 @@
             _applyVibrancy();
         }
 
+        // A shallow bevel and rounded silhouette, bounded by the original gem
+        // dimensions so chord/slide placement and trail footprints stay valid.
+        function _initRsNotation() {
+            const bevel = ND * 0.12;
+            const hw = NW / 2 - bevel, hh = NH / 2 - bevel;
+            const radius = NH * 0.15 - bevel;
+            const shape = new T.Shape();
+            shape.moveTo(-hw + radius, -hh);
+            shape.lineTo(hw - radius, -hh);
+            shape.quadraticCurveTo(hw, -hh, hw, -hh + radius);
+            shape.lineTo(hw, hh - radius);
+            shape.quadraticCurveTo(hw, hh, hw - radius, hh);
+            shape.lineTo(-hw + radius, hh);
+            shape.quadraticCurveTo(-hw, hh, -hw, hh - radius);
+            shape.lineTo(-hw, -hh + radius);
+            shape.quadraticCurveTo(-hw, -hh, -hw + radius, -hh);
+            gRsNote = new T.ExtrudeGeometry(shape, {
+                depth: ND - 2 * bevel, bevelEnabled: true,
+                bevelSize: bevel, bevelThickness: bevel, bevelSegments: 1,
+                curveSegments: 3, steps: 1,
+            });
+            gRsNote.translate(0, 0, -(ND - 2 * bevel) / 2);
+            gRsNoteGhost = hwyGhostNoteWithBodyGeometry(T, gRsNote, gNoteGhost, NW);
+            gRsNoteGrad = activePalette.map(() => {
+                const geo = gRsNote.clone();
+                geo.setAttribute('color', new T.BufferAttribute(new Float32Array(geo.attributes.position.count * 3), 3));
+                return geo;
+            });
+            gRsNoteGhostGrad = activePalette.map(() => {
+                const geo = gRsNoteGhost.clone();
+                geo.setAttribute('color', new T.BufferAttribute(new Float32Array(geo.attributes.position.count * 3), 3));
+                return geo;
+            });
+            const basic = (color, extra = {}) => new T.MeshBasicMaterial({
+                color, transparent: true, opacity: 1, depthWrite: false,
+                fog: false, toneMapped: false, ...extra,
+            });
+            mRsBody = activePalette.map(() => basic(0xffffff, { vertexColors: true }));
+            mRsRim = activePalette.map(c => basic(c));
+            mRsAccentRim = activePalette.map(c => basic(c));
+            mRsHitRim = activePalette.map(c => basic(c));
+            mRsSus = activePalette.map(c => basic(c, { depthTest: false, opacity: 0.62 }));
+            mRsSusHit = activePalette.map(c => basic(c, { depthTest: false, opacity: 0.82 }));
+            mRsSusEdge = activePalette.map(c => basic(c, { depthTest: false, opacity: 0.72 }));
+            mRsMissRim = basic(0xff5577);
+            mRsOpenStem = basic(0xfff8e9);
+            // An outside-only, rounded falloff. There is no luminous face to
+            // bleach yellow/white notes, and no full-screen blur pass.
+            const w = 256, h = 128, pixels = new Uint8Array(w * h * 4);
+            for (let iy = 0; iy < h; iy++) {
+                for (let ix = 0; ix < w; ix++) {
+                    const px = Math.abs((ix + 0.5) / w - 0.5) * NW * 1.5;
+                    const py = Math.abs((iy + 0.5) / h - 0.5) * NH * 1.5;
+                    const r = NH * 0.17;
+                    const qx = px - (NW * 0.575 - r), qy = py - (NH * 0.575 - r);
+                    const distance = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+                    const falloff = Math.max(0, 1 - distance / (NH * 0.16));
+                    const alpha = distance > 0 ? falloff * falloff : 0;
+                    const off = (iy * w + ix) * 4;
+                    pixels[off] = pixels[off + 1] = pixels[off + 2] = 255;
+                    pixels[off + 3] = Math.round(255 * alpha);
+                }
+            }
+            rsHaloTexture = new T.DataTexture(pixels, w, h, T.RGBAFormat);
+            rsHaloTexture.magFilter = T.LinearFilter;
+            rsHaloTexture.minFilter = T.LinearMipmapLinearFilter;
+            rsHaloTexture.generateMipmaps = true;
+            rsHaloTexture.needsUpdate = true;
+            gRsNoteHalo = new T.PlaneGeometry(NW * 1.5, NH * 1.5);
+            mRsHalo = activePalette.map(c => basic(c, { map: rsHaloTexture, depthTest: false, opacity: 0 }));
+            _applyRsNotationPalette();
+        }
+
+        function _applyRsNotationPalette() {
+            if (!T || !gRsNoteGrad.length) return;
+            const signature = activePalette.join(',') + '|' + vibrancy + '|' + glowMul;
+            if (signature === rsNotationPaletteSig) return;
+            rsNotationPaletteSig = signature;
+            const col = new T.Color();
+            for (let s = 0; s < activePalette.length; s++) {
+                col.setHex(activePalette[s]);
+                const grey = col.r * 0.2126 + col.g * 0.7152 + col.b * 0.0722;
+                const saturation = 0.55 + 0.45 * vibrancy;
+                col.r = grey + (col.r - grey) * saturation;
+                col.g = grey + (col.g - grey) * saturation;
+                col.b = grey + (col.b - grey) * saturation;
+                const geo = gRsNoteGrad[s];
+                const pos = geo.attributes.position, normals = geo.attributes.normal, colors = geo.attributes.color;
+                for (let i = 0; i < pos.count; i++) {
+                    const height = Math.max(0, Math.min(1, pos.getY(i) / NH + 0.5));
+                    const shade = (0.78 + 0.22 * height) * (Math.abs(normals.getZ(i)) > 0.9 ? 1 : 0.88);
+                    colors.setXYZ(i, col.r * shade, col.g * shade, col.b * shade);
+                }
+                colors.needsUpdate = true;
+                const ghost = gRsNoteGhostGrad[s];
+                const gp = ghost.attributes.position, gn = ghost.attributes.normal, gc = ghost.attributes.color;
+                const bracket = col.clone().lerp(new T.Color(0xffffff), 0.82);
+                for (let i = 0; i < gp.count; i++) {
+                    if (Math.abs(gp.getX(i)) > NW * 0.51) gc.setXYZ(i, bracket.r, bracket.g, bracket.b);
+                    else {
+                        const height = Math.max(0, Math.min(1, gp.getY(i) / NH + 0.5));
+                        const shade = (0.78 + 0.22 * height) * (Math.abs(gn.getZ(i)) > 0.9 ? 1 : 0.88);
+                        gc.setXYZ(i, col.r * shade, col.g * shade, col.b * shade);
+                    }
+                }
+                gc.needsUpdate = true;
+                // The reference's red gems have a warm gold edge; other strings
+                // keep a pale version of their own hue. The accent strengthens
+                // the edge without turning the entire border paper-white.
+                const rimHighlight = new T.Color(col.r > col.g * 2 && col.r > col.b * 2
+                    ? 0xffdf72 : 0xffffff);
+                mRsRim[s].color.copy(col).lerp(rimHighlight, 0.30 + 0.08 * glowMul);
+                mRsAccentRim[s].color.copy(col).lerp(rimHighlight, 0.58 + 0.08 * glowMul);
+                mRsHitRim[s].color.copy(col).lerp(new T.Color(0xffffff), 0.90);
+                mRsSus[s].color.copy(col);
+                mRsSusHit[s].color.copy(col).lerp(new T.Color(0xffffff), 0.10 * glowMul);
+                mRsSusEdge[s].color.copy(col).lerp(new T.Color(0xffffff), 0.35);
+                mRsHalo[s].color.copy(col);
+            }
+        }
+
         // Recompute the per-vertex gem-gradient colors from the active palette.
         // Built-in palettes (and unchanged slots of a custom palette) keep the
         // hand-tuned DEFAULT_GEM_GRADIENTS stops so the stock look is preserved;
@@ -10357,6 +11178,7 @@
             if (!T || !gNoteGrad || !gNoteGrad.length) return;
             const isCustom = (activePalette === _customPalette);
             const topCol = new T.Color(), botCol = new T.Color(), tmp = new T.Color();
+            const bracketCol = new T.Color(), white = new T.Color(0xffffff);
             const halfH = NH / 2;
             for (let s = 0; s < gNoteGrad.length; s++) {
                 const g = gNoteGrad[s];
@@ -10385,6 +11207,20 @@
                     colAttr.setXYZ(i, tmp.r, tmp.g, tmp.b);
                 }
                 colAttr.needsUpdate = true;
+                const ghost = gNoteGhostGrad[s];
+                if (ghost?.attributes.color) {
+                    const gp = ghost.attributes.position;
+                    const gc = ghost.attributes.color;
+                    // Pale string tint keeps the parentheses readable without
+                    // changing the ordinary gem gradient or sharing new alpha.
+                    bracketCol.setHex(base).lerp(white, 0.82);
+                    for (let i = 0; i < gp.count; i++) {
+                        if (Math.abs(gp.getX(i)) > NW * 0.51) tmp.copy(bracketCol);
+                        else tmp.copy(botCol).lerp(topCol, (gp.getY(i) + halfH) / NH);
+                        gc.setXYZ(i, tmp.r, tmp.g, tmp.b);
+                    }
+                    gc.needsUpdate = true;
+                }
             }
         }
 
@@ -10399,6 +11235,7 @@
         // anticipation loop in update(), so they read glowMul /
         // _vibrancyIdleOp / vibrancy directly each frame instead.
         function _applyVibrancy() {
+            _applyRsNotationPalette();
             const t = vibrancy;
             const idleOp     = 0.4  + 0.6  * t;  // mStr / IDLE_OP source
             // projIdleOp drives the projMeshArr ghost-frame opacity and is
@@ -10417,7 +11254,7 @@
                     // vibrancy=1 the white-wash on hit notes goes away.
                     if (!_paletteColorTmp && T) _paletteColorTmp = new T.Color();
                     if (_paletteColorTmp) {
-                        mGlow[s].color.setHex(0xffffff).lerp(_paletteColorTmp.setHex(activePalette[s]), t);
+                        mGlow[s].color.setHex(0xffffff).lerp(_paletteColorTmp.setHex(activePalette[s]), rsPlusNotation ? 1 : t);
                     }
                 }
                 if (mAccentCore[s]) {
@@ -10444,6 +11281,7 @@
             _vibrancyProjOp = projIdleOp;
         }
         function _applyGlow() {
+            _applyRsNotationPalette();
             const g = glowMul;
             for (let s = 0; s < activePalette.length; s++) {
                 if (mStr[s])  mStr[s].emissiveIntensity  = 0.002 * g;
@@ -10462,10 +11300,10 @@
             if (mWhiteOutline) mWhiteOutline.emissiveIntensity = 0.6 * g;
             if (mMissOutline)  mMissOutline.emissiveIntensity  = 1.2 * g;
             for (let s = 0; s < mHitBright.length; s++) {
-                if (mHitBright[s]) mHitBright[s].emissiveIntensity = 4.0 * g;
+                if (mHitBright[s]) mHitBright[s].emissiveIntensity = (rsPlusNotation ? 0.35 * _hitFx : 4.0) * g;
             }
             if (mSusOutline)      mSusOutline.emissiveIntensity      = 0.3 * g;
-            if (mHitSusOutline)   mHitSusOutline.emissiveIntensity   = 0.7 * g;
+            if (mHitSusOutline)   mHitSusOutline.emissiveIntensity   = (rsPlusNotation ? 0.25 * _hitFx : 0.7) * g;
             if (mTapChevron)   mTapChevron.emissiveIntensity   = 0.9 * g;
             if (mBarre)        mBarre.emissiveIntensity        = 0.9 * g;
             for (let si = 0; si < activePalette.length; si++) {
@@ -10631,6 +11469,19 @@
         // / `laneDim` falls back to the stock lit/dim lane hexes, so every
         // existing/neutral highway theme stays byte-identical (default blue lane
         // unchanged). Only colored highway themes opt into a coordinated lane.
+        function _usesRsDefaultHighway() {
+            return rsPlusNotation && hwThemeId === 'default';
+        }
+        function _highwayReferenceLabelColor(currentHex) {
+            return _usesRsDefaultHighway() ? FRET_LABEL_RS_IDLE_HEX : currentHex;
+        }
+
+        function _highwayLaneOpacity(highwayIntensity) {
+            return _usesRsDefaultHighway() ? RSPLUS_DEFAULT_HIGHWAY.laneOpacity
+                : (HWY_LANE_STRIPE_OP_BASE + highwayIntensity * HWY_LANE_STRIPE_OP_INT)
+                    * (_venueSceneOverride ? VENUE_LANE_OP_BOOST : 1);
+        }
+
         function _applyBgTheme() {
             // --- Background axis: clear + fog ---
             const bg = _bgBackgroundColors(bgThemeId);
@@ -10639,7 +11490,10 @@
                 if (ren) ren.setClearColor(bg.clear, _bcActive() ? 0 : 1);
             }
             // --- Highway axis: board plane + lane ---
-            const hw = _bgHighwayColors(hwThemeId);
+            // RS+ changes only the default highway appearance. Named themes
+            // remain the user's explicit colour choice and are never rewritten.
+            const neutralHighway = _usesRsDefaultHighway();
+            const hw = neutralHighway ? RSPLUS_DEFAULT_HIGHWAY : _bgHighwayColors(hwThemeId);
             if (_boardPlaneMat) _boardPlaneMat.color.setHex(hw.board);
             // Lit lane strip + its dimmer alternating row. Fall back to the
             // hardcoded stock lane colors when the highway theme omits them.
@@ -10647,6 +11501,23 @@
             const laneDim = (typeof hw.laneDim === 'number') ? hw.laneDim : HWY_LANE_STRIPE_EVEN_HEX;
             if (mLaneOdd) mLaneOdd.color.setHex(laneLit);
             if (mLaneEven) mLaneEven.color.setHex(laneDim);
+            if (mLaneDivider) {
+                const savedOpacity = mLaneDivider.userData.h3dCurrentLaneOpacity;
+                if (neutralHighway) {
+                    if (savedOpacity === undefined) mLaneDivider.userData.h3dCurrentLaneOpacity = mLaneDivider.opacity;
+                    mLaneDivider.opacity = 1;
+                } else if (savedOpacity !== undefined) {
+                    mLaneDivider.opacity = savedOpacity;
+                    delete mLaneDivider.userData.h3dCurrentLaneOpacity;
+                }
+            }
+            if (mLaneDividerExt) mLaneDividerExt.color.setHex(
+                neutralHighway ? RSPLUS_DEFAULT_HIGHWAY.extension : 0x364D5F,
+            );
+            if (_boardDotMat) {
+                _boardDotMat.color.setHex(neutralHighway ? RSPLUS_DEFAULT_HIGHWAY.inlay : 0x556677);
+                _boardDotMat.opacity = neutralHighway ? RSPLUS_DEFAULT_HIGHWAY.inlayOpacity : 1;
+            }
             // Keep the (otherwise vestigial) lane target color in sync with the
             // lit lane so any future lane-blend consumer reads the themed value.
             if (_laneTargetColor) _laneTargetColor.setHex(laneLit);
@@ -10679,6 +11550,7 @@
         }
         function _sparkBurst(x, y, z, hex, count) {
             if (!_sparkPts || count <= 0) return;
+            if (rsPlusNotation && (glowMul <= 0 || _hitFx <= 0)) return;
             const r = ((hex >> 16) & 255) / 255, g = ((hex >> 8) & 255) / 255, b = (hex & 255) / 255;
             let made = 0;
             for (let i = 0; i < _SPARK_N && made < count; i++) {
@@ -10706,7 +11578,8 @@
             }
             _sparkPts.geometry.attributes.position.needsUpdate = true;
             _sparkPts.geometry.attributes.color.needsUpdate = true;
-            _sparkPts.visible = any;
+            _sparkPts.material.opacity = rsPlusNotation ? 0.8 * glowMul * _hitFx : 0.8;
+            _sparkPts.visible = any && _sparkPts.material.opacity > 0;
         }
         // #4 Bloom: lazy-load the vendored postprocessing addons and build an
         // EffectComposer (RenderPass -> UnrealBloomPass -> OutputPass/ACES). Returns
@@ -10796,7 +11669,7 @@
             // theme (default theme = the original 0x08080e). Kept on
             // _boardPlaneMat so _applyBgTheme can recolor it live without
             // rebuilding the board.
-            const pm = new T.MeshLambertMaterial({ color: _bgHighwayColors(hwThemeId).board, transparent: true, opacity: 0.6 });
+            const pm = new T.MeshLambertMaterial({ color: (_usesRsDefaultHighway() ? RSPLUS_DEFAULT_HIGHWAY : _bgHighwayColors(hwThemeId)).board, transparent: true, opacity: 0.6 });
             _boardPlaneMat = pm;
             const p = new T.Mesh(pg, pm);
             p.rotation.x = -Math.PI / 2;
@@ -11034,11 +11907,12 @@
             const dotRZ = (1.5 * K * 0.9);
             const dg = new T.CircleGeometry(dotRZ, 64);
             const dm = new T.MeshBasicMaterial({
-                color: 0x556677,
+                color: _usesRsDefaultHighway() ? RSPLUS_DEFAULT_HIGHWAY.inlay : 0x556677,
                 transparent: true,
-                opacity: 1,
+                opacity: _usesRsDefaultHighway() ? RSPLUS_DEFAULT_HIGHWAY.inlayOpacity : 1,
                 depthWrite: false,
             });
+            _boardDotMat = dm;
             const dotZBack = -STR_THICK * 0.85;
             const my = (sY(0) + sY(nStr - 1)) / 2;
             const addDot = (x, y) => {
@@ -11101,7 +11975,7 @@
             // so the per-string scratch arrays stay hot in L1 across all
             // material writes for a given string.
             const BASE_GLOW = 0.02 * glowMul;
-            const MAX_GLOW  = 3.5  * glowMul;
+            const MAX_GLOW  = (rsPlusNotation ? 0.5 : 3.5) * glowMul;
             const IDLE_OP   = _vibrancyIdleOp;
             const g = glowMul;
             const venueGemMul = _venueSceneOverride ? VENUE_GEM_EMISSIVE_MUL : 1;
@@ -11122,7 +11996,8 @@
                 // The glow slider scales it here since this assignment
                 // stomps anything _applyGlow() set statically.
                 const bg = noteState.strGlow[s] * g;
-                if (mGlow[s]) mGlow[s].emissiveIntensity = bg * venueGemMul;
+                if (mGlow[s]) mGlow[s].emissiveIntensity = rsPlusNotation ? Math.min(bg, 0.35 * g) : bg * venueGemMul;
+                if (mRsHalo[s]) mRsHalo[s].opacity = 0.35 * notationSoftGlow();
                 if (mAccentCore[s]) {
                     mAccentCore[s].emissiveIntensity =
                         (bg + noteState.accentFillBoost[s] * g) * venueGemMul;
@@ -11461,6 +12336,54 @@
             }
             _hintCache.set(ch, result);
             return result;
+        }
+
+        // Guide durations belong to the chart, not the playback clock. Cache
+        // them once per chart revision so a seek produces the same spans and
+        // no note/beat/hand-shape searches run in the frame's chord loop.
+        function _ensureChordGuideEnds(chords, bundle) {
+            const { notes, handShapes, chordTemplates, beats, sections, anchors } = bundle;
+            const old = _chordGuideCache;
+            if (old && old.chords === chords && old.notes === notes && old.handShapes === handShapes
+                && old.chordTemplates === chordTemplates && old.beats === beats
+                && old.sections === sections && old.anchors === anchors && old.stringCount === nStr) return old.ends;
+            const ends = new WeakMap();
+            const rows = (chords || []).map(ch => {
+                if (!ch || ch.h3dSynth || !Number.isFinite(ch.t) || !Array.isArray(ch.notes)) return null;
+                const members = filterValidNotes(ch.notes);
+                const shape = mergeChordShape(ch, members, chordTemplates);
+                if (shape.size < 2) return null;
+                const hint = chordHandShapeArpeggioHint(ch, handShapes, chordTemplates);
+                if (hint.explicit || chordTemplateMarkedArpeggio(ch.id, chordTemplates)) return null;
+                const timeWin = hint.hs ? { tLo: hsStart(hint.hs) - 0.06, tHi: hsEnd(hint.hs) + 0.06 } : null;
+                if ((!hint.hs || handShapeChartSpanSec(hint.hs) >= ARP_INFER_MIN_HAND_SHAPE_SPAN_S)
+                    && inferArpeggioFromNotePattern(ch, shape, notes, timeWin, handShapes,
+                        timeWin ? null : nextStrictlyLaterChordTime(bundle.chords, ch.t),
+                        timeWin ? null : hint.fallbackInferenceStopBefore)) return null;
+                return { ch, end: hsEnd(hint.hs) };
+            });
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                if (!row || !Number.isFinite(row.end) || row.end <= row.ch.t) continue;
+                const ch = row.ch;
+                // Ambiguous coincident chord rows must not invent a continuation.
+                if ((i > 0 && Math.abs(chords[i - 1].t - ch.t) <= CHORD_ANCHOR_TIME_EPS)
+                    || (i + 1 < rows.length && Math.abs(chords[i + 1].t - ch.t) <= CHORD_ANCHOR_TIME_EPS)) continue;
+                const next = rows[i + 1];
+                let end = Math.min(row.end, chords[i + 1]?.t ?? Infinity);
+                if (next && next.ch.t > row.end) {
+                    const gap = next.ch.t - row.end;
+                    const halfBeat = chordGuideHalfBeat(beats, row.end);
+                    if (Array.isArray(notes) && halfBeat > 0 && gap <= halfBeat + CHORD_ANCHOR_TIME_EPS
+                        && !chordGuideHasInterveningNote(notes, ch, next.ch, nStr)
+                        && !chordGuideHasSectionBreak(sections, ch.t, next.ch.t)) end = next.ch.t;
+                }
+                // Keep the old position up to the next position's onset, never
+                // across an earlier authored anchor change or an arpeggio.
+                ends.set(ch, chordGuideEndAt(anchors, ch.t, end));
+            }
+            _chordGuideCache = { chords, notes, handShapes, chordTemplates, beats, sections, anchors, stringCount: nStr, ends };
+            return ends;
         }
 
         /** Build ``ch.notes`` from ``chordTemplates[cid].frets`` (-1 omitted). */
@@ -12350,9 +13273,241 @@
             if (nullnessChanged) m.needsUpdate = true;
         }
 
+        // Anchor all incoming text below its chord-box / note-stem foot.
+        // World X/Z stay unchanged; pool reuse resets the centre each frame.
+        function _setIncomingFloorLabelMap(sprite, srcMat, fret = 0, time = NaN) {
+            _setLabelMap(sprite, srcMat);
+            sprite.center.set(0.5, 1);
+            const i = _incomingFloorLabelCount++;
+            const record = _incomingFloorLabels[i]
+                || (_incomingFloorLabels[i] = { sprite: null, fret: 0, time: NaN, layoutFrame: -1, rect: _newLabelRect() });
+            record.sprite = sprite;
+            record.fret = fret;
+            record.time = time;
+        }
+
+        function _registerFretColumnMarker(sprite, fret, time) {
+            // Reference and played-fret numbers share the same floor baseline.
+            sprite.center.set(0.5, 1);
+            const i = _incomingFretColumnMarkerCount++;
+            const record = _incomingFretColumnMarkers[i]
+                || (_incomingFretColumnMarkers[i] = { sprite: null, fret: 0, time: NaN });
+            record.sprite = sprite;
+            record.fret = fret;
+            record.time = time;
+        }
+
+        function _suppressCoincidentFretColumnMarkers(record) {
+            // Called only for a gold label that will render (or hand off to the
+            // fixed row). A missing gold label never removes a reference number.
+            for (let i = 0; i < _incomingFretColumnMarkerCount; i++) {
+                const marker = _incomingFretColumnMarkers[i];
+                if (hwySameFretLabelBeat(record.fret, record.time, marker.fret, marker.time)) {
+                    marker.sprite.visible = false;
+                }
+            }
+        }
+
+        function _registerIncomingLabelOccluder(mesh, z, outline = null) {
+            const i = _incomingLabelOccluderCount++;
+            const record = _incomingLabelOccluders[i]
+                || (_incomingLabelOccluders[i] = { mesh: null, outline: null, z: 0, frame: -1, rect: _newLabelRect(), outlineRect: _newLabelRect() });
+            record.mesh = mesh;
+            record.outline = outline;
+            record.z = z;
+        }
+
+        // Conservative screen bounds, cached per occluder for this frame.
+        function _incomingLabelScreenRect(object, out, inkOnly = false) {
+            const v = _incomingLabelProbe || (_incomingLabelProbe = new T.Vector3());
+            object.updateWorldMatrix(true, false);
+            if (object.isSprite) {
+                const e = object.matrixWorld.elements;
+                v.set(e[12], e[13], e[14]).applyMatrix4(cam.matrixWorldInverse);
+                if (v.z >= -cam.near) return false;
+                const sx = Math.hypot(e[0], e[1], e[2]) * cam.projectionMatrix.elements[0] / -v.z;
+                const sy = Math.hypot(e[4], e[5], e[6]) * cam.projectionMatrix.elements[5] / -v.z;
+                v.applyMatrix4(cam.projectionMatrix);
+                out.minX = v.x - object.center.x * sx;
+                out.maxX = out.minX + sx;
+                out.minY = v.y - object.center.y * sy;
+                out.maxY = out.minY + sy;
+                out.spriteHeight = sy;
+                const ink = inkOnly && object.material.map?.userData.hwyLabelInk;
+                if (ink) {
+                    out.maxX = out.minX + ink.maxX * sx;
+                    out.minX += ink.minX * sx;
+                    out.maxY = out.minY + ink.maxY * sy;
+                    out.minY += ink.minY * sy;
+                }
+
+            } else {
+                const geometry = object.geometry;
+                if (!geometry.boundingBox) geometry.computeBoundingBox();
+                const box = geometry.boundingBox;
+                out.minX = out.minY = Infinity;
+                out.maxX = out.maxY = -Infinity;
+                for (let i = 0; i < 8; i++) {
+                    v.set(i & 1 ? box.max.x : box.min.x,
+                        i & 2 ? box.max.y : box.min.y,
+                        i & 4 ? box.max.z : box.min.z)
+                        .applyMatrix4(object.matrixWorld).project(cam);
+                    out.minX = Math.min(out.minX, v.x); out.maxX = Math.max(out.maxX, v.x);
+                    out.minY = Math.min(out.minY, v.y); out.maxY = Math.max(out.maxY, v.y);
+                }
+            }
+            return Number.isFinite(out.minX + out.maxX + out.minY + out.maxY);
+        }
+
+        function _layoutIncomingFretLabels() {
+            if (!_incomingFloorLabelCount) return;
+            cam.updateMatrixWorld();
+            const frame = ++_incomingLabelLayoutFrame;
+            for (let i = 0; i < _incomingFloorLabelCount; i++) {
+                const record = _incomingFloorLabels[i], label = record.sprite;
+                if (!label.visible || label.material.opacity <= 0
+                    || !_incomingLabelScreenRect(label, record.rect)) continue;
+                // Chord and standalone paths can both identify the same fret.
+                // Keep the first drawable gold label (including its row handoff).
+                for (let j = 0; j < i; j++) {
+                    const previous = _incomingFloorLabels[j];
+                    if (previous.layoutFrame === frame && hwySameFretLabelBeat(
+                        record.fret, record.time, previous.fret, previous.time)) {
+                        label.visible = false;
+                        break;
+                    }
+                }
+                if (!label.visible) continue;
+                record.layoutFrame = frame;
+                _suppressCoincidentFretColumnMarkers(record);
+                let display = label, displayRect = record.rect;
+                const eventZ = label.position.z;
+                // At arrival, combine duplicate fret identities only when they
+                // overlap. An absent/offscreen row never hides an incoming label.
+                const row = record.fret > 0 ? _incomingFixedFretLabels[record.fret] : null;
+                if (row && row.visible && row.material.opacity > 0) {
+                    const rr = row.userData.incomingLabelRect
+                        || (row.userData.incomingLabelRect = _newLabelRect());
+                    if (_incomingLabelScreenRect(row, rr, true)
+                        && rr.minX >= -1 && rr.maxX <= 1 && rr.maxY > -1
+                        && hwyScreenRectsOverlap(record.rect, rr)) {
+                        // At the zoom cap, a partially clipped arrival digit can
+                        // be lifted just inside the viewport without moving the
+                        // camera or the note. Fully offscreen rows remain ineligible.
+                        if (rr.minY < -0.98 && rr.spriteHeight > 0) {
+                            row.center.y -= (-0.98 - rr.minY) / rr.spriteHeight;
+                            _incomingLabelScreenRect(row, rr, true);
+                        }
+                        if (rr.minY >= -1 && rr.maxY <= 1) {
+                            row.material = txtMat(record.fret, FRET_LABEL_GOLD_HEX, false, 'fretRow');
+                            row.material.opacity = 1;
+                            label.visible = false;
+                            display = row;
+                            displayRect = rr;
+                        }
+                    }
+                }
+                for (let j = 0; j < _incomingLabelOccluderCount; j++) {
+                    const occluder = _incomingLabelOccluders[j], mesh = occluder.mesh;
+                    if (!mesh.visible || mesh.material.opacity <= 0 || occluder.z < eventZ) continue;
+                    const order = Math.min(mesh.renderOrder, occluder.outline?.renderOrder ?? Infinity);
+                    if (display.renderOrder < order) continue;
+                    if (occluder.frame !== frame) {
+                        occluder.frame = frame;
+                        occluder.valid = _incomingLabelScreenRect(mesh, occluder.rect);
+                        if (occluder.outline && occluder.outline.visible
+                            && _incomingLabelScreenRect(occluder.outline, occluder.outlineRect)) {
+                            const r = occluder.rect, o = occluder.outlineRect;
+                            r.minX = Math.min(r.minX, o.minX); r.maxX = Math.max(r.maxX, o.maxX);
+                            r.minY = Math.min(r.minY, o.minY); r.maxY = Math.max(r.maxY, o.maxY);
+                        }
+                    }
+                    if (occluder.valid && hwyScreenRectsOverlap(displayRect, occluder.rect)) {
+                        display.renderOrder = hwyIncomingLabelBehindGemOrder(
+                            display.renderOrder, eventZ, order, occluder.z);
+                    }
+                }
+            }
+        }
+
         let _chartPrewarmed = false;
+        let _rsPrewarmBundle = null, _rsPrewarmState = null;
+        let _rsPrewarmLabelModes = 0;
+        function _resetRsNotationPrewarm() {
+            _rsPrewarmBundle = _rsPrewarmState = null;
+            _rsPrewarmLabelModes = 0;
+        }
         function _prewarmTex(mat) {
             if (mat && mat.map && ren) ren.initTexture(mat.map);
+        }
+        function _prewarmRsNotation(bundle) {
+            if (bundle) _rsPrewarmBundle = bundle;
+            if (!rsPlusNotation || !ren || _ctxLost || !bundle) return;
+            const notes = bundle.notes, chords = bundle.chords, templates = bundle.chordTemplates;
+            const noteCount = Array.isArray(notes) ? notes.length : 0;
+            const chordCount = Array.isArray(chords) ? chords.length : 0;
+            const templateCount = Array.isArray(templates) ? templates.length : 0;
+            const arrows = slideArrowApproachVisible || slideArrowNeckVisible;
+            const lefty = !!bundle.lefty;
+            const old = _rsPrewarmState;
+            const changed = !old || old.renderer !== ren || old.notes !== notes || old.chords !== chords
+                || old.noteCount !== noteCount || old.chordCount !== chordCount
+                || old.templates !== templates || old.templateCount !== templateCount
+                || old.palette !== _bgPaletteSig || old.strings !== nStr
+                || old.arrows !== arrows || old.lefty !== lefty;
+            const labelMode = _usesRsDefaultHighway() ? 1 : 2;
+            const warmLabels = !(_rsPrewarmLabelModes & labelMode);
+            if (!changed && !warmLabels) return;
+            // Do not rescan chart arrays or create temporary sets on ordinary
+            // frames. A new chart, palette/layout or enabled arrow cue is the
+            // only reason to revisit the observed notation combinations.
+            if (changed) _rsPrewarmState = {
+                renderer: ren, notes, chords, templates, noteCount, chordCount, templateCount,
+                palette: _bgPaletteSig, strings: nStr, arrows, lefty,
+            };
+            try {
+                if (warmLabels) {
+                    for (let f = 0; f <= NFRETS; f++) {
+                        _prewarmTex(txtMat(f, FRET_LABEL_GOLD_HEX, false, 'fretRow'));
+                        _prewarmTex(txtMat(f, FRET_LABEL_GOLD_HEX, false, 'noteFret'));
+                        _prewarmTex(txtMat(f, _highwayReferenceLabelColor(FRET_LABEL_IDLE_HEX), false, 'fretRow'));
+                        _prewarmTex(txtMat(f, _highwayReferenceLabelColor('#888888'), false, 'noteFret'));
+                    }
+                    _rsPrewarmLabelModes |= labelMode;
+                }
+                if (!changed) return;
+                const uploaded = new Set();
+                const warm = (kind, hex) => {
+                    const mat = rsPlusTechniqueMat(kind, hex);
+                    if (uploaded.has(mat)) return;
+                    uploaded.add(mat);
+                    _prewarmTex(mat);
+                };
+                const warmNote = n => {
+                    if (!n || !validString(n.s) || !isRenderableNote(n)) return;
+                    const hex = activePalette[n.s] ?? 0xffffff;
+                    const flags = rsPlusTechniqueFlags(n);
+                    if (flags) warm(flags, hex);
+                    if (Number(n.bn) > 0 || (Array.isArray(n.bnv)
+                        && n.bnv.some(p => (Number(p.v) || 0) > 0))) warm('bend', hex);
+                    if (arrows) {
+                        const st = slideTrailEnd(n);
+                        if (st) {
+                            const fret = isUnpitchedMute(n) ? 0 : n.f;
+                            const dir = Math.sign(fretMid(st.endFret) - fretMid(fret)) * (lefty ? -1 : 1);
+                            if (dir) warm(dir > 0 ? 'slideRight' : 'slideLeft', hex);
+                        }
+                    }
+                };
+                if (noteCount) for (const n of notes) warmNote(n);
+                if (chordCount) for (const ch of chords) {
+                    if (Array.isArray(ch?.notes)) for (const n of ch.notes) warmNote(n);
+                }
+                if (templateCount) for (const tpl of templates) {
+                    const name = chordTemplateLabel(tpl);
+                    if (name) _prewarmTex(txtMat(name, '#f3f4f6', true, 'chord'));
+                }
+            } catch (e) { console.warn('[3D-Hwy] prewarm RS+ notation:', e); }
         }
         function _prewarmStatic() {
             // MAINTENANCE NOTE: this list must cover every deterministic
@@ -12403,7 +13558,7 @@
                 const tpls = bundle && bundle.chordTemplates;
                 if (Array.isArray(tpls)) {
                     for (const tpl of tpls) {
-                        if (tpl && tpl.name) _prewarmTex(txtMat(tpl.name, '#e8d080', true, 'chord'));
+                        if (tpl && tpl.name) _prewarmTex(txtMat(tpl.name, rsPlusNotation ? '#f3f4f6' : '#e8d080', true, 'chord'));
                     }
                 }
                 const secs = bundle && bundle.sections;
@@ -12439,9 +13594,11 @@
                 const vg = _ndVerdictSawAlpha ? _ndVerdictMaxAlpha : 1;
                 const venueGemMul = _venueSceneOverride ? VENUE_GEM_EMISSIVE_MUL : 1;
                 for (let s = 0; s < mHitBright.length; s++) {
-                    if (mHitBright[s]) mHitBright[s].emissiveIntensity = 4.0 * glowMul * vg * venueGemMul;
+                    if (mHitBright[s]) mHitBright[s].emissiveIntensity = rsPlusNotation
+                        ? 0.35 * glowMul * _hitFx * vg : 4.0 * glowMul * vg * venueGemMul;
                 }
-                if (mHitSusOutline) mHitSusOutline.emissiveIntensity = 0.7 * glowMul * vg * venueGemMul;
+                if (mHitSusOutline) mHitSusOutline.emissiveIntensity = rsPlusNotation
+                    ? 0.25 * glowMul * _hitFx * vg : 0.7 * glowMul * vg * venueGemMul;
                 _ndVerdictMaxAlpha = 0;
                 _ndVerdictSawAlpha = false;
             }
@@ -12477,10 +13634,14 @@
             pNote.reset(); pNoteEdge.reset(); pSus.reset(); pSusOutline.reset(); pSusRibbon.reset(); pSusRibbonOl.reset(); pTapChevron.reset(); pAccentHalo.reset(); pLbl.reset();
             pBeat.reset(); pSec.reset();
             if (projMeshArr) for (const arr of projMeshArr) for (const m of arr) m.visible = false;
+            _incomingFloorLabelCount = _incomingLabelOccluderCount = 0;
+            _incomingFixedFretLabels.fill(null);
+            _incomingFretColumnMarkerCount = 0;
             pFretLbl.reset(); pLane.reset(); pLaneDivider.reset();
             if (pGhostFretLbl) pGhostFretLbl.reset();
             _scrGhostUpcomingCount.fill(0, 0, nStr);
             pChordBox.reset(); pChordFrameFill.reset(); pChordLbl.reset(); pBarreLine.reset(); pArpBracket.reset(); pHaloBar.reset();
+            pRsChordFrame.reset();
             _imPMTechCount = _imFHTechCount = 0;
             _imPMXFillCount = _imPMXLinesCount = _imFHXFillCount = _imFHXLinesCount = 0;
             if (pPMXFill) pPMXFill.reset();
@@ -12608,7 +13769,8 @@
                 _mergeCacheHsRef = bundle.handShapes;
                 _mergeCacheTplRef = bundle.chordTemplates;
             }
-            _ensureChordCullIndex(chords, AHEAD, nStr);
+            const chordGuideEnds = _ensureChordGuideEnds(chords, bundle);
+            _ensureChordCullIndex(chords, AHEAD, nStr, chordGuideEnds);
 
             let arpGhostHsInfer = null;
             const hsForArpGhost = bundle.handShapes;
@@ -12665,7 +13827,11 @@
             // destination representation. Do not infer links from timing alone:
             // grace-slide targets deliberately omit `ln` because they are struck.
             if (notes !== _linkNextTargetNotesRef || bundle.chords !== _linkNextTargetChordsRef) {
-                _linkNextTargetSet = hwyLinkNextTargetNotes(notes, bundle.chords);
+                const bendLinks = new Map();
+                _linkNextTargetSet = hwyLinkNextTargetNotes(notes, bundle.chords, 1e-6, bendLinks);
+                _linkedBendEnds = resolveLinkedBendEnds(bendLinks);
+                _linkedBendStarts = resolveLinkedBendStarts(bendLinks, _linkedBendEnds);
+                _linkedVibratoRuns = resolveLinkedVibratoRuns(bendLinks);
                 _linkNextTargetNotesRef = notes;
                 _linkNextTargetChordsRef = bundle.chords;
             }
@@ -12800,7 +13966,7 @@
                     // lerps these toward FRET_WIRE_HIT_* in place, so they must
                     // be re-seeded or a flash would never fade back out.
                     _m.emissive.setHex(FRET_EMISSIVE);
-                    _m.emissiveIntensity = 1;
+                    _m.emissiveIntensity = rsPlusNotation ? 0 : 1;
                 }
             }
 
@@ -13621,7 +14787,8 @@
                     // visual artifact despite staying in the loop longer.
                     // ndVerdictT0 extends the window when a note-detect provider is
                     // attached so async verdicts still land while drawable.
-                    const _chFilterSus = maxSus > 0 ? maxSus : AHEAD;
+                    const _chGuideEnd = chordGuideEnds.get(ch);
+                    const _chFilterSus = Math.max(maxSus > 0 ? maxSus : AHEAD, (_chGuideEnd ?? ch.t) - ch.t);
                     if (ch.t + _chFilterSus < ndVerdictT0) continue;
                     if (ch.t > t1) break;
 
@@ -13642,7 +14809,7 @@
                     }
 
                     // Anchor selection for chord frame + open-string X + sustain rails:
-                    // • Upcoming (chDtEarly > 0): onset time — frame previews the correct
+                    // • Upcoming or at onset: onset time — frame previews the correct
                     //   neck region before the chord hits the line.
                     // • Past, actively sustaining (now < ch.t + maxSus): onset time — frame
                     //   stays at the frets where the chord was struck. Using `now` here
@@ -13653,8 +14820,11 @@
                     //   — brief fade-out frame tracks the current lane position so it
                     //   doesn't visibly drift while the lane has already transitioned.
                     const chDtEarly = ch.t - now;
-                    const _chAnchorT = chDtEarly > 0 ? ch.t
-                        : (maxSus > 0 && now < ch.t + maxSus) ? ch.t
+                    // Match the rail's onset tolerance, including the tiny interval
+                    // between a rounded chord onset and its source-precision anchor.
+                    const _chAnchorT = chDtEarly >= -CHORD_ANCHOR_TIME_EPS
+                        || (maxSus > 0 && now < ch.t + maxSus) || now < _chGuideEnd
+                        ? ch.t + CHORD_ANCHOR_TIME_EPS
                         : now;
                     const chAnc = getChartAnchorAt(anchors, _chAnchorT);
                     const chAncB = laneBoundsFromAnchor(chAnc);
@@ -13966,7 +15136,7 @@
                             }
                         }
                     }
-                    // Repeat gems remain visible for technique cues or moving sustains.
+                    // Repeat gems remain visible for technique cues or visible sustains.
                     const suppressRepeatGems = repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes);
                     let retainsChordGems = false;
                     if (!deferChordGems || _deferFallback || suppressSynthChord) {
@@ -13987,14 +15157,30 @@
                             Object.assign(_scrChordNote, cn);
                             _scrChordNote.t   = ch.t;
                             _scrChordNote.sus = cn.sus || 0;
-                            // `fhm` is omit-when-false in the wire format (unlike `mt`/`pm`
-                            // which are always emitted). Before 5913129, chord-level
-                            // fretHandMute was folded into `mt` (always-emitted), so
-                            // Object.assign would overwrite any stale value. After that
-                            // commit fhm is its own field — absent on non-muted notes —
-                            // so Object.assign leaves a stale `true` from a previous
-                            // muted chord note untouched. Reset it explicitly here.
+                            // Real wire notes emit legacy technique defaults, but
+                            // handshape-synthesized members contain only s/f/sus.
+                            // Reset every missing technique on the shared scratch
+                            // so a generated chord cannot inherit an earlier cue.
+                            _scrChordNote.ho  = !!cn.ho;
+                            _scrChordNote.po  = !!cn.po;
+                            _scrChordNote.hm  = !!cn.hm;
+                            _scrChordNote.hp  = !!cn.hp;
+                            _scrChordNote.pm  = !!cn.pm;
+                            _scrChordNote.mt  = !!cn.mt;
+                            _scrChordNote.vb  = !!cn.vb;
+                            _scrChordNote.tr  = !!cn.tr;
+                            _scrChordNote.ac  = !!cn.ac;
+                            _scrChordNote.tp  = !!cn.tp;
+                            _scrChordNote.ln  = !!cn.ln;
+                            _scrChordNote.ig  = !!cn.ig;
+                            _scrChordNote.bn  = cn.bn || 0;
+                            _scrChordNote.sl  = cn.sl ?? -1;
+                            _scrChordNote.slu = cn.slu ?? -1;
+                            _scrChordNote.rh  = Number.isInteger(cn.rh) ? cn.rh : -1;
+                            _scrChordNote.pkd = Number.isInteger(cn.pkd) ? cn.pkd : -1;
+                            _scrChordNote.sg  = Number.isInteger(cn.sg) ? cn.sg : -1;
                             _scrChordNote.fhm = cn.fhm || false;
+                            _scrChordNote.ghost = cn.ghost === true;
                             // Bass attacks are also omit-when-false: do not let
                             // a reused chord member inherit the preceding marker.
                             _scrChordNote.slp = cn.slp || false;
@@ -14006,6 +15192,14 @@
                             // apply the wrong contour). Reset explicitly.
                             _scrChordNote.bnv = Array.isArray(cn.bnv) ? cn.bnv : undefined;
                             _scrChordNote.bt  = cn.bt || 0;
+                            // The drawing scratch has a different identity from
+                            // its authored member. Replace the cached start on
+                            // every reuse, including an ordinary zero start.
+                            _linkedBendStarts.set(_scrChordNote, _linkedBendStarts.get(cn) || 0);
+                            _linkedBendEnds.set(_scrChordNote, _linkedBendEnds.get(cn));
+                            _scrChordNote.slide_out = cn.slide_out;
+                            _scrChordNote.slide_out_marks = cn.slide_out_marks;
+                            _linkedVibratoRuns.set(_scrChordNote, _linkedVibratoRuns.get(cn));
                             // Same stale-scratch hazard for the teaching marks
                             // (§6.2.2): fg/sd are omit-when-default on the wire,
                             // so a chord note without them must reset to -1 or it
@@ -14146,19 +15340,21 @@
                         const yBot = yMinF;
                         const yTop = yMinF + height;
                         const cY = (yBot + yTop) * 0.5;
-                        const fade = Math.max(0, 1 - chDt / AHEAD);
+                        const fade = rsPlusNotation ? 1 : Math.max(0, 1 - chDt / AHEAD);
                         const chordAccent = chordNotes.some(cn => cn.ac);
 
                         // Rim thickness from full vertical span — repeat halves inner height only,
                         // not bar thickness vs first chord — see CHORD_FRAME_RIM_* tuning.
                         let ft = Math.max(CHORD_FRAME_RIM_MIN * K, fullChordBoxH * CHORD_FRAME_RIM_FRAC_H);
-                        if (chordAccent) ft *= 1.22;
+                        if (rsPlusNotation) ft *= 0.5;
+                        if (chordAccent) ft *= rsPlusNotation ? 1.85 : 1.22;
                         // Lavender frame: authored arpeggio marker only.
                         // RS ``highDensity`` is kept out — it tags gallops & repeated
                         // strums (Frantic ~2:46), not arpeggio.
                         const isArpeggioFrame = chordHighwayLavenderArpVisual;
                         const ftSide = isArpeggioFrame ? ft * 1.55 : ft;
-                        let rimHex = isArpeggioFrame ? ARPEGGIO_RIM_BLUE_HEX : CHORD_BOX_TEAL_HEX;
+                        let rimHex = isArpeggioFrame ? ARPEGGIO_RIM_BLUE_HEX
+                            : rsPlusNotation ? RSPLUS_CHORD_RIM_HEX : CHORD_BOX_TEAL_HEX;
                         // Capture the neutral frame color before any verdict overwrite.
                         // Used for the mute X lines so hit/miss feedback only shows on
                         // the outer borders of the framebox, not inside the X pattern.
@@ -14301,7 +15497,7 @@
                         }
 
                         if (chDt > 0) { // framebox only on highway, not on the fretboard
-                        const repDim = isRepeat ? 0.78 : 1;
+                        const repDim = !rsPlusNotation && isRepeat ? 0.78 : 1;
                         const edgeOp = fade * chordTailMul;
                         const thickZ = Math.max(CHORD_FRAME_RIM_Z_MIN * K, ft * CHORD_FRAME_RIM_Z_SCAL);
                         // Per-depth layer stack: chord frames, gems, technique markers,
@@ -14332,7 +15528,8 @@
                         // Swapping `map` between two non-null gradient textures
                         // doesn't change shader-defining state, so no needsUpdate
                         // — that flag would otherwise force a recompile per frame.
-                        fill.material.map = isArpeggioFrame ? chordFrameGradTexArp : chordFrameGradTex;
+                        fill.material.map = isArpeggioFrame ? chordFrameGradTexArp
+                            : rsPlusNotation ? chordFrameGradTexRs : chordFrameGradTex;
                         fill.material.color.setRGB(1, 1, 1);
 
                         const withTopFrame = !compactRepeatFrame;
@@ -14347,6 +15544,12 @@
                         const sideH = Math.max(ySideHi - ySideLo, ft * 1.25);
                         const sideCy = ySideLo + sideH * 0.5;
 
+                        if (rsPlusNotation) {
+                            // Modern repeats are closed half-height panels;
+                            // explicit arpeggios keep only short-capped sides.
+                            drawRsPlusChordFrame(cx, cY, z, width, height, ftSide,
+                                false, rimHex, edgeOp, isArpeggioFrame ? width * 0.12 : 0);
+                        } else {
                         // Bottom bar: thin teal (like top bar) + dark corners on top.
                         {
                             const botCW = Math.min(sideH * (compactRepeatFrame ? 0.5 : 0.25), width * 0.4);
@@ -14389,13 +15592,14 @@
                             // Top bar: thin
                             drawFrameBox(cx, yTop - ftThin * 0.5, width, ftThin, chordFrameRenderOrder);
                         }
+                        }
 
                         // Accent bloom on frame edges: 4 additive shells with
                         // Gaussian-style falloff. Each border expands only in its
                         // perpendicular axis so bloom never leaves the frame boundary:
                         //   horizontal bars (top/bottom) → expand Y only
                         //   vertical bars (left/right)   → expand X only
-                        if (chordAccent && pHaloBar) {
+                        if (!rsPlusNotation && chordAccent && pHaloBar) {
                             // Bloom only on the teal (thin) parts of the frame — the dark
                             // "#163137" L-corners are deliberately left without bloom so they
                             // remain visibly dark (same appearance as non-accent chords).
@@ -14442,7 +15646,7 @@
                         if (chordName && firstInShapeRun && !chordWireHighDensity(ch)) {
                             const lblW = 28 * K, lblH = 9 * K;
                             const lbl = pChordLbl.get();
-                            const mat = txtMat(chordName, '#e8d080', true, 'chord');
+                            const mat = txtMat(chordName, rsPlusNotation ? '#f3f4f6' : '#e8d080', true, 'chord');
                             _setLabelMap(lbl, mat);
                             lbl.material.opacity = Math.min(1, 0.3 + fade * 0.7) * chordTailMul;
                             // Gold chord name: slight +X shift from flush-left so it sits farther right.
@@ -14603,7 +15807,7 @@
                                 _seenChordFrets.add(f);
                                 const lbl = pNoteFretLabel.get();
                                 const mat = txtMat(f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
-                                _setLabelMap(lbl, mat);
+                                _setIncomingFloorLabelMap(lbl, mat, f, ch.t);
                                 lbl.position.set(xFretMid(f), yMinF, z);
                                 lbl.renderOrder = renderOrderForLayerAtZ(z, 'CHORD_FRET_LABEL');
                                 const _flS = 7.0 * K * (1 + 0.4 * chDt / AHEAD) * _textSizeMul * fretLabelScaleForFret(f);
@@ -14613,9 +15817,13 @@
                         }
 
                         // ── Palm-mute strum indicator — pool (fill + lines) ──────────────
+                        // A full chord owns its mute cues on the individual gems.
+                        // Only gemless compact repeats need a frame-wide cue, and
+                        // only when every member shares the same effective mute.
+                        const frameMuteKind = compactRepeatFrame ? chordMuteKind(chordNotes) : 'none';
                         // Per-chord Z-proportional renderOrder: muted fill/lines and
                         // frame edges all use the named layer offsets above.
-                        if (isRepeat && chordNotes.some(cn => cn.pm)) {
+                        if (frameMuteKind === 'palm') {
                             if (pPMXFill) {
                                 const xf = pPMXFill.get();
                                 xf.renderOrder = renderOrderForLayerAtZ(z, 'CHORD_STRUM_FILL');
@@ -14636,7 +15844,7 @@
                         }
 
                         // ── Frethand-mute strum indicator — pool (fill + lines) ───────────
-                        if (isRepeat && chordNotes.some(cn => cn.mt || cn.fhm)) {
+                        if (frameMuteKind === 'fretHand') {
                             if (pFHXFill) {
                                 const xf = pFHXFill.get();
                                 xf.renderOrder = renderOrderForLayerAtZ(z, 'CHORD_STRUM_FILL');
@@ -14660,14 +15868,14 @@
 
                     }
 
-                    // ── Chord sustain length indicator — 3D plane rails ─────────────
+                    // ── Chord hand-position guides — shared by both styles ──────────
                     // Left + right rail as plane meshes (PlaneGeometry +
                     // MeshBasicMaterial) in the WebGL scene so they respect
                     // renderOrder (16) and never occlude note gems (20/21).
                     // isRepeat chords also draw their rail: each repeat shows a
                     // segment from its own onset to the next chord's onset (or the
-                    // handshape end, whichever is shorter), chaining together to
-                    // cover the full handshape duration visually.
+                    // handshape end at a run's finish), chaining together with
+                    // approved short gaps bridged by the chart-static guide cache.
                     if (chShape.size > 1 && chordOpenBoxW != null && chDt < AHEAD) {
                         // Cap handshape-derived sustain at the gap to the next chord.
                         // Each chord (including repeats) only extends to the next
@@ -14697,13 +15905,17 @@
                             && ch.h3dSynthEnd != null)
                             ? Math.max(0, ch.h3dSynthEnd - ch.t)
                             : 0;
-                        const _rawSus = maxSus > 0 ? maxSus : Math.max(_hsSus, _synthSus);
-                        // Apply the 0.4 s visual-minimum only to chords with an
-                        // explicit note sustain (maxSus > 0). Handshape-derived
-                        // sustain (_hsSus, already capped at _nextChordGap) must
+                        // Ordinary authored shapes describe hand-position guides,
+                        // independently of how long any individual note rings.
+                        const _rawSus = _chGuideEnd != null ? Math.max(0, _chGuideEnd - ch.t)
+                            : maxSus > 0 ? maxSus : Math.max(_hsSus, _synthSus);
+                        // Legacy sustain-only rails retain the 0.4 s minimum.
+                        // Authored hand-position guides use their own end instead.
+                        // Handshape-derived sustain (_hsSus, already capped at
+                        // _nextChordGap) must
                         // not be inflated — that would undo the gallop cap and
                         // cause the rail to reappear at the old anchor position.
-                        const _effSus = maxSus > 0
+                        const _effSus = _chGuideEnd == null && maxSus > 0
                             ? Math.max(_rawSus, 0.4)
                             : _rawSus;
                         const _dtSusEnd  = chDt + _effSus;
@@ -14713,29 +15925,16 @@
                             // correctly per-anchor; a single-segment rail at fixed X would
                             // visually "invade" the neighbouring region when anchors change
                             // within the sustain window.
-                            let _dtSusEndRail = _dtSusEnd;
-                            if (anchors && anchors.length) {
-                                const _susAbsT = chDt > 0 ? ch.t : now;
-                                if (getChartAnchorAt(anchors, _susAbsT) !==
-                                    getChartAnchorAt(anchors, now + _dtSusEnd)) {
-                                    // Binary search: first anchor starting strictly after _susAbsT.
-                                    let _lo = 0, _hi = anchors.length;
-                                    while (_lo < _hi) {
-                                        const _mid = (_lo + _hi) >>> 1;
-                                        if (anchors[_mid].time <= _susAbsT) _lo = _mid + 1;
-                                        else _hi = _mid;
-                                    }
-                                    if (_lo < anchors.length)
-                                        _dtSusEndRail = anchors[_lo].time - now;
-                                }
-                            }
+                            // Resolve from the chord onset, never from playback time:
+                            // crossing a boundary must not resurrect a clipped rail.
+                            const _dtSusEndRail = (_chGuideEnd ?? chordRailEndAt(anchors, ch.t, ch.t + _effSus)) - now;
                             const _zNear = chDt > 0 ? dZ(chDt) : 0;
                             const _zFar  = dZ(Math.min(_dtSusEndRail, AHEAD));
                             const _railLen = _zNear - _zFar;
                             if (_railLen > 0.001) {
                                 const _yA   = sY(0), _yB = sY(nStr - 1);
                                 const _yBot = Math.min(_yA, _yB) - S_GAP * 0.8;
-                                const _fadeAhead = chDt > 0 ? Math.max(0, 1 - chDt / AHEAD) : 1;
+                                const _fadeAhead = !rsPlusNotation && chDt > 0 ? Math.max(0, 1 - chDt / AHEAD) : 1;
                                 const _fadeSus   = Math.min(1, _dtSusEnd / 0.25);
                                 const _op  = _fadeAhead * _fadeSus * 0.9;
                                 const _hex = chordHighwayLavenderArpVisual ? ARPEGGIO_RIM_BLUE_HEX : CHORD_BOX_TEAL_HEX;
@@ -14751,9 +15950,10 @@
                                     rl.scale.set(_railW, 1, _railLen);
                                     // Bloom glow — wider gaussian plane, additive blending
                                     if (!_leanSus) {
+                                        if (rsPlusNotation && notationSoftGlow() <= 0) continue;
                                         const bl = pSusRailBloom.get();
                                         bl.material.color.setHex(_hex);
-                                        bl.material.opacity = _op * 0.8;
+                                        bl.material.opacity = _op * (rsPlusNotation ? notationSoftGlow() * 0.25 : 0.8);
                                         bl.position.set(_rxIn, _yBot + 0.001, _zMid);
                                         bl.scale.set(3 * K, 1, _railLen);
                                     }
@@ -14848,12 +16048,14 @@
                     const _f = _i === 0 ? _fwLo : _fwHi;
                     if (_f < 0) break;                       // nothing lit
                     if (_i === 1 && _f === _fwLo) break;     // single wire lit
-                    const _g = _fwHitGlow[_f];
+                    const _g = _fwHitGlow[_f] * (rsPlusNotation ? _hitFx : 1);
                     const _m = fretWireMats[_f];
                     if (!_m) continue;
                     _m.color.lerp(_fwHitColor, _g);
                     _m.emissive.lerp(_fwHitEmissive, _g);
-                    _m.emissiveIntensity = 1 + (FRET_WIRE_HIT_INTENSITY - 1) * _g;
+                    _m.emissiveIntensity = rsPlusNotation
+                        ? glowMul * 1.5 * _g
+                        : 1 + (FRET_WIRE_HIT_INTENSITY - 1) * _g;
                     _m.opacity += (FRET_WIRE_HIT_OP - _m.opacity) * _g;
                 }
 
@@ -14864,7 +16066,9 @@
                 // the outline reverts and idle intensity is irrelevant.
                 for (let _s = 0; _s < mRimFlash.length; _s++) {
                     const _m = mRimFlash[_s];
-                    if (_m) _m.emissiveIntensity = 1 + (FRET_WIRE_HIT_INTENSITY - 1) * _rimFlashIn[_s];
+                    if (_m) _m.emissiveIntensity = rsPlusNotation
+                        ? glowMul * _hitFx * 1.5 * _rimFlashIn[_s]
+                        : 1 + (FRET_WIRE_HIT_INTENSITY - 1) * _rimFlashIn[_s];
                 }
             }
 
@@ -14950,8 +16154,7 @@
                         }
                     }
                     {
-                        const laneOp = (HWY_LANE_STRIPE_OP_BASE + highwayIntensity * HWY_LANE_STRIPE_OP_INT)
-                            * (_venueSceneOverride ? VENUE_LANE_OP_BOOST : 1);
+                        const laneOp = _highwayLaneOpacity(highwayIntensity);
                         // 2 shared materials (odd/even); opacity travels via the
                         // material so set it once per frame, not per mesh.
                         mLaneOdd.opacity = laneOp;
@@ -14983,6 +16186,7 @@
                         if (mLaneDividerArp) {
                             mLaneDividerArp.opacity = divOpArp;
                         }
+                        if (_usesRsDefaultHighway()) mLaneDivider.opacity = 1;
 
                         for (let s = 0; s < _laneSegLen; s++) {
                             const segZ0 = _laneSegZ0[s];
@@ -14997,7 +16201,8 @@
                                 if (_laneSegArp[s] && (f === fDiv0 || f === fDiv1)) continue;
                                 const div = pLaneDivider.get();
                                 div.position.set(xFret(f), yPos, zMid);
-                                div.material = mLaneDivider;
+                                div.material = _usesRsDefaultHighway() && f !== fDiv0 && f !== fDiv1
+                                    ? mRsLaneDivider : mLaneDivider;
                                 div.scale.set(1, 1, dz);
                                 div.renderOrder = 2;
                             }
@@ -15069,8 +16274,7 @@
                     // +TS*BEHIND; spanning AHEAD alone keeps the same far edge.
                     const laneLen = TS * AHEAD;
                     const zLane = -laneLen / 2;
-                    const laneOp = (HWY_LANE_STRIPE_OP_BASE + highwayIntensity * HWY_LANE_STRIPE_OP_INT)
-                        * (_venueSceneOverride ? VENUE_LANE_OP_BOOST : 1);
+                    const laneOp = _highwayLaneOpacity(highwayIntensity);
                     mLaneOdd.opacity = laneOp;
                     mLaneEven.opacity = laneOp;
                     const fLow = dMin + 1;
@@ -15094,7 +16298,7 @@
                         const divOp2 = 0.02 + highwayIntensity * 0.1;
                         const divOpArp2 = Math.min(0.92, 0.16 + highwayIntensity * 0.42);
                         if (mLaneDivider && mLaneDividerArp) {
-                            mLaneDivider.opacity = divOp2;
+                            mLaneDivider.opacity = _usesRsDefaultHighway() ? 1 : divOp2;
                             mLaneDividerArp.opacity = divOpArp2;
                         }
                         const fDivA = Math.floor(divMin);
@@ -15103,7 +16307,8 @@
                             if (hwyLaneArpOuterDividers && (f === fDivA || f === fDivB)) continue;
                             const div = pLaneDivider.get();
                             div.position.set(xFret(f), yPos, -divLen * 0.5);
-                            div.material = mLaneDivider;
+                            div.material = _usesRsDefaultHighway() && f !== fDivA && f !== fDivB
+                                ? mRsLaneDivider : mLaneDivider;
                             div.scale.set(1, 1, divLen);
                             div.renderOrder = 2;
                         }
@@ -15126,7 +16331,8 @@
                     const extLaneLen = TS * AHEAD;
                     const extZMid = -extLaneLen / 2;
                     const extYPos = boardY + 0.03 * K;
-                    mLaneDividerExt.opacity = Math.max(0.3, 0.3 + highwayIntensity * 0.15);
+                    mLaneDividerExt.opacity = _usesRsDefaultHighway() ? RSPLUS_DEFAULT_HIGHWAY.extensionOpacity
+                        : Math.max(0.3, 0.3 + highwayIntensity * 0.15);
                     for (let f = 0; f <= NFRETS; f++) {
                         const div = pLaneDivider.get();
                         div.position.set(xFret(f), extYPos, extZMid);
@@ -15171,13 +16377,14 @@
                     if (!isInAnchor && !isMainFret) continue;
                     const lb = pFretLbl.get();
                     lb.material = txtMat(f,
-                        isInAnchor ? FRET_LABEL_GOLD_HEX : FRET_LABEL_IDLE_HEX,
+                        isInAnchor ? FRET_LABEL_GOLD_HEX : _highwayReferenceLabelColor(FRET_LABEL_IDLE_HEX),
                         false, 'fretRow');
                     lb.position.set(xFretMid(f), yBottom - S_GAP * 1.4, 0.5 * K);
                     lb.material.opacity = isInAnchor ? 1.0 : 0.55;
                     const scale = 5.95 * _textSizeMul * fretLabelScaleForFret(f);
                     lb.scale.set(scale * K, scale * K, 1);
                     lb.renderOrder = 1000;
+                    _incomingFixedFretLabels[f] = lb;
                 }
             }
 
@@ -15325,10 +16532,11 @@
                         // activeFrets only covering now+2s while waves appear at
                         // AHEAD (3s), which made each marker start dark then
                         // suddenly jump to light when its note entered the 2s window.
-                        const color = '#888888';
+                        const color = _highwayReferenceLabelColor('#888888');
                         const sp = pFretColMarker.get();
                         const m = txtMat(f, color, false, 'noteFret');
                         _setLabelMap(sp, m);
+                        _registerFretColumnMarker(sp, f, b.time);
                         sp.material.opacity = 0.85 * _colFadeIn;
                         sp.position.set(xFretMid(f), labelY, z);
                         // Z-proportional: sits between chord frame and note gem
@@ -15621,6 +16829,41 @@
             pbReportTick();
         }
 
+        const _slideRibbonTimesScratch = [];
+        function ensureSlideRibbonCapacity(geometry, slices) {
+            const capacity = geometry.attributes.position.count / 4 - 1;
+            if (capacity < slices) {
+                let next = Math.max(SLIDE_RIBBON_SAMPLES, capacity);
+                while (next < slices) next *= 2;
+                const vertices = (next + 1) * 4;
+                // Release old GPU attributes before replacing a pooled
+                // geometry's buffers. Three reinitializes it on next render.
+                geometry.dispose?.();
+                geometry.setAttribute('position', new T.Float32BufferAttribute(new Float32Array(vertices * 3), 3));
+                const colors = new Float32Array(vertices * 4);
+                colors.fill(1);
+                geometry.setAttribute('color', new T.Float32BufferAttribute(colors, 4));
+                const normals = new Float32Array(vertices * 3);
+                const corners = [-1, -1, 1, -1, 1, 1, -1, 1];
+                for (let i = 0; i < vertices; i++) {
+                    normals[i * 3] = corners[(i % 4) * 2] * Math.SQRT1_2;
+                    normals[i * 3 + 1] = corners[(i % 4) * 2 + 1] * Math.SQRT1_2;
+                }
+                geometry.setAttribute('normal', new T.Float32BufferAttribute(normals, 3));
+                const indices = [];
+                for (let k = 0; k < next; k++) {
+                    const b = k * 4, nx = b + 4;
+                    indices.push(b, nx + 1, b + 1, b, nx, nx + 1,
+                        b + 3, nx + 2, nx + 3, b + 3, b + 2, nx + 2,
+                        b, nx + 3, nx, b, b + 3, nx + 3,
+                        b + 1, nx + 2, b + 2, b + 1, nx + 1, nx + 2);
+                }
+                geometry.setIndex(indices);
+            }
+            geometry.userData.ribbonSlices = slices;
+            geometry.setDrawRange(0, slices * 24);
+        }
+
         /**
          * Indexed sustain ribbon (~SLIDE_RIBBON_SAMPLES longitudinal slices)
          * for slides, bends, vibrato and tremolo — smooth contour vs stacked
@@ -15633,12 +16876,18 @@
             yieldStarts = null, yieldEnds = null, yieldCount = 0,
             trailEnd = Infinity, yieldSettings = TRAIL_YIELD_DEFAULTS,
         ) {
+            const times = slideRibbonSampleTimes(n, susStart, sliceDur, _slideRibbonTimesScratch);
+            const S = times.length - 1;
+            ensureSlideRibbonCapacity(outlineGeom, S);
+            ensureSlideRibbonCapacity(bodyGeom, S);
             const outlinePositions = outlineGeom.attributes.position.array;
             const bodyPositions = bodyGeom.attributes.position.array;
-            const S = SLIDE_RIBBON_SAMPLES;
+            const outlineColors = outlineGeom.attributes.color?.array;
+            const bodyColors = bodyGeom.attributes.color?.array;
+            const hasSlideOut = !slideSt && slideOutMarks(n).length > 0;
             let v = 0;
             for (let k = 0; k <= S; k++) {
-                const Tk = susStart + (k / S) * sliceDur;
+                const Tk = times[k];
                 const zk = dZ(Tk - now);
                 const outlineX = sustainTrailCenterXAt(
                     n, strandBaseX, Tk, slideSt, outlineTw,
@@ -15652,7 +16901,17 @@
                         Tk, yieldStarts, yieldEnds, yieldCount, trailEnd, yieldSettings,
                     )
                     : 0;
-                const yieldScale = 1 - (1 - yieldSettings.minScale) * yieldAmount;
+                // Artistic taper and user-selected visibility narrowing compose
+                // by the smaller envelope, never multiply into a thin sliver.
+                const yieldScale = Math.min(hasSlideOut ? slideOutWidthScaleAt(n, Tk) : 1,
+                    1 - (1 - yieldSettings.minScale) * yieldAmount);
+                if (hasSlideOut && outlineColors && bodyColors) {
+                    const alpha = slideOutAlphaAt(n, Tk);
+                    for (let j = 0; j < 4; j++) {
+                        outlineColors[k * 16 + j * 4 + 3] = alpha;
+                        bodyColors[k * 16 + j * 4 + 3] = alpha;
+                    }
+                }
                 const outlineHalfW = outlineTw * yieldScale * 0.5;
                 const outlineHalfH = outlineTh * yieldScale * 0.5;
                 const bodyHalfW = bodyTw * yieldScale * 0.5;
@@ -15680,6 +16939,8 @@
             }
             outlineGeom.attributes.position.needsUpdate = true;
             bodyGeom.attributes.position.needsUpdate = true;
+            if (hasSlideOut && outlineColors) outlineGeom.attributes.color.needsUpdate = true;
+            if (hasSlideOut && bodyColors) bodyGeom.attributes.color.needsUpdate = true;
             // Normals are pre-baked at geometry creation (see mkSlideRibbonGeo);
             // axis-aligned cross-section means they don't need per-frame recompute.
         }
@@ -15694,20 +16955,42 @@
                 || (Array.isArray(n.bnv) && n.bnv.length > 0)
                 || noteHasVibrato(n)
                 || n.tr
+                || slideOutMarks(n).length > 0
             ));
         }
 
         function noteHasRepeatTechniqueCue(n) {
             // Compact repeat frames have their own palm/fret-hand mute marks,
             // but these cues live on individual gems and must approach with them.
-            return !!(n.hm || n.hp || n.ho || n.po || n.tp || n.ac || n.slp || n.plk
+            return !!(n.ghost === true || n.hm || n.hp || n.ho || n.po || n.tp || n.ac || n.slp || n.plk
+                || noteHasSlideOutCue(n)
                 || (Number(n.bn) || 0) > 0
                 || (Array.isArray(n.bnv) && n.bnv.some(p => (Number(p.v) || 0) > 0)));
         }
 
+        function chordMuteKind(chordNotes) {
+            // Matches drawNote: fret-hand mute takes precedence if both flags
+            // are authored. An unmuted member also makes a muted chord mixed.
+            let kind;
+            for (const n of chordNotes) {
+                const memberKind = n.mt || n.fhm ? 'fretHand' : n.pm ? 'palm' : 'none';
+                if (kind !== undefined && memberKind !== kind) return 'mixed';
+                kind = memberKind;
+            }
+            return kind || 'none';
+        }
+
         function repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes) {
             if (!isRepeat || chordLinksSlide) return false;
-            return !chordNotes.some(n => noteHasVisibleMotionSustain(n) || noteHasRepeatTechniqueCue(n));
+            // One strum glyph cannot convey different instructions per string.
+            if (chordMuteKind(chordNotes) === 'mixed') return false;
+            // Match the fretted chord trail's initial visibility cutoff. Use
+            // authored duration, not remaining duration, so an approaching
+            // sustained repeat keeps its full frame and attached note heads.
+            // Open chord members do not emit trails; linked-target attack
+            // suppression is still handled independently by drawNote.
+            return !chordNotes.some(n => (n.f > 0 && Number.isFinite(n.sus) && n.sus > 0.01)
+                || noteHasVisibleMotionSustain(n) || noteHasRepeatTechniqueCue(n));
         }
 
         function bendVisualDirY(stringIdx) {
@@ -15765,18 +17048,48 @@
             return last.v;
         }
 
-        function bendSemisAtTime(n, chartTime) {
+        /**
+         * Render-only fallback for a curve that omits its onset. Feedpak makes
+         * samples authoritative but does not prescribe before-first sampling.
+         * Preserve authored t=0 values; release/pre-bend intent keeps the first
+         * value. Ordinary delayed targets rise from the linked predecessor's
+         * endpoint, or zero for a new attack. Never rewrite the wire curve.
+         */
+        function bendCurveStartSemis(n, inheritedStart = 0) {
+            const first = Array.isArray(n?.bnv) ? n.bnv[0] : null;
+            if (!first || !Number.isFinite(first.t) || first.t < 0
+                || !Number.isFinite(first.v)) return 0;
+            if (first.t <= 1e-6 || n.bt === 1 || n.bt === 2 || n.bt === 3) {
+                return Math.max(0, first.v);
+            }
+            return Number.isFinite(inheritedStart) ? Math.max(0, inheritedStart) : 0;
+        }
+
+        function bendCurveSemisAt(n, elapsed, inheritedStart = 0) {
+            const first = Array.isArray(n?.bnv) ? n.bnv[0] : null;
+            if (!first || !Number.isFinite(first.t) || first.t < 0
+                || !Number.isFinite(first.v) || !Number.isFinite(elapsed)) return 0;
+            if (elapsed < first.t && first.t > 1e-6) {
+                const start = bendCurveStartSemis(n, inheritedStart);
+                const p = Math.max(0, elapsed) / first.t;
+                return Math.max(0, start + (first.v - start) * p);
+            }
+            const value = bnvSampleAt(n.bnv, elapsed);
+            return Number.isFinite(value) ? Math.max(0, value) : 0;
+        }
+
+        function bendSemisAtElapsed(n, elapsed, inheritedStart = 0, linkedEnd = undefined) {
             if (!(n?.sus > 0)) return 0;
             // When the note carries an authoritative bend curve (§6.2.1),
             // sample its real shape at the elapsed time so the gem's Y gesture
             // and sustain ribbon follow the actual bend (pre-bend, round-trip,
             // release, …). Negative samples clamp to 0 (upward-only Y offset).
             if (Array.isArray(n.bnv) && n.bnv.length) {
-                return Math.max(0, bnvSampleAt(n.bnv, chartTime - n.t));
+                return bendCurveSemisAt(n, elapsed, inheritedStart);
             }
             const bn = Number(n?.bn) || 0;
             if (!(bn > 0)) return 0;
-            const p = Math.max(0, Math.min(1, (chartTime - n.t) / Math.max(n.sus, 1e-6)));
+            const p = Math.max(0, Math.min(1, elapsed / Math.max(n.sus, 1e-6)));
             // Fallback: synthesize rise → hold → release from the scalar peak.
             // Ramp up over the first ~35 %, hold, then release over the last
             // ~30 % — the bend gesture rather than a monotone climb. Drives both
@@ -15786,23 +17099,135 @@
             if (p < RISE) env = p / RISE;
             else if (p < 1 - REL) env = 1;
             else env = (1 - p) / REL;
+            // A linked continuation with an authored initial bend supplies the
+            // missing endpoint of a scalar bend. Keep the same rise and hold,
+            // then meet that pitch instead of inventing a release to zero.
+            if (p >= 1 - REL && Number.isFinite(linkedEnd)
+                && linkedEnd >= 0 && linkedEnd <= bn) {
+                return linkedEnd + (bn - linkedEnd) * Math.max(0, Math.min(1, env));
+            }
             return bn * Math.max(0, Math.min(1, env));
+        }
+
+        /** Resolve only an unambiguous authored onset across a validated link. */
+        function resolveLinkedBendEnds(links) {
+            const destinations = new Map();
+            for (const [destination, link] of links) {
+                if (!link) continue;
+                const source = link.source;
+                // Even equal-pitch duplicate destinations are ambiguous. Do not
+                // pick an endpoint from array order or an unrelated later note.
+                destinations.set(source, destinations.has(source) ? null : destination);
+            }
+            const ends = new WeakMap();
+            for (const [source, destination] of destinations) {
+                if (!destination || !(source.sus > 0) || !Number.isFinite(source.sus)
+                    || !Number.isFinite(source.bn) || !(source.bn > 0)
+                    || (Array.isArray(source.bnv) && source.bnv.length)
+                    || !(destination.sus > 0) || !Number.isFinite(destination.sus)) continue;
+                const first = Array.isArray(destination.bnv) ? destination.bnv[0] : null;
+                if (!first || !Number.isFinite(first.t) || first.t < 0
+                    || !Number.isFinite(first.v) || first.v < 0 || first.v > source.bn) continue;
+                // A delayed ordinary target is not an authored starting pitch.
+                if (first.t > 1e-6 && destination.bt !== 1
+                    && destination.bt !== 2 && destination.bt !== 3) continue;
+                ends.set(source, first.v);
+            }
+            return ends;
+        }
+
+        /** Links arrive in chronological order within each string's lane. */
+        function resolveLinkedBendStarts(links, ends = new WeakMap()) {
+            const starts = new WeakMap();
+            for (const [destination, link] of links) {
+                if (!link) continue;
+                const inherited = starts.get(link.source) || 0;
+                const end = bendSemisAtElapsed(link.source, link.source.sus, inherited, ends.get(link.source));
+                if (end > 0) starts.set(destination, end);
+            }
+            return starts;
+        }
+
+        function bendSemisAtTime(n, chartTime) {
+            return bendSemisAtElapsed(n, chartTime - n.t, _linkedBendStarts.get(n) || 0, _linkedBendEnds.get(n));
+        }
+
+        /** Cache continuous vibrato runs from the same validated links as bends. */
+        function resolveLinkedVibratoRuns(links) {
+            const outgoing = new Map();
+            for (const [destination, link] of links) {
+                if (!link) continue;
+                // A fork cannot supply a unique visual continuation.
+                outgoing.set(link.source, outgoing.has(link.source) ? null : { destination, ...link });
+            }
+            const incoming = new Map(), times = new Map();
+            for (const [source, edge] of outgoing) {
+                const destination = edge?.destination;
+                if (!destination || source.ln !== true
+                    || !Number.isFinite(source.sus) || !(source.sus > 0)
+                    || !Number.isFinite(destination.sus) || !(destination.sus > 0)
+                    || !Number.isFinite(edge.sourceTime) || !Number.isFinite(edge.targetTime)
+                    || !(edge.targetTime > edge.sourceTime)
+                    || Math.abs(edge.sourceTime + source.sus - edge.targetTime) > BEND_LINK_TIME_EPS + 1e-9) {
+                    outgoing.set(source, null);
+                    continue;
+                }
+                incoming.set(destination, edge);
+                times.set(source, edge.sourceTime);
+                times.set(destination, edge.targetTime);
+            }
+            const contexts = new WeakMap();
+            for (const [head, time] of times) {
+                if (!noteHasVibrato(head) || noteHasVibrato(incoming.get(head)?.source)) continue;
+                const members = [];
+                let note = head, onset = time, duration = 0, exit = null;
+                while (noteHasVibrato(note)) {
+                    members.push({ note, onset, offset: duration });
+                    duration += note.sus;
+                    exit = outgoing.get(note);
+                    if (!exit) break;
+                    note = exit.destination;
+                    onset = exit.targetTime;
+                }
+                // Fade only at an actual linked transition to/from non-vibrato.
+                // A half-run bound keeps the two fades from crossing on tiny runs.
+                const fade = Math.min(VIBRATO_HALF_WAVE_S, duration * 0.5);
+                const run = { duration, fadeIn: incoming.has(head) ? fade : 0,
+                    fadeOut: exit && !noteHasVibrato(exit.destination) ? fade : 0 };
+                for (const member of members) {
+                    contexts.set(member.note, { onset: member.onset, offset: member.offset, run });
+                }
+            }
+            return contexts;
         }
 
         function vibratoSemisAtTime(n, chartTime) {
             if (!noteHasVibrato(n) || !(n?.sus > 0)) return 0;
+            const context = _linkedVibratoRuns.get(n);
+            if (context) {
+                // Chart-time sampling is seek-safe; rounding-sized link gaps do
+                // not restart phase. Chord members use their chord's cached onset.
+                const elapsed = context.offset + Math.max(0, Math.min(n.sus, chartTime - context.onset));
+                const run = context.run;
+                let envelope = 1;
+                if (run.fadeIn > 0 && elapsed < run.fadeIn) {
+                    const p = Math.max(0, elapsed / run.fadeIn);
+                    envelope *= p * p * (3 - 2 * p);
+                }
+                if (run.fadeOut > 0 && elapsed > run.duration - run.fadeOut) {
+                    const p = Math.max(0, (run.duration - elapsed) / run.fadeOut);
+                    envelope *= p * p * (3 - 2 * p);
+                }
+                return Math.sin(elapsed * Math.PI / VIBRATO_HALF_WAVE_S) * envelope;
+            }
             const elapsed = Math.max(0, chartTime - n.t);
             return Math.sin(elapsed * Math.PI / VIBRATO_HALF_WAVE_S);
         }
 
         function prebendOffsetWorld(n) {
             if (!(n?.sus > 0) || !Array.isArray(n.bnv)) return 0;
-            const first = n.bnv[0];
-            // Only an authored positive value at onset proves a prebend.
-            // A later target or scalar peak must still approach unbent.
-            if (!first || !Number.isFinite(first.t) || first.t < 0 || first.t > 1e-6
-                || !Number.isFinite(first.v) || !(first.v > 0)) return 0;
-            return bendVisualDirY(n.s) * BEND_HALFSTEP_WORLD_Y * first.v;
+            // Head, attached markers and ribbon sample the same resolved start.
+            return bendVisualDirY(n.s) * BEND_HALFSTEP_WORLD_Y * bendSemisAtTime(n, n.t);
         }
 
         function techniqueYOffsetWorld(n, chartTime) {
@@ -15813,18 +17238,25 @@
             return bendVisualDirY(n.s) * BEND_HALFSTEP_WORLD_Y * (bendSemi + vibratoSemi);
         }
 
+        function sustainMotionWidth(trailW) {
+            // Thin RS+ strokes retain the authored motion's existing reach.
+            // Keep this conversion shared by rendering and crossing bounds.
+            return rsPlusNotation ? trailW / RSPLUS_SUSTAIN_STROKE_SCALE : trailW;
+        }
+
         function tremoloOffsetWorldX(n, chartTime, trailW) {
             if (!(n?.tr) || !(n?.sus > 0)) return 0;
             const elapsed = Math.max(0, chartTime - n.t);
             const phase = (elapsed % TREMOLO_BUMP_S) / TREMOLO_BUMP_S;
             const tri = (Math.abs(phase - 0.5) - 0.25) * 3;
-            return trailW * 0.5 * tri;
+            return sustainMotionWidth(trailW) * 0.5 * tri;
         }
 
         /** Rendered X centre of one sustain strand at a chart time. */
         function sustainTrailCenterXAt(n, strandBaseX, chartTime, slideSt, trailW) {
             return strandBaseX
-                + (_leftyCached ? -1 : 1) * slideOffsetWorldX(n, chartTime, slideSt)
+                + (_leftyCached ? -1 : 1) * (slideOffsetWorldX(n, chartTime, slideSt)
+                    + slideOutOffsetWorldX(n, chartTime))
                 + tremoloOffsetWorldX(n, chartTime, trailW);
         }
 
@@ -15864,14 +17296,22 @@
             const anchorCX = anchor
                 ? (xFret(anchor.dMin) + xFret(anchor.dMax)) * 0.5
                 : curX;
-            const outlineWidthScale = (35 / 40) * 1.1
-                * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
-            const coreWidthScale = event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1;
+            // Match the selected style's rendered open rim. RS+ keeps the
+            // body at the ordinary width and emphasizes accents on its rim.
+            const outlineWidthScale = rsPlusNotation ? 1
+                : (35 / 40) * 1.1 * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
+            const coreWidthScale = !rsPlusNotation && event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1;
             const bodyScale = 0.96 * Math.max(coreWidthScale, outlineWidthScale);
+            const ghostExtent = event.ghost === true
+                ? NW * 0.48 * (rsPlusNotation ? (event.accent ? 1.5 : 1) : 1.1) : 0;
+            // The actual open renderer clamps its slab scale to .22 even in
+            // very narrow lanes. Preserve ordinary-note matching unchanged.
+            const ghostMinBody = event.ghost === true
+                ? NW * 8 * 0.22 * Math.max(coreWidthScale, outlineWidthScale) : 0;
 
             if (event.standalone || !event.chordMeta) {
                 trailYieldAddTargetXBounds(
-                    anchorCX, openNoteLaneBoxW(event.t) * bodyScale, bounds,
+                    anchorCX, Math.max(openNoteLaneBoxW(event.t) * bodyScale, ghostMinBody) + ghostExtent, bounds,
                 );
             }
 
@@ -15899,7 +17339,7 @@
                         laneW += OPEN_NOTE_PAD_X * 2;
                     }
                 }
-                trailYieldAddTargetXBounds(chordCX, laneW * bodyScale, bounds);
+                trailYieldAddTargetXBounds(chordCX, Math.max(laneW * bodyScale, ghostMinBody) + ghostExtent, bounds);
             }
             return Number.isFinite(bounds[0]) && Number.isFinite(bounds[1]);
         }
@@ -15912,7 +17352,8 @@
             if (event.f > 0) {
                 _trailCrossingTargetBases[0] = xFretMid(event.f);
                 _trailCrossingTargetBaseCount = 1;
-                ctx.crossingTargetW = NW * 0.85 + 0.4 * K;
+                ctx.crossingTargetW = (NW * 0.85 + 0.4 * K)
+                    * (rsPlusNotation ? RSPLUS_SUSTAIN_STROKE_SCALE : 1);
                 return 1;
             }
             // Chord-member open strings deliberately do not emit sustain rails.
@@ -15929,7 +17370,8 @@
             _trailCrossingTargetBases[0] = baseX - offset;
             _trailCrossingTargetBases[1] = baseX + offset;
             _trailCrossingTargetBaseCount = 2;
-            ctx.crossingTargetW = NW * 0.85 * openWScale + 0.4 * K;
+            ctx.crossingTargetW = (NW * 0.85 * openWScale + 0.4 * K)
+                * (rsPlusNotation ? RSPLUS_SUSTAIN_STROKE_SCALE : 1);
             return 2;
         }
 
@@ -15949,7 +17391,8 @@
                 ctx.crossingTargetW,
             );
             return hwyTrailOverlapsGemX(
-                sourceX, ctx.trailW, targetX, ctx.crossingTargetW,
+                sourceX, ctx.trailW * slideOutWidthScaleAt(ctx.note, chartTime),
+                targetX, ctx.crossingTargetW * slideOutWidthScaleAt(target, chartTime),
             );
         }
 
@@ -15977,12 +17420,13 @@
             } else {
                 targetX = xFretMid(event.f);
                 targetW = NW * 1.1
-                    * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1);
+                    * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1)
+                    * (event.ghost === true ? 1.48 : 1);
             }
             const onsetMatches = hwyTrailFootprintsCanOcclude(
                 visuallyBelow,
                 trailX,
-                ctx.trailW,
+                ctx.trailW * slideOutWidthScaleAt(n, sampleT),
                 targetX,
                 targetW,
             );
@@ -16033,7 +17477,7 @@
         }
 
         function trailYieldApplyBehindLayerRecord(
-            worldZ, outline, core, face, coveringRenderOrder = Infinity,
+            worldZ, outline, core, face, coveringRenderOrder = Infinity, halo = null,
         ) {
             const outlineOrder = renderOrderForLayerAtZ(
                 worldZ, 'NOTE_OUTLINE_BEHIND_TRAIL',
@@ -16056,6 +17500,9 @@
             if (face) face.renderOrder = Number.isFinite(coveringRenderOrder)
                 ? Math.min(faceOrder, coveringRenderOrder - 0.001)
                 : faceOrder;
+            // The optional RS+ halo is part of this gem, including when a
+            // later crossing demotes it after its initial layer was chosen.
+            if (halo) halo.renderOrder = outline.renderOrder - 0.01;
         }
 
         function trailYieldApplyBehindLayers(event) {
@@ -16072,6 +17519,7 @@
                 event._trailYieldGemCore,
                 event._trailYieldGemFace,
                 coveringRenderOrder,
+                event._trailYieldGemHalo,
             );
             const extras = event._trailYieldGemExtraRecords;
             for (let i = 1; i < count; i++) {
@@ -16079,6 +17527,7 @@
                 trailYieldApplyBehindLayerRecord(
                     record.worldZ, record.outline, record.core, record.face,
                     coveringRenderOrder,
+                    record.halo,
                 );
             }
             trailYieldConstrainOwnTrailBehindGem(event);
@@ -16110,7 +17559,7 @@
             matchedEvents[ctx.matchedEventCount++] = event;
         }
 
-        function trailYieldRegisterGem(event, worldZ, outline, core, face) {
+        function trailYieldRegisterGem(event, worldZ, outline, core, face, halo = null) {
             if (!event) return;
             if (event._trailYieldGemFrame !== _trailYieldFrameId) {
                 event._trailYieldGemFrame = _trailYieldFrameId;
@@ -16125,6 +17574,7 @@
                 event._trailYieldGemOutline = outline;
                 event._trailYieldGemCore = core;
                 event._trailYieldGemFace = face;
+                event._trailYieldGemHalo = halo;
             } else {
                 // A standalone arpeggio note can duplicate a chord member.
                 // Allocate records only for that uncommon second emission.
@@ -16135,6 +17585,7 @@
                 record.outline = outline;
                 record.core = core;
                 record.face = face;
+                record.halo = halo;
             }
             if (event._trailYieldTargetFrame === _trailYieldFrameId) {
                 trailYieldApplyBehindLayers(event);
@@ -16362,18 +17813,43 @@
             }
             _trailOrderGemCount++;
 
-            // The approach rotation is already present on the pooled mesh.
-            // Resolve its XY axis-aligned footprint without Box3/Vector churn.
-            const width = NW * outline.scale.x;
-            const height = NH * outline.scale.y;
+            // Union both actual meshes without Box3/Vector churn: an open
+            // core is wider than its outline, and a hit punch can also expand
+            // the core. Both meshes carry the ghost-parenthesis geometry.
+            const width = NW * (n.ghost === true ? 1.48 : 1);
+            const height = NH * (n.ghost === true ? 1.16 : 1);
+            const outlineBounds = n.ghost === true && n.f === 0 ? outline.geometry?.boundingBox : null;
+            const coreBounds = n.ghost === true && n.f === 0 ? core.geometry?.boundingBox : null;
+            const outlineWidth = outlineBounds ? outlineBounds.max.x - outlineBounds.min.x : width;
+            const outlineHeight = outlineBounds ? outlineBounds.max.y - outlineBounds.min.y : height;
+            const coreWidth = coreBounds ? coreBounds.max.x - coreBounds.min.x : width;
+            const coreHeight = coreBounds ? coreBounds.max.y - coreBounds.min.y : height;
             const cos = Math.abs(Math.cos(outline.rotation.z));
             const sin = Math.abs(Math.sin(outline.rotation.z));
-            gem.x = outline.position.x;
-            gem.y = outline.position.y;
-            gem.z = outline.position.z;
-            gem.zHalf = ND * outline.scale.z * 0.5;
-            gem.width = width * cos + height * sin;
-            gem.height = width * sin + height * cos;
+            const coreCos = Math.abs(Math.cos(core.rotation.z));
+            const coreSin = Math.abs(Math.sin(core.rotation.z));
+            const outlineHalfX = (outlineWidth * Math.abs(outline.scale.x) * cos
+                + outlineHeight * Math.abs(outline.scale.y) * sin) * 0.5;
+            const outlineHalfY = (outlineWidth * Math.abs(outline.scale.x) * sin
+                + outlineHeight * Math.abs(outline.scale.y) * cos) * 0.5;
+            const coreHalfX = (coreWidth * Math.abs(core.scale.x) * coreCos
+                + coreHeight * Math.abs(core.scale.y) * coreSin) * 0.5;
+            const coreHalfY = (coreWidth * Math.abs(core.scale.x) * coreSin
+                + coreHeight * Math.abs(core.scale.y) * coreCos) * 0.5;
+            const minX = Math.min(outline.position.x - outlineHalfX, core.position.x - coreHalfX);
+            const maxX = Math.max(outline.position.x + outlineHalfX, core.position.x + coreHalfX);
+            const minY = Math.min(outline.position.y - outlineHalfY, core.position.y - coreHalfY);
+            const maxY = Math.max(outline.position.y + outlineHalfY, core.position.y + coreHalfY);
+            const minZ = Math.min(outline.position.z - ND * Math.abs(outline.scale.z) * 0.5,
+                core.position.z - ND * Math.abs(core.scale.z) * 0.5);
+            const maxZ = Math.max(outline.position.z + ND * Math.abs(outline.scale.z) * 0.5,
+                core.position.z + ND * Math.abs(core.scale.z) * 0.5);
+            gem.x = (minX + maxX) * 0.5;
+            gem.y = (minY + maxY) * 0.5;
+            gem.z = (minZ + maxZ) * 0.5;
+            gem.zHalf = (maxZ - minZ) * 0.5;
+            gem.width = maxX - minX;
+            gem.height = maxY - minY;
             gem.string = n.s;
             gem.event = event;
             gem.outline = outline;
@@ -16411,7 +17887,7 @@
 
             if (geometry) {
                 const positions = geometry.attributes.position.array;
-                const last = SLIDE_RIBBON_SAMPLES * 12;
+                const last = (geometry.userData.ribbonSlices ?? SLIDE_RIBBON_SAMPLES) * 12;
                 strand.nearZ = Math.max(positions[2], positions[last + 2]);
                 strand.farZ = Math.min(positions[2], positions[last + 2]);
             } else {
@@ -16432,16 +17908,30 @@
                 return;
             }
             const positions = geometry.attributes.position.array;
-            const span = strand.nearZ - strand.farZ;
-            const u = span > 1e-9
-                ? Math.max(0, Math.min(1, (strand.nearZ - worldZ) / span))
-                : 0;
-            const offset = Math.round(u * SLIDE_RIBBON_SAMPLES) * 12;
-            let minX = positions[offset], maxX = positions[offset];
-            let minY = positions[offset + 1], maxY = positions[offset + 1];
+            // Slide-out contours add exact boundary rings, so sample spacing
+            // is nonuniform. Search the actual rendered depth, not a guessed
+            // uniform index, and interpolate the actual footprint.
+            const last = geometry.userData.ribbonSlices ?? SLIDE_RIBBON_SAMPLES;
+            let lo = 0, hi = last;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (positions[mid * 12 + 2] > worldZ) lo = mid + 1;
+                else hi = mid;
+            }
+            const offset = lo * 12;
+            const previous = Math.max(0, lo - 1) * 12;
+            const zSpan = positions[previous + 2] - positions[offset + 2];
+            const mix = zSpan > 1e-9
+                ? Math.max(0, Math.min(1, (positions[previous + 2] - worldZ) / zSpan)) : 1;
+            const firstX = positions[previous] + (positions[offset] - positions[previous]) * mix;
+            const firstY = positions[previous + 1] + (positions[offset + 1] - positions[previous + 1]) * mix;
+            let minX = firstX, maxX = firstX;
+            let minY = firstY, maxY = firstY;
             for (let vertex = 3; vertex < 12; vertex += 3) {
-                const x = positions[offset + vertex];
-                const y = positions[offset + vertex + 1];
+                const x = positions[previous + vertex]
+                    + (positions[offset + vertex] - positions[previous + vertex]) * mix;
+                const y = positions[previous + vertex + 1]
+                    + (positions[offset + vertex + 1] - positions[previous + vertex + 1]) * mix;
                 if (x < minX) minX = x;
                 if (x > maxX) maxX = x;
                 if (y < minY) minY = y;
@@ -16627,7 +18117,7 @@
          * only avoids opening time windows for frets the strand cannot reach.
          */
         function trailYieldSweepMayReachFret(sweepCenter, sweepWidth, fret) {
-            const widestGem = NW * 1.1 * ACCENT_RIM_XY_SCALE_MUL;
+            const widestGem = NW * 1.1 * ACCENT_RIM_XY_SCALE_MUL * 1.48;
             return hwyTrailOverlapsGemX(
                 sweepCenter, sweepWidth, xFretMid(fret), widestGem,
             );
@@ -16639,6 +18129,7 @@
          * come from the existing occlusion index; this pass only resolves the
          * local geometry and is deliberately independent of front-priority UI.
          */
+        const _slideOutCrossingTimesScratch = [];
         function collectTrailCrossingWindowsForStrand(
             n, now, susEnd, visibleEnd,
             starts, ends, targetTrailEnds,
@@ -16665,8 +18156,10 @@
                 const targetStrandCount = trailCrossingTargetStrands(target);
                 if (targetStrandCount === 0) continue;
                 const span = overlapEnd - overlapStart;
-                const sourceMovesX = !!(ctx.slideSt || n.tr);
-                const targetMovesX = !!(ctx.crossingTargetSlideSt || target.tr);
+                const sourceSlideOut = slideOutMarks(n).length > 0 && !ctx.slideSt;
+                const targetSlideOut = slideOutMarks(target).length > 0 && !ctx.crossingTargetSlideSt;
+                const sourceMovesX = !!(ctx.slideSt || n.tr || sourceSlideOut);
+                const targetMovesX = !!(ctx.crossingTargetSlideSt || target.tr || targetSlideOut);
                 const ribbonStep = span / SLIDE_RIBBON_SAMPLES;
                 const hasTremolo = !!(n.tr || target.tr);
                 const sampleStep = hasTremolo
@@ -16692,7 +18185,8 @@
                     const sourceEndX = sustainTrailCenterXAt(
                         n, ctx.strandBaseX, overlapEnd, ctx.slideSt, ctx.trailW,
                     );
-                    const sourceReach = n.tr ? ctx.trailW * 0.375 : 0;
+                    const sourceReach = (n.tr ? sustainMotionWidth(ctx.trailW) * 0.375 : 0)
+                        + (sourceSlideOut ? slideOutReach(n) : 0);
                     const targetStartX = sustainTrailCenterXAt(
                         target, ctx.crossingTargetBaseX, overlapStart,
                         ctx.crossingTargetSlideSt, ctx.crossingTargetW,
@@ -16701,7 +18195,8 @@
                         target, ctx.crossingTargetBaseX, overlapEnd,
                         ctx.crossingTargetSlideSt, ctx.crossingTargetW,
                     );
-                    const targetReach = target.tr ? ctx.crossingTargetW * 0.375 : 0;
+                    const targetReach = (target.tr ? sustainMotionWidth(ctx.crossingTargetW) * 0.375 : 0)
+                        + (targetSlideOut ? slideOutReach(target) : 0);
                     const sourceLo = Math.min(sourceStartX, sourceEndX)
                         - sourceReach - ctx.trailW * 0.5;
                     const sourceHi = Math.max(sourceStartX, sourceEndX)
@@ -16711,16 +18206,20 @@
                     const targetHi = Math.max(targetStartX, targetEndX)
                         + targetReach + ctx.crossingTargetW * 0.5;
                     if (sourceHi < targetLo || targetHi < sourceLo) continue;
-                    count = hwyFillTrailCrossingWindows(
-                        overlapStart,
-                        overlapEnd,
-                        sampleStep,
-                        trailCrossingFootprintsOverlapAt,
-                        starts,
-                        ends,
-                        count,
-                        crossingMergeFrom,
+                    // A short authored mark can lie wholly between regular
+                    // ribbon ticks. Partition at the same contour rings used
+                    // by geometry, including both moving trails, then refine.
+                    const crossingTimes = slideOutCrossingTimes(
+                        n, target, overlapStart, overlapEnd, _slideOutCrossingTimesScratch,
                     );
+                    for (let j = 1; j < crossingTimes.length; j++) {
+                        if (!(crossingTimes[j] > crossingTimes[j - 1])) continue;
+                        count = hwyFillTrailCrossingWindows(
+                            crossingTimes[j - 1], crossingTimes[j], sampleStep,
+                            trailCrossingFootprintsOverlapAt,
+                            starts, ends, count, crossingMergeFrom,
+                        );
+                    }
                 }
             }
             if (targetTrailEnds) {
@@ -16749,11 +18248,12 @@
             const slideEndX = strandBaseX
                 + (_leftyCached ? -1 : 1)
                     * slideOffsetWorldX(n, n.t + (n.sus || 0), ctx.slideSt);
-            // tremoloOffsetWorldX ranges from -0.375 to +0.375 trail widths.
-            const tremoloReach = n.tr ? ctx.trailW * 0.375 : 0;
+            // Tremolo reach is independent of the selected stroke thickness.
+            const tremoloReach = n.tr ? sustainMotionWidth(ctx.trailW) * 0.375 : 0;
             const sweepCenter = (strandBaseX + slideEndX) * 0.5;
             const sweepWidth = Math.abs(slideEndX - strandBaseX)
-                + ctx.trailW + tremoloReach * 2;
+                + ctx.trailW + tremoloReach * 2
+                + (slideOutMarks(n).length > 0 && !ctx.slideSt ? slideOutReach(n) * 2 : 0);
             let count = 0;
             if (priorityTimes) priorityTimes[priorityIndex] = -Infinity;
             // Fret zero is always considered because an open gem spans the
@@ -16871,7 +18371,12 @@
             // Preserve source fret/identity for note-detect matching. Only this
             // local drawing view treats an unpitched muted strike as a slab.
             const sourceNote = n;
-            if (isUnpitchedMute(n)) n = { ...n, f: 0 };
+            if (isUnpitchedMute(n)) {
+                n = { ...n, f: 0 };
+                _linkedBendStarts.set(n, _linkedBendStarts.get(sourceNote) || 0);
+                _linkedBendEnds.set(n, _linkedBendEnds.get(sourceNote));
+                _linkedVibratoRuns.set(n, _linkedVibratoRuns.get(sourceNote));
+            }
             const nxFrame = _drawNextByString && _drawNextByString[s];
             const dt = n.t - now;
             const ghostHold = fromChord ? linger : GHOST_HOLD_AFTER_ONSET;
@@ -16953,7 +18458,11 @@
             // and after onset; its sustain and any outgoing slide still render.
             const effSkipBody = hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, dt);
             const hasTechniqueVibrato = noteHasVibrato(n);
-            const techniqueYNow = sustained ? techniqueYOffsetWorld(n, now)
+            // A short sustain can leave its gem visible until the linger
+            // deadline. Hold the final bend/vibrato pose for that remainder,
+            // without extending the authored motion or the gem's lifetime.
+            const techniqueYNow = dt < 0 && hasSus
+                ? techniqueYOffsetWorld(n, Math.min(now, susEnd))
                 : now <= n.t ? prebendOffsetWorld(n) : 0;
             const noteZ = sustained ? 0 : Math.min(0, dZ(dt));
             // Per-note Z-based renderOrder: far notes get a low value (render
@@ -16991,7 +18500,10 @@
             // the unconditional sustain trail all share one declaration.
             // For skipBody=true (slide targets), defaults are safe no-ops.
             const openSlabThickMul = n.f === 0 ? 1.5 : 1;
-            const approachRot = n.f > 0 ? Math.max(0, Math.min(1, dt / AHEAD)) * Math.PI / 2 : 0;
+            // RS+ keeps the gem, rim and attached symbols in their landing
+            // orientation for the entire approach. Current retains its turn.
+            const approachRot = !rsPlusNotation && n.f > 0
+                ? Math.max(0, Math.min(1, dt / AHEAD)) * Math.PI / 2 : 0;
             // Ghost preview window: capped to the gap from the previous note
             // on this string so dense passages don't show the preview 0.6 s
             // ahead with no visible gem. Minimum 0.05 s so the ghost isn't
@@ -17237,8 +18749,8 @@
                 }
                 // (approachRot / PROJ_WIN_G / projFactorG / inGhostWin hoisted above)
 
-                const rimXY = n.ac ? ACCENT_RIM_XY_SCALE_MUL : 1;
-                const rimZ = n.ac ? ACCENT_RIM_Z_SCALE_MUL : 1;
+                const rimXY = !rsPlusNotation && n.ac ? ACCENT_RIM_XY_SCALE_MUL : 1;
+                const rimZ = !rsPlusNotation && n.ac ? ACCENT_RIM_Z_SCALE_MUL : 1;
 
                 // feedBack#254 — apply outline + lateral face-fill overrides from provider verdict.
                 // hit/active → green outline (mHitBright[s]) + green lateral faces;
@@ -17259,7 +18771,7 @@
                         // alpha > 1 must not over-drive emissiveIntensity.
                         const _rimA = Math.max(0, Math.min(1, _vAlpha));
                         if (_rimA > _rimFlashIn[s]) _rimFlashIn[s] = _rimA;
-                        _hitPunch = 1 + 0.22 * _hitFx * _vAlpha;   // #3 scale-punch (biggest at strike, eases)
+                        _hitPunch = 1 + (rsPlusNotation ? 0.08 : 0.22) * _hitFx * _vAlpha;   // #3 scale-punch (biggest at strike, eases)
                         if (_verdictMarks) { const _tc = _timingHex(_ndMatchedMark && _ndMatchedMark.timingState); _ndLabels.push({ x, y: y + NH * 1.7, z: noteZ + 0.02, labels: [{ text: '✓', color: '#' + _tc.toString(16).padStart(6, '0') }] }); }  // #6 + #5
                         if (_sparks && _hitFx > 0 && _vAlpha > 0.5) {
                             const _spk = s + '|' + n.f + '|' + n.t.toFixed(2);
@@ -17292,12 +18804,14 @@
                 // around a missed gem muddies the dark-core-plus-red-rim fail
                 // signal, matching the same miss-over-accent priority the
                 // gem core material applies below.
-                if (n.ac && _ndState !== 'miss' && mAccentHaloNear[s]) {
+                if (!rsPlusNotation && n.ac && _ndState !== 'miss' && mAccentHaloNear[s]) {
                     const rZ = approachRot;
                     const accentShells = _accentShellsByString[s];
                     for (let hi = 0; hi < accentShells.length; hi++) {
                         const sh = accentShells[hi];
                         const glow = pAccentHalo.get();
+                        glow.geometry = gNote;
+                        glow.renderOrder = 0;
                         glow.material = sh.mat;
                         glow.rotation.z = rZ;
                         glow.position.set(x, y + techniqueYNow, noteZ - sh.zK * K);
@@ -17324,11 +18838,20 @@
                 // priority the accent halo guard above already applies.
                 const _ndVerdict = (_ndCs && (_ndState === 'miss' || _ndGood))
                     || !!_ndMatchedMark;
-                outline.material = (n.ac && !_ndVerdict) ? mAccentOutline[s] : _ndOutline;
+                // Provider verdicts take precedence; event-only detectors still
+                // carry hit/miss feedback through their matched mark.
+                const rsMiss = _ndCs && (_ndState === 'miss' || _ndGood)
+                    ? _ndState === 'miss' : !!_ndMatchedMark && !_ndHadHitMark;
+                const rsHit = _ndCs && (_ndState === 'miss' || _ndGood)
+                    ? _ndGood : _ndHadHitMark;
+                outline.material = rsPlusNotation
+                    ? (rsMiss ? mRsMissRim : (rsHit ? mRsHitRim[s] : (n.ac ? mRsAccentRim[s] : mRsRim[s])))
+                    : ((n.ac && !_ndVerdict) ? mAccentOutline[s] : _ndOutline);
                 // outline + core share the pNote pool, so set geometry explicitly
                 // each frame (a recycled mesh may carry a gradient geometry from a
-                // prior core use). Outline always uses the plain box.
-                outline.geometry = gNote;
+                // prior core use). Keep the selected body style and authored brackets.
+                outline.geometry = n.ghost === true
+                    ? (rsPlusNotation ? gRsNoteGhost : gNoteGhost) : (rsPlusNotation ? gRsNote : gNote);
                 const trailYieldGemEvent = trailYieldTargetEvent;
                 const isTrailYieldTarget = !!(trailYieldGemEvent
                     && !trailYieldGemInFront
@@ -17345,11 +18868,39 @@
                     trailYieldGemInFront, isTrailYieldTarget,
                     'TECHNIQUE_MARKER', 'NOTE_FACE_BEHIND_TRAIL',
                 );
+                let noteHaloMesh = null;
+                if (rsPlusNotation && (n.ac || rsHit) && !rsMiss && notationSoftGlow() > 0) {
+                    const halo = pAccentHalo.get();
+                    noteHaloMesh = halo;
+                    halo.geometry = gRsNoteHalo;
+                    halo.material = mRsHalo[s];
+                    halo.renderOrder = renderOrderForLayerAtZ(noteZ, noteOutlineLayer) - 0.01;
+                    halo.position.set(x, y + techniqueYNow, noteZ - ND);
+                    halo.rotation.z = approachRot;
+                    if (n.f === 0) halo.scale.set((40 * K / NW) * openWScale,
+                        0.1 * openSlabThickMul * (n.ac ? 1.5 : 1), 1);
+                    else halo.scale.set(1, 1, 1);
+                }
                 outline.renderOrder = renderOrderForLayerAtZ(noteZ, noteOutlineLayer);
                 outline.position.set(x, y + techniqueYNow, noteZ);
                 outline.rotation.z = approachRot;
-                const ndRim = 1.1;
-                if (n.f === 0) {
+                const ndRim = rsPlusNotation ? (n.ac ? 1.15 : 1.075) : 1.1;
+                if (rsPlusNotation && n.f === 0) {
+                    // Open strings are bars, not stretched fretted-note rims.
+                    // Reuse the outline mesh for the reference's pale vertical
+                    // stem: no extra draw call and no white horizontal end caps.
+                    const barW = 40 * K * openWScale;
+                    const stemW = NH * 0.10;
+                    const stemTop = y + techniqueYNow + NH * 0.45;
+                    const stemBottom = fromChord
+                        ? y + techniqueYNow - NH * 0.45
+                        : Math.min(sY(0), sY(nStr - 1)) - S_GAP * 0.55;
+                    outline.geometry = gNote;
+                    if (!rsMiss && !rsHit) outline.material = mRsOpenStem;
+                    outline.position.set(x + (_leftyCached ? 1 : -1) * (barW - stemW) * 0.5,
+                        (stemTop + stemBottom) * 0.5, noteZ);
+                    outline.scale.set(stemW / NW, Math.max(stemW, stemTop - stemBottom) / NH, 0.6);
+                } else if (n.f === 0) {
                     outline.scale.set(
                         (35 * K / NW) * ndRim * rimXY * openWScale,
                         0.1 * ndRim * openSlabThickMul,
@@ -17374,7 +18925,7 @@
                     if (n.f === 0) {
                         edges.scale.set(
                             (40 * K / NW) * rimXY * openWScale * 1.02,
-                            0.1 * openSlabThickMul * 1.02,
+                            0.1 * openSlabThickMul * 1.02 * (rsPlusNotation && n.ac ? 1.5 : 1),
                             0.6 * rimZ * 1.02,
                         );
                     } else {
@@ -17386,24 +18937,35 @@
                 const core = pNote.get();
                 // Body always keeps the string colour. Verdict feedback is
                 // carried by the outline shell and lateral face fill.
-                core.material = n.ac ? mAccentCore[s] : mStr[s];
+                core.material = rsPlusNotation ? mRsBody[s] : (n.ac ? mAccentCore[s] : mStr[s]);
                 // Gradient gem body for strings 0..5; flat box otherwise.
-                core.geometry = (!n.ac && gNoteGrad[s]) ? gNoteGrad[s] : gNote;
+                core.geometry = n.ghost === true
+                    ? (rsPlusNotation ? gRsNoteGhostGrad[s] : ((!n.ac && gNoteGhostGrad[s]) ? gNoteGhostGrad[s] : gNoteGhost))
+                    : (rsPlusNotation ? gRsNoteGrad[s] : ((!n.ac && gNoteGrad[s]) ? gNoteGrad[s] : gNote));
                 core.renderOrder = renderOrderForLayerAtZ(noteZ, noteCoreLayer);
                 core.position.set(x, y + techniqueYNow, noteZ + 0.001);
                 core.rotation.z = approachRot;
                 if (n.f === 0) {
                     core.scale.set(
                         (40 * K / NW) * rimXY * openWScale,
-                        0.1 * openSlabThickMul,
+                        0.1 * openSlabThickMul * (rsPlusNotation && n.ac ? 1.5 : 1),
                         0.6 * rimZ,
                     );
                 } else {
                     core.scale.set(rimXY, rimXY, 2.5 * rimZ);
                 }
                 if (_hitPunch !== 1) core.scale.multiplyScalar(_hitPunch);   // #3 hit scale-punch
+                if (n.ghost === true && n.f === 0) {
+                    const bodyWidth = NW * Math.max(outline.scale.x, core.scale.x);
+                    const markerScale = core.scale.y / (0.1 * openSlabThickMul);
+                    // RS+ keeps its single vertical stem; the bar core carries
+                    // both parentheses. Current also brackets its outline.
+                    if (!rsPlusNotation) hwyShapeOpenGhostGeometry(outline, gNoteGhost, bodyWidth, markerScale * 1.1, NW, _ownedSharedGeos);
+                    hwyShapeOpenGhostGeometry(core, core.geometry, bodyWidth, markerScale, NW, _ownedSharedGeos);
+                }
+                _registerIncomingLabelOccluder(core, noteZ, outline);
                 trailYieldRegisterGem(
-                    trailYieldGemEvent, noteZ, outline, core, noteFaceMesh,
+                    trailYieldGemEvent, noteZ, outline, core, noteFaceMesh, noteHaloMesh,
                 );
                 trailOrderRegisterUpcomingGem(
                     n, dt, trailYieldGemEvent, outline, core,
@@ -17447,6 +19009,13 @@
                             }
                             tw = Math.max(tw, ftSide * 1.05);
                         }
+                        // The reference uses a fine coloured tail with a thin
+                        // edge; narrowing its cross-section exposes motion
+                        // without changing the bend/slide/oscillation path.
+                        const strokeScale = rsPlusNotation ? RSPLUS_SUSTAIN_STROKE_SCALE : 1;
+                        tw *= strokeScale;
+                        th *= strokeScale;
+                        const trailEdgePad = 0.4 * K * strokeScale;
                         // Standalone open strings get two parallel trails
                         // offset along X — visually echoes the wide flat
                         // open-note body. Fretted notes keep the
@@ -17500,7 +19069,7 @@
                             const ctx = _trailYieldMatchContext;
                             ctx.note = n;
                             ctx.slideSt = slideSt;
-                            ctx.trailW = tw + 0.4 * K;
+                            ctx.trailW = tw + trailEdgePad;
                             ctx.susEnd = susEnd;
 
                             if (n.f === 0) {
@@ -17566,14 +19135,16 @@
                             || (Array.isArray(n.bnv) && n.bnv.length > 0)
                             || n.tr
                             || hasTechniqueVibrato
+                            || slideOutMarks(n).length > 0
                         );
                         // Outline material for the sustain trail border — uses the
                         // same materials as the gem border so hit/miss colours are
                         // perceptually identical across gem outline, lateral faces,
                         // and sustain trail rim.
-                        const _susOlMat = _ndState === 'miss' ? mMissOutline
-                            : _ndGood ? (mHitBright[s] ?? mHitSusOutline)
-                            : mSusOutline;
+                        const _susOlMat = rsPlusNotation
+                            ? (_ndState === 'miss' ? mRsMissRim : mRsSusEdge[s])
+                            : (_ndState === 'miss' ? mMissOutline
+                                : _ndGood ? (mHitBright[s] ?? mHitSusOutline) : mSusOutline);
                         const emitSusStrip = (xCenter, segLen, zCenter) => {
                             // Same depth-bucket scheme as chord frames, using the
                             // ordered sustain-trail layer so same-depth frames win
@@ -17605,9 +19176,9 @@
                                 trOut.material = _susOlMat;
                                 trOut.renderOrder = trailRenderOrder;
                                 trOut.position.set(xOff, y, zCenter);
-                                trOut.scale.set(tw + 0.4 * K, th + 0.4 * K, segLen);
+                                trOut.scale.set(tw + trailEdgePad, th + trailEdgePad, segLen);
                                 const tr = pSus.get();
-                                tr.material = _ndState ? mGlow[s] : mSus[s];
+                                tr.material = rsPlusNotation ? (_ndGood ? mRsSusHit[s] : mRsSus[s]) : (_ndState ? mGlow[s] : mSus[s]);
                                 tr.renderOrder = trailRenderOrder + 0.0005;
                                 tr.position.set(xOff, y, zCenter);
                                 tr.scale.set(tw, th, segLen);
@@ -17616,7 +19187,7 @@
                                 );
                                 trailOrderRegisterStrand(
                                     trOut, tr, trailYieldTargetEvent, s,
-                                    xOff, y, tw + 0.4 * K, th + 0.4 * K, null,
+                                    xOff, y, tw + trailEdgePad, th + trailEdgePad, null,
                                 );
                             }
                             trailOcclusionRegisterRelationships(
@@ -17702,10 +19273,14 @@
                                 body.scale.set(1, 1, 1);
                                 body.rotation.set(0, 0, 0);
                                 body.position.set(0, 0, 0);
-                                body.material = _ndState ? mGlow[s] : mSus[s];
+                                body.material = rsPlusNotation ? (_ndGood ? mRsSusHit[s] : mRsSus[s]) : (_ndState ? mGlow[s] : mSus[s]);
+                                if (slideOutMarks(n).length > 0 && !slideSt) {
+                                    olMesh.material = slideRibbonFadeMaterial(_susOlMat);
+                                    body.material = slideRibbonFadeMaterial(body.material);
+                                }
                                 slideRibbonUpdatePair(
                                     olMesh.geometry, body.geometry, strandX,
-                                    tw + 0.4 * K, th + 0.4 * K,
+                                    tw + trailEdgePad, th + trailEdgePad,
                                     tw, th, y,
                                     sliceDur, susStart, now, n, slideSt,
                                     strandYieldStarts, strandYieldEnds, strandYieldCount,
@@ -17768,7 +19343,9 @@
                     const neckAlpha = Math.max(0, Math.min(1, 1 - dt / GHOST_UPCOMING_WIN));
                     if (neckAlpha > 0.001) {
                         const arrowHexN = darkenHex(activePalette[s], 0.55);
-                        const arrowSmN = slideArrowMat(slideDirN > 0, arrowHexN);
+                        const arrowSmN = rsPlusNotation
+                            ? rsPlusTechniqueMat(slideDirN > 0 ? 'slideRight' : 'slideLeft', activePalette[s] ?? 0xffffff)
+                            : slideArrowMat(slideDirN > 0, arrowHexN);
                         const arrowN = pTechPlane.get();
                         arrowN.material = _spriteMat2MeshMat(arrowN, arrowSmN);
                         const arrowScaleN = NH * 1.1 * LBL_MULT * _textSizeMul;
@@ -17814,6 +19391,21 @@
                 const specialMarkerScale = n.f === 0
                     ? NH * 1.5 * sLbl * openWScale
                     : NH * 1.5 * sLbl;
+                // Legacy direction-only files cannot place a timed trail.
+                // A small on-gem chevron conveys only their known direction.
+                const legacySlideOut = slideOutLegacyDirection(n);
+                if (legacySlideOut && n.f > 0 && validString(s)) {
+                    const direction = legacySlideOut * (_leftyCached ? -1 : 1);
+                    const arrow = pTechPlane.get();
+                    arrow.material = _spriteMat2MeshMat(arrow,
+                        slideArrowMat(direction > 0, darkenHex(activePalette[s], 0.55)));
+                    const size = NH * 1.1 * sLbl;
+                    arrow.scale.set(size, size, 1);
+                    arrow.position.set(x + direction * NW * 1.15, y + techniqueYNow, noteZ + K);
+                    arrow.rotation.z = 0;
+                    arrow.renderOrder = techniqueMarkerRenderOrder;
+                    arrow.material.opacity = 1;
+                }
                 // ── Slide direction arrow (on the note/gem) ─────────────────
                 // A small ›/‹ chevron beside the note pointing toward the
                 // slide's destination fret. Visible for the note's whole
@@ -17825,18 +19417,21 @@
                     const slideDir = Math.sign(fretMid(slideSt.endFret) - fretMid(n.f)) * (_leftyCached ? -1 : 1);
                     if (slideDir !== 0) {
                         const arrowHex = darkenHex(activePalette[s], 0.55);
-                        const arrowSm = slideArrowMat(slideDir > 0, arrowHex);
+                        const arrowSm = rsPlusNotation
+                            ? rsPlusTechniqueMat(slideDir > 0 ? 'slideRight' : 'slideLeft', activePalette[s] ?? 0xffffff)
+                            : slideArrowMat(slideDir > 0, arrowHex);
                         const arrow = pTechPlane.get();
                         arrow.material = _spriteMat2MeshMat(arrow, arrowSm);
                         const arrowScale = NH * 1.1 * sLbl;
                         arrow.scale.set(arrowScale, arrowScale, 1);
                         arrow.position.set(x + slideDir * NW * 1.15, y + techniqueYNow, noteZ + K);
-                        // No rotation, ever — notes themselves rotate in
+                        // No rotation, ever — Current notes rotate in
                         // (approachRot) as they approach, but that would
                         // tilt the ›/‹ chevron and make its left/right
                         // direction ambiguous. Always flat.
                         arrow.rotation.z = 0;
                         arrow.renderOrder = techniqueMarkerRenderOrder;
+                        _registerIncomingLabelOccluder(arrow, noteZ);
                         arrow.material.opacity = 1;
                     }
                 }
@@ -17851,19 +19446,37 @@
                     // the gem (approachRot). Fixed world size so it perspective-
                     // shrinks naturally without distFactor compensation.
                     const steps = Math.max(1, Math.min(4, Math.round(_bendPeak)));
-                    const bendSm = bendChevronMat(steps, activePalette[s] || 0xffffff);
+                    const bendSm = rsPlusNotation ? rsPlusTechniqueMat('bend', activePalette[s] ?? 0xffffff)
+                        : bendChevronMat(steps, activePalette[s] || 0xffffff);
                     const l = pTechPlane.get();
                     l.material = _spriteMat2MeshMat(l, bendSm);
-                    const cs = NH * 2.4;
+                    const cs = NH * (rsPlusNotation ? 1.5 : 2.4);
                     l.scale.set(cs, cs, 1);
                     const bendDir = bendVisualDirY(s);
                     l.position.set(x, y + techniqueYNow + bendDir * NH * 1.1, noteZ + K);
                     l.rotation.z = approachRot + (bendDir < 0 ? Math.PI : 0);
                     l.renderOrder = techniqueMarkerRenderOrder;
+                    _registerIncomingLabelOccluder(l, noteZ);
                     // Only an upward bend occupies the upper label stack.
                     if (bendDir > 0) yo = Math.max(yo, y + techniqueYNow + NH * 2.5);
                 }
-                if (n.ho || n.po || n.tp) {
+                if (rsPlusNotation) {
+                    const faceFlags = rsPlusTechniqueFlags(n);
+                    if (faceFlags) {
+                        const face = pTechPlane.get();
+                        face.material = _spriteMat2MeshMat(face, rsPlusNoteFaceMat(faceFlags, activePalette[s] ?? 0xffffff));
+                        face.material.opacity = 1;
+                        // A square footprint preserves circle/triangle/V
+                        // proportions. Open-string bars keep the same glyph
+                        // size; their width must not stretch a technique mark.
+                        // Only compound flags share smaller face cells.
+                        face.scale.set(NH * 2.2, NH * 2.2, 1);
+                        face.position.set(x, y + techniqueYNow, noteZ + K);
+                        face.rotation.z = approachRot;
+                        face.renderOrder = techniqueMarkerRenderOrder;
+                        _registerIncomingLabelOccluder(face, noteZ);
+                    }
+                } else if (n.ho || n.po || n.tp) {
                     if (n.ho || n.po) {
                         // Hammer-on / pull-off: ▲/▼ triangle — PlaneGeometry mesh
                         // so it tilts with the gem instead of billboarding.
@@ -17874,6 +19487,7 @@
                         tri.position.set(x, y + techniqueYNow, noteZ + K);
                         tri.rotation.z = approachRot;
                         tri.renderOrder = techniqueMarkerRenderOrder;
+                        _registerIncomingLabelOccluder(tri, noteZ);
                         // Reserve stack space above the triangle for stacked labels.
                         yo = Math.max(yo, y + techniqueYNow + NH * 1.0);
                     } else {
@@ -17883,9 +19497,10 @@
                         chevron.rotation.z = approachRot;
                         chevron.scale.set(chevronScale, chevronScale, 1);
                         chevron.renderOrder = techniqueMarkerRenderOrder;
+                        _registerIncomingLabelOccluder(chevron, noteZ);
                     }
                 }
-                if (n.slp || n.plk) {
+                if (!rsPlusNotation && (n.slp || n.plk)) {
                     for (let attack = 0; attack < 2; attack++) {
                         const isPop = attack === 1;
                         if (!(isPop ? n.plk : n.slp)) continue;
@@ -17897,10 +19512,11 @@
                         attackMark.position.set(x, y + techniqueYNow + attackOffset, noteZ + K);
                         attackMark.rotation.z = approachRot;
                         attackMark.renderOrder = techniqueMarkerRenderOrder;
+                        _registerIncomingLabelOccluder(attackMark, noteZ);
                     }
                 }
                 // Tremolo label ('~~~') removed — trail shape already conveys it visually.
-                if (n.pm || n.mt || n.fhm) {
+                if (!rsPlusNotation && (n.pm || n.mt || n.fhm)) {
                     // Muted notes: pool-based plane with per-note Z-proportional
                     // renderOrder (techniqueMarkerRenderOrder). The previous InstancedMesh
                     // approach used a fixed renderOrder (702/700), which made PM/FH markers from
@@ -17917,11 +19533,12 @@
                     _pmMark.position.set(x, y + techniqueYNow, noteZ + K);
                     _pmMark.rotation.z = approachRot;
                     _pmMark.renderOrder = techniqueMarkerRenderOrder;
+                    _registerIncomingLabelOccluder(_pmMark, noteZ);
                 }
                 // hm / hp — PlaneGeometry overlay sized like the palm-mute X,
                 // so the symbol only appears on the front face and matches
                 // the palm-mute marker proportions.
-                if (n.hm || n.hp) {
+                if (!rsPlusNotation && (n.hm || n.hp)) {
                     const harmSprite = n.hm ? naturalHarmonicMat() : pinchHarmonicMat(activePalette[s]);
                     const harmMark = pTechPlane.get();
                     harmMark.material = _spriteMat2MeshMat(harmMark, harmSprite);
@@ -17931,6 +19548,7 @@
                     harmMark.position.set(x, y + techniqueYNow, noteZ + K);
                     harmMark.rotation.z = approachRot;
                     harmMark.renderOrder = techniqueMarkerRenderOrder;
+                    _registerIncomingLabelOccluder(harmMark, noteZ);
                 }
 
                 // ── Per-note fret connector label ─────────────────────────
@@ -17950,8 +19568,11 @@
                     if (!fromChord) {
                         const line = pConnectorLine.get();
                         line.position.set(x, labelY, noteZ);
-                        // Half-length (50% shorter), anchored at the fret-label end.
-                        line.scale.set(1, (y - labelY) * 0.5, 1);
+                        // RS+ connects the moving gem all the way to the floor.
+                        // Current retains its shorter label-end guide.
+                        line.scale.set(1, rsPlusNotation
+                            ? y + techniqueYNow - labelY
+                            : (y - labelY) * 0.5, 1);
                         // Tint the line with the incoming note's string colour.
                         // mStr is white for gradient strings, so use the canonical
                         // flat palette colour instead of the material's .color.
@@ -17979,7 +19600,7 @@
                         _frameLabeledKeys.add(_flFrameKey);
                         const fretLabel  = pNoteFretLabel.get();
                         const cachedMat  = txtMat(n.f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
-                        _setLabelMap(fretLabel, cachedMat);
+                        _setIncomingFloorLabelMap(fretLabel, cachedMat, n.f, n.t);
                         fretLabel.position.set(x, labelY, noteZ);
                         fretLabel.renderOrder = renderOrderForLayerAtZ(noteZ,
                             _isArpNote
@@ -18004,7 +19625,7 @@
                             if (!text) return;
                             const spr = pTeachMarkLbl.get();
                             const m = txtMat(text, colorHex, false, cacheKey);
-                            _setLabelMap(spr, m);
+                            _setIncomingFloorLabelMap(spr, m);
                             spr.position.set(x + dx, labelY, noteZ);
                             spr.renderOrder = renderOrderForLayerAtZ(noteZ,
                                 _isArpNote ? 'ARP_NOTE_FRET_LABEL' : 'NOTE_FRET_LABEL');
@@ -18038,7 +19659,7 @@
                     const _isArp2   = arpBounds !== null;
                     const fl2 = pNoteFretLabel.get();
                     const cm2 = txtMat(n.f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
-                    _setLabelMap(fl2, cm2);
+                    _setIncomingFloorLabelMap(fl2, cm2, n.f, n.t);
                     fl2.position.set(x, _labelY2, noteZ);
                     fl2.renderOrder = renderOrderForLayerAtZ(noteZ,
                         _isArp2
@@ -18063,8 +19684,10 @@
                 const _alpha = Math.min(1.0, (AHEAD - dt) / 0.35);
                 const dl = pDropLine.get();
                 dl.position.set(x, _dropY, noteZ);
-                // Half-length, anchored at the label end (matches single notes).
-                dl.scale.set(1, (y - _dropY) * 0.5, 1);
+                // Same connection rule as standalone notes, including pre-bends.
+                dl.scale.set(1, rsPlusNotation
+                    ? y + techniqueYNow - _dropY
+                    : (y - _dropY) * 0.5, 1);
                 // String-colour tint (palette is canonical; mStr is white for
                 // gradient strings).
                 if (activePalette[s] != null) dl.material.color.setHex(activePalette[s]);
@@ -18145,7 +19768,7 @@
                 const rimSolid = arpGhostActive
                     ? 0.75 * arpGhostAlpha
                     : projFactor * 0.94;
-                proj.material.opacity = Math.min(0.96,
+                proj.material.opacity = rsPlusNotation ? 0.55 * rimSolid * bodyDim : Math.min(0.96,
                     projScale * rimSolid * (0.5 + 0.5 * glowMul) * bodyDim);
                 proj.material.emissiveIntensity = arpGhostActive
                     ? 0.35 * arpGhostAlpha * glowMul * bodyDim
@@ -18155,7 +19778,9 @@
                 proj.rotation.z = projRim;
                 proj.visible = true;
 
-                const ghostFretOk = showFretOnNote && (
+                const techniqueCoversGhost = rsPlusNotation && !effSkipBody && !slideSt
+                    && dt < 0.12 && dt > -0.12 && rsPlusTechniqueFlags(n) !== 0;
+                const ghostFretOk = showFretOnNote && !techniqueCoversGhost && (
                     arpGhostActive ||
                     fretNumberGhostScope === 'all' ||
                     (fretNumberGhostScope === 'chords' && fromChord)
@@ -18213,7 +19838,7 @@
                     const upcomingProgress = projFactor;
                     const proj = projMeshArr[s][slotIdx];
                     const rimSolid = upcomingProgress * 0.94;
-                    proj.material.opacity = Math.min(0.96,
+                    proj.material.opacity = rsPlusNotation ? 0.55 * rimSolid * bodyDim : Math.min(0.96,
                         projScale * rimSolid * (0.5 + 0.5 * glowMul) * bodyDim);
                     proj.material.emissiveIntensity = upcomingProgress * 0.55 * glowMul * bodyDim;
                     const growScale = PROJ_GROW_MIN + (1 - PROJ_GROW_MIN) * upcomingProgress;
@@ -18244,6 +19869,33 @@
          * the < > tips are placed at the actual edges of the note rather than a
          * fixed offset.
          */
+        function drawRsPlusChordFrame(cx, cy, z, width, height, rim, openTop, color, opacity, bracketCap = 0, perNoteBracket = false) {
+            if (!pRsChordFrame || !(width > 0 && height > 0 && opacity > 0)) return;
+            // Fingering guidance stays quiet; only playable chord frames glow.
+            const softGlow = bracketCap > 0 ? 0 : notationSoftGlow();
+            const radius = Math.min(rim * 3, width * 0.18, height * 0.18);
+            for (let pass = 0; pass < (softGlow > 0 ? 2 : 1); pass++) {
+                const halo = pass === 1;
+                const pad = halo ? rim * 2.5 : 0;
+                const mesh = pRsChordFrame.get();
+                const u = mesh.material.uniforms;
+                u.uSize.value.set(width, height);
+                u.uRim.value = rim;
+                u.uRadius.value = radius;
+                u.uPad.value = pad;
+                u.uOpenTop.value = openTop ? 1 : 0;
+                u.uBracketCap.value = bracketCap;
+                u.uHalo.value = halo ? 1 : 0;
+                u.uOpacity.value = opacity * (halo ? softGlow * 0.3 : 1);
+                u.uColor.value.setHex(color);
+                mesh.position.set(cx, cy, z);
+                mesh.scale.set(width + 2 * pad, height + 2 * pad, 1);
+                mesh.rotation.set(0, 0, 0);
+                mesh.renderOrder = perNoteBracket ? 18
+                    : renderOrderForLayerAtZ(z, halo ? 'CHORD_EDGE_GLOW' : 'CHORD_FRAME');
+            }
+        }
+
         function drawArpBrackets(x, y, bracketDt, arpEnd, now, s, isOpen = false, openHalfW = null) {
             if (bracketDt >= AHEAD) return;
             if (bracketDt < 0 && now > arpEnd + 0.05) return;
@@ -18262,13 +19914,22 @@
             if (alpha < 0.01) return;
 
             const bracketZ = bracketDt > 0 ? Math.min(0, dZ(bracketDt)) : 0;
-            const col = activePalette[s % activePalette.length];
+            const col = rsPlusNotation ? ARPEGGIO_RIM_BLUE_HEX : activePalette[s % activePalette.length];
             const barThick = NW * 0.09;
             const bracketH = NH * 1.05;
             const capLen   = NW * 0.42;
             const xOff     = (isOpen && openHalfW != null) ? openHalfW : NW * 0.95;
             const zOff     = 0.006 * K;
             const ord      = 18;
+
+            if (rsPlusNotation && !isOpen) {
+                // One rounded, open-sided pair follows the official arpeggio
+                // guidance. Its outer bounds match the existing six bars.
+                drawRsPlusChordFrame(x, y, bracketZ + zOff,
+                    xOff * 2 + barThick, bracketH + barThick, barThick,
+                    false, col, alpha, capLen + barThick * 0.5, true);
+                return;
+            }
 
             if (isOpen) {
                 // < > chevron — 2 diagonal arms per side.
@@ -18641,7 +20302,19 @@
                 const _rowY = Math.min(sY(0), sY(nStr - 1)) - S_GAP * 1.4;
                 _probe.set(curX, _rowY, 0.5 * K);
                 _probe.project(cam);                              // _probe.y → NDC; < -1 = off the bottom
-                const _rowNdcY = _probe.y;
+                let _rowNdcY = _probe.y;
+                // Fit the visible digits, including large text and the sloping
+                // ends of the row. A centre-only probe can leave their bottoms
+                // clipped and prevents a readable incoming-label handoff.
+                for (const row of _incomingFixedFretLabels) {
+                    if (!row || !row.visible || row.material.opacity <= 0) continue;
+                    const rect = row.userData.incomingLabelRect
+                        || (row.userData.incomingLabelRect = _newLabelRect());
+                    if (_incomingLabelScreenRect(row, rect, true)
+                        && rect.minX >= -1 && rect.maxX <= 1) {
+                        _rowNdcY = Math.min(_rowNdcY, rect.minY);
+                    }
+                }
                 if (_rowNdcY < FRET_ROW_FIT_NDC_MIN) {
                     // Row below the safe line → pull back promptly, proportional to
                     // the deficit so it converges in a few frames without overshoot.
@@ -18802,6 +20475,7 @@
                 // Shared chord-frame fill gradient — not owned by txtCache;
                 // MeshBasicMaterial.dispose() does not release maps.
                 chordFrameGradTex?.dispose?.();
+                chordFrameGradTexRs?.dispose?.();
                 chordFrameGradTexArp?.dispose?.();
             }
             gNote?.dispose?.(); gSus?.dispose?.(); gBeat?.dispose?.(); gSusRail?.dispose?.(); gTapChevron?.dispose?.();
@@ -18829,10 +20503,22 @@
             _imFHXLinesMat?.dispose?.(); _imFHXLinesMat = null;
             _imM4 = _imPos = _imSca = _imQ = _imAZ = _imColor = null;
             gHaloBar?.dispose?.(); gHaloBar = null;
+            gRsChordFrame?.dispose?.(); gRsChordFrame = null; pRsChordFrame = null;
             gArpBracket?.dispose?.(); gArpBracket = null;
+            for (const arr of [mRsBody, mRsRim, mRsAccentRim, mRsHitRim, mRsHalo, mRsSus, mRsSusHit, mRsSusEdge]) for (const m of arr) m?.dispose?.();
+            for (const g of [...gRsNoteGrad, ...gRsNoteGhostGrad]) g?.dispose?.();
+            gRsNoteGhost?.dispose?.();
+            gRsNote?.dispose?.(); gRsNoteHalo?.dispose?.(); rsHaloTexture?.dispose?.(); mRsMissRim?.dispose?.();
+            mRsOpenStem?.dispose?.(); mRsOpenStem = null;
+            gRsNote = gRsNoteGhost = gRsNoteHalo = rsHaloTexture = mRsMissRim = null;
+            rsNotationPaletteSig = '';
+            gRsNoteGrad = []; gRsNoteGhostGrad = []; mRsBody = []; mRsRim = []; mRsAccentRim = []; mRsHitRim = []; mRsHalo = [];
+            mRsSus = []; mRsSusHit = []; mRsSusEdge = [];
             for (const m of mStr) m?.dispose?.();
             for (const m of mGlow) m?.dispose?.();
             for (const m of mSus) m?.dispose?.();
+            for (const m of _slideRibbonFadeMaterials.values()) m.dispose();
+            _slideRibbonFadeMaterials.clear();
             for (const m of mStrHitOutline) m?.dispose?.();
             for (const m of mAccentOutline) m?.dispose?.();
             for (const m of mAccentCore) m?.dispose?.();
@@ -18860,6 +20546,8 @@
             // Technique-marker sprite materials (triMat / bendChevronMat) —
             // own numeric-keyed cache, not reachable via txtCache.
             for (const tm of _techMatCache.values()) {
+                tm.userData.h3dTechMeshMat?.dispose?.();
+                tm.userData.h3dTechMeshMat = null;
                 tm.map?.dispose();
                 tm.dispose();
             }
@@ -18888,6 +20576,7 @@
             if (ren) { ren.dispose(); ren = null; }
             scene = cam = noteG = beatG = lblG = fretG = tuningLblG = null;
             ambLight = dirLight = null;
+            _boardDotMat = null;
             mStr = []; mGlow = []; mSus = []; mStrHitOutline = []; mAccentOutline = []; mAccentCore = []; mAccentHaloNear = []; mAccentHaloMid = []; mAccentHaloFar = []; _accentShellsByString = []; mWhiteOutline = mSusOutline = null; mMissOutline = null; mHitSusOutline = null; stringLines = []; stringLineGlows = []; _boardPlaneMat = null; fretWireMats = []; fretTubeGeo?.dispose?.(); fretTubeGeo = null;
             for (const m of _inlayMats) m?.dispose?.(); _inlayMats = []; _inlayLabels = [];
             // mTapChevron: dispose explicitly — if no tap marker ever
@@ -18908,6 +20597,12 @@
             lyricsCanvas = lyricsCtx = null;
             projMeshArr = null;
             _probe = null;
+            _incomingLabelProbe = null;
+            _incomingFloorLabels.length = _incomingLabelOccluders.length = 0;
+            _incomingFixedFretLabels.length = 0;
+            _incomingFretColumnMarkers.length = 0;
+            _incomingFretColumnMarkerCount = 0;
+            _incomingFloorLabelCount = _incomingLabelOccluderCount = 0;
             _drawNextByString = null; _drawRecentByString = null;
             _susVerdictLatch.clear();
             _drawChordTemplates = null;
@@ -18925,11 +20620,12 @@
             if (gFHXFill) { gFHXFill.dispose(); gFHXFill = null; }
             if (gPMXLines) { gPMXLines.dispose(); gPMXLines = null; }
             if (gFHXLines) { gFHXLines.dispose(); gFHXLines = null; }
-            mLaneOdd = mLaneEven = mLaneDivider = mLaneDividerArp = gLanePlane = gGhostFretPlane = null;
-            chordFrameGradTex = chordFrameGradTexArp = null;
+            mLaneOdd = mLaneEven = mLaneDivider = mLaneDividerArp = mRsLaneDivider = gLanePlane = gGhostFretPlane = null;
+            chordFrameGradTex = chordFrameGradTexRs = chordFrameGradTexArp = null;
             pFretColMarker = null;
             _fretMarkerWaveCache.clear();
-            gNote = gSus = gBeat = gTapChevron = null;
+            gNote = gNoteGhost = gSus = gBeat = gTapChevron = null;
+            gNoteGrad = []; gNoteGhostGrad = [];
             tgtX = curX = xFretMid(CAM_LOCK_CENTER_FRET); tgtDist = curDist = CAM_DIST_BASE; tgtLookY = curLookY = 0; _fretRowFitBoost = 1; nStr = NSTR; _oobStringWarned = false;
             _lookaheadCamX = xFretMid(CAM_LOCK_CENTER_FRET);
             _lookaheadFretSpan = DEFAULT_LOOKAHEAD_FRET_SPAN;
@@ -18948,9 +20644,13 @@
             _camBootstrapHolding = false;
             _camBootstrapMode = null;
             _songKey = null;
+            _resetRsNotationPrewarm();
             _linkNextTargetSet = null;
             _linkNextTargetNotesRef = null;
             _linkNextTargetChordsRef = null;
+            _linkedBendStarts = new WeakMap();
+            _linkedBendEnds = new WeakMap();
+            _linkedVibratoRuns = new WeakMap();
             trailVisibilityReleaseChartReferences();
         }
 
@@ -19038,6 +20738,7 @@
                         // chart-dependent half runs on first draw() (bundle
                         // arrays are only guaranteed populated post-ready).
                         _prewarmStatic();
+                        _prewarmRsNotation(bundle);
                         _chartPrewarmed = false;
                         const sz = canvasSize(highwayCanvas);
                         // Mark ready before RAF so any resize(w,h) calls that arrive
@@ -19147,6 +20848,7 @@
                     _invertedForBoard = _invertedCached;
                     _leftyForBoard = _leftyCached;
                 }
+                _prewarmRsNotation(bundle);
                 if (newScale !== _renderScale) {
                     _renderScale = newScale;
                     const s = canvasSize(highwayCanvas);
@@ -19204,6 +20906,7 @@
                 }
                 update(bundle);
                 camUpdate(bundle);
+                _layoutIncomingFretLabels();
 
                 // Background animations (#13). Compute frame dt once,
                 // read audio bands when reactivity is on, delegate to
@@ -19299,7 +21002,7 @@
                     _streakHeat += (Math.min(1, _streakHits / 16) - _streakHeat) * 0.08;   // #7 ease heat
                 }
                 {
-                    const comp = (_bloom && !_ssActive()) ? _bloomEnsure() : null;
+                    const comp = (!rsPlusNotation && _bloom && !_ssActive()) ? _bloomEnsure() : null;
                     if (comp) {
                         const bsz = canvasSize(highwayCanvas);
                         if (bsz) _bloomResize(bsz.w, bsz.h);
@@ -19487,6 +21190,13 @@
     // removed — per-string colors are set via the core "Highway String Colors"
     // UI, which drives both highways by named string.
     window.feedBackViz_highway_3d.panelControls = [
+        {
+            key: 'notationStyle', label: 'Notation style', type: 'select',
+            options: [{ id: 'current', label: 'Current' }, { id: 'rsplus', label: 'RS+ inspired' }],
+            default: BG_DEFAULTS.notationStyle,
+        },
+        { key: 'glow', label: 'Highway glow', type: 'range', min: 0, max: 1, step: 0.05, default: BG_DEFAULTS.glow },
+        { key: 'bloom', label: 'Soft glow / bloom', type: 'toggle', default: BG_DEFAULTS.bloom },
         {
             key: 'cameraSmoothing',
             label: 'Camera smoothing (X-pan)',

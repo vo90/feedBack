@@ -42,12 +42,12 @@ function loadSlideOffsetHelpers() {
 
 function loadTremoloOffset() {
     const src = fs.readFileSync(SCREEN_JS, 'utf8');
-    const start = src.indexOf('        function tremoloOffsetWorldX(');
+    const start = src.indexOf('        function sustainMotionWidth(');
     const end = src.indexOf('        /** Rendered X centre', start);
     assert.notEqual(start, -1);
     assert.notEqual(end, -1);
     return vm.runInNewContext(
-        'const TREMOLO_BUMP_S = 0.06;\n'
+        'const TREMOLO_BUMP_S = 0.06; const rsPlusNotation = false; const RSPLUS_SUSTAIN_STROKE_SCALE = 0.5;\n'
         + src.slice(start, end)
         + '\ntremoloOffsetWorldX',
     );
@@ -1166,8 +1166,8 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
     assert.notEqual(ribbonEnd, -1);
     assert.doesNotMatch(
         src.slice(ribbonStart, ribbonEnd),
-        /\.material\s*=|\.opacity\s*=|\.color\s*\./,
-        'the taper must modify geometry only, never trail color or opacity',
+        /\.material\s*=|\.opacity\s*=|\.color\s*\.\s*(?:set|copy|lerp)/,
+        'visibility taper must never mutate shared material color or opacity; authored slide-out fade uses geometry alpha',
     );
 });
 
@@ -1281,7 +1281,8 @@ test('rendering and eligibility share one rendered footprint model', () => {
 
     assert.match(src, /function\s+trailYieldSweepMayReachFret\(/);
     assert.match(src, /slideOffsetWorldX\(n,\s*n\.t\s*\+\s*\(n\.sus\s*\|\|\s*0\),\s*ctx\.slideSt\)/);
-    assert.match(src, /const\s+tremoloReach\s*=\s*n\.tr\s*\?\s*ctx\.trailW\s*\*\s*0\.375\s*:\s*0/);
+    assert.ok(/const\s+tremoloReach\s*=\s*n\.tr\s*\?\s*sustainMotionWidth\(ctx\.trailW\)\s*\*\s*0\.375\s*:\s*0/.test(src),
+        'tremolo sweep bounds must retain motion reach independently of stroke thickness');
     assert.match(src, /function\s+collectTrailYieldTargetsForStrand\(/);
     assert.match(src, /function\s+collectTrailCrossingWindowsForStrand\(/);
     const crossingDecl = src.indexOf('        function collectTrailCrossingWindowsForStrand(');

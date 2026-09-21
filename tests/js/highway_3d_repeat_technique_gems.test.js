@@ -23,9 +23,11 @@ function extractFn(src, name) {
 
 const maySuppress = new Function(
     '"use strict";' +
+    screenSrc.slice(screenSrc.indexOf('    function slideTrailEnd('), screenSrc.indexOf('    // Camera tgtDist building blocks')) +
     extractFn(screenSrc, 'noteHasVibrato') +
     extractFn(screenSrc, 'noteHasVisibleMotionSustain') +
     extractFn(screenSrc, 'noteHasRepeatTechniqueCue') +
+    extractFn(screenSrc, 'chordMuteKind') +
     extractFn(screenSrc, 'repeatChordMaySuppressGems') +
     '\nreturn repeatChordMaySuppressGems;',
 )();
@@ -34,6 +36,34 @@ test('ordinary rapid repeat chords retain compact gem suppression', () => {
     assert.equal(maySuppress(true, false, [
         { s: 3, f: 9 },
         { s: 5, f: 0 },
+    ]), true);
+});
+
+test('Are You Dead Yet 34.678s sustained repeat keeps both note heads', () => {
+    const members = [
+        { s: 1, f: 5, sus: 0.156 },
+        { s: 2, f: 7, sus: 0.156 },
+    ];
+    assert.equal(maySuppress(true, false, members), false);
+    assert.equal(maySuppress(true, false, members.map(n => ({ ...n, pm: true }))), false);
+});
+
+test('one visible fretted sustain keeps the complete repeated chord', () => {
+    assert.equal(maySuppress(true, false, [
+        { s: 0, f: 0, sus: 0 },
+        { s: 1, f: 5, sus: 0.156 },
+        { s: 2, f: 7, sus: 0 },
+    ]), false);
+});
+
+test('repeat presentation agrees with the existing chord trail cutoff', () => {
+    for (const sus of [undefined, 0, -0.1, 0.005, 0.01, NaN, Infinity]) {
+        assert.equal(maySuppress(true, false, [{ s: 1, f: 5, sus }]), true, String(sus));
+    }
+    assert.equal(maySuppress(true, false, [{ s: 1, f: 5, sus: 0.010001 }]), false);
+    // Ordinary open chord members have no separate sustain ribbons.
+    assert.equal(maySuppress(true, false, [
+        { s: 0, f: 0, sus: 0.5 }, { s: 1, f: 0, sus: 0.5 },
     ]), true);
 });
 

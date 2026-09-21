@@ -10,6 +10,28 @@ The whole renderer is **one file** — `screen.js`, wrapped in an IIFE, register
 
 ## File structure at a glance
 
+**Bend onset semantics.** `bendCurveStartSemis` and `bendCurveSemisAt` supply a
+render-only start when the authoritative `bnv` curve omits t=0. Precedence is an
+authored onset sample (even zero), then release/pre-bend intent `bt=1/2/3`, then
+a validated contiguous predecessor's ending bend, otherwise zero. Inheritance
+fills a missing curve onset. `bnvSampleAt`
+retains its generic endpoint-clamping contract. `bendSemisAtTime` and
+`prebendOffsetWorld` use the same resolved curve for trail and gem alignment.
+`hwyLinkNextTargetNotes` optionally collects predecessor records while retaining
+its existing attack-suppression rules. Bend inheritance separately requires a
+positive sustain ending within 1 ms of the next onset; ambiguous sources do not
+supply a starting value. `resolveLinkedBendStarts` runs once per arrangement in
+lane order and stores values in a per-renderer WeakMap. Chord scratch and muted
+drawing views must carry that cached start. `resolveLinkedBendEnds` first resolves
+scalar-only source endpoints from a unique contiguous destination's explicit
+onset (t=0 or pre-bend/release intent). It rejects ambiguous destinations, invalid
+samples and endpoints above the source peak. The scalar's final fallback phase
+meets that pitch instead of releasing to zero; unrelated scalar bends retain
+their existing envelope. Carry the endpoint cache through scratch/muted views
+and clear both caches at teardown. Never mutate authored notes or allocate/rebuild
+these relationships in the ribbon-sampling loop. Timing, ribbon samples and
+scoring remain unchanged; real unlinked gaps remain visible.
+
 The file is laid out top-to-bottom as:
 
 1. **Constants block** — palette (`S_COL`), scale (`SCALE`, `K`), fret/string counts, geometry sizes, camera, fog
@@ -31,6 +53,30 @@ The file is laid out top-to-bottom as:
    - `teardown()` — dispose all GPU resources + reset state
    - `canvasSize()` — resilient canvas-dimension lookup
    - **Returned API** — `init / draw / resize / destroy` (setRenderer contract)
+
+## Incoming fret-label layout
+
+`_setIncomingFloorLabelMap` top-anchors the three gold incoming-label paths and
+adjacent teaching labels after pool reuse. `_layoutIncomingFretLabels` runs
+**after** `update` (including trail-order finalization) and `camUpdate`. It
+uses cached texture ink bounds for the fixed-row handoff and conservative
+projected core/outline/technique bounds for overlap. Only label priorities are
+lowered; do not replace the shared depth buckets or alter gem/trail orders.
+Register new incoming technique meshes with `_registerIncomingLabelOccluder`.
+The geometry-bound cache assumes their vertices remain static after creation;
+mutable trails must not be registered without invalidating those bounds.
+Per-renderer records and vectors are reused and cleared at teardown. The fret
+row's existing camera fit guard measures glyph bottoms rather than only the
+row centre. At arrival, a partially clipped matching row digit is lifted just
+inside the viewport before handoff; wholly offscreen rows remain ineligible.
+The pool resets that temporary Sprite centre on the next update.
+`_registerFretColumnMarker` gives grey reference markers the same top anchor.
+After confirming a gold label is visible/projectable, layout suppresses grey
+markers for the same positive fret within 1 ms of the authored onset. Store
+actual `ch.t`/`n.t` and `b.time`; keep only the first drawable gold identity
+across chord and note paths each layout frame. Do not use clamped render Z or 40 ms density
+buckets. Teaching marks have no fret/time identity and never suppress a marker.
+Marker records are per renderer, reused, reset each update and cleared at teardown.
 
 ## Coordinate system
 
@@ -62,7 +108,7 @@ Concrete sizes (search the constants block for the names):
 Each entry names the function or banner you should grep for, plus key sub-blocks (also marked with banner comments inside the function).
 
 ### Strings
-- **String colors** → `S_COL` array in the top-level constants block. Eight-element vibrant palette; index `s` is the string (0 = high E for guitar). `MAX_RENDER_STRINGS` keys off `S_COL.length`.
+- **String colors** → `S_COL` / `PALETTES` and the per-instance `activePalette`. Eight-element palette; string 0 is the lowest-pitched guitar string (low E in standard tuning). `MAX_RENDER_STRINGS` keys off `S_COL.length`.
 - **String count for the active arrangement** → `resolveStringCount(bundle)` (top-level helper). Reads `bundle.stringCount` (feedBack#93) with a `bass`-name fallback. Don't reintroduce `tuning.length` — see Pitfall #4.
 - **String thickness / gap / base Y** → `STR_THICK`, `S_BASE`, `S_GAP` constants.
 - **String-to-Y mapping (respects invert)** → the `sY(s)` arrow function inside `createFactory()`. Single source of truth for "where on Y is string s."
@@ -73,29 +119,30 @@ Each entry names the function or banner you should grep for, plus key sub-blocks
 - **Fret count** → `NFRETS` constant. Increasing requires nothing else.
 - **Fret X positioning** → `fretX(f)` and `fretMid(f)` (top-level helpers). Logarithmic guitar-fret spacing within `SCALE`.
 - **Fretboard plane / fret wires / fret dots** → `buildBoard()`, separate banner-style comment blocks (`// Fret wires`, `// Fret dots`). The dark background plane is the first thing built; main fret wires use `0xbbbbff` / opacity 0.8, minor wires `0x666688` / opacity 0.4. Single/double dots: `DOTS` array + `DDOTS` set in the constants block.
+- **RS+ default highway surface** → `_usesRsDefaultHighway()`, `RSPLUS_DEFAULT_HIGHWAY`, `_applyBgTheme()` and the lane pass in `update()`. Only RS+ with `hwThemeId === 'default'` gets the graphite floor, grey inner dividers, cyan outer rails and muted inlays. `_highwayReferenceLabelColor()` supplies grey idle labels. Named highway themes and the background axis remain independent; style/theme round-trips restore Current materials. Reuse `mRsLaneDivider` and existing lane pools rather than allocating materials per frame.
 - **Fret-row label colors / sizing** (the heat-coloured row of fret numbers below the board) → `update()`, `// ── Dynamic fret number row ──` block. Active = `#ffe84d`, inactive = `#9ab8cc`, opacity / scale driven by `noteState.fretHeat[f]`. Text rendering (font, outline, shadow) is governed by the `'fretRow'` preset in `TXT_STYLES` — see "Tweaking text-sprite styling".
 - **Active-fret cooldown** → `FRET_COOLDOWN` constant. How long after the last note in a fret it stays in the active set.
 
 ### Notes
 - **Single-note rendering** → `drawNote()`. Handles outline, core body, open-string variant, sustain trail, lane drop line, all technique labels, fret connector label, and the board projection. Each visual block has its own banner comment (`// ── Outline ──`, `// ── Core (filled note body) ──`, `// ── Sustain trail ──`, `// ── Lane drop line ──`, `// ── Technique labels ──`, `// ── Per-note fret connector label ──`, `// ── Board projection ──`).
-- **Note geometry / size** → `gNote = new T.BoxGeometry(NW, NH, ND)` in `initScene()`. Per-note scale tweaks happen inside `drawNote()`.
-- **Note approach rotation (vertical → horizontal)** → search `approachRot` inside `drawNote()`. Maps `dt / AHEAD` to `[0, π/2]`. Open strings skip the rotation.
-- **Note color** → `mStr[s]` (idle) / `mGlow[s]` (hit), built in `initScene()`. Hit material is white-with-emissive, idle is dim emissive of the string color.
-- **Sustain trail** → `// ── Sustain trail ──` block in `drawNote()`. Geometry: scaled `gSus` (`BoxGeometry(1,1,1)`). Width `NW * 0.85`, height `NH * 0.12`. Outline mesh + colored core mesh.
+- **Note geometry / size** → Current uses `gNote` / `gNoteGrad`; RS+ inspired uses rounded `gRsNote` / `gRsNoteGrad`. Per-note scale and open-string widths are in `drawNote()`. Keep footprint/bounds helpers in sync with silhouette changes.
+- **Note approach orientation** → search `approachRot` inside `drawNote()`. RS+ inspired keeps gems, rims and attached technique symbols at their landing orientation throughout the approach. Current maps `dt / AHEAD` to `[0, π/2]`; open strings skip the rotation. Bend/slide trajectories and the bend chevron's direction are independent of this decorative turn.
+- **Note color** → Current's playable core selects `mStr[s]` or `mAccentCore[s]` from the authored accent flag; `mGlow` is also used by active sustain paths and must not be treated as interchangeable with a playable body. RS+ inspired selects `mRsBody[s]`, with palette-derived vertex colors, opacity 1, no fog, and no scene-light dependence. See `_applyRsNotationPalette()` and `_applyVibrancy()`.
+- **Sustain trail** → the sustain blocks in `drawNote()` build ribbons/segments using chart-driven bend, vibrato, tremolo and slide paths. RS+ inspired uses `mRsSus`, `mRsSusHit` and `mRsSusEdge`; Current retains its existing materials. Changing appearance must not change time sampling, slide destinations, linked continuation ownership, or trail-yield behavior.
 - **Lane drop line** → `// ── Lane drop line ──` block in `drawNote()`. Vertical line from each upcoming note down to the fretboard plane in the string's color.
-- **Per-note fret connector label** → `// ── Per-note fret connector label ──` block in `drawNote()`. Number below the board with a thin line up to the note. Be careful with `replace_all` on the `0.5` and `0.4` floats in the alpha formula — they're separate constants. Uses the `'noteFret'` preset in `TXT_STYLES` (also applied to the on-body fret number when `showFretOnNote` is enabled).
-- **Technique markers** (bend, slide, hammer/pull/tap, accent, tremolo, palm-mute, pinch harmonic) → `// ── Technique labels ──` block in `drawNote()`. Most are small if-blocks using `txtMat(text, color, wide, style)` (cached sprite material; `'technique'` preset in `TXT_STYLES`). Exceptions: a **bend** draws a string-coloured chevron strength stack (`bendChevronMat`, one chevron per half-step), and **hammer-on / pull-off** draw a white ▲/▼ triangle with a string-coloured border (`triMat`) — both pinned to the gem; the bend ribbon's up→hold→down contour is driven by `bendSemisAtTime`.
-- **Open-string note** → special-cased throughout `drawNote()`: `n.f === 0`. Wider/flatter geometry, "0" label sprite, uses `openX` (the chord's open-string centroid) when supplied.
-- **Board projection ("ghost" preview)** → `// ── Board projection ──` block in `drawNote()`. Two meshes per string (`projMeshArr`, `projGlowArr`), one visible per frame for the next note. Linger window `PROJ_WIN`. Gated on the `projectionVisible` setting (BG_DEFAULTS / `h3dBgSetProjectionVisible` / the "Show note preview on the fretboard" checkbox in `settings.html`) — when off, the block is skipped and `update()`'s per-frame `m.visible = false` reset leaves the ghost hidden. **The glow has `renderOrder = -1`** which fights the strings — see Pitfall #6.
-- **Note-hit "sizzle" (feedBack#254)** → `drawNotedetectSizzle()` (called from the `lyricsCtx` block in `draw()`, just before `drawNotedetectLabels()`). For each confirmed hit/active note (`_ndGood` in `drawNote()` pushes `{x, y, z, s, alpha, color}` onto the per-frame `_ndSizzle` array — `alpha` is the provider's clamped fade, `color` an optional palette override), it projects the note's world point through the up-to-date `cam`, sizes the burst from a fretboard-X-axis offset projection (reliable even when the note's rotated flat at the line), and twinkles a few short crackling ellipse-arc segments + tiny dots hugging the note's rectangle — re-randomised every frame, contained to ≲1.4× the note, half white / half the string colour (or the provider's `color` when given). Every dot/arc's `globalAlpha` and `shadowBlur` are scaled by the entry's `alpha`, and the per-element "off-this-frame" probability rises as `alpha` decays, so a struck-note glow visibly thins and fades. Also: `_ndGood` swaps the note's outline to `mGlow[s]` (bright string-tinted, not green). Knobs are inline: arc/dot count, base on-probability, line widths, `shadowBlur`, spread radii. Lives entirely on the 2D overlay layer — no Three.js geometry/disposal.
+- **Per-note fret connector label** → `// ── Per-note fret connector label ──` in `drawNote()`. Uses the `'noteFret'` preset for numbers below the board. Finger/degree teaching labels live beside that row. Flying note bodies do not carry fret digits; `showFretOnNote` controls ghost digits with `fretNumberGhostScope`.
+- **Technique markers** → `// ── Technique labels ──` in `drawNote()`. Current retains `triMat`, `bendChevronMat`, mute/harmonic factories and the tap geometry. RS+ inspired uses `rsPlusTechniqueFlags`, `rsPlusTechniqueCells`, `drawRsPlusTechniqueGlyph` and `rsPlusTechniqueMat`: cached 512px sRGB masks with no baked glow. A combined mask gives each authored family a separate face cell. Masks become pooled planes through `_spriteMat2MeshMat`, which preserves their fog/tone-mapping policy. RS+ bends use filled string-colored chevrons following `bendVisualDirY`, without amount text. Fractional chart values still drive `bendSemisAtTime` and the complete path.
+- **Open-string note** → special-cased throughout `drawNote()`: `n.f === 0`. A wide bar using `openX` and chord box width when supplied. Unpitched muted notes use this local drawing treatment without changing source note identity.
+- **Board projection ("ghost" preview)** → the `Board ghost` block in `drawNote()`. `projMeshArr` / `projGlowArr` hold up to three preview slots per string. `projectionVisible` gates previews; reset their visibility every frame. Chord/arpeggio finger hints and ordinary fret hints have distinct scope/timing. In RS+ inspired, a technique-bearing attack suppresses a coincident ghost digit so it cannot cover the face symbol. See `techniqueCoversGhost` and `drawGhostFretLabel`.
+- **Note-hit feedback** → the provider-verdict block in `drawNote()`, `_sparkBurst`, `_rimFlashIn` and the fret-wire flash pass in `update()`. Current uses string-colored rim flashes plus its existing side fill; RS+ inspired uses its own crisp verdict rim and restrained strike punch. `_sparks` and `_hitFx` gate bursts. Verdict symbols are queued into `_ndLabels`; score pops are separate 2D effects. Do not route either style's playable face through the old bright-body path.
 
 ### Chords
 - **Chord rendering loop** → `update()`, `// ── Chords ──` block. Iterates `bundle.chords`, calls `drawNote()` per chord-note, then draws the frame box, name label, and barre indicator.
-- **Chord linger after hit** → the `0.55`-second value passed as the `linger` arg to `drawNote()` from inside the chord loop, and used in the chord-frame Z clamp + opacity formulas.
-- **Chord frame-box** (rectangle around frets in the chord) → inside the chord loop, search for the `drawEdge` helper. Four edges + a low-opacity fill. `isRepeat` halves the height + dims it.
-- **Chord name label (gold)** → in the same chord loop, search `chordName`. Cached via `txtMat(chordName, '#e8d080', true)`. Anchored above the chord box.
+- **Chord linger after hit** → the chord loop's `chordTailMul` and the `linger` argument passed to `drawNote()`. Keep event cleanup separate from approach opacity; the RS+ style removes approach fading, not post-event cleanup.
+- **Chord frame-box** → the chord loop's `compactRepeatFrame`, `drawRsPlusChordFrame()` and `pRsChordFrame`. Current retains distance/repeat dimming. RS+ inspired uses pale neutral rims and a lightly transparent fill (`chordFrameGradTexRs`), stable approach opacity and stronger accent borders. Full chords use closed full-height panels; plain repeats use closed half-height panels. Explicit arpeggios use full-height purple side brackets with short caps instead of full-width top/bottom bars.
+- **Chord name label** → in the same chord loop, search `chordName`. Cached with the `'chord'` preset in `txtMat()`: Current uses gold `#e8d080`; RS+ uses white `#f3f4f6`. Anchored above the chord box.
 - **Barre indicator** (white vertical line at the barre fret during linger) → in the chord loop, gated on `/barre/i.test(chordName) && chDt <= 0`. Position is `fretMid(bFret)` where `bFret` is the lowest fretted string.
-- **Repeat-chord detection** → `prevChordSig` / `prevChordTime` inside the chord loop. Same shape within 0.5 s → `isRepeat = true` (suppresses note bodies, dims frame).
+- **Repeat-chord detection** → `prevChordSig` / `prevChordTime` inside the chord loop. Same shape within 0.5 s may be a repeat, but `retainsChordGems` and technique-aware suppression preserve members needed to convey slides, bends, vibrato, harmonics and other techniques. Only gem-suppressed repeats become half-height; retained techniques keep full-height frames. RS+ inspired keeps repeat panels closed and does not dim them just because they repeat.
 - **Chord diagram (top-left 2D overlay)** → `drawChordDiagram()`, called from the `lyricsCtx` block at the bottom of the returned `draw()`. The chord-to-display is selected in `update()` under `// ── Chord diagram: track most recently hit chord ──` and stashed in `_diagChord` (most recently hit named chord within the 0.55 s linger window).
 
 ### Camera
@@ -136,8 +183,25 @@ Each entry names the function or banner you should grep for, plus key sub-blocks
 - Per-panel background overrides use `localStorage` keys shaped as `h3d_bg_panel<N>_<key>`. When present, they override the global `h3d_bg_<key>` value for panel `N`; when absent, the global value still applies.
 - Keep per-panel keys to `BG_DEFAULTS` entries that `_bgLoadSettings()` reads. Do not add panel-only keys outside that load path.
 - `panelControls` is a static, host-readable, curated descriptor list for controls a host can expose per panel. It documents the supported per-panel surface; the renderer still loads values through `_bgLoadSettings()`.
+- The curated list includes `notationStyle` (`current` / `rsplus`), `glow`, `bloom`, and the camera controls. The splitscreen host renders `{ id, label }` select options, writes the panel key, then calls the matching `h3dBgSet*` setter with the unchanged global value to emit the refresh notification. Do not replace that value with the panel value: it would overwrite every inheriting panel's preference.
+- The `notationStyle` listener must reload settings **before** `_applyVibrancy()` and `_applyGlow()`. An unchanged palette is skipped by the signature guard in `_bgLoadSettings()`; those explicit apply calls still retint the selected style and restore Current's material parameters when switching back.
+- `_bgLoadSettings()` also detects a style change during a bulk rebuild/reset and reapplies shared material colors/intensities after loading the complete snapshot. This covers resets that bypass the dedicated style listener without changing unrelated Current reload behavior.
+- Current's full-scene bloom remains disabled in splitscreen. RS+ inspired uses local halos, so each panel's `bloom` flag means Soft glow and remains usable there.
 - Asset/background image keys remain global-only. Do not make uploaded or selected asset references panel-scoped unless that contract is explicitly widened.
 - Host refresh nudges that call toggle setters must pass real booleans, not strings such as `'false'`, so setters can distinguish `true` from `false`.
+
+### Notation style and effects contract
+
+- `BG_DEFAULTS.notationStyle` is `current`; `NOTATION_STYLE_IDS`, `_bgCoerce()` and `h3dBgSetNotationStyle()` validate/store the selection. `_bgLoadSettings()` resolves the per-instance `rsPlusNotation` flag through the usual panel → global-memory → global-storage → default precedence. Style changes never write palette, background, Glow, or Vibrancy preferences.
+- RS+ playable faces use opacity 1 and remain independent of distance fog, cinematic lighting, and the accent flag. `_applyRsNotationPalette()` changes saturation/vertex shading and rim colors, not body opacity. Current materials retain their existing appearance and transparency.
+- `notationSoftGlow()` is nonzero only for RS+ inspired with Soft glow enabled and Glow above zero. The draw path bypasses the full-scene bloom compositor for this style. Local halos sit outside the crisp note/frame rims; a bright yellow or custom white face must never become an automatic halo source.
+- Glow scales decorative highway glow; essential faces, symbols, frame edges and preview outlines remain legible at zero. Hit feedback intensity scales strike motion/flash/sparks; basic verdict cues remain. Cinematic lighting still affects the environment. 2D score/milestone effects and background decorations retain their own controls.
+- Keep glyph/artwork masks free of baked blur and mark CanvasTexture CSS colors as `SRGBColorSpace`. `_techMatCache` owns RS+ technique textures/materials in a separate negative-key namespace, including disposal of each cached `h3dTechMeshMat` base; `_techMeshMatClones` owns the per-mesh conversions. Keys include string color. Pale face symbols add a narrow dark contour across palettes; palm mute retains its own pale edge/string-dark center and off-face arrows stay solid string color. Compound cells use uniform scale and centered incomplete rows. Check actual ink bounds, including strokes, when changing padding; nominal two-mark cells slightly overlap but their ink must not. New style resources must be covered by pool reset and teardown paths; chord fill textures and frame shaders are shared and reused.
+- RS+ attack combinations use one padded mask rather than overlapping several full-size symbols. The static attack precedence matches Current for contradictory imported flags. Accent rims and chart-driven sustain techniques remain independent of the face mask.
+- `settings.html` hydrates the style dropdown and changes descriptions of Vibrancy, Glow and Bloom to match the selected style. The Bloom title becomes **Soft glow** in RS+ inspired. Text size applies to text labels; RS+ glyph masks use square world planes so circle/triangle proportions are not stretched to gem aspect ratio. Some reference glyphs deliberately cross the gem edges.
+- RS+ open bars reuse their outline mesh as the vertical stem; accent changes the bar thickness, not its horizontal extent. Keep lefty mirroring, stem bounds, halos and verdict faces consistent. The original open rim remains available for Current.
+- `prebendOffsetWorld()` samples the same onset envelope as the trail. Do not require the first imported curve point to be exactly at time zero: the trail clamps a later first point back to onset.
+- Regression entry points: `highway_3d_rsplus_settings.test.js` (coercion, panel refresh, storage failure, UI hydration), `highway_3d_rsplus_techniques.test.js` (mask combinations, contrast, caching/teardown, fractional bends), `highway_3d_rsplus_highway_theme.test.js` (default-only surface and theme/style round-trips), the RS+ chord tests, and the existing live-settings/bend/repeat/trail suites. Screenshot and motion review are still required for proportions, layering, and readability.
 
 ## The `bundle` object
 
@@ -150,10 +214,10 @@ Every per-frame renderer call receives a `bundle` from feedBack core. Fields use
 - `inverted` — display flag honored via `sY(s)` (low-string-on-top vs the default low-string-on-bottom)
 - `lyricsVisible` — gate for lyrics overlay
 - `renderScale` — pixel-ratio multiplier from the user's quality setting
-- `songInfo.arrangement` — only field of `songInfo` this plugin reads, used as the bass-name fallback in `resolveStringCount()`
+- `songInfo.arrangement` — used as the bass-name fallback in `resolveStringCount()`; other song metadata also supports overlays and tuning-label fallbacks.
 - `stringCount` — feedBack#93; always prefer this over deriving from tuning/arrangement
 - `lefty` — display flag consumed by this renderer from `bundle.lefty`. Captured into `_leftyCached` before each frame so `xFret()`, `xFretMid()`, `boardSpanX()`, board geometry, note placement, and the camera shoulder offset mirror the fret axis for left-handed mode. A runtime lefty flip rebuilds board state and mirrors `curX`/`tgtX` plus the lookahead camera X cache so the camera does not drift across the neck.
-- `getNoteState(note, chartTime)` — feedBack#254; per-note judgment from a scorer (note_detect). Captured each frame into `_ndGetNoteState` at the top of `update()` and consulted in `drawNote()` AFTER the event-driven `_ndHitMarks`/`_ndMissMarks` lookup AND over the proximity-based `hit` heuristic, both of which it overrides when it has a verdict: `'hit'`/`'active'` → `mGlow[s]` outline (bright string-tinted, *not* green) + `mGlow[s]` body + `mGlow[s]` sustain trail + a queue entry for `drawNotedetectSizzle` (so a held sustain keeps glowing/sparkling as long as the provider keeps returning `'active'`); `'miss'` → `mMissOutline` and `_showHit = false` (suppresses the bright body even if the note is near the line). Called with the note's chart time (`n.t`), which is how note_detect keys its `noteResults` map — *not* `now`. Returns null on cores without the API or songs with no scorer — then the event path / `hit` heuristic drive feedback for older note_detect builds. **notedetect ≥1.13 object verdicts additionally carry `{ points, mult, popKey }`** (game-scoring layer): `points` is the note's awarded score, `mult` the multiplier tier it landed at, and `popKey` a dedup key — chord members all return the chord-level judgment's key so a chord pops once, not once per gem. Consumed by the score-pop spawn in `drawNote()` (see Score FX below); all three are absent on older notedetect builds, so guard with `!== undefined`.
+- `getNoteState(note, chartTime)` — per-note scorer verdict, captured as `_ndGetNoteState` and resolved in `drawNote()` alongside event-driven marks and compatibility fallbacks. `'hit'` / `'active'` and `'miss'` select style-specific rim/side feedback and sustain treatment; they must not erase the string color or technique glyph. Preserve the existing source identity and chart-time lookup when changing visuals. Object verdicts can also carry `{ points, mult, popKey }`: points and multiplier feed the score pop, while `popKey` deduplicates shared chord judgments and sustained verdicts. Guard optional fields for older providers.
 
 `tuning` and `capo` feed only the nut's open-string pitch labels. They prefer the bundle's effective values; `songInfo` remains the original metadata fallback. Note placement never reads them.
 
@@ -167,7 +231,7 @@ Core reuses the bundle OBJECT across frames (mutated in place); never cache it o
 - Everything lives on the 2D overlay layer — no Three.js geometry, no `txtMat()` cache traffic, nothing to dispose; `teardown()` deactivates the pools and removes both listeners.
 - **This block is the reference implementation for other renderer plugins** (drum highway, piano, custom highways) that want score pops / session FX: copy the `_fxOnFx` dedup+scoping listener, the `popKey`-keyed seen-map (cleared on backward seek), and the `_FX_PALETTES` skin mapping. The full consumer contract (events, payloads, provider verdict fields, theming variables) is documented in feedBack-plugin-notedetect's `CLAUDE.md`.
 
-If you need a bundle field that isn't here yet, check `_makeBundle()` in `static/highway.js` in the **feedBack core repo** — this is the plugin repo, `static/highway.js` is not here. The full path in the parent feedBack checkout is `feedBack/static/highway.js`.
+If a bundle field is missing here, check `_makeBundle()` in the core's `static/highway.js`. This plugin is bundled in the same repository under `plugins/highway_3d/`.
 
 ## Per-string state arrays
 
@@ -195,13 +259,13 @@ If a pool's mesh has per-instance state (its own material clone, its own texture
 ## Key gotchas / pitfalls
 
 1. **Adding a new pool? Reset it.** The reset block at the top of `update()` is easy to miss when adding a new pool elsewhere.
-2. **`txtMat()` is cache-keyed by `(style, text, color, wide)`.** Calling it with a numeric `text` works (it's coerced via `String(...)`), but new label content creates a new texture forever. Don't generate dynamic per-frame text (e.g. interpolated values) through `txtMat()` or you'll leak GPU memory. For static labels that change occasionally (chord names, fret numbers), the cache is fine. The `style` arg picks a preset from the `TXT_STYLES` table — see "Tweaking text-sprite styling" below.
+2. **`txtMat()` is cache-keyed by `(style, text, color, wide)` plus its color-space variant.** RS+ `noteFret`, `fretRow` and `chord` labels use a separate `|srgb` entry; Current retains its existing key and texture encoding. Calling with numeric `text` works (coerced via `String(...)`), but new label content creates a new texture forever. Don't generate dynamic per-frame text through `txtMat()` or you'll leak GPU memory. Static chord names and fret numbers are suitable cache entries. The `style` arg picks a `TXT_STYLES` preset — see below.
 3. **Disposal in `teardown()` matters.** Three.js doesn't garbage-collect GPU resources. Every `material.dispose()`, `geometry.dispose()`, `map.dispose()`, and `ren.dispose()` call there is load-bearing. `teardown()` is called from `init()` (when re-initing), `destroy()` (setRenderer swap or `highway.stop()`), and on init failure.
 4. **Don't use `tuning.length` for string count.** `bundle.tuning` (and `arr.tuning` server-side) is always 6 elements even for bass — feedBack pre-fills the array with zeros for unused strings. Use `bundle.stringCount` (feedBack#93), with `/bass/i.test(arrangement)` as the only acceptable fallback. There's a comment in `resolveStringCount()` documenting this.
 5. **lyricsCanvas DOM order.** The 2D overlay canvas is appended to `wrap` AFTER `ren.domElement` and given `z-index:1`. This is the empirically-correct order — earlier versions had it before the WebGL canvas, which broke in splitscreen panels with `position:relative; overflow:hidden`. Don't reorder without testing both modes.
-6. **Projection glow `renderOrder = -1`** in `initScene()`. This is a known-suboptimal setting — it forces the glow to draw before the strings in the transparent queue, so the string visibly cuts through the preview. Removing the line lets natural Z-sort layer it correctly. Plus the projection's world-Y matches the string Y, which after perspective projection puts the preview slightly screen-lower than the string; bumping `projY = y + NH * 0.4` recenters it. (Both fixes live on the `fix/preview-stacking` branch.)
-7. **`renderOrder` on transparent objects is sticky.** Three.js sorts the transparent queue by `renderOrder` first, then back-to-front. A stray `m.renderOrder = -1` on something will pull it under everything regardless of Z. When in doubt, leave `renderOrder` at the default 0 and rely on Z position.
-   - **Corollary: `depthTest: false` alone does NOT make a sprite "always on top."** It removes the sprite from depth-buffer comparison, but draw order in the transparent queue is still determined by `renderOrder` then Z. Anything rendered after a `depthTest: false` sprite will still overdraw it. For HUD-style overlays that must always be visible (fret-row labels — issue #35, technique callouts), set `renderOrder = 1000` AND keep `depthTest: false`. Both knobs together is the contract; either alone leaves the door open to occlusion.
+6. **Preview and attack are different layers.** A ghost digit may legitimately use the preview layer, but must not cover a coincident incoming technique mark. RS+ inspired handles this with `techniqueCoversGhost`; preserve it when changing preview timing or note footprints.
+7. **`renderOrder` on pooled transparent objects is sticky.** Use `renderOrderForLayerAtZ()` and the named layer contract for note bodies, rims, trails and technique marks. Reassign the layer on every pool use; a far note's marker must not draw over a nearer chord.
+   - **Corollary: `depthTest: false` alone does not put a sprite on top.** It only removes depth-buffer comparison. Follow the named transparent ordering policy rather than assigning a universal order of 1000 to technique planes. Opacity 1 also does not justify moving all note materials into the opaque queue.
 8. **`ch.id` may be missing.** Some chord events lack an `id` (or it doesn't index into `chordTemplates`). Always optional-chain: `bundle.chordTemplates?.[ch.id]?.name`. The chord diagram + name label both gate on a non-empty result.
 9. **The `aspectScale` clamp (`Math.max(1, …)`).** Without it, ultra-wide split-screen panels (top/bottom layout, ~5:1 aspect) yield aspectScale ≈ 0.33, which dollies the camera way in and kills highway depth. The clamp keeps wide panels at baseline depth and only allows narrow panels to dolly the camera back.
 10. **The `_oobStringWarned` flag is reset on `nStr` change** in the returned `draw()` — switching from guitar (6) to bass (4) re-arms the warning so a malformed bass chart still gets logged.
@@ -211,24 +275,26 @@ If a pool's mesh has per-instance state (its own material clone, its own texture
 
 The eight-color palette `S_COL` is the single source of truth for per-string color. **Don't hardcode hex values inside `drawNote()` or `update()`** — every per-string color reference is either an entry in `S_COL` or one of the per-string material arrays (`mStr`, `mGlow`, `mSus`, `mProj`, `mProjGlow`) built from it.
 
-If a planned color-palette feature lands (issue #10), expect it to swap the palette source array but keep this single-array indirection. Anything that hardcodes color today will break that swap; flag it during review.
+Palettes already support custom string colors. Use `activePalette` and the existing palette update helpers; do not hardcode a string color because a reference screenshot happens to show that technique on a red, orange, or green string.
 
-Non-string colors (the stock lane hexes `HWY_LANE_STRIPE_ODD_HEX`/`_EVEN_HEX` — now overridable per Highway theme, see "Scene colors" above; fret-row label colors `#ffe84d` / `#9ab8cc`, fret-dot color `0x556677`, lyrics box rgba, chord-name gold `#e8d080`, etc.) are scattered as literals — that's intentional for now, since they're scene-wide accents rather than per-string. Pulling them into named constants is fine if you're already in that area.
+Non-string colors (the stock lane hexes `HWY_LANE_STRIPE_ODD_HEX`/`_EVEN_HEX` — now overridable per Highway theme, see "Scene colors" above; fret-row label colors `#ffe84d` / `#9ab8cc`, fret-dot color `0x556677`, lyrics box rgba, Current chord-name gold `#e8d080` / RS+ white `#f3f4f6`, etc.) are scattered as literals — that's intentional for now, since they're scene-wide accents rather than per-string. Pulling them into named constants is fine if you're already in that area.
 
 ## Tweaking text-sprite styling
 
-Every text label in the 3D scene is rasterised by `txtMat(text, color, wide, style)` and the look (font, outline, drop-shadow, source-canvas resolution) is driven by a preset in the `TXT_STYLES` table at the top of `createFactory()`. **Do not edit the body of `txtMat()` to change a single label class** — change the relevant preset entry instead, so the rest stay unaffected.
+Most text labels are rasterised by `txtMat(text, color, wide, style)`, with appearance driven by `TXT_STYLES`. **Do not edit the body of `txtMat()` to change a single label class** — change its preset. RS+ technique masks are separately cached by `rsPlusTechniqueMat()` and `rsPlusNoteFaceMat()`; they do not inherit text-sprite shadows or add bend-amount text.
+
+RS+ `noteFret`, `fretRow` and `chord` canvas textures are explicitly sRGB. This keeps gold fret text from washing out to cream; chord names use white. The encoding correction is scoped to those RS+ cache variants and leaves Current's text textures unchanged.
 
 Current presets and their callers:
 
 | Preset | Used by | Default look |
 |---|---|---|
 | `fretRow` | Fret-number row under the board (`update()`, fret-row block) | Arial Black 900, 256px source canvas, 18px dark outline + soft drop-shadow — designed to pop against any background |
-| `noteFret` | Per-note connector numbers + on-body fret label (`drawNote()`) | Same heavy treatment as `fretRow` |
-| `chord` | 3D chord-name labels above chord boxes | bold sans, 128px source, 6px outline (lighter so the gold reads) |
+| `noteFret` | Per-note connector numbers below the board (`drawNote()`) | Same heavy treatment as `fretRow` |
+| `chord` | 3D chord-name labels above chord boxes | bold sans, 128px source, 6px outline; gold in Current, white in RS+ |
 | `section` | Section banners ("Verse", "Chorus") at fret 12 | bold sans, 128px source, 6px outline |
-| `technique` | Bend / slide / H / P / T / PH / PM / accent / tremolo / open-string overlay | bold sans, 128px source, 6px outline |
-| `open` | The "0" label on open-string note bodies | bold sans, 128px source, 6px outline |
+| `technique` | Generic technique text and legacy callouts; not the RS+ face masks | bold sans, 128px source, 6px outline |
+| `open` | Retained open-string text preset; incoming bars do not currently draw a "0" | bold sans, 128px source, 6px outline |
 
 Style fields:
 

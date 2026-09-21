@@ -35,6 +35,7 @@ import {
 } from './js/highway-constants.js';
 import {
     bnvNormalizedPoints,
+    maxNoteFretInWindow,
     chordHarmonyLabels,
     project,
     roundRect,
@@ -424,6 +425,14 @@ function createHighway() {
         // Find the highest fret needed across all anchors visible on screen
         const src = hwState._xfAnchors !== null ? hwState._xfAnchors
             : hwState._filteredAnchors !== null ? hwState._filteredAnchors : hwState.anchors;
+        if (!src.length) {
+            const notes = hwState._xfNotes !== null ? hwState._xfNotes
+                : hwState._filteredNotes !== null ? hwState._filteredNotes : hwState.notes;
+            const chords = hwState._xfChords !== null ? hwState._xfChords
+                : hwState._filteredChords !== null ? hwState._filteredChords : hwState.chords;
+            const templates = hwState._xfChordTemplates ?? hwState.chordTemplates;
+            return maxNoteFretInWindow(notes, chords, templates, t, VISIBLE_SECONDS + 2);
+        }
         let maxFret = 0;
         for (const anc of src) {
             if (anc.time > t + VISIBLE_SECONDS + 2) break; // Skip anchors well in the future (with a little buffer to avoid moving early the cutoff)
@@ -450,6 +459,11 @@ function createHighway() {
         const currentMax = anchor.fret + anchor.width;
         const needed = Math.max(currentMax, lookAheadMax);
         const targetMax = Math.max(needed + 3, 8);
+        const anchors = hwState._xfAnchors !== null ? hwState._xfAnchors
+            : hwState._filteredAnchors !== null ? hwState._filteredAnchors : hwState.anchors;
+        if (!anchors.length && targetMax > hwState.displayMaxFret) {
+            hwState.displayMaxFret = targetMax;
+        }
         hwState.displayMaxFret += (targetMax - hwState.displayMaxFret) * rate;
     }
 
