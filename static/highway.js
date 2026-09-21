@@ -68,11 +68,29 @@ import {
     getChordTemplateInfo,
     strumGroupBuckets,
 } from './js/highway-draw.js';
+import { createHarmonyGuideController } from './js/harmony-guide-controller.js';
+import { createHarmonyGuideUI } from './js/harmony-guide-ui.js';
 
 function createHighway() {
   // R3c: per-instance mutable state in one object, so extracted renderer/ws
   // modules can close over it as a factory arg without cross-panel sharing.
   const hwState = {};
+    let guideStorage = null;
+    try { guideStorage = window.localStorage; } catch (_) { /* private/blocked storage */ }
+    const harmonicGuide = createHarmonyGuideController(guideStorage);
+    let harmonicGuideUI = null;
+    let harmonicGuideLoop = null;
+    const harmonicGuideChartLoop = { start: 0, end: 0, hasWrapped: false };
+    let harmonicGuideIdentity = '';
+
+    function syncHarmonicGuideUI() {
+        if (!hwState.canvas) return;
+        if (!harmonicGuideUI) {
+            const parent = hwState._resizeContainer || hwState.canvas.parentElement;
+            if (parent) harmonicGuideUI = createHarmonyGuideUI(parent, harmonicGuide);
+        }
+        harmonicGuideUI?.setSupported(hwState._renderer?.supportsHarmonicGuide === true);
+    }
 
     // ── Stable, hwState-bound views of the carved primitives (R3c) ──────────────
     //
@@ -635,6 +653,20 @@ function createHighway() {
         // so its presence alone isn't a useful "detect mode" signal.
         // Renderers gate verdict-window cull / draw extensions on this.
         b.getNoteStateProvider = _getNoteStateProvider; // stable — see above
+        if (harmonicGuideLoop) {
+            harmonicGuideChartLoop.start = harmonicGuideLoop.start + hwState.songOffset;
+            harmonicGuideChartLoop.end = harmonicGuideLoop.end + hwState.songOffset;
+            harmonicGuideChartLoop.hasWrapped = harmonicGuideLoop.hasWrapped;
+        }
+        b.harmonicGuide = harmonicGuide.update({
+            supported: hwState._renderer?.supportsHarmonicGuide === true,
+            ready: hwState.ready, notes: b.notes, chords: b.chords, beats: b.beats,
+            duration: harmonicGuide.songEnd,
+            time: hwState.chartTime, visualTime: hwState.currentTime,
+            tuning: b.tuning, capo: b.capo, stringCount: b.stringCount,
+            loop: harmonicGuideLoop ? harmonicGuideChartLoop : null,
+        });
+        harmonicGuideUI?.update(b.harmonicGuide);
         return b;
     }
 
@@ -981,6 +1013,7 @@ function createHighway() {
             }
         }
         hwState._rendererInited = initSucceeded;
+        syncHarmonicGuideUI();
         if (!hwState._rendererInited) return;
         if (typeof hwState._renderer.resize === 'function') {
             try { hwState._renderer.resize(hwState.canvas.width, hwState.canvas.height); }
@@ -1025,6 +1058,7 @@ function createHighway() {
                     _destroyCurrentIfInited();
                     hwState._renderer = _defaultRenderer;
                     hwState._rendererDrawFailures = 0;
+                    syncHarmonicGuideUI();
                     _emitVizReverted('async-init-failure');
                     if (hwState.canvas) {
                         // Async-init failure usually means the renderer
@@ -1682,6 +1716,7 @@ function createHighway() {
             // renderer that never saw a canvas gets init'd fresh, not
             // destroy+init'd).
             _setRenderer(hwState._renderer || _defaultRenderer);
+            syncHarmonicGuideUI();
             if (hwState._resizeHandler) window.removeEventListener('resize', hwState._resizeHandler);
             hwState._resizeHandler = () => this.resize();
             window.addEventListener('resize', hwState._resizeHandler);
@@ -1861,6 +1896,11 @@ function createHighway() {
         },
 
         connect(wsUrl, opts = {}) {
+            harmonicGuide.reset();
+            try {
+                const source = new URL(wsUrl, location.href);
+                harmonicGuideIdentity = decodeURIComponent(source.pathname.replace(/^\/ws\/highway\//, ''));
+            } catch (_) { harmonicGuideIdentity = ''; }
             hwState._connectOpts = opts;
             // Bump generation so async handlers from the previous connection
             // can detect they are stale and skip state mutations.
@@ -1952,6 +1992,7 @@ function createHighway() {
                                 hasNotation: Boolean(msg.has_notation),
                                 hasDrumTab: Boolean(msg.has_drum_tab),
                             });
+                            harmonicGuide.setSong(hwState.songInfo, harmonicGuideIdentity);
                             _reportAudioSessionStart(msg);
                             {
                                 const parsedOffset = Number(msg.offset);
@@ -2382,6 +2423,12 @@ function createHighway() {
                             }
                             break;
                         case 'chord_templates': hwState.chordTemplates = msg.data; break;
+                        case 'keys':
+                            harmonicGuide.setKeys(msg.data);
+                            break;
+                        case 'harmony':
+                            harmonicGuide.setHarmony(msg.data);
+                            break;
                         case 'lyrics':
                             hwState.lyrics = msg.data;
                             // Provenance: "xml" | "notechart" | "whisperx" | "user".
@@ -2884,6 +2931,8 @@ function createHighway() {
             // removes it when the flag flips off) is about to stop, so leaving
             // it would strand the overlay in the DOM until a page reload.
             if (hwState._perfHud) { hwState._perfHud.remove(); hwState._perfHud = null; }
+            harmonicGuideUI?.destroy(); harmonicGuideUI = null;
+            harmonicGuide.reset(); harmonicGuideLoop = null;
             // Reset per-session adaptive-scale + HUD accumulators so a quick
             // stop→init can't inherit stale performance.now() anchors (which
             // would skip the next paused session's first draw or defer a
@@ -2939,7 +2988,19 @@ function createHighway() {
          * of slider position. Use _drawHooks only for the default
          * renderer; they're a 2D-only contract.
          */
-        setRenderer(r) { _setRenderer(r); },
+        setRenderer(r) { _setRenderer(r); syncHarmonicGuideUI(); },
+        /** Song-driven guide; separate from scoring and detected player notes. */
+        getHarmonicGuide() { return harmonicGuide; },
+        setHarmonicGuideLoop(value) {
+            const sameBounds = harmonicGuideLoop && value
+                && harmonicGuideLoop.start === value.start && harmonicGuideLoop.end === value.end;
+            harmonicGuideLoop = value && value.enabled !== false
+                && Number.isFinite(value.start) && Number.isFinite(value.end) && value.end > value.start
+                ? { start: value.start, end: value.end, hasWrapped: !!(sameBounds && harmonicGuideLoop.hasWrapped) } : null;
+        },
+        notifyHarmonicGuideSeek(reason) {
+            if (harmonicGuideLoop) harmonicGuideLoop.hasWrapped = reason === 'loop-wrap-continuous';
+        },
         /**
          * True when the built-in 2D canvas highway is the active renderer
          * (or none has been installed yet — that resolves to the default
