@@ -282,6 +282,15 @@ eligible. `trailOpenLayoutAt` must match the actual chord/standalone rail spans,
 including fallback bounds and rounded anchor timing. Rebuild this metadata when
 the cached hold model changes; never infer a rendered trail from sustain alone.
 
+`hwyTrailPriorityWorldZ` treats trail-first targets as foreground constraints,
+not replacement positions: a target may raise the emitted segment's natural
+sorting depth but must never move it backward. This also applies when an open
+note after the sustain end causes endpoint narrowing; intervening notes must not
+gain foreground priority as a side effect. Gem-first and attached-trail-first
+options keep their target-depth rules. Preserve ordinary-gem ordering repair
+before the physical-string relationship pass. Width envelopes and authored
+timing are independent of this ordering constraint.
+
 ## Object pools
 
 Pools live as closure refs (`pNote`, `pSus`, `pLbl`, `pBeat`, `pSec`, `pFretLbl`, `pLane`, `pLaneDivider`, `pChordBox`, `pChordLbl`, `pBarreLine`, `pNoteFretLabel`, `pConnectorLine`, `pDropLine`, `pSusOutline`).

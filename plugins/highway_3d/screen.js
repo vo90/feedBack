@@ -1255,11 +1255,12 @@
     /**
      * Depth used to order one yielding ribbon strand. A ribbon is one pooled
      * mesh, so its geometric midpoint cannot consistently represent gems near
-     * either end of a long sustain. Strands with real yield targets instead
-     * use a target depth: the farthest requested target extent when notes are
-     * prioritized (a gem onset, or its trail endpoint when included), or the
-     * nearest gem when trails are prioritized. The named layer breaks an
-     * equal-depth tie in the selected direction.
+     * either end of a long sustain. Note-first strands use the farthest
+     * requested target extent (a gem onset, or its trail endpoint when included).
+     * Trail-first strands may advance to the nearest target, but never retreat
+     * behind their own geometry. A post-end target can narrow the endpoint
+     * without sending the trail behind unrelated intervening gems. The named
+     * layer breaks an equal-depth tie in the selected direction.
      */
     function hwyTrailPriorityWorldZ(
         fallbackWorldZ,
@@ -1290,7 +1291,8 @@
                 ? Math.min(worldZ, targetWorldZ)
                 : Math.max(worldZ, targetWorldZ);
         }
-        return worldZ === null ? fallbackWorldZ : worldZ;
+        if (worldZ === null) return fallbackWorldZ;
+        return gemInFront ? worldZ : Math.max(fallbackWorldZ, worldZ);
     }
 
     // Keep equal-depth trail chains deterministic without crossing the next
