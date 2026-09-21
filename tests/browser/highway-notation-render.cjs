@@ -9,6 +9,8 @@
  * --fidelity-only reviews each technique plus open-marker and arpeggio layouts.
  * --chords-only captures and validates just the chord sequence in both styles.
  * --orientation-only checks stable RS+ gems/markers across approach and live style reuse.
+ * --open-chords-only checks open stems inside ordinary frames and through pool reuse.
+ * --source-ref <git-ref> serves screen.js from a Git revision for before/after evidence.
  * --reference captures older notation for comparison without new geometry checks.
  * --detail-filter name,name limits closeups; --times t,t and --fixture-name name
  * select chart poses without changing or importing the source song library.
@@ -32,12 +34,16 @@ const quick = args.includes('--quick');
 const fidelityOnly = args.includes('--fidelity-only');
 const chordsOnly = args.includes('--chords-only');
 const orientationOnly = args.includes('--orientation-only');
+const openChordsOnly = args.includes('--open-chords-only');
 const reference = args.includes('--reference');
 const perfOnly=args.includes('--perf-only'),perfRounds=Number(option('--perf-rounds',1));
 const width=Number(option('--width',1280)),height=Number(option('--height',720));
 const dpr=Number(option('--dpr',1)),renderScale=Number(option('--scale',1));
 const sourcePath = path.join(repo, 'plugins/highway_3d/screen.js');
-const source = fs.readFileSync(sourcePath, 'utf8');
+const sourceRef = option('--source-ref');
+const source = sourceRef
+  ? cp.execFileSync('git', ['-C', repo, 'show', `${sourceRef}:plugins/highway_3d/screen.js`], {encoding:'utf8',maxBuffer:8*1024*1024})
+  : fs.readFileSync(sourcePath, 'utf8');
 const failures = [], errors = [], results = [];
 const sha = text => crypto.createHash('sha256').update(text).digest('hex');
 function check(value, message) { if (!value) failures.push(message); }
@@ -226,6 +232,73 @@ async function main() {
       return chords;
     }
     const styles=baseline?['current']:option('--style')?[option('--style')]:['current','rsplus'];
+    if(openChordsOnly){
+      const onset=10.4;
+      const member=n=>({sus:0,sl:-1,slu:-1,bn:0,ho:false,po:false,hm:false,hp:false,
+        pm:false,mt:false,fhm:false,vb:false,tr:false,ac:false,tp:false,slp:false,plk:false,...n});
+      function openChord({lefty=false,arpeggio=false,repeat=false}={}){
+        const b=baseBundle();b.lefty=lefty;b.currentTime=onset-.3;
+        b.anchors=[{time:0,fret:2,width:4}];
+        b.chordTemplates=[{name:'A5',frets:[-1,0,2,2,-1,-1],fingers:[-1,-1,1,1,-1,-1],arp:arpeggio}];
+        b.chords=[{t:onset,id:0,hd:repeat,notes:[{s:1,f:0,ac:repeat},{s:2,f:2},{s:3,f:2}].map(member)}];
+        if(repeat)b.chords.unshift({t:onset-.4,id:0,notes:[{s:1,f:0},{s:2,f:2},{s:3,f:2}].map(member)});
+        b.handShapes=[{chord_id:0,start_time:repeat?onset-.4:onset,end_time:onset+2,arp:arpeggio}];
+        return b;
+      }
+      const framedVisibility=reference;
+      function assertOpen(proof,label,{visible,frame=false,arpeggio=false}={}){
+        const open=proof.notes.filter(n=>n.note.f===0&&Math.abs(n.note.t-onset)<1e-6);
+        check(open.length>0,`${label}: fixture did not render any open string`);
+        check(open.every(n=>n.outline.visible===visible),`${label}: open stem visibility should be ${visible}`);
+        check(open.every(n=>n.core.visible&&(proof.style!=='rsplus'||n.core.material.opacity===1)),`${label}: open colored bar disappeared or faded`);
+        if(frame)check(proof.frames.some(f=>!f.isArpeggioFrame),`${label}: missing enclosing ordinary frame`);
+        if(arpeggio)check(proof.roundedFrames.some(f=>f.mesh.material.uniforms.uBracketCap>0),`${label}: missing arpeggio guidance`);
+      }
+      async function captureOpen(name,b,settings,expectation){
+        const proof=await capture(name,b,settings,{expectBodies:true});
+        assertOpen(proof,name,expectation);
+        const [px,py]=proof.notes.find(n=>n.note.f===0).screen;
+        const clipWidth=Math.min(width,600),clipHeight=Math.min(height,400);
+        await page.screenshot({path:path.join(out,name+'-close.png'),clip:{
+          x:Math.max(0,Math.min(width-clipWidth,Math.round(px-clipWidth*.5))),
+          y:Math.max(0,Math.min(height-clipHeight,Math.round(py-clipHeight*.45))),width:clipWidth,height:clipHeight}});
+        return proof;
+      }
+      const modern={notationStyle:'rsplus',glow:0,bloom:false};
+      for(const lefty of [false,true]){
+        const b=openChord({lefty});
+        await captureOpen(`open-chord-framed-${lefty?'lefty':'righty'}`,b,modern,{visible:framedVisibility,frame:true});
+      }
+      const repeated=openChord({repeat:true});
+      const repeatedProof=await captureOpen('open-chord-accented-repeat',repeated,modern,{visible:framedVisibility,frame:true});
+      check(repeatedProof.frames.some(f=>f.isRepeat&&!f.compactRepeatFrame),'Open repeat fixture did not exercise a repeated full frame');
+      const onsetBundle=openChord();onsetBundle.currentTime=onset;
+      const onsetProof=await captureOpen('open-chord-onset',onsetBundle,modern,{visible:true});
+      check(onsetProof.frames.length===0,'Ordinary chord frame survived onset');
+      onsetBundle.currentTime=onset+.03;
+      const postOnsetProof=await captureOpen('open-chord-after-onset',onsetBundle,modern,{visible:true});
+      check(postOnsetProof.frames.length===0,'Ordinary chord frame survived after onset');
+      const single=baseBundle();single.notes=[member({t:onset,s:0,f:0})];single.currentTime=onset-.3;
+      await captureOpen('open-standalone',single,modern,{visible:true});
+      await captureOpen('open-chord-arpeggio',openChord({arpeggio:true}),modern,{visible:true,arpeggio:true});
+      await captureOpen('open-chord-current',openChord(),{notationStyle:'current',glow:0,bloom:false},{visible:true,frame:true});
+      // The same renderer must reset pooled visibility at the frame boundary,
+      // when rewinding, and when switching styles in either direction.
+      await init(openChord(),modern);
+      const passes=[];
+      for(const [style,time,visible] of [
+        ['rsplus',onset-.3,framedVisibility],['rsplus',onset,true],
+        ['rsplus',onset+.03,true],
+        ['rsplus',onset-.3,framedVisibility],['current',onset-.3,true],
+        ['rsplus',onset-.3,framedVisibility],['current',onset-.3,true],
+      ]){
+        const proof=await page.evaluate(({style,time})=>{h3dBgSetNotationStyle(style);bundle.currentTime=time;
+          for(let i=0;i<45;i++)r.draw(bundle);return __captureNotation();},{style,time});
+        assertOpen(proof,`live ${style}/${time}`,{visible,frame:time<onset});
+        passes.push(proof);
+      }
+      results.push({name:'open-chord-live-style-and-onset-reuse',passes});
+    }
     if(orientationOnly){
       const onset=13,distances=[2.7,1.5,.3,0];
       const member=n=>({sus:0,sl:-1,slu:-1,bn:0,ho:false,po:false,hm:false,hp:false,
@@ -313,7 +386,7 @@ async function main() {
       results.push({name:'orientation-live-style-roundtrip',passes});
     }
     if(chordsOnly)for(const style of styles)await captureChordSequence(style);
-    if(!orientationOnly&&!chordsOnly&&!perfOnly&&!fidelityOnly)for(const style of styles){
+    if(!openChordsOnly&&!orientationOnly&&!chordsOnly&&!perfOnly&&!fidelityOnly)for(const style of styles){
       const effectProofs=[];
       for(const [effect,glow,bloom] of [['zero',0,false],['soft',.25,true],['user',.05,false]]){
         const proof=await capture(`${style}-eight-strings-${effect}`,matrix(),{notationStyle:style,glow,bloom},{expectBodies:true});
@@ -347,7 +420,7 @@ async function main() {
         }
       }
     }
-    if(!orientationOnly&&!chordsOnly&&fidelityOnly){
+    if(!openChordsOnly&&!orientationOnly&&!chordsOnly&&fidelityOnly){
       for(const [index,[name,flags]] of techniqueFlags.entries()){
         if(option('--detail-filter')&&!option('--detail-filter').split(',').includes(name))continue;
         const string = name==='tap'?4:name==='half-bend'?2:
@@ -395,7 +468,7 @@ async function main() {
         }
       }
     }
-    if(!orientationOnly&&!chordsOnly&&!baseline&&!perfOnly&&!fidelityOnly){
+    if(!openChordsOnly&&!orientationOnly&&!chordsOnly&&!baseline&&!perfOnly&&!fidelityOnly){
       await init(matrix(),{notationStyle:'current',glow:0,bloom:false});
       const controls=await page.evaluate(()=>feedBackViz_highway_3d.panelControls);
       for(const key of ['notationStyle','glow','bloom'])check(controls.some(c=>c.key===key),`Missing panel control ${key}`);
@@ -446,7 +519,7 @@ async function main() {
         await page.evaluate(()=>{for(const x of __splitInstances)x.destroy();delete window.feedBackSplitscreen;window.r=null;const host=document.getElementById('host');host.style.display='block';host.innerHTML='<canvas id="highway"></canvas>';});
       }
     }
-    if(!orientationOnly&&!chordsOnly&&((!quick&&!fidelityOnly)||perfOnly))for(let round=0;round<perfRounds;round++)for(const style of (round%2?[...styles].reverse():styles))for(const [effect,glow,bloom] of (perfOnly?[['zero',0,false],['soft',.25,true]]:[['soft',.25,true]])){
+    if(!openChordsOnly&&!orientationOnly&&!chordsOnly&&((!quick&&!fidelityOnly)||perfOnly))for(let round=0;round<perfRounds;round++)for(const style of (round%2?[...styles].reverse():styles))for(const [effect,glow,bloom] of (perfOnly?[['zero',0,false],['soft',.25,true]]:[['soft',.25,true]])){
       await init(denseScene(),{notationStyle:style,glow,bloom});
       const perf=await page.evaluate(async()=>{
         const a=r.__notationAudit(),gl=a.ren.getContext(),samples=[],cpuSamples=[],finishSamples=[];
@@ -467,7 +540,7 @@ async function main() {
       }
     }
     check(errors.length===0,`Browser errors: ${errors.join('\n')}`);
-    const report={repo,git,sourceSha256:sha(source),baseline,reference,viewport:[width,height],deviceScaleFactor:dpr,renderScale,comparisons,results,errors,failures};
+    const report={repo,git,sourceRef,sourceSha256:sha(source),baseline,reference,viewport:[width,height],deviceScaleFactor:dpr,renderScale,comparisons,results,errors,failures};
     fs.writeFileSync(path.join(out,'results.json'),JSON.stringify(report,null,2));
     console.log(JSON.stringify({output:out,cases:results.length,errors,failures},null,2));
     if(failures.length)process.exitCode=1;

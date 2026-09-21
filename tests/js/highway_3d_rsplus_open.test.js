@@ -72,9 +72,11 @@ function harness() {
             const nStr = options.strings ?? 6, s = options.string ?? 0;
             const sY = index => (options.inverted ? nStr-1-index : index) * S_GAP;
             const n = {f:options.fret ?? 0, ac:!!options.accent, s};
+            const sourceNote = {...n, f:options.sourceFret ?? n.f};
             const x = 30, y = sY(s), techniqueYNow = options.offset ?? 0;
             const dt = options.dt ?? .1, noteZ = -10 * dt;
             const fromChord = !!options.chord, _leftyCached = !!options.lefty;
+            const hasEnclosingChordFrame = !!options.enclosed;
             const openWScale = options.width ?? 1;
             const ACCENT_RIM_XY_SCALE_MUL = 1.09, ACCENT_RIM_Z_SCALE_MUL = 1.06;
             ${between('const openSlabThickMul =', '// Ghost preview window:')}
@@ -134,15 +136,52 @@ test('RS+ open bars keep opaque bodies and thin stems inside the playable width 
     }
 });
 
-test('standalone stems reach the floor on all strings while chord stems stay local to their bars', () => {
+test('standalone stems reach the floor while unframed chord stems stay local to their bars', () => {
     const draw = harness();
     for (const strings of [4,6,7,8]) for (const inverted of [false,true]) {
         for (let string=0;string<strings;string++) for (const chord of [false,true]) {
             const r = draw({strings,inverted,string,chord,offset:.7});
+            assert.equal(r.outline.visible, true);
             const halfHeight = r.outline.scale.y*3/2;
             close(r.outline.position.y+halfHeight, r.y+1.35);
             close(r.outline.position.y-halfHeight, chord ? r.y-1.35 : r.floor);
         }
+    }
+});
+
+test('enclosed RS+ open chord bars hide only their stems in either handedness and string order', () => {
+    const draw = harness();
+    for (const strings of [4,6,7,8]) for (const lefty of [false,true]) for (const inverted of [false,true]) {
+        for (const accent of [false,true]) for (const string of [0,strings-1]) {
+            const options = {chord:true,strings,lefty,inverted,accent,string,width:1.6};
+            const unframed = draw(options);
+            const bodyBefore = JSON.stringify([unframed.core.position,unframed.core.scale,unframed.core.material]);
+            const framed = draw({...options,enclosed:true});
+            assert.equal(framed.outline.visible, false);
+            assert.equal(framed.core.visible, true);
+            assert.equal(JSON.stringify([framed.core.position,framed.core.scale,framed.core.material]),bodyBefore,
+                'removing the redundant stem must not move, shrink or recolor the open bar');
+            assert.equal(framed.registrations[0].mesh,framed.core);
+            assert.equal(framed.counts.notes,2,'the shared gem pool does not grow');
+        }
+    }
+    const mutedSlab = draw({chord:true,enclosed:true,sourceFret:-1});
+    assert.equal(mutedSlab.outline.visible,true,'an unpitched mute slab is not an authored open string');
+});
+
+test('enclosed open bars retain accent halos and hit or miss faces without restoring a stem', () => {
+    const draw = harness();
+    for (const accent of [false,true]) for (const verdict of ['hit','miss']) {
+        const options = {chord:true,accent,verdict,glow:1,string:5};
+        const baseline = draw(options);
+        const visualState = r => JSON.stringify([r.core.position,r.core.scale,r.core.material,
+            r.edges.position,r.edges.scale,r.edges.material,r.halo?.position,r.halo?.scale,r.halo?.material]);
+        const before = visualState(baseline);
+        const framed = draw({...options,enclosed:true});
+        assert.equal(framed.outline.visible,false);
+        assert.equal(framed.edges.visible,true,'verdict side faces stay visible');
+        assert.equal(visualState(framed),before,'verdict and accent geometry is unchanged');
+        assert.equal(framed.halo?.visible ?? false,verdict === 'hit');
     }
 });
 
@@ -163,28 +202,46 @@ test('accent open halos and verdict edges follow bar height without stretching a
     assert.equal(draw({accent:false,glow:1}).halo, null);
 });
 
-test('shared gem pools restore Current and fretted RS+ geometry and materials after open stems', () => {
+test('shared gem pools restore visible standalone, fretted and Current notes after hidden chord stems', () => {
     const draw = harness();
-    const snapshot = r => JSON.stringify([r.outline.geometry,r.outline.material,r.outline.position,
+    const snapshot = r => JSON.stringify([r.outline.visible,r.outline.geometry,r.outline.material,r.outline.position,
         r.outline.scale,r.core.geometry,r.core.material,r.core.position,r.core.scale]);
     for (const accent of [false,true]) {
-        const baseline = draw({style:'current',accent});
+        const baseline = draw({style:'current',accent,chord:true,enclosed:true});
         const before = snapshot(baseline), reused = baseline.outline;
+        assert.equal(draw({chord:true,enclosed:true,accent}).outline.visible,false);
         const open = draw({accent,lefty:true,string:5,glow:1});
         assert.equal(open.outline,reused);
-        const fretted = draw({fret:4,accent});
+        assert.equal(open.outline.visible,true,'standalone stems recover after enclosed chords');
+        assert.equal(draw({chord:true,enclosed:true,accent}).outline.visible,false);
+        const fretted = draw({fret:4,accent,chord:true,enclosed:true});
         assert.equal(fretted.outline,reused);
+        assert.equal(fretted.outline.visible,true,'fretted outlines recover after enclosed chords');
         assert.equal(fretted.registrations[0].mesh,fretted.core);
         assert.equal(fretted.registrations[0].outline,fretted.outline);
         assert.equal(fretted.outline.geometry.name,'rounded');
         assert.notEqual(fretted.outline.material,fretted.materials.stem);
         close(fretted.outline.position.x,30);
-        const restored = draw({style:'current',accent});
+        assert.equal(draw({chord:true,enclosed:true,accent}).outline.visible,false);
+        const restored = draw({style:'current',accent,chord:true,enclosed:true});
         assert.equal(snapshot(restored),before);
         assert.equal(restored.registrations.length,1, 'pool reuse does not retain a previous frame registration');
         assert.equal(restored.registrations[0].mesh,restored.core);
         assert.equal(restored.registrations[0].outline,restored.outline);
         assert.equal(draw().counts.notes,2, 'no extra mesh is allocated for the open stem');
+    }
+});
+
+test('a chord stem returns when its enclosing frame ends at the play line', () => {
+    const draw = harness();
+    const approaching = draw({chord:true,enclosed:true,dt:.001});
+    const pooledOutline = approaching.outline;
+    assert.equal(approaching.outline.visible,false);
+    for (const dt of [0,-.001,-.5]) {
+        const landed = draw({chord:true,enclosed:false,dt});
+        assert.equal(landed.outline,pooledOutline);
+        assert.equal(landed.outline.visible,true);
+        close(landed.outline.scale.y*3,2.7);
     }
 });
 
