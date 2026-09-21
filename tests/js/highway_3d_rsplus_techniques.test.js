@@ -232,70 +232,159 @@ test('pale face marks keep their ink over a narrow dark contour across bright an
             }
         }
     }
-    for (const kind of ['bend', 'slideRight', 'slideLeft']) {
+    for (const kind of ['slideRight', 'slideLeft']) {
         assert.equal(f.mat(kind, 0xffffff).map.image.context.calls.some(c => c.method === 'stroke'), false,
-            'off-face direction cues retain solid string color');
+            'slide direction cues retain solid string color');
     }
 });
 
-test('numeric technique-cache teardown disposes converted bases as well as textures and sprites', () => {
-    const f = factory(), sprite = f.faceMat(f.flags({ hm: true }), 0xff2233);
-    const mesh = { userData: {}, material: { dispose() {} } };
-    const clone = f.meshMat(mesh, sprite), base = sprite.userData.h3dTechMeshMat, texture = sprite.map;
-    assert.ok(base && base !== clone);
+test('numeric technique-cache teardown disposes face and bend-stack bases, textures and sprites', () => {
+    const f = factory();
+    const sprites = [f.faceMat(f.flags({ hm: true }), 0xff2233),
+        ...[1, 2, 3, 4].map(steps => f.mat('bend', 0xff2233, steps))];
+    const records = sprites.map(sprite => {
+        const mesh = { userData: {}, material: { dispose() {} } };
+        const clone = f.meshMat(mesh, sprite), base = sprite.userData.h3dTechMeshMat, texture = sprite.map;
+        assert.ok(base && base !== clone);
+        return {sprite, clone, base, texture};
+    });
     const start = src.indexOf('            for (const tm of _techMatCache.values()) {');
     const end = src.indexOf('            _techMatCache.clear();', start) + '            _techMatCache.clear();'.length;
     assert.ok(start >= 0 && end > start);
     const cleanup = new Function('_techMatCache', src.slice(start, end));
     cleanup(f.cache);
-    assert.equal(base.disposed, true, 'the cached conversion base is owned by this teardown');
-    assert.equal(sprite.userData.h3dTechMeshMat, null);
-    assert.equal(sprite.disposed, true);
-    assert.equal(texture.disposed, true);
+    for (const {sprite, clone, base, texture} of records) {
+        assert.equal(base.disposed, true, 'the cached conversion base is owned by this teardown');
+        assert.equal(sprite.userData.h3dTechMeshMat, null);
+        assert.equal(sprite.disposed, true);
+        assert.equal(texture.disposed, true);
+        assert.equal(clone.disposed, undefined, 'per-mesh clones have their separate teardown owner');
+    }
     assert.equal(f.cache.size, 0);
-    assert.equal(clone.disposed, undefined, 'per-mesh clones have their separate teardown owner');
     assert.doesNotThrow(() => cleanup(f.cache), 'a repeated empty cleanup is safe');
 });
 
-test('bend glyph is a filled string-colored chevron without an added text label', () => {
+test('bend stacks preserve their six-point arrows, string fill and pale edge for every palette', () => {
     const f = factory();
-    for (const color of [0x22aaff, 0xdd1144, 0]) {
-        const sm = f.mat('bend', color), calls = sm.map.image.context.calls;
-        assert.equal(calls.find(c => c.method === 'fill').fill, '#' + color.toString(16).padStart(6, '0'));
-        assert.equal(calls.some(c => c.method === 'stroke' || c.method.endsWith('Text')), false);
-        assert.equal(calls.filter(c => c.method === 'lineTo').length, 5, 'closed six-point ribbon silhouette');
-        assert.equal(f.mat('bend', color), sm);
+    const silhouette = [[.12,.53],[.50,.22],[.88,.53],[.88,.78],[.50,.49],[.12,.78]];
+    for (const color of [0x22aaff, 0xdd1144, 0xffffff, 0]) for (const steps of [1, 2, 3, 4]) {
+        const sm = f.mat('bend', color, steps), image = sm.map.image, calls = image.context.calls;
+        assert.equal(image.width, 512);
+        assert.equal(image.height, Math.round(512 * (1 + .4 * (steps - 1))));
+        const painted = calls.filter(c => c.method === 'stroke' || c.method === 'fill');
+        assert.equal(painted.length, steps * 3);
+        const points = calls.filter(c => c.method === 'moveTo' || c.method === 'lineTo');
+        for (let i = 0; i < steps; i++) {
+            assert.deepEqual(points.slice(i * 6, i * 6 + 6).map(c => c.args), silhouette,
+                'stacking must not change the existing six-point arrow silhouette');
+            assert.deepEqual(painted.slice(i * 3, i * 3 + 3).map(c => [c.method, c[c.method]]),
+                [['stroke', '#18222c'], ['stroke', '#fff8f6'], ['fill', '#' + color.toString(16).padStart(6, '0')]]);
+            assert.equal(painted[i * 3].width, .07, 'dark outer contour stays visible behind the pale edge');
+            assert.equal(painted[i * 3 + 1].width, .032);
+        }
+        assert.deepEqual(calls.filter(c => c.method === 'translate').map(c => c.args),
+            Array.from({length: steps}, (_, i) => [0, i * .4]));
+        assert.equal(calls.some(c => c.method.endsWith('Text')), false, 'the arrow count carries the amount');
+        assert.equal(sm.opacity, 1);
+        assert.equal(sm.fog, false);
+        assert.equal(sm.toneMapped, false);
+        assert.equal(f.mat('bend', color, steps), sm);
     }
 });
 
-test('RS+ bend direction renders one tinted chevron for fractional chart amounts', () => {
+test('bend count is clamped, cached separately from slides, and reused without new materials', () => {
     const f = factory();
-    const start = src.indexOf('                if (_bendPeak > 0) {');
+    const colors = [0x22aaff, 0];
+    for (const color of colors) {
+        const stacks = [1, 2, 3, 4].map(steps => f.mat('bend', color, steps));
+        assert.equal(new Set(stacks).size, 4);
+        assert.equal(f.mat('bend', color), stacks[0]);
+        for (const [amount, count] of [[0,1],[.25,1],[.5,1],[1.49,1],[1.5,2],[2.49,2],[2.5,3],[3.5,4],[20,4]]) {
+            assert.equal(f.mat('bend', color, amount), stacks[count - 1]);
+        }
+        const slides = ['slideRight','slideLeft'].map(kind => f.mat(kind, color, 4));
+        assert.equal(new Set([...stacks, ...slides]).size, 6, 'bend counts must not collide with slide cache entries');
+        for (let i = 0; i < stacks.length; i++) {
+            assert.equal(f.cache.get(-(color * 1024 + 512 + i * 4 + 1)), stacks[i]);
+        }
+        const size = f.cache.size;
+        for (let i = 0; i < 200; i++) assert.equal(f.mat('bend', color, i % 4 + 1), stacks[i % 4]);
+        assert.equal(f.cache.size, size);
+    }
+    assert.ok([...f.cache.keys()].every(k => Number.isSafeInteger(k) && k < 0));
+});
+
+test('slide arrows retain the original solid directional silhouettes and square textures', () => {
+    const f = factory(), points = [[.26,.14],[.76,.50],[.26,.86],[.26,.63],[.45,.50],[.26,.37]];
+    for (const [kind, code] of [['slideRight',513],['slideLeft',514]]) {
+        const mat = f.mat(kind, 0x22aaff, 4), calls = mat.map.image.context.calls;
+        assert.equal(f.mat(kind, 0x22aaff, 1), mat, 'a bend count cannot change slide cache identity');
+        assert.equal(f.cache.get(-(0x22aaff * 1024 + code + 1)), mat);
+        assert.equal(mat.map.image.width, 512);
+        assert.equal(mat.map.image.height, 512);
+        assert.deepEqual(calls.filter(c => c.method === 'moveTo' || c.method === 'lineTo').map(c => c.args),
+            points.map(([x,y]) => [kind === 'slideLeft' ? 1 - x : x, y]));
+        assert.equal(calls.some(c => c.method === 'stroke'), false);
+        assert.equal(calls.filter(c => c.method === 'fill').length, 1);
+        assert.equal(calls.find(c => c.method === 'fill').fill, '#22aaff');
+    }
+});
+
+test('bend amounts use one proportional plane with unchanged gem clearance and correct string direction', () => {
+    const f = factory();
+    const start = src.indexOf('                const _bnvPeak =');
     const end = src.indexOf('\n                if (rsPlusNotation) {', start);
     assert.ok(start >= 0 && end > start);
-    const run = new Function('f', 'dir', 'peak', `
-        const rsPlusNotation=true, _bendPeak=peak, NH=1, NW=2, K=.1, x=5, y=10,
-            techniqueYNow=.5, noteZ=-1, approachRot=.2, s=0;
-        const activePalette=[0x22aaff], techniqueMarkerRenderOrder=20, meshes=[], registrations=[];
+    const run = new Function('f', 'n', 'options', `
+        const rsPlusNotation=options.rs !== false, NH=1, NW=2, K=.1, x=5, y=10,
+            techniqueYNow=.5, noteZ=-1, approachRot=.2, s=options.string ?? 0;
+        const nStr=6, _invertedCached=!!options.inverted;
+        ${fn('bendVisualDirY')}
+        const activePalette=Array(6).fill(options.color ?? 0x22aaff);
+        const techniqueMarkerRenderOrder=20, meshes=[], registrations=[], legacyCounts=[];
         const _registerIncomingLabelOccluder=(mesh,z)=>registrations.push({mesh,z});
-        const pTechPlane={get:()=>{ const m={ material:{}, scale:{set(){}},
-            position:{set(x,y,z){this.x=x;this.y=y;}}, rotation:{} }; meshes.push(m); return m; }};
-        const rsPlusTechniqueMat=f.mat, _spriteMat2MeshMat=(m,sm)=>sm, bendVisualDirY=()=>dir;
+        const pTechPlane={get:()=>{ const m={ material:{}, scale:{set(x,y,z){Object.assign(this,{x,y,z});}},
+            position:{set(x,y,z){Object.assign(this,{x,y,z});}}, rotation:{} }; meshes.push(m); return m; }};
+        const rsPlusTechniqueMat=f.mat, _spriteMat2MeshMat=(m,sm)=>sm;
+        const bendChevronMat=(steps,color)=>{legacyCounts.push({steps,color});return {map:{image:{width:512,height:512}}};};
         let yo=11;
         ${src.slice(start, end)}
-        return {meshes,registrations};
+        return {meshes,registrations,yo,legacyCounts};
     `);
-    for (const direction of [-1, 1]) {
-        for (const peak of [0.25, 0.5, 1.5, 2.25]) {
-            const {meshes,registrations} = run(f, direction, peak);
-            assert.equal(meshes.length, 1, 'no unreferenced bend-amount label beside the gem');
-            const chevron = meshes[0];
-            assert.equal(Math.sign(chevron.position.y - 10.5), direction);
-            assert.equal(chevron.material.map.image.context.calls.find(c => c.method === 'fill').fill, '#22aaff');
-            assert.equal(registrations.length,1);
-            assert.equal(registrations[0].mesh,chevron, 'the actual chevron protects its pixels from nearer labels');
-            assert.equal(registrations[0].z,-1, 'clearance uses the note event depth, not the forward marker plane');
+    const cases = [[{bn:.25},1],[{bn:.5},1],[{bn:1},1],[{bn:1.49},1],[{bn:1.5},2],[{bn:2},2],
+        [{bn:3},3],[{bn:4},4],[{bn:12},4],[{bn:0,bnv:[{v:.5},{v:2},{v:1}]},2],
+        [{bn:3,bnv:[{v:1}]},3],[{bn:1,bnv:[{v:4.5}]},4]];
+    for (const inverted of [false,true]) for (const string of [0,5]) for (const accent of [false,true]) {
+        const direction = inverted ? (string === 0 ? 1 : -1) : (string === 0 ? -1 : 1);
+        for (const [note,count] of cases) for (const color of [0x22aaff,0]) {
+            const {meshes,registrations,yo,legacyCounts} = run(f, {...note,ac:accent}, {inverted,string,color});
+            assert.equal(meshes.length, 1, 'the full stack must use one plane and no amount label');
+            const chevron = meshes[0], image = chevron.material.map.image;
+            assert.equal(image.context.calls.filter(c => c.method === 'fill').length, count);
+            assert.equal(chevron.scale.x, 1.5, 'each arrow keeps its one-step width');
+            const height = 1.5 * image.height / image.width, extra = height - 1.5;
+            assert.equal(chevron.scale.y, height, 'texture and plane aspect preserve arrow proportions');
+            assert.equal(chevron.position.y, 10.5 + direction * (1.1 + extra * .5));
+            assert.ok(Math.abs(Math.abs(chevron.position.y - 10.5) - height / 2 - .35) < 1e-12,
+                'the nearest stack edge keeps the original clearance from the gem');
+            assert.equal(chevron.rotation.z, .2 + (direction < 0 ? Math.PI : 0));
+            assert.equal(yo, direction > 0 ? 13 + extra : 11, 'only upward stacks push following labels higher');
+            assert.equal(chevron.material.map.image.context.calls.find(c => c.method === 'fill').fill,
+                '#' + color.toString(16).padStart(6, '0'));
+            assert.equal(registrations.length, 1);
+            assert.equal(registrations[0].mesh, chevron, 'the full stack participates in label clearance');
+            assert.equal(registrations[0].z, -1, 'clearance uses the note event depth');
+            assert.equal(legacyCounts.length, 0);
         }
+    }
+    for (const [note, count] of cases) {
+        const {meshes,yo,legacyCounts} = run(f,note,{rs:false,string:5});
+        assert.deepEqual(legacyCounts,[{steps:count,color:0x22aaff}]);
+        assert.deepEqual([meshes[0].scale.x,meshes[0].scale.y,meshes[0].position.y,yo],[2.4,2.4,11.6,13],
+            'Current keeps its existing square stack and placement');
+    }
+    for (const note of [{bn:0},{bn:-1},{bn:0,bnv:[{v:0}]}]) {
+        assert.equal(run(f,note,{}).meshes.length,0,'zero or absent bend amounts must not invent a cue');
     }
 });
 

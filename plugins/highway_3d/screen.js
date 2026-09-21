@@ -8014,7 +8014,7 @@
             const fill = (color, onFace = true) => {
                 // Pale ink stays distinct on bright string colors as well as
                 // custom white faces. Keep this contour in the cached mask;
-                // off-face direction cues retain their solid string color.
+                // off-face direction cues retain their string-colored fill.
                 if (onFace) keyline(0.028);
                 g.fillStyle = color; g.fill();
             };
@@ -8075,14 +8075,23 @@
                     g.moveTo(x(0.26), 0.14); g.lineTo(x(0.76), 0.50); g.lineTo(x(0.26), 0.86);
                     g.lineTo(x(0.26), 0.63); g.lineTo(x(0.45), 0.50); g.lineTo(x(0.26), 0.37);
                 }
-                g.closePath(); fill(rsPlusTechniqueColor(stringHex), false);
+                g.closePath();
+                if (kind === 'bend') {
+                    // A narrow light edge separates the arrow from a matching
+                    // gem/trail; its dark contour remains readable on pale ones.
+                    // Bake both into the same mask, without glow or extra meshes.
+                    keyline(0.070);
+                    g.strokeStyle = white; g.lineWidth = 0.032; g.stroke();
+                }
+                fill(rsPlusTechniqueColor(stringHex), false);
             }
         }
 
-        function rsPlusTechniqueMat(kind, stringHex = 0xffffff) {
+        function rsPlusTechniqueMat(kind, stringHex = 0xffffff, steps = 1) {
             const hex = (stringHex >>> 0) & 0xffffff;
+            const bendSteps = kind === 'bend' ? Math.max(1, Math.min(4, Math.round(steps) || 1)) : 1;
             const code = typeof kind === 'number' ? kind
-                : kind === 'bend' ? 512 : kind === 'slideRight' ? 513 : kind === 'slideLeft' ? 514
+                : kind === 'bend' ? 512 + (bendSteps - 1) * 4 : kind === 'slideRight' ? 513 : kind === 'slideLeft' ? 514
                 : kind === 'hammerOn' ? 1 : kind === 'pullOff' ? 2 : kind === 'tap' ? 4
                 : kind === 'slap' ? 8 : kind === 'pop' ? 16 : kind === 'palmMute' ? 32
                 : kind === 'fretHandMute' ? 64 : kind === 'naturalHarmonic' ? 128 : 256;
@@ -8093,11 +8102,15 @@
             const cached = _techMatCache.get(key);
             if (cached) return cached;
             const c = document.createElement('canvas');
-            c.width = c.height = 512;
+            c.width = 512;
+            // Nest chevrons with clear gaps. A taller mask preserves each
+            // arrow's size instead of squeezing full bends into a single icon.
+            c.height = Math.round(512 * (1 + 0.4 * (bendSteps - 1)));
             const g = c.getContext('2d');
             g.scale(512, 512);
-            const cells = typeof kind === 'number'
-                ? rsPlusTechniqueCells(kind) : [{ kind, x: 0, y: 0, w: 1, h: 1 }];
+            const cells = typeof kind === 'number' ? rsPlusTechniqueCells(kind)
+                : kind === 'bend' ? Array.from({ length: bendSteps }, (_, i) => ({ kind, x: 0, y: i * 0.4, w: 1, h: 1 }))
+                : [{ kind, x: 0, y: 0, w: 1, h: 1 }];
             for (const cell of cells) {
                 g.save();
                 g.translate(cell.x, cell.y);
@@ -13973,8 +13986,8 @@
                 }
                 if (!changed) return;
                 const uploaded = new Set();
-                const warm = (kind, hex) => {
-                    const mat = rsPlusTechniqueMat(kind, hex);
+                const warm = (kind, hex, steps = 1) => {
+                    const mat = rsPlusTechniqueMat(kind, hex, steps);
                     if (uploaded.has(mat)) return;
                     uploaded.add(mat);
                     _prewarmTex(mat);
@@ -13984,8 +13997,9 @@
                     const hex = activePalette[n.s] ?? 0xffffff;
                     const flags = rsPlusTechniqueFlags(n);
                     if (flags) warm(flags, hex);
-                    if (Number(n.bn) > 0 || (Array.isArray(n.bnv)
-                        && n.bnv.some(p => (Number(p.v) || 0) > 0))) warm('bend', hex);
+                    const bendPeak = Math.max(Number(n.bn) || 0, Array.isArray(n.bnv)
+                        ? n.bnv.reduce((peak, p) => Math.max(peak, Number(p.v) || 0), 0) : 0);
+                    if (bendPeak > 0) warm('bend', hex, Math.max(1, Math.min(4, Math.round(bendPeak))));
                     if (arrows) {
                         const st = slideTrailEnd(n);
                         if (st) {
@@ -20079,19 +20093,23 @@
                     // the gem (approachRot). Fixed world size so it perspective-
                     // shrinks naturally without distFactor compensation.
                     const steps = Math.max(1, Math.min(4, Math.round(_bendPeak)));
-                    const bendSm = rsPlusNotation ? rsPlusTechniqueMat('bend', activePalette[s] ?? 0xffffff)
+                    const bendSm = rsPlusNotation ? rsPlusTechniqueMat('bend', activePalette[s] ?? 0xffffff, steps)
                         : bendChevronMat(steps, activePalette[s] || 0xffffff);
                     const l = pTechPlane.get();
                     l.material = _spriteMat2MeshMat(l, bendSm);
                     const cs = NH * (rsPlusNotation ? 1.5 : 2.4);
-                    l.scale.set(cs, cs, 1);
+                    const stackHeight = rsPlusNotation ? cs * bendSm.map.image.height / bendSm.map.image.width : cs;
+                    const extraHeight = stackHeight - cs;
+                    l.scale.set(cs, stackHeight, 1);
                     const bendDir = bendVisualDirY(s);
-                    l.position.set(x, y + techniqueYNow + bendDir * NH * 1.1, noteZ + K);
+                    // Grow the stack away from the gem, preserving the gap
+                    // to the nearest arrow in either string orientation.
+                    l.position.set(x, y + techniqueYNow + bendDir * (NH * 1.1 + extraHeight * 0.5), noteZ + K);
                     l.rotation.z = approachRot + (bendDir < 0 ? Math.PI : 0);
                     l.renderOrder = techniqueMarkerRenderOrder;
                     _registerIncomingLabelOccluder(l, noteZ);
                     // Only an upward bend occupies the upper label stack.
-                    if (bendDir > 0) yo = Math.max(yo, y + techniqueYNow + NH * 2.5);
+                    if (bendDir > 0) yo = Math.max(yo, y + techniqueYNow + NH * 2.5 + extraHeight);
                 }
                 if (rsPlusNotation) {
                     const faceFlags = rsPlusTechniqueFlags(n);
