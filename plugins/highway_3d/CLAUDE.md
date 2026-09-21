@@ -248,6 +248,19 @@ const noteState = {
 
 Anything that indexes a per-string array MUST be guarded by `validString(s)`. The function checks that `s` is an integer in `[0, nStr)` (returning `false` otherwise so the caller can skip), warns once when an out-of-range index is seen, and keeps the `mStr / mGlow / mSus / projMeshArr` lookups safe. It does NOT clamp — out-of-range strings are dropped, not silently mapped to a valid one. `filterValidNotes(notes)` is the chord-note equivalent (allocates only when something would actually be dropped).
 
+## RS+ readability sizing
+
+`RSPLUS_SUSTAIN_STROKE_SCALE` keeps individual ribbons and their edge padding
+at 60% of Current's dimensions. `sustainMotionWidth` divides out that same scale
+so tremolo sweep and its visibility bounds remain independent of stroke weight.
+Shared chord-hold rails have separate sizing. The user's visibility minimum is
+shared by both styles; do not silently adjust it when tuning RS+ appearance.
+
+`drawRsPlusTechniqueGlyph` receives the face-cell scale when caching a mask.
+Compound symbols use bounded stroke compensation, with palm-mute endpoints
+inset to preserve their painted footprint. Keep hollow harmonic centers and
+test the actual composite mask's ink bounds, not scaled standalone masks.
+
 ## Linked sustain visibility
 
 `hwyBuildLinkedTrailPaths` builds renderer-only paths once when chart arrays change,
