@@ -19615,18 +19615,18 @@
                     const barW = 40 * K * openWScale;
                     const stemW = NH * 0.10;
                     const stemTop = y + techniqueYNow + NH * 0.45;
-                    const stemBottom = fromChord
-                        ? y + techniqueYNow - NH * 0.45
-                        : Math.min(sY(0), sY(nStr - 1)) - S_GAP * 0.55;
+                    const stemBottom = Math.min(sY(0), sY(nStr - 1)) - S_GAP * 0.55;
                     outline.geometry = gNote;
                     if (!rsMiss && !rsHit) outline.material = mRsOpenStem;
                     outline.position.set(x + (_leftyCached ? 1 : -1) * (barW - stemW) * 0.5,
                         (stemTop + stemBottom) * 0.5, noteZ);
                     outline.scale.set(stemW / NW, Math.max(stemW, stemTop - stemBottom) / NH, 0.6);
-                    // Ordinary chord boxes already supply this edge. Keep the
-                    // marker for unpitched mute slabs, which only borrow f:0
-                    // locally, and let the pool restore it on the next draw.
-                    outline.visible = !(hasEnclosingChordFrame && sourceNote.f === 0);
+                    // An enclosing ordinary chord box supplies this edge for
+                    // both open strings and unpitched mute slabs. Otherwise the
+                    // stem always reaches the floor: fromChord also describes
+                    // hand-shape/arpeggio association, not physical enclosure.
+                    // Pool reuse restores the full stem once the frame ends.
+                    outline.visible = !hasEnclosingChordFrame;
                 } else if (n.f === 0) {
                     outline.scale.set(
                         (35 * K / NW) * ndRim * rimXY * openWScale,

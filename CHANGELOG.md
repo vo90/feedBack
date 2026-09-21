@@ -341,6 +341,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RS+ open and muted bars consistently reach the floor.** Standalone bars keep
+  their full white stems even when associated with hand-shape or arpeggio guidance.
+  An enclosing ordinary chord frame replaces the stem, including for unpitched
+  muted bars; the full stem returns if the note outlasts the frame at the play line.
 - **RS+ distant fret dividers stay continuous.** Grey inner highway lines retain
   a soft one-pixel minimum at the render resolution, preventing the centre line
   from disappearing near the horizon. Joined segments keep consistent brightness

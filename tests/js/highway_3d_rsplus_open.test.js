@@ -136,15 +136,15 @@ test('RS+ open bars keep opaque bodies and thin stems inside the playable width 
     }
 });
 
-test('standalone stems reach the floor while unframed chord stems stay local to their bars', () => {
+test('every unframed RS+ open or muted bar reaches the floor regardless of chord association', () => {
     const draw = harness();
     for (const strings of [4,6,7,8]) for (const inverted of [false,true]) {
-        for (let string=0;string<strings;string++) for (const chord of [false,true]) {
-            const r = draw({strings,inverted,string,chord,offset:.7});
+        for (let string=0;string<strings;string++) for (const chord of [false,true]) for (const sourceFret of [0,127]) {
+            const r = draw({strings,inverted,string,chord,sourceFret,offset:.7});
             assert.equal(r.outline.visible, true);
             const halfHeight = r.outline.scale.y*3/2;
             close(r.outline.position.y+halfHeight, r.y+1.35);
-            close(r.outline.position.y-halfHeight, chord ? r.y-1.35 : r.floor);
+            close(r.outline.position.y-halfHeight, r.floor);
         }
     }
 });
@@ -152,8 +152,8 @@ test('standalone stems reach the floor while unframed chord stems stay local to 
 test('enclosed RS+ open chord bars hide only their stems in either handedness and string order', () => {
     const draw = harness();
     for (const strings of [4,6,7,8]) for (const lefty of [false,true]) for (const inverted of [false,true]) {
-        for (const accent of [false,true]) for (const string of [0,strings-1]) {
-            const options = {chord:true,strings,lefty,inverted,accent,string,width:1.6};
+        for (const accent of [false,true]) for (const string of [0,strings-1]) for (const sourceFret of [0,127]) {
+            const options = {chord:true,strings,lefty,inverted,accent,string,sourceFret,width:1.6};
             const unframed = draw(options);
             const bodyBefore = JSON.stringify([unframed.core.position,unframed.core.scale,unframed.core.material]);
             const framed = draw({...options,enclosed:true});
@@ -165,8 +165,6 @@ test('enclosed RS+ open chord bars hide only their stems in either handedness an
             assert.equal(framed.counts.notes,2,'the shared gem pool does not grow');
         }
     }
-    const mutedSlab = draw({chord:true,enclosed:true,sourceFret:-1});
-    assert.equal(mutedSlab.outline.visible,true,'an unpitched mute slab is not an authored open string');
 });
 
 test('enclosed open bars retain accent halos and hit or miss faces without restoring a stem', () => {
@@ -232,7 +230,7 @@ test('shared gem pools restore visible standalone, fretted and Current notes aft
     }
 });
 
-test('a chord stem returns when its enclosing frame ends at the play line', () => {
+test('a full floor stem returns when its enclosing frame ends at the play line', () => {
     const draw = harness();
     const approaching = draw({chord:true,enclosed:true,dt:.001});
     const pooledOutline = approaching.outline;
@@ -241,7 +239,7 @@ test('a chord stem returns when its enclosing frame ends at the play line', () =
         const landed = draw({chord:true,enclosed:false,dt});
         assert.equal(landed.outline,pooledOutline);
         assert.equal(landed.outline.visible,true);
-        close(landed.outline.scale.y*3,2.7);
+        close(landed.outline.position.y-landed.outline.scale.y*3/2,landed.floor);
     }
 });
 

@@ -9,7 +9,7 @@
  * --fidelity-only reviews each technique plus open-marker and arpeggio layouts.
  * --chords-only captures and validates just the chord sequence in both styles.
  * --orientation-only checks stable RS+ gems/markers across approach and live style reuse.
- * --open-chords-only checks open stems inside ordinary frames and through pool reuse.
+ * --open-chords-only checks open/muted floor stems, hand-shape association and pool reuse.
  * --bends-only checks bend chevron amounts, colors, orientation and style reuse.
  * --readability-only samples technique contrast and moving trails; --quick omits yellow-only masks.
  * --readability-extra checks scored accented chord/slides and records real RAF playback to WebM.
@@ -60,7 +60,7 @@ function once(text, marker, replacement) {
   return text.replace(marker, replacement);
 }
 let served = once(source, 'const core = pNote.get();', `const core = pNote.get();
-  if (window.__notationProbe) window.__notationProbe.notes.push({ note: {...n}, dt, fromChord, core, outline });`);
+  if (window.__notationProbe) window.__notationProbe.notes.push({ note: {...n}, sourceFret:sourceNote.f, dt, fromChord, core, outline });`);
 served = once(served, 'const fill = pChordFrameFill.get();', `const fill = pChordFrameFill.get();
   if (window.__notationProbe) window.__notationProbe.frames.push({ t:ch.t, dt:chDt, isRepeat, isArpeggioFrame, compactRepeatFrame, palmMuted:chordNotes.some(cn=>cn.pm), fill });`);
 served = once(served, 'const b = pChordBox.get();', `const b = pChordBox.get();
@@ -87,6 +87,7 @@ if(readabilityOnly){
 }
 served = once(served, "contextType: 'webgl2',", `__notationAudit() { return {
   scene, cam, ren, noteG, pNote, pTechPlane, projMeshArr, composer:_composer, bloom:_bloom,
+  openStemFloor:Math.min(sY(0),sY(nStr-1))-S_GAP*.55, noteHeight:NH,
   style:typeof rsPlusNotation === 'undefined' ? 'current' : rsPlusNotation ? 'rsplus' : 'current',
   settings:{glow:glowMul,vibrancy,cinematic:_cinematic,hitFx:_hitFx,bloom:_bloom,
     ${readabilityOnly?'trailYield:{...trailYieldSettings},sustainStroke:rsPlusNotation?RSPLUS_SUSTAIN_STROKE_SCALE:1,':''}},
@@ -203,9 +204,9 @@ async function main() {
         a.ren.info.autoReset=false;a.ren.info.reset();r.draw(bundle);
         const p=window.__notationProbe;window.__notationProbe=null;
         const gl=a.ren.getContext();
-        return {style:a.style,settings:a.settings,canvas:[a.ren.domElement.width,a.ren.domElement.height],
+        return {style:a.style,settings:a.settings,openStemFloor:a.openStemFloor,noteHeight:a.noteHeight,canvas:[a.ren.domElement.width,a.ren.domElement.height],
           renderer:{calls:a.ren.info.render.calls,triangles:a.ren.info.render.triangles,memory:{...a.ren.info.memory}},
-          notes:p.notes.map(({note,dt,fromChord,core,outline})=>{const v=core.getWorldPosition(core.position.clone()).project(a.cam);const rgba=new Uint8Array(4);gl.readPixels(Math.round((v.x+1)*a.ren.domElement.width/2),Math.round((v.y+1)*a.ren.domElement.height/2),1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba);return {note,dt,fromChord,core:__probeMesh(core),outline:__probeMesh(outline),screen:[(v.x+1)*innerWidth/2,(1-v.y)*innerHeight/2],centerPixel:Array.from(rgba)};}),
+          notes:p.notes.map(({note,sourceFret,dt,fromChord,core,outline})=>{const v=core.getWorldPosition(core.position.clone()).project(a.cam);const rgba=new Uint8Array(4);gl.readPixels(Math.round((v.x+1)*a.ren.domElement.width/2),Math.round((v.y+1)*a.ren.domElement.height/2),1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba);return {note,sourceFret,dt,fromChord,core:__probeMesh(core),outline:__probeMesh(outline),screen:[(v.x+1)*innerWidth/2,(1-v.y)*innerHeight/2],centerPixel:Array.from(rgba)};}),
           frames:p.frames.map(({fill,...metadata})=>({...metadata,fill:__probeMesh(fill),textureAlpha:__fillAlpha(fill.material)})),
           edges:p.edges.map(({t,dt,isRepeat,mesh})=>({t,dt,isRepeat,mesh:__probeMesh(mesh)})),
           roundedFrames:p.roundedFrames.map(({mesh,...rest})=>({...rest,mesh:__probeMesh(mesh)})),
@@ -431,8 +432,16 @@ async function main() {
         b.handShapes=[{chord_id:0,start_time:repeat?onset-.4:onset,end_time:onset+2,arp:arpeggio}];
         return b;
       }
-      const framedVisibility=reference;
+      const framedVisibility=reference&&!source.includes('hasEnclosingChordFrame');
+      function assertFloorStems(proof,label){
+        if(reference||proof.style!=='rsplus')return;
+        for(const n of proof.notes.filter(n=>n.note.f===0&&n.outline.visible)){
+          const bottom=n.outline.position[1]-n.outline.scale[1]*proof.noteHeight/2;
+          check(Math.abs(bottom-proof.openStemFloor)<1e-5,`${label}: string ${n.note.s} at ${n.note.t} has a short stem (${bottom}, floor ${proof.openStemFloor})`);
+        }
+      }
       function assertOpen(proof,label,{visible,frame=false,arpeggio=false}={}){
+        assertFloorStems(proof,label);
         const open=proof.notes.filter(n=>n.note.f===0&&Math.abs(n.note.t-onset)<1e-6);
         check(open.length>0,`${label}: fixture did not render any open string`);
         check(open.every(n=>n.outline.visible===visible),`${label}: open stem visibility should be ${visible}`);
@@ -468,6 +477,54 @@ async function main() {
       await captureOpen('open-standalone',single,modern,{visible:true});
       await captureOpen('open-chord-arpeggio',openChord({arpeggio:true}),modern,{visible:true,arpeggio:true});
       await captureOpen('open-chord-current',openChord(),{notationStyle:'current',glow:0,bloom:false},{visible:true,frame:true});
+      // Reproduce the reported pattern: standalone PM opens associated with a
+      // hand shape, interleaved with actual open/fretted power-chord strikes.
+      // The shared fromChord flag must still be exercised without shortening
+      // stems or modifying chart ownership. This is synthetic chart data.
+      function mutedSequence(){
+        const b=baseBundle();b.currentTime=onset-.25;
+        b.anchors=[{time:0,fret:2,width:4}];
+        b.chordTemplates=[{name:'B5',frets:[0,2,-1,-1,-1,-1],fingers:[-1,1,-1,-1,-1,-1]}];
+        b.notes=[0,.157,.471,.628,.942,1.099].map(dt=>member({t:onset+dt,s:0,f:0,pm:true}));
+        b.chords=[.314,.785,1.256].map(dt=>({t:onset+dt,id:0,notes:[{s:0,f:0,ac:true},{s:1,f:2,ac:true}].map(member)}));
+        b.handShapes=[{chord_id:0,start_time:onset,end_time:onset+.275},
+          {chord_id:0,start_time:onset+.314,end_time:onset+1.5}];
+        return b;
+      }
+      const sequence=mutedSequence();
+      const sequenceProof=await captureOpen('muted-open-handshape-sequence',sequence,modern,{visible:true});
+      check(sequenceProof.notes.some(n=>n.note.pm&&n.note.f===0&&n.fromChord),'PM fixture did not exercise hand-shape association');
+      for(const n of sequenceProof.notes.filter(n=>n.note.f===0)){
+        const standalone=sequence.notes.some(s=>s.t===n.note.t&&s.s===n.note.s);
+        check(n.outline.visible===(standalone||framedVisibility),'PM sequence confused a standalone bar with an enclosed chord member');
+      }
+      await captureOpen('muted-open-handshape-current',mutedSequence(),{...modern,notationStyle:'current'},{visible:true});
+      for(const strings of [4,6,7,8])for(const lefty of [false,true])for(const inverted of [false,true]){
+        const b=baseBundle(strings);b.lefty=lefty;b.inverted=inverted;b.currentTime=onset-.3;
+        b.notes=[member({t:onset,s:0,f:0,pm:true}),member({t:onset+.4,s:strings-1,f:127,mt:true,fhm:true})];
+        const proof=await captureOpen(`open-muted-${strings}-${lefty?'lefty':'righty'}-${inverted?'inverted':'normal'}`,b,modern,{visible:true});
+        check(proof.notes.some(n=>n.sourceFret===127&&n.outline.visible),'Standalone unpitched mute slab missing');
+      }
+      const mutedChord=openChord();
+      mutedChord.chordTemplates[0].frets=[-1,127,127,127,-1,-1];
+      mutedChord.chords[0].notes=[1,2,3].map(s=>member({s,f:127,mt:true,fhm:true}));
+      const muteProof=await captureOpen('unpitched-muted-chord',mutedChord,modern,{visible:reference,frame:true});
+      check(muteProof.notes.every(n=>n.sourceFret===127),'Unpitched chord fixture lost its source frets');
+      await captureOpen('unpitched-muted-chord-current',mutedChord,{...modern,notationStyle:'current'},{visible:true,frame:true});
+      mutedChord.currentTime=onset;
+      await captureOpen('unpitched-muted-chord-onset',mutedChord,modern,{visible:true});
+      // Read-only optional local chart evidence. Do not commit library data.
+      if(option('--fixture')){
+        const raw=JSON.parse(fs.readFileSync(option('--fixture'),'utf8'));
+        for(const style of ['rsplus','current'])for(const currentTime of option('--times','132,132.171005,132.485001').split(',').map(Number)){
+          const b={...baseBundle(),...raw,handShapes:raw.handshapes||raw.handShapes,chordTemplates:raw.templates||raw.chordTemplates,currentTime};
+          const name=`${style}-${option('--fixture-name','open-muted')}-${currentTime}`;
+          const proof=await capture(name,b,{...modern,notationStyle:style},{expectBodies:true});
+          assertFloorStems(proof,name);
+          const singles=proof.notes.filter(n=>n.note.f===0&&b.notes.some(s=>s.t===n.note.t&&s.s===n.note.s));
+          check(singles.length>0&&singles.every(n=>n.outline.visible),`${name}: standalone open bars lost their stems`);
+        }
+      }
       // The same renderer must reset pooled visibility at the frame boundary,
       // when rewinding, and when switching styles in either direction.
       await init(openChord(),modern);
