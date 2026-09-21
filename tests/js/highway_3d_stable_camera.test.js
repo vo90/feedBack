@@ -41,16 +41,18 @@ function harness() {
         const T = { Vector3: class {} }; // sprite collection uses matrix scalars only
         const performance = { now: () => wall * 1000 };
         const sY = string => (3 + (nStr - 1 - string) * 4) * K;
-        const xFretMid = fret => fret * 10, xFret = fret => fret * 10;
+        const xFretMid = fret => fret * 10 - 5, xFret = fret => fret * 10;
+        const fretLabelScaleForFret = () => 1;
         const _stablePlan = {rows:null,key:'',stops:[],revision:0,result:{}};
         let mockRegionKey='', mockRegionAnchors=[];
         const dZ = time => -time * TS;
         ${extractFunction('stableAddPoint')}
+        ${extractFunction('stableAddSegment')}
         ${extractFunction('stableCollectObject')}
         ${extractFunction('stableConstrain')}
         ${extractFunction('stableIntervalAt')}
         ${extractFunction('stableSolve')}
-        ${['hwyBuildCameraStops','hwyCameraPlanAt','hwyCameraRejoin','stableRegionFitDistance','stableCameraPlan','stableCamUpdate'].map(extractFunction).join('\n')}
+        ${['hwyBuildCameraStops','hwyCameraPlanAt','hwyCameraRejoin','hwyCameraZoom','stableRegionFitDistance','stableRegionFootprint','stableRegionFraming','stableCameraPlan','stableCamUpdate'].map(extractFunction).join('\n')}
         ${extractFunction('stableCollectGeometry').replace('function stableCollectGeometry(', 'function collectRealRegionGeometry(')}
         function stableCollectGeometry() {
             _stableCam.pointCount = fixturePoints.length * 3;
@@ -151,6 +153,14 @@ function harness() {
                 }
                 return points;
             },
+            segmentPoints(a, b) {
+                for (const bin of _stableBins) {
+                    bin.minX = bin.minY = bin.minZ = Infinity;
+                    bin.maxX = bin.maxY = bin.maxZ = -Infinity;
+                }
+                stableAddSegment(...a, ...b);
+                return _stableBins.filter(b => Number.isFinite(b.minX)).map(b => ({...b}));
+            },
             projected(point, x, distance, prediction = 0) {
                 const b = _stableBasis, dx = point[0] - x, y = point[1] - b.y;
                 const z = Math.max(point[2], Math.min(0, point[2] + prediction * TS));
@@ -172,7 +182,7 @@ function assertFits(h, points, fit, prediction = 0, margin = .90) {
         const p = h.projected(point, fit.x, fit.distance, prediction);
         assert.ok(p.depth >= .02 - 1e-7, JSON.stringify(p));
         assert.ok(Math.abs(p.x) <= margin + 1e-6, JSON.stringify(p));
-        assert.ok(Math.abs(p.y) <= .90 + 1e-6, JSON.stringify(p));
+        assert.ok(Math.abs(p.y) <= Math.max(.90, margin) + 1e-6, JSON.stringify(p));
     }
 }
 
@@ -300,7 +310,7 @@ test('the undamped safety guard fits a sudden nearby note when following', () =>
     h.setPoints(points);
     const state = h.frame(.1, .1);
     assert.equal(state.correction, true);
-    assertFits(h, points, { x: state.x, distance: state.distance }, 0, .92);
+    assertFits(h, points, { x: state.x, distance: state.distance }, 0, .96);
 });
 
 
@@ -404,10 +414,10 @@ test('pause and follow-off hold an unfinished return without preventing later se
 });
 
 test('zoom closes a residual below three percent instead of keeping an inherited wider view', () => {
-    const normal = [[-70.5, 13, 0], [70.5, 13, 0]];
+    const normal = [[-90.5, 13, 0], [90.5, 13, 0]];
     for (const fps of [10, 20, 60]) {
         const h = harness();
-        h.setPoints([[-72.5, 13, 0], [72.5, 13, 0]]);
+        h.setPoints([[-92.5, 13, 0], [92.5, 13, 0]]);
         const wider = h.frame(0, 0);
         const direct = harness(); direct.setPoints(normal);
         const expected = direct.frame(8, 0);
@@ -448,14 +458,16 @@ test('changing distant extrema cannot block return to the current group', () => 
     assert.equal(settled.distance, 100);
 });
 
-test('necessary secondary widening preserves the primary centre', () => {
+test('necessary secondary widening uses the closest feasible framing before sacrificing size', () => {
     for (const preset of ['straight', 'angled']) {
         const h = harness(); h.settings({ preset }); h.setFocus(20);
         const points = [[20, 13, 0], [300, 13, -30]];
         h.setPoints(points); const s = h.frame(0, 0);
-        assert.equal(s.x, 20, 'minimum zoom must not take precedence over musical focus');
+        const fixed = h.solve(20, 100, .6, .82, true);
+        assert.ok(s.x > 20 && s.x < 300, 'both playing locations share the closer view');
         assert.ok(s.distance > 100);
-        assertFits(h, points, s, .35, .68);
+        assert.ok(s.distance < fixed.distance, 'lateral framing avoids unnecessary zoom-out');
+        assertFits(h, points, s, .6, .82);
     }
 });
 
@@ -482,7 +494,7 @@ test('a distant entry stays visible during silence without taking over the held 
     const rest = h.frame(.1, .1);
     assert.equal(rest.x, initial.x, 'silence holds the playing position');
     assert.ok(rest.distance > initial.distance, 'an off-axis entry needs more room');
-    assertFits(h, entry, rest, 0, .92);
+    assertFits(h, entry, rest, 0, .96);
     h.frame(.1, .1, false);
     const paused = h.frame(.1, 2, false);
     assert.equal(paused.distance, rest.distance, 'paused previews do not change pose');
@@ -553,12 +565,12 @@ test('equal-bounds markers do not restart a playing-area transition', () => {
     assert.ok(Math.abs(previous - 115) < .15);
 });
 
-test('a width-only playing-area change updates the preferred centre', () => {
-    const h = harness(); h.setRegion(20, 50); h.frame(0, 0);
+test('a lasting width extension retains the normal four-fret centre', () => {
+    const h = harness(); h.setRegion(20, 60); h.frame(0, 0);
     h.setRegion(20, 80, .1);
     const state = advanceCamera(h, 0, 2, 60);
     assert.equal(state.focusX, 50);
-    assert.ok(Math.abs(state.x - 50) < .1, JSON.stringify(state));
+    assert.equal(state.x, 40, 'camera stays between the middle two frets of the four-fret base');
 });
 
 test('known short detours and width extensions retain a shared centre', () => {
@@ -575,7 +587,7 @@ test('a lasting lane transition begins early, ends finitely and uses the same vi
     const rows=[{time:0,minX:20,maxX:60},{time:2,minX:100,maxX:140}];
     const h=harness();h.setRegionTimeline(rows);h.frame(0,0);
     const at=[];for(let i=1;i<=180;i++)at.push(h.frame(i/60,1/60));
-    assert.equal(at[88].x,40);
+    assert.equal(at[82].x,40);
     assert.ok(at[104].x>40&&at[104].x<120);
     assert.equal(at[155].x,120);
     const direct=harness();direct.setRegionTimeline(rows);
@@ -585,7 +597,7 @@ test('a lasting lane transition begins early, ends finitely and uses the same vi
 test('safety fitting protects notes during early framing changes', () => {
     const h=harness();h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:2,minX:100,maxX:140}]);
     h.frame(0,0);h.setPoints([[-150,13,0],[140,13,0]]);
-    for(let i=1;i<=180;i++){const state=h.frame(i/60,1/60);assertFits(h,[[-150,13,0],[140,13,0]],state,0,.92);}
+    for(let i=1;i<=180;i++){const state=h.frame(i/60,1/60);assertFits(h,[[-150,13,0],[140,13,0]],state,0,.96);}
 });
 
 test('resize reclassification rejoins a new plan without a next-frame position jump', () => {
@@ -607,7 +619,7 @@ test('unexpected geometry can recover readability without snapping to a suppress
     for (let i=1;i<=132;i++) state=h.frame(i/60,1/60);
     assert.ok(state.safetyOffset>0, 'real geometry overrides an inadequate shared footprint');
     assert.ok(state.x>40&&state.x<75, 'only a limited smooth correction is taken');
-    assertFits(h,[[150,13,0]],state,0,.92);
+    assertFits(h,[[150,13,0]],state,0,.96);
     h.setPoints([]);
     const settled=advanceCamera(h,2.2,3);
     assert.ok(Math.abs(settled.x-40)<.01, 'temporary protection cannot leave a persistent offset');
@@ -737,4 +749,77 @@ test('the stable camera update entry point forwards the shared floor render cloc
     const call = run(bundle);
     assert.equal(call.bundle, bundle);
     assert.equal(call.frameTime, 108.735);
+});
+
+test('five and seven fret passages keep the same four-fret base at normal zoom', () => {
+    for (const preset of ['straight', 'angled']) {
+        const h = harness(); h.settings({preset});
+        h.setRegionTimeline([{time:0,minX:90,maxX:130},{time:2,minX:90,maxX:140},
+            {time:5,minX:90,maxX:160},{time:10,minX:90,maxX:130}]);
+        const first = h.frame(0, 0);
+        assert.equal(first.x, 110);
+        for (let i = 1; i <= 660; i++) {
+            const s = h.frame(i / 60, 1 / 60);
+            assert.equal(s.x, 110, `${preset}: width alone moved the centre at ${i / 60}`);
+            assert.equal(s.distance, first.distance, `${preset}: avoidable zoom at ${i / 60}`);
+        }
+    }
+});
+
+test('a lateral adjustment that fits at close distance does not zoom out', () => {
+    const h = harness(); h.setRegion(0, 40);
+    h.setPoints([[-10, 13, 0], [130, 13, 0]]);
+    const state = h.frame(0, 0);
+    assert.equal(state.distance, 100);
+    assert.ok(state.x > 20 && state.x < 65, 'take only the necessary step from the preferred centre');
+    assertFits(h, [[-10, 13, 0], [130, 13, 0]], state, 0, .82);
+});
+
+test('genuinely wide playing areas remain stable across alternating notes', () => {
+    for (const preset of ['straight', 'angled']) {
+        const h = harness(); h.settings({preset}); h.setRegion(0, 240);
+        h.setPoints([[0, 13, 0], [240, 13, 0]]);
+        const first = h.frame(0, 0);
+        assert.ok(first.distance > 100, 'this span genuinely cannot fit at close zoom');
+        for (let i = 1; i <= 240; i++) {
+            h.setPoints([[i % 2 ? 0 : 240, 13, 0]]);
+            const s = h.frame(i / 60, 1 / 60);
+            assert.ok(Math.abs(s.x - first.x) < 1e-6, 'a shared wide view must not chase attacks');
+            assert.ok(Math.abs(s.distance - first.distance) < 1e-6, 'a shared wide view must not breathe');
+        }
+    }
+});
+
+test('far future geometry does not participate and imminent constraints enter continuously', () => {
+    const h = harness(); h.setRegion(0, 40); h.frame(0, 0);
+    const sprite = z => h.spritePoints({x:500,y:13,z,size:0,centerY:.5});
+    assert.deepEqual(sprite(-2.8 * 230), []);
+    const entering = sprite(-.899 * 230), later = sprite(-.75 * 230), full = sprite(-.6 * 230);
+    assert.ok(entering.every(p => Math.abs(p[0] - 20) < .1), 'no jump at the relevance window edge');
+    assert.ok(later.every(p => p[0] > 20 && p[0] < 500));
+    assert.ok(full.every(p => Math.abs(p[0] - 500) < 1e-8));
+});
+
+test('a long trail crossing the near window is clipped rather than lost or fitted in full', () => {
+    const h = harness(); h.frame(0, 0);
+    const bins = h.segmentPoints([200,13,20], [-100,13,-1000]);
+    assert.ok(bins.length >= 2, 'both endpoints lie outside but the crossing segment is protected');
+    assert.ok(bins.every(b => b.minZ >= -.9 * 230 - 1e-7 && b.maxZ <= 8 + 1e-7));
+    assert.ok(bins.some(b => Math.abs(b.minZ + .6 * 230) < 1e-7), 'full-strength preview boundary is sampled');
+    assert.deepEqual(h.segmentPoints([200,13,-500], [-100,13,-1000]), []);
+});
+
+test('near geometry cannot turn a suppressed detour into an opposing safety pan', () => {
+    const h = harness();
+    h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:2,minX:55,maxX:95},
+        {time:2.4,minX:-60,maxX:-20}]);
+    let previous = h.frame(0, 0).x;
+    for (let i = 1; i <= 180; i++) {
+        const time = i / 60;
+        h.setPoints(time >= 1.2 && time < 2.4 ? [[160,13,0]] : []);
+        const state = h.frame(time, 1 / 60);
+        assert.ok(state.x <= previous + 1e-7, 'visibility correction must not reintroduce right/left movement');
+        if (time >= 1.2 && time < 2.4) assertFits(h, [[160,13,0]], state, 0, .96);
+        previous = state.x;
+    }
 });

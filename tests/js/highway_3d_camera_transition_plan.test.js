@@ -15,9 +15,9 @@ function extract(name) {
     }
     return source.slice(start, end);
 }
-const { build, at, rejoin } = new Function(`
-    ${['hwyBuildCameraStops', 'hwyCameraPlanAt', 'hwyCameraRejoin'].map(extract).join('\n')}
-    return {build:hwyBuildCameraStops,at:hwyCameraPlanAt,rejoin:hwyCameraRejoin};
+const { build, at, rejoin, zoom } = new Function(`
+    ${['hwyBuildCameraStops', 'hwyCameraPlanAt', 'hwyCameraRejoin', 'hwyCameraZoom'].map(extract).join('\n')}
+    return {build:hwyBuildCameraStops,at:hwyCameraPlanAt,rejoin:hwyCameraRejoin,zoom:hwyCameraZoom};
 `)();
 const row = (time, x, width = 4) => ({ time, x, minX: x - width / 2, maxX: x + width / 2 });
 const fits = () => true;
@@ -85,9 +85,9 @@ test('progressive short changes continue following rather than staying at an old
     }
 });
 
-test('finite easing begins half a second early and finishes without residual drift', () => {
+test('finite easing begins 600ms early and finishes without residual drift', () => {
     const stops = build([row(0, 3), row(2, 7)], 1, fits);
-    assert.equal(sample(stops, 1.5).x, 3);
+    assert.equal(sample(stops, 1.4).x, 3);
     assert.ok(sample(stops, 1.7).x > 3);
     assert.ok(sample(stops, 2).x > 6);
     assert.equal(sample(stops, 2.11).x, 7);
@@ -96,7 +96,7 @@ test('finite easing begins half a second early and finishes without residual dri
 
 test('scheduled pan has continuous velocity and acceleration at its endpoints', () => {
     const stops = build([row(0, 3), row(2, 11)], 1, fits), e = 1e-6;
-    for (const t of [1.5, 2.5]) {
+    for (const t of [1.4, 2.5]) {
         const l = sample(stops, t - e), m = sample(stops, t), r = sample(stops, t + e);
         assert.ok(Math.abs(l.velocity - r.velocity) < 1e-7);
         assert.ok(Math.abs((r.velocity - l.velocity) / (2 * e)) < .002);
@@ -157,4 +157,34 @@ test('catch-up after lifecycle changes is stable across frame rates', () => {
 test('empty and one-position charts have finite resting plans', () => {
     assert.deepEqual(sample([], 20), { x: 0, velocity: 0, valid: false });
     assert.deepEqual(sample(build([row(3, 9)], 1, fits), 0), { x: 9, velocity: 0, valid: true });
+});
+
+test('normal transition is 700ms with a lower peak speed and the same arrival deadline', () => {
+    const stops = build([row(0, 3), row(2, 7)], 1, fits);
+    assert.equal(sample(stops, 1.4).velocity, 0);
+    assert.ok(Math.abs(sample(stops, 1.75).velocity - 4 * 1.875 / .7) < 1e-9);
+    assert.ok(sample(stops, 1.75).velocity < 4 * 1.875 / .6);
+    assert.equal(sample(stops, 2.1).x, 7);
+});
+
+test('necessary zoom waits 500ms and returns fully over 800ms at every frame rate', () => {
+    for (const fps of [10, 20, 60, 120]) {
+        const state = {distance: 2, quietZoomTime: 0};
+        for (let i = 1; i <= Math.round(1.4 * fps); i++) {
+            zoom(state, 1, 1 / fps);
+            if (i / fps <= .5) assert.ok(Math.abs(state.distance - 2) < 1e-10);
+        }
+        assert.equal(state.distance, 1);
+        assert.equal(state.zoomRequired, 1);
+    }
+});
+
+test('renewed wide requirements cancel a narrowing return', () => {
+    const state = {distance: 2, quietZoomTime: 0};
+    for (let i = 0; i < 9; i++) zoom(state, 1, .1);
+    assert.ok(state.distance > 1 && state.distance < 2);
+    const before = state.distance;
+    zoom(state, 2, .1);
+    assert.equal(state.quietZoomTime, 0);
+    assert.ok(state.distance > before);
 });

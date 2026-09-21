@@ -77,6 +77,8 @@ const fixture=kind=>{
  if(kind==='mismatch')return base({notes:Array.from({length:28},(_,i)=>note({t:6+i*.2,f:14+i%3})),anchors:[{time:0,fret:2,width:4}]});
  if(kind==='fallback-wide-release')return base({notes:[note({t:6,f:2,sus:1,s:2}),note({t:6,f:17,sus:1,s:3}),...Array.from({length:30},(_,i)=>note({t:8+i*.12,f:2+i%3,s:i%6,sus:.05}))],anchors:[]});
  if(kind==='wide')return base({notes:Array.from({length:30},(_,i)=>note({t:6+i*.2,f:i%2?19:7,s:i%6})),anchors:[{time:0,fret:7,width:13}]});
+ if(kind==='wide-return')return base({notes:[...Array.from({length:15},(_,i)=>note({t:8+i*.2,f:i%2?17:2,s:i%6})),note({t:13,f:3})],anchors:[{time:0,fret:2,width:4},{time:8,fret:2,width:16},{time:11,fret:2,width:4}]});
+ if(kind==='distant')return base({notes:[note({t:10,f:24,sus:.1})],anchors:[{time:0,fret:2,width:4}]});
  if(kind==='sustain')return base({notes:[note({t:6,f:3,s:3,sus:6}),note({t:8,f:16,s:2,sus:3}),note({t:12.5,f:16,s:2})],anchors:[{time:0,fret:2,width:4},{time:8,fret:15,width:4}]});
  if(kind==='parity')return base({notes:[note({t:7,f:2,s:3,sus:1,sl:5}),note({t:9,f:4,s:2,sus:1,bn:2})],chords:[{t:6,id:0,notes:[{s:0,f:2,sus:2},{s:1,f:4,sus:2},{s:2,f:5,sus:2}]}],chordTemplates:[{name:'Shape',frets:[2,4,5,-1,-1,-1],fingers:[1,3,4,-1,-1,-1]}]});
  if(kind==='slides')return base({notes:[note({t:6,f:2,sl:5,sus:1}),note({t:7.3,f:5,sl:2,sus:1}),note({t:8.6,f:2,bn:2,sus:1}),note({t:10,f:5,sl:15,sus:1.5})]});
@@ -85,6 +87,9 @@ const fixture=kind=>{
 const chart=file=>{const r=JSON.parse(fs.readFileSync(file,'utf8'));return base({...r,currentTime:0,chordTemplates:r.templates||r.chordTemplates||[],handShapes:r.handshapes||r.handShapes||[]});};
 const cases=[];
 for(const preset of ['straight','angled']){
+ cases.push({name:`wide-return-${preset}`,kind:'wide-return',preset,fps:30,b:fixture('wide-return'),start:6,end:15,captureTimes:[9,14]});
+ cases.push({name:`distant-${preset}`,kind:'distant',preset,fps:30,b:fixture('distant'),start:6,end:9,captureTimes:[8]});
+ for(const viewport of [{width:720,height:960},{width:1920,height:720}])cases.push({name:`wide-${preset}-${viewport.width}-lefty`,kind:'wide',preset,fps:20,b:{...fixture('wide'),lefty:true},start:6,end:12,viewport,captureTimes:[9]});
  for(const kind of ['short-detour','width-burst','progressive']){
  for(const fps of [10,60])cases.push({name:`${kind}-${preset}-${fps}`,kind,preset,fps,b:fixture(kind),start:6,end:10});
  }
@@ -96,6 +101,7 @@ for(const preset of ['straight','angled']){
  for(const rate of [.5,1.5])cases.push({name:`fixed-${preset}-rate${rate}`,kind:'fixed',preset,fps:20,b:{...fixture('fixed'),playbackRate:rate},start:6,end:12});
  for(const stringCount of [4,7])cases.push({name:`fixed-${preset}-strings${stringCount}-lefty`,kind:'fixed',preset,fps:20,b:{...fixture('fixed'),lefty:true,stringCount,tuning:Array(stringCount).fill(0),notes:fixedNotes().map(n=>({...n,s:n.s%stringCount}))},start:6,end:12});
  if(option('--six')){
+ cases.push({name:`six-early-width-${preset}`,kind:'six-early-width',preset,fps:30,b:chart(option('--six')),start:11,end:17,captureTimes:[13.9,14.9,15.3]});
  cases.push({name:`six-detour-${preset}`,kind:'six-detour',preset,fps:30,b:chart(option('--six')),start:54,end:62,captureTimes:[58.5,58.9,59.3,60]});
  cases.push({name:`six-width-${preset}`,kind:'six-width',preset,fps:30,b:chart(option('--six')),start:153,end:161,captureTimes:[158.2,158.5,158.9]});
  cases.push({name:`six-full-${preset}`,kind:'six',preset,fps:20,b:chart(option('--six')),start:0,end:212,captureTimes:[104,109.75,119,160.1],checkTimes:[30.4,160.1,199]});
@@ -134,11 +140,33 @@ function validate(c,run){
  check(range(settled.map(s=>s.state.focusX))<.01,prefix+'fallback chases alternating attacks');
  check(settled.every(s=>s.region.floor&&s.region.gold.length>=4),prefix+'fallback lacks matching floor/gold numbers');
  }
- if(['rest','disjoint','width'].includes(c.kind)){
- const pre=samples.filter(s=>s.time<=7.5),after=samples.filter(s=>s.time>=9.1);
- check(range(pre.map(s=>s.state.x))<.001,prefix+'camera anticipates beyond the half-second transition window');
+ if(['rest','disjoint'].includes(c.kind)){
+ const pre=samples.filter(s=>s.time<=7.4),after=samples.filter(s=>s.time>=9.1);
+ check(range(pre.map(s=>s.state.x))<.001,prefix+'camera anticipates beyond the 600ms transition window');
  check(after.length&&after.every(s=>Math.abs(s.state.x-s.region.expected.x)<.10),prefix+'camera does not settle on new region during rest');
  check(Math.abs(run.last.state.x-run.first.state.x)>.1,prefix+'region change ignored without notes');
+ }
+ if(c.kind==='width'){
+ check(samples.every(s=>Math.abs(s.state.distance-run.first.state.distance)<.001),prefix+'same-base extension widened unnecessarily');
+ const after=samples.filter(s=>s.time>=9.1);
+ check(range(after.map(s=>s.state.x))<.001,prefix+'same-base extension did not settle');
+ if(c.preset==='straight')check(range(samples.map(s=>s.state.x))<.001,prefix+'readable same-base extension moved the camera');
+ else check(Math.abs(run.last.state.x-run.first.state.x)<.04,prefix+'angled extension moved more than the necessary small adjustment');
+ }
+ if(c.kind==='wide-return'){
+ check(samples.some(s=>s.time>=8&&s.time<=11&&s.state.distance>run.first.state.distance+.05),prefix+'wide passage was not accommodated');
+ check(samples.filter(s=>s.time>=13.5).every(s=>Math.abs(s.state.distance-run.first.state.distance)<.003),prefix+'wide zoom did not finish returning');
+ }
+ if(c.kind==='distant'){
+ check(range(samples.filter(s=>s.time<=9).map(s=>s.state.distance))<.001,prefix+'a distant note widened the current view');
+ check(range(samples.filter(s=>s.time<=9).map(s=>s.state.x))<.001,prefix+'a distant note stole the current centre');
+ }
+ if(c.kind==='six-early-width'){
+ const stable=samples.filter(s=>s.time>=14.1&&s.time<=15.3);
+ check(range(stable.map(s=>s.state.x))<.003,prefix+'five/seven-fret extension moves the camera');
+ check(stable.every(s=>Math.abs(s.state.planX-(s.region.resolved.minX+(s.region.resolved.maxX-s.region.resolved.minX)/(s.region.resolved.dMax-s.region.resolved.dMin)*2))<.001),prefix+'not at the four-fret base centre');
+ const expanded=stable.filter(s=>s.time>=14.9);
+ check(range(expanded.map(s=>s.state.distance))<.01,prefix+'ordinary width extension pulses zoom');
  }
  if(c.kind==='short-detour'){
  check(samples.every((s,i)=>!i||s.state.x<=samples[i-1].state.x+1e-6),prefix+'unnecessary high-region detour');

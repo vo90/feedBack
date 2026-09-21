@@ -3000,8 +3000,8 @@
     function hwyCameraPlanAt(stops, now, rate, smoothing, out) {
         out = out || {};
         rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
-        const lead = 0.5 * rate;
-        const baseDuration = 0.5 + Math.max(0, Math.min(1, smoothing)) * 0.2;
+        const lead = 0.6 * rate;
+        const baseDuration = 0.6 + Math.max(0, Math.min(1, smoothing)) * 0.2;
         const maxDuration = (baseDuration + 0.4) * rate;
         let lo = 0, hi = stops.length;
         while (lo < hi) {
@@ -3037,6 +3037,30 @@
         const decay = Math.exp(-omega * dt);
         return { offset: (offset + c * dt) * decay,
             velocity: (velocity - omega * c * dt) * decay };
+    }
+
+    // A finite zoom return, with a quiet period before narrowing. Keep its
+    // original start while the requirement relaxes; restarting every frame
+    // would turn the return into an endless asymptote. Rising requirements
+    // cancel it immediately, including the anticipated next playing area.
+    function hwyCameraZoom(state, required, dt, smoothing = 0.5) {
+        if (required > (state.zoomRequired ?? required) + Math.max(1e-8, required * 0.005)) {
+            state.quietZoomTime = 0;
+        }
+        state.zoomRequired = required;
+        if (required >= state.distance - 1e-8) {
+            state.quietZoomTime = 0;
+            state.zoomReturnFrom = state.distance;
+            state.distance += (required - state.distance) * (1 - Math.exp(-dt / 0.16));
+        } else {
+            if (!state.quietZoomTime) state.zoomReturnFrom = state.distance;
+            state.quietZoomTime += dt;
+            const calm = Math.max(0, Math.min(1, smoothing));
+            const u = Math.max(0, Math.min(1, (state.quietZoomTime - (0.4 + calm * 0.2)) / (0.6 + calm * 0.4)));
+            const eased = u * u * u * (10 + u * (-15 + 6 * u));
+            state.distance = state.zoomReturnFrom + (required - state.zoomReturnFrom) * eased;
+        }
+        if (Math.abs(state.distance - required) < 1e-8) state.distance = required;
     }
 
     /**
@@ -21101,6 +21125,7 @@
             lastTime: NaN, lastWall: NaN, rate: 1, rateTime: NaN, rateWall: NaN, preset: '', lefty: false, strings: 0,
             reset: -1, song: null, notes: null, chords: null, anchors: null, anchorCount: -1, aspect: 0,
             quietZoomTime: 0, quietPanTime: 0, centreCandidateX: NaN,
+            zoomReturnFrom: 0, zoomRequired: 0, collectCentre: 0,
             pointCount: 0, minX: 0, maxX: 0,
             targetX: 0, targetDistance: 0, correction: false,
             focusValid: false, focusX: 0, focusMinX: 0, focusMaxX: 0,
@@ -21115,18 +21140,49 @@
             minZ: Infinity, maxZ: -Infinity,
         }));
         const _stablePoints = new Float64Array(32 * 8 * 3);
+        const _stableRegionPoints = new Float64Array(16 * 3);
+        const _stableRibbonPrevious = new Float64Array(4 * 3);
+        const _stableBoxPoints = new Float64Array(8 * 3);
         const _stableBasis = { bx: 0, by: 0, bz: 1, rx: 1, rz: 0, ux: 0, uy: 1, uz: 0, y: 0 };
         const _stableInterval = { min: 0, max: 0, valid: true };
         const _stableFit = { x: 0, distance: 0 };
         let _stableVector = null;
 
         function stableAddPoint(x, y, z) {
-            if (!Number.isFinite(x + y + z) || z > 8 * K || z < dZ(AHEAD) - 8 * K) return;
-            z = Math.max(dZ(AHEAD), z);
+            const horizon = Math.min(AHEAD, 0.9 * _stableCam.rate);
+            if (!Number.isFinite(x + y + z) || z > 8 * K || z < dZ(horizon) - 1e-7) return;
+            // Constraints enter over 300ms and become complete 600ms before
+            // playing. Far-away scenery cannot change the close view. This
+            // affects framing only; rendered objects retain their real shape.
+            const u = Math.max(0, Math.min(1, (horizon + z / TS) / (0.3 * _stableCam.rate)));
+            const weight = u * u * (3 - 2 * u);
+            x = _stableCam.collectCentre + (x - _stableCam.collectCentre) * weight;
+            y = _stableBasis.y + (y - _stableBasis.y) * weight;
             const bin = _stableBins[Math.max(0, Math.min(31, Math.floor(-z / (TS * AHEAD) * 32)))];
             bin.minX = Math.min(bin.minX, x); bin.maxX = Math.max(bin.maxX, x);
             bin.minY = Math.min(bin.minY, y); bin.maxY = Math.max(bin.maxY, y);
             bin.minZ = Math.min(bin.minZ, z); bin.maxZ = Math.max(bin.maxZ, z);
+        }
+
+        // A long hold can cross the near window with both endpoints outside.
+        // Clip edges so its relevant portion still participates in the fit.
+        function stableAddSegment(ax, ay, az, bx, by, bz) {
+            const near = 8 * K, far = dZ(Math.min(AHEAD, 0.9 * _stableCam.rate));
+            let lo = 0, hi = 1;
+            const dz = bz - az;
+            if (Math.abs(dz) < 1e-10) {
+                if (az < far || az > near) return;
+            } else {
+                const a = (far - az) / dz, b = (near - az) / dz;
+                lo = Math.max(0, Math.min(a, b)); hi = Math.min(1, Math.max(a, b));
+                if (lo > hi) return;
+            }
+            const fullZ = dZ(Math.max(0, Math.min(AHEAD, 0.9 * _stableCam.rate) - 0.3 * _stableCam.rate));
+            const full = Math.abs(dz) > 1e-10 ? (fullZ - az) / dz : lo;
+            for (let i = 0; i < 3; i++) {
+                const t = i === 0 ? lo : i === 1 ? Math.max(lo, Math.min(hi, full)) : hi;
+                stableAddPoint(ax + (bx - ax) * t, ay + (by - ay) * t, az + dz * t);
+            }
         }
 
         function stableCollectObject(object) {
@@ -21158,7 +21214,12 @@
                 const count = Math.min(attr.count, (geometry.userData.ribbonSlices + 1) * 4);
                 for (let i = 0; i < count; i++) {
                     v.fromBufferAttribute(attr, i).applyMatrix4(object.matrixWorld);
-                    stableAddPoint(v.x, v.y, v.z);
+                    const j = (i % 4) * 3;
+                    if (i >= 4) stableAddSegment(_stableRibbonPrevious[j], _stableRibbonPrevious[j + 1],
+                        _stableRibbonPrevious[j + 2], v.x, v.y, v.z);
+                    else stableAddPoint(v.x, v.y, v.z);
+                    _stableRibbonPrevious[j] = v.x; _stableRibbonPrevious[j + 1] = v.y;
+                    _stableRibbonPrevious[j + 2] = v.z;
                 }
                 return;
             }
@@ -21172,10 +21233,17 @@
                     i & 2 ? box.max.y : box.min.y,
                     i & 4 ? box.max.z : box.min.z).applyMatrix4(object.matrixWorld);
                 stableAddPoint(v.x, v.y, v.z);
+                _stableBoxPoints[i * 3] = v.x; _stableBoxPoints[i * 3 + 1] = v.y;
+                _stableBoxPoints[i * 3 + 2] = v.z;
+            }
+            for (let i = 0; i < 8; i++) for (let bit = 1; bit <= 4; bit *= 2) {
+                if (i & bit) continue;
+                const a = i * 3, b = (i | bit) * 3, p = _stableBoxPoints;
+                stableAddSegment(p[a], p[a + 1], p[a + 2], p[b], p[b + 1], p[b + 2]);
             }
         }
 
-        function stableCollectGeometry(region, forecast, now) {
+        function stableCollectGeometry(region) {
             for (const bin of _stableBins) {
                 bin.minX = bin.minY = bin.minZ = Infinity;
                 bin.maxX = bin.maxY = bin.maxZ = -Infinity;
@@ -21193,43 +21261,23 @@
                 if (record.time < _frameNow - 0.03) continue;
                 stableCollectObject(record.sprite);
             }
-            // Include imminent area footprints even during rests. Pan and
-            // zoom then prepare together instead of discovering a wide empty
-            // lane only when its gold labels appear at the strike line.
-            if (forecast?.length) {
-                let lo = 0, hi = forecast.length;
-                while (lo < hi) {
-                    const mid = (lo + hi) >>> 1;
-                    if (forecast[mid].time <= now) lo = mid + 1; else hi = mid;
+            // The plan prepares future lane footprints; collecting them again
+            // here would pull toward empty future areas before that planned
+            // move. Protect the current lane with fret-centred label corners,
+            // avoiding an imaginary low rectangle across its entire width.
+            const addRegion = (row, dt) => {
+                stableRegionFootprint(row);
+                for (let i = 0; i < 48; i += 3) {
+                    stableAddPoint(_stableRegionPoints[i], _stableRegionPoints[i + 1],
+                        _stableRegionPoints[i + 2] + dZ(dt));
                 }
-                const rowBottom = Math.min(sY(0), sY(nStr - 1)) - S_GAP * 1.4 - 10 * K * _textSizeMul;
-                const rowTop = Math.max(sY(0), sY(nStr - 1)) + NH;
-                for (let i = lo; i < Math.min(forecast.length, lo + 32); i++) {
-                    const row = forecast[i], dt = row.time - now;
-                    if (dt > 0.8 * _stableCam.rate) break;
-                    stableAddPoint(row.minX - 3 * K, rowBottom, dZ(dt));
-                    stableAddPoint(row.maxX + 3 * K, rowTop, dZ(dt));
-                }
-            }
-            // Reserve the readable number band below nearby playable frets,
-            // not every reference digit across the full neck.
-            const rowY = Math.min(sY(0), sY(nStr - 1)) - (S_GAP * 1.4 + 4 * K * _textSizeMul);
+            };
             if (region?.valid) {
-                // An empty marked position is still the player's playing
-                // area. Reserve its full strike-line footprint, not every
-                // distant lane slice or grey reference number across the neck.
-                const topY = Math.max(sY(0), sY(nStr - 1)) + NH;
-                stableAddPoint(region.minX - 3 * K, rowY, 0);
-                stableAddPoint(region.maxX + 3 * K, topY, 0);
+                addRegion({minX:region.minX, maxX:region.maxX,
+                    firstFret:region.dMin + 1, lastFret:region.dMax}, 0);
                 for (let f = region.dMin + 1; f <= region.dMax; f++) {
                     stableCollectObject(_incomingFixedFretLabels[f]);
                 }
-            }
-            for (const bin of _stableBins) {
-                if (!Number.isFinite(bin.minX) || bin.maxZ < dZ(Math.min(AHEAD, 1.2 * _stableCam.rate))) continue;
-                const lo = bin.minX, hi = bin.maxX, z = bin.maxZ;
-                stableAddPoint(lo - 3 * K, rowY, z);
-                stableAddPoint(hi + 3 * K, rowY, z);
             }
             let count = 0;
             _stableCam.minX = Infinity; _stableCam.maxX = -Infinity;
@@ -21256,18 +21304,19 @@
             else _stableInterval.min = Math.max(_stableInterval.min, b / a);
         }
 
-        function stableIntervalAt(distance, prediction, margin, fixedX = null) {
+        function stableIntervalAt(distance, prediction, margin, fixedX = null, points = _stablePoints, count = _stableCam.pointCount) {
             const out = _stableInterval, b = _stableBasis;
             out.min = fixedX === null ? -Infinity : fixedX;
             out.max = fixedX === null ? Infinity : fixedX;
             out.valid = true;
             const tan = Math.tan(STABLE_CAMERA_FOV * Math.PI / 360);
             const horizontal = tan * cam.aspect * margin;
-            const top = tan * (0.90 + STABLE_CAMERA_SHIFT);
-            const bottom = tan * (0.90 - STABLE_CAMERA_SHIFT);
-            for (let i = 0; i < _stableCam.pointCount; i += 3) {
-                const x = _stablePoints[i], y = _stablePoints[i + 1] - b.y;
-                const z = Math.max(_stablePoints[i + 2], Math.min(0, _stablePoints[i + 2] + prediction * TS));
+            const vertical = Math.max(0.90, margin);
+            const top = tan * (vertical + STABLE_CAMERA_SHIFT);
+            const bottom = tan * (vertical - STABLE_CAMERA_SHIFT);
+            for (let i = 0; i < count; i += 3) {
+                const x = points[i], y = points[i + 1] - b.y;
+                const z = Math.max(points[i + 2], Math.min(0, points[i + 2] + prediction * TS));
                 const depth = distance - (b.bx * x + b.by * y + b.bz * z);
                 const right = b.rx * x + b.rz * z;
                 const up = b.ux * x + b.uy * y + b.uz * z;
@@ -21281,23 +21330,23 @@
             return out;
         }
 
-        function stableSolve(preferredX, baseDistance, prediction, margin, fixedCentre = false) {
+        function stableSolve(preferredX, baseDistance, prediction, margin, fixedCentre = false, points = _stablePoints, count = _stableCam.pointCount) {
             let low = baseDistance, high = low;
             const fixed = fixedCentre ? preferredX : null;
-            let interval = stableIntervalAt(high, prediction, margin, fixed);
+            let interval = stableIntervalAt(high, prediction, margin, fixed, points, count);
             if (!interval.valid) {
                 // Exponential bracket + bounded bisection: no per-frame chart
                 // scans and no dependency on the previous frame's fit result.
                 for (let i = 0; i < 10 && !interval.valid; i++) {
                     high *= 1.5;
-                    interval = stableIntervalAt(high, prediction, margin, fixed);
+                    interval = stableIntervalAt(high, prediction, margin, fixed, points, count);
                 }
                 for (let i = 0; i < 16; i++) {
                     const mid = (low + high) / 2;
-                    if (stableIntervalAt(mid, prediction, margin, fixed).valid) high = mid;
+                    if (stableIntervalAt(mid, prediction, margin, fixed, points, count).valid) high = mid;
                     else low = mid;
                 }
-                interval = stableIntervalAt(high, prediction, margin, fixed);
+                interval = stableIntervalAt(high, prediction, margin, fixed, points, count);
             }
             _stableFit.x = Math.max(interval.min, Math.min(interval.max, preferredX));
             _stableFit.distance = high;
@@ -21386,21 +21435,41 @@
         }
 
         function stableRegionFitDistance(row, centre, baseDistance) {
-            const b = _stableBasis, tan = Math.tan(STABLE_CAMERA_FOV * Math.PI / 360);
-            const horizontal = tan * cam.aspect * 0.68;
-            const bottom = Math.min(sY(0), sY(nStr - 1)) - S_GAP * 1.4 - 10 * K * _textSizeMul;
+            return stableRegionFraming(row, centre, baseDistance, true).distance;
+        }
+
+        function stableRegionFootprint(row) {
+            const bottom = Math.min(sY(0), sY(nStr - 1));
             const top = Math.max(sY(0), sY(nStr - 1)) + NH;
-            let distance = baseDistance;
+            const b = _stableBasis;
             for (let i = 0; i < 8; i++) {
-                const x = (i & 1 ? row.maxX + 3 * K : row.minX - 3 * K) - centre;
-                const y = (i & 2 ? top : bottom) - b.y, z = i & 4 ? 4 * K : 0;
-                const depthOffset = b.bx * x + b.by * y + b.bz * z;
-                const right = b.rx * x + b.rz * z, up = b.ux * x + b.uy * y + b.uz * z;
-                distance = Math.max(distance, depthOffset + Math.abs(right) / horizontal,
-                    depthOffset + up / (tan * (0.90 + STABLE_CAMERA_SHIFT)),
-                    depthOffset - up / (tan * (0.90 - STABLE_CAMERA_SHIFT)), depthOffset + 0.02);
+                _stableRegionPoints[i * 3] = i & 1 ? row.maxX + 3 * K : row.minX - 3 * K;
+                _stableRegionPoints[i * 3 + 1] = i & 2 ? top : bottom;
+                _stableRegionPoints[i * 3 + 2] = i & 4 ? 2 * K : 0;
             }
-            return distance;
+            // Gold labels are camera-facing glyphs at fret centres, not a
+            // solid box extending below the entire outer lane. Reserve their
+            // true sprite corners; the old imaginary lower corners caused
+            // avoidable panning/zoom in the angled preset as a lane widened.
+            for (let end = 0; end < 2; end++) {
+                const fret = end ? row.lastFret : row.firstFret;
+                const x = Number.isFinite(fret) ? xFretMid(fret) : end ? row.maxX : row.minX;
+                const half = 5.95 * K * _textSizeMul * (Number.isFinite(fret) ? fretLabelScaleForFret(fret) : 1) / 2;
+                for (let i = 0; i < 4; i++) {
+                    const dx = i & 1 ? half : -half, dy = i & 2 ? half : -half;
+                    const j = (8 + end * 4 + i) * 3;
+                    _stableRegionPoints[j] = x + b.rx * dx + b.ux * dy;
+                    _stableRegionPoints[j + 1] = bottom - S_GAP * 1.4 + b.uy * dy;
+                    _stableRegionPoints[j + 2] = 0.5 * K + b.rz * dx + b.uz * dy;
+                }
+            }
+        }
+
+        function stableRegionFraming(row, preferred, baseDistance, fixed = false, margin = 0.82) {
+            stableRegionFootprint(row);
+            // Prefer the four-fret centre, then the nearest centre at normal
+            // zoom, and only then the minimum distance at which it can fit.
+            return stableSolve(preferred, baseDistance, 0, margin, fixed, _stableRegionPoints, 48);
         }
 
         function stableCameraPlan(bundle, now, baseDistance) {
@@ -21416,15 +21485,54 @@
             if (cache.rows !== rows || cache.key !== key) {
                 const regions = rows.map(row => {
                     const a = xFret(row.fret - 1), b = xFret(row.fret + row.width - 1);
-                    return { time: row.time, minX: Math.min(a, b), maxX: Math.max(a, b), x: (a + b) / 2 };
+                    const end = xFret(row.fret - 1 + Math.min(4, row.width));
+                    const preferred = (a + end) / 2;
+                    const normal = { minX: Math.min(a, end), maxX: Math.max(a, end), firstFret: row.fret, lastFret: row.fret + Math.min(4, row.width) - 1 };
+                    const closeDistance = stableRegionFitDistance(normal, preferred, baseDistance);
+                    const region = { time: row.time, minX: Math.min(a, b), maxX: Math.max(a, b), preferred, closeDistance, firstFret: row.fret, lastFret: row.fret + row.width - 1 };
+                    const fit = stableRegionFraming(region, preferred, closeDistance);
+                    region.x = fit.x; region.distance = fit.distance;
+                    return region;
                 });
                 cache.stops = hwyBuildCameraStops(regions, rate, (row, centre) =>
-                    stableRegionFitDistance(row, centre, baseDistance)
-                        <= stableRegionFitDistance(row, row.x, baseDistance) * 1.35);
+                    stableRegionFraming(row, centre, baseDistance, true, 0.96).distance
+                        <= row.distance + 1e-6);
                 cache.regions = regions;
                 cache.rows = rows; cache.key = key; cache.rate = rate; cache.revision++;
             }
             hwyCameraPlanAt(cache.stops, now, rate, cameraSmoothing, cache.result);
+            cache.result.direction = Math.sign(cache.result.velocity);
+            if (!cache.result.direction) {
+                let a = 0, b = cache.stops.length;
+                while (a < b) {
+                    const mid = (a + b) >>> 1;
+                    if (cache.stops[mid].time <= now) a = mid + 1; else b = mid;
+                }
+                const next = cache.stops[a];
+                if (next && next.time - now <= 1.3 * rate) {
+                    cache.result.direction = Math.sign(next.x - cache.result.x);
+                }
+            }
+            let lo = 0, hi = cache.regions.length;
+            while (lo < hi) {
+                const mid = (lo + hi) >>> 1;
+                if (cache.regions[mid].time <= now) lo = mid + 1; else hi = mid;
+            }
+            const current = cache.regions[Math.max(0, lo - 1)];
+            cache.result.distance = current?.distance || baseDistance;
+            cache.result.closeDistance = current?.closeDistance || baseDistance;
+            cache.result.returnFloor = baseDistance;
+            for (let i = lo; i < Math.min(cache.regions.length, lo + 32); i++) {
+                const row = cache.regions[i], until = (row.time - now) / rate;
+                if (until > 1.3) break;
+                // Do not start closing only to reopen during the 800ms return.
+                // This holds an existing wider view, never widens early.
+                cache.result.returnFloor = Math.max(cache.result.returnFloor, row.distance);
+                const u = Math.max(0, Math.min(1, 1 - until / 0.6));
+                const eased = u * u * u * (10 + u * (-15 + 6 * u));
+                cache.result.distance = Math.max(cache.result.distance,
+                    baseDistance + (row.distance - baseDistance) * eased);
+            }
             cache.result.revision = cache.revision;
             return cache.result;
         }
@@ -21472,30 +21580,38 @@
             const focus = stablePlayingRegion(bundle, frameTime);
             const baseDistance = Math.max(100 * K, (Math.abs(sY(0) - sY(nStr - 1)) + 14 * K) * 2.3);
             const plan = stableCameraPlan(bundle, frameTime, baseDistance);
-            stableCollectGeometry(focus, _stablePlan.regions, frameTime);
+            s.collectCentre = plan.valid ? plan.x : s.x;
+            stableCollectGeometry(focus);
             s.focusValid = focus.valid;
             s.focusX = focus.x; s.focusMinX = focus.minX; s.focusMaxX = focus.maxX;
             s.regionTime = focus.time; s.regionSource = focus.source;
-            // Short real-time anticipation protects approaching geometry. It
-            // never contributes to the preferred centre; fit at that centre
-            // first, widening only when needed instead of stealing the focus
-            // to achieve the smallest possible viewing distance.
-            const prediction = Math.min(AHEAD, 0.5 * s.rate);
+            // The planned area keeps the view stable between attacks; actual
+            // near geometry supplies only the additional visibility constraint.
+            // The area plan already anticipates position changes by 600ms.
+            // Only a short safety look-ahead belongs here: projecting a whole
+            // future lane to the strike line before the scheduled pan has
+            // happened would override that pan with a faster correction.
+            const prediction = Math.min(AHEAD, 0.15 * s.rate);
+            const closeDistance = plan.closeDistance;
             const snap = reset || !s.initialized || (seek && stableCameraFollow);
             s.correction = false;
             if (snap) {
                 const centre = plan.valid ? plan.x : focus.valid ? focus.x
                     : s.initialized ? s.x : curX;
-                const fit = stableSolve(centre, baseDistance, prediction, 0.68, true);
+                const distance = Math.max(closeDistance, plan.distance);
+                const fits = stableIntervalAt(distance, prediction, 0.96, centre).valid;
+                const fit = stableSolve(centre, distance, prediction, fits ? 0.96 : 0.82);
                 s.x = fit.x; s.distance = fit.distance;
+                s.distance = Math.max(s.distance, plan.distance);
                 s.targetX = s.x; s.targetDistance = s.distance;
                 s.centreCandidateX = focus.valid ? s.x : NaN;
                 s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
                 s.panPending = false;
                 s.quietPanTime = 0;
                 s.quietZoomTime = 0; s.initialized = true;
+                s.zoomReturnFrom = s.zoomRequired = s.distance;
                 s.rejoinOffset = s.rejoinVelocity = 0;
-                s.safetyOffset = s.safetyVelocity = 0;
+                s.safetyOffset = s.x - centre; s.safetyVelocity = 0;
             } else if (resize) {
                 // A resize can change distance, but never the held centre or
                 // viewing angle, even with following switched off.
@@ -21514,28 +21630,22 @@
                 s.rejoinOffset = rejoin.offset; s.rejoinVelocity = rejoin.velocity;
                 s.x = plannedX + rejoin.offset;
                 s.targetX = plannedX;
-                // A chart footprint cannot predict every protruding bend,
-                // hold or chord frame. If sharing a centre costs substantially
-                // more readability than the current area's own view, smoothly
-                // take the minimum necessary step back toward that area.
-                let safetyTarget = 0;
-                if (Math.abs(s.x - focus.x) > 1e-7) {
-                    const sharedDistance = stableSolve(s.x, baseDistance, prediction, 0.68, true).distance;
-                    if (sharedDistance > baseDistance * 1.35) {
-                        const localDistance = stableSolve(focus.x, baseDistance, prediction, 0.68, true).distance;
-                        const budget = localDistance * 1.35;
-                        if (sharedDistance > budget) {
-                            const nearest = stableSolve(s.x, budget, prediction, 0.68).x;
-                            safetyTarget = Math.max(Math.min(s.x, focus.x),
-                                Math.min(Math.max(s.x, focus.x), nearest)) - s.x;
-                        }
-                    }
-                }
+                // Prefer a small lateral adjustment to a zoom change. The
+                // chart-derived plan already fits a whole passage, so normal
+                // notes within it cannot make this target chase individual gems.
+                const plannedDistance = Math.max(closeDistance, plan.distance);
+                const comfortable = stableIntervalAt(plannedDistance, prediction, 0.96, s.x).valid;
+                const nearest = stableSolve(s.x, plannedDistance, prediction, comfortable ? 0.96 : 0.82);
+                let safetyTarget = comfortable ? 0 : nearest.x - s.x;
+                // Do not reintroduce a short right/left detour through the
+                // safety fit. If a correction opposes the scheduled move,
+                // preserve that move and fit the overlap with minimum zoom.
+                if (safetyTarget * plan.direction < 0) safetyTarget = 0;
                 const safety = hwyCameraRejoin(s.safetyOffset - safetyTarget, s.safetyVelocity, dt, 8);
                 s.safetyOffset = safetyTarget + safety.offset; s.safetyVelocity = safety.velocity;
                 s.x += s.safetyOffset;
-                const fit = stableSolve(s.x, baseDistance, prediction, 0.68, true);
-                const neutralDistance = fit.distance;
+                const fit = stableSolve(s.x, closeDistance, prediction, comfortable ? 0.96 : 0.82, true);
+                const neutralDistance = Math.max(fit.distance, plan.distance, Math.min(s.distance, plan.returnFloor));
                 s.centreCandidateX = plannedX;
                 s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
                 s.targetDistance = neutralDistance;
@@ -21546,15 +21656,7 @@
                 if (Math.abs(s.rejoinOffset) < settleEpsilon && Math.abs(s.rejoinVelocity) < settleEpsilon) {
                     s.x = plannedX + s.safetyOffset; s.rejoinOffset = s.rejoinVelocity = 0;
                 }
-                // Once a wider view is returning, finish the return. A relative
-                // 3% cutoff used to reset this timer just before convergence.
-                if (neutralDistance >= s.distance - settleEpsilon) s.quietZoomTime = 0;
-                else s.quietZoomTime += dt;
-                if (neutralDistance > s.distance || s.quietZoomTime > 0.65 + zoomSmoothing * 0.6) {
-                    const tau = neutralDistance > s.distance ? 0.16 : 0.65 + zoomSmoothing * 1.1;
-                    s.distance += (neutralDistance - s.distance) * (1 - Math.exp(-dt / tau));
-                }
-                if (Math.abs(s.distance - neutralDistance) < settleEpsilon) s.distance = neutralDistance;
+                hwyCameraZoom(s, neutralDistance, dt, zoomSmoothing);
             } else if (!focus.valid || !stableCameraFollow) {
                 // No usable position and Follow off hold the pose. Silence
                 // with a chart-defined area still follows the ordinary path.
@@ -21575,7 +21677,7 @@
             if (!snap && !resize && stableCameraFollow && bundle.isPlaying !== false && s.pointCount > 0) {
                 // Last-resort actual-geometry guard also covers upcoming notes
                 // during a rest. It may widen, but never redirects the centre.
-                const safe = stableSolve(s.x, s.distance, 0, 0.92, true);
+                const safe = stableSolve(s.x, s.distance, 0, 0.96, true);
                 s.correction = safe.distance > s.distance + 1e-7;
                 s.distance = safe.distance;
             }
