@@ -42,6 +42,8 @@ function createFolderSurface(cfg) {
     // ── State ───────────────────────────────────────────────────────────
     let _tree             = null;
     let _loaded           = false;
+    let _renderPending    = false;
+    let _loadVersion      = 0;
     let _lastFilterParams = null;             // params string used for the last /tree fetch
     let _openFolders      = new Set(_storeJSON('open') || []);
     let _unsortedOpen     = _store(cfg.unsortedKey) !== 'false';
@@ -75,6 +77,11 @@ function createFolderSurface(cfg) {
     // ── DOM helpers ─────────────────────────────────────────────────────
     function _el(id) { return document.getElementById(id); }
     function _treeEl() { return document.getElementById(cfg.treeId); }
+    function _surfaceVisible() {
+        var el = _treeEl();
+        // An embedded tree can lack .hidden while its parent screen is hidden.
+        return !!el && el.getClientRects().length > 0;
+    }
 
     // ── Force screen to have height (nav screen has no height set) ──────
     function _fixHeight() {
@@ -168,32 +175,41 @@ function createFolderSurface(cfg) {
 
     // ── Fetch tree ──────────────────────────────────────────────────────
     async function _load(force) {
+        if (force) {
+            _loaded = false;
+            ++_loadVersion;
+        }
+        var visible = _surfaceVisible();
+        // Preserve the nav's background data scan, but never construct hidden
+        // UI. Large libraries can take minutes to scan on their first request.
         // Lib surface owns a couple of host-chrome tweaks on entry.
-        if (cfg.searchInputId) {
+        if (visible && cfg.searchInputId) {
             var fe = _el(cfg.searchInputId);
             if (fe) fe.style.maxWidth = '320px';
         }
-        if (cfg.countId) {
+        if (visible && cfg.countId) {
             var ce0 = _el(cfg.countId);
             if (ce0) ce0.textContent = '';
         }
 
         var params = cfg.getFilterParams ? cfg.getFilterParams() : '';
         if (!force && _loaded && _tree && params === _lastFilterParams) {
-            if (cfg.injectToolbar) _injectToolbar();
-            _render();
+            _showLoadedTree();
             return;
         }
 
-        _status('Loading…');
+        if (visible) _status('Loading…');
         var treeEl = _treeEl();
-        if (!cfg.ownsStatus && treeEl) {
+        if (visible && !cfg.ownsStatus && treeEl) {
             treeEl.innerHTML = '<div style="padding:48px;text-align:center;color:#4b5563;font-size:13px;">Loading folders…</div>';
         }
+        var loadVersion = ++_loadVersion;
         try {
             var url  = '/tree' + (params ? '?' + params : '');
             var data = await _api(url);
+            if (loadVersion !== _loadVersion) return;
             if (data.error) {
+                if (!_surfaceVisible()) { _renderPending = true; return; }
                 if (cfg.ownsStatus) _status('⚠ ' + data.error, true);
                 else if (treeEl) { treeEl.innerHTML = ''; var _ed = document.createElement('div'); _ed.style.cssText = 'padding:48px;text-align:center;color:#ef4444;font-size:13px;'; _ed.textContent = '⚠ ' + data.error; treeEl.appendChild(_ed); }
                 return;
@@ -201,22 +217,30 @@ function createFolderSurface(cfg) {
             _tree             = data;
             _loaded           = true;
             _lastFilterParams = params;
-            _status('');
             // Lib auto-expands top-level folders on first visit (empty open set).
             if (cfg.autoExpandTop && _openFolders.size === 0 && data.folders.length) {
                 data.folders.forEach(function (f) { _openFolders.add(f.path); });
                 _storeJSON('open', [..._openFolders]);
             }
-            if (cfg.injectToolbar) _injectToolbar();
-            _render();
-            // Rebuild filter panel if it's open so tuning list reflects new data.
-            if (cfg.ownsFilterPanel) {
-                var fp = _el('fb-filter-panel');
-                if (fp && fp.style.display !== 'none') _buildFilterPanel();
-            }
+            _showLoadedTree();
         } catch (err) {
+            if (loadVersion !== _loadVersion) return;
+            if (!_surfaceVisible()) { _renderPending = true; return; }
             if (cfg.ownsStatus) _status('Load failed: ' + err.message, true);
             else if (treeEl) { treeEl.innerHTML = ''; var _ed = document.createElement('div'); _ed.style.cssText = 'padding:48px;text-align:center;color:#ef4444;font-size:13px;'; _ed.textContent = '⚠ Failed to load: ' + err.message; treeEl.appendChild(_ed); }
+        }
+    }
+
+    function _showLoadedTree() {
+        // A scan can finish minutes after the user has left for gameplay.
+        // Keep its data, but build the view only when it is actually on screen.
+        if (!_surfaceVisible()) { _renderPending = true; return; }
+        _status('');
+        if (cfg.injectToolbar) _injectToolbar();
+        _render();
+        if (cfg.ownsFilterPanel) {
+            var fp = _el('fb-filter-panel');
+            if (fp && fp.style.display !== 'none') _buildFilterPanel();
         }
     }
 
@@ -1487,6 +1511,8 @@ function createFolderSurface(cfg) {
 
     // ── Render ──────────────────────────────────────────────────────────
     function _render() {
+        if (!_surfaceVisible()) { _renderPending = true; return; }
+        _renderPending = false;
         _hoveredFolder = null; // DOM is rebuilt; discard any stale reference
         // Drop the scroll listeners of the previous render's windowed lists —
         // their `list` nodes are about to be detached, and a surviving listener
@@ -1697,7 +1723,7 @@ function createFolderSurface(cfg) {
         var id = ev && ev.detail && ev.detail.id;
         if (id === cfg.screenId) {
             _closeDropdown();
-            if (!_loaded) _load(true);
+            if (!_loaded || _renderPending) _load(false);
         }
     }
 
@@ -1820,7 +1846,7 @@ if (!window.__folderLibraryLib) {
     // skipped. Now that we're defined, kick off the load if #lib-folder-tree is
     // currently visible.
     var treeEl = document.getElementById('lib-folder-tree');
-    if (treeEl && !treeEl.classList.contains('hidden')) {
+    if (treeEl && treeEl.getClientRects().length > 0) {
         _lib.load();
     }
 }());
