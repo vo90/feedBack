@@ -41,6 +41,7 @@ from song import (
     scale_degree_for_pitch,
 )
 from audio import find_wem_files, convert_wem
+from harmony import source_revision
 import sloppak as sloppak_mod
 import drums as drums_mod
 import notation as notation_mod
@@ -188,6 +189,7 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
     tmp = None
     owns_tmp = False
     loaded_slop = None  # LoadedSloppak when is_slop
+    guide_revision = None
     _keepalive_active = True
 
     async def _send_keepalives():
@@ -213,6 +215,7 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
                     lambda: _ctx.run(sloppak_mod.load_song, filename, dlc, appstate.sloppak_cache_dir),
                 )
                 song = loaded_slop.song
+                guide_revision = loaded_slop.harmonic_guide_revision
                 tmp = str(loaded_slop.source_dir)
                 owns_tmp = False
             elif is_loose:
@@ -222,6 +225,17 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
                 # _resolve_dlc_path, so audio conversion below can use
                 # it directly.
                 song = await loop.run_in_executor(None, lambda: load_song(str(song_path)))
+                # Loose sources have no authored harmony, but local corrections
+                # still need chart/audio invalidation and library identity.
+                guide_revision = await loop.run_in_executor(
+                    None,
+                    lambda: source_revision(
+                        song_path,
+                        (p.relative_to(song_path).as_posix()
+                         for pattern in ("*.xml", "*.json") for p in song_path.rglob(pattern)),
+                        (p.relative_to(song_path).as_posix() for p in song_path.rglob("*.wem")),
+                    ),
+                )
                 tmp = str(song_path)
                 owns_tmp = False
             else:
@@ -597,6 +611,10 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
             "has_keys": bool(
                 is_slop and loaded_slop is not None and loaded_slop.keys is not None
             ),
+            "has_harmony": bool(
+                is_slop and loaded_slop is not None and loaded_slop.harmony is not None
+            ),
+            "harmonic_guide_revision": guide_revision,
         })
 
         # Send drum_tab when the sloppak ships one (manifest `drum_tab:` key,
@@ -664,6 +682,13 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
                 "type": "keys",
                 "version": int(loaded_slop.keys.get("version", 1)),
                 "data": loaded_slop.keys.get("events") or [],
+            })
+
+        if is_slop and loaded_slop is not None and loaded_slop.harmony is not None:
+            await websocket.send_json({
+                "type": "harmony",
+                "version": loaded_slop.harmony["version"],
+                "data": loaded_slop.harmony["events"],
             })
 
         # Song-level tempo + time-signature maps (song_timeline, feedpak 1.2.0),
