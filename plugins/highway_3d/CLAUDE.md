@@ -256,6 +256,15 @@ Fret and string indexes use max-end trees to skip expired ranges, including thos
 behind an old long-running target. Keep these indexes chart-static, retain bounded
 visible-window queries, and avoid scanning complete linked chains each frame.
 
+`hwyTrailPriorityWorldZ` treats trail-first targets as foreground constraints,
+not replacement positions: a target may raise the emitted segment's natural
+sorting depth but must never move it backward. This also applies when an open
+note after the sustain end causes endpoint narrowing; intervening notes must not
+gain foreground priority as a side effect. Gem-first and attached-trail-first
+options keep their target-depth rules. Preserve ordinary-gem ordering repair
+before the physical-string relationship pass. Width envelopes and authored
+timing are independent of this ordering constraint.
+
 ## Object pools
 
 Pools live as closure refs (`pNote`, `pSus`, `pLbl`, `pBeat`, `pSec`, `pFretLbl`, `pLane`, `pLaneDivider`, `pChordBox`, `pChordLbl`, `pBarreLine`, `pNoteFretLabel`, `pConnectorLine`, `pDropLine`, `pSusOutline`).
