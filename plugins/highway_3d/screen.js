@@ -2151,7 +2151,12 @@
      * tolerance. Zero/omitted sustains retain authored-link compatibility.
      * These checks keep later attacks and partial-chord HO/PO gems visible.
      */
-    function hwyLinkNextTargetNotes(notes, chords, onsetTolerance = 1e-6) {
+    // Wire times/sustains can be rounded to milliseconds. Bend inheritance is
+    // stricter than attack suppression: overlapping or expired sustains must
+    // not supply an unrelated starting pitch.
+    const BEND_LINK_TIME_EPS = 0.001;
+
+    function hwyLinkNextTargetNotes(notes, chords, onsetTolerance = 1e-6, bendLinks = null) {
         const targets = new Set();
         const lanes = new Map();
         const eps = Number.isFinite(onsetTolerance) && onsetTolerance >= 0
@@ -2212,6 +2217,22 @@
                         const destination = lane[j].note;
                         if (destination.f === (slideTarget >= 0 ? slideTarget : source.f)) {
                             targets.add(destination);
+                            if (bendLinks) {
+                                const previous = bendLinks.get(destination);
+                                const contiguous = Number.isFinite(source.sus) && source.sus > 0
+                                    && Math.abs(lane[i].time + source.sus - nextTime)
+                                        <= BEND_LINK_TIME_EPS;
+                                // Ambiguous coincident sources stay unresolved;
+                                // never pick a bend height by chart array order.
+                                if (!bendLinks.has(destination)) {
+                                    bendLinks.set(destination, contiguous
+                                        ? { source, sourceTime: lane[i].time, targetTime: nextTime }
+                                        : null);
+                                } else if (!previous || previous.source !== source
+                                    || previous.sourceTime !== lane[i].time) {
+                                    bendLinks.set(destination, null);
+                                }
+                            }
                         }
                     }
                 }
@@ -5933,6 +5954,7 @@
         let _linkNextTargetSet = null;
         let _linkNextTargetNotesRef = null;
         let _linkNextTargetChordsRef = null;
+        let _linkedBendStarts = new WeakMap();
 
         // Per-fret onset index for localized sustain yielding. Rebuilt once per
         // arrangement; drawNote scans only conservative footprint buckets and
@@ -13170,7 +13192,9 @@
             // destination representation. Do not infer links from timing alone:
             // grace-slide targets deliberately omit `ln` because they are struck.
             if (notes !== _linkNextTargetNotesRef || bundle.chords !== _linkNextTargetChordsRef) {
-                _linkNextTargetSet = hwyLinkNextTargetNotes(notes, bundle.chords);
+                const bendLinks = new Map();
+                _linkNextTargetSet = hwyLinkNextTargetNotes(notes, bundle.chords, 1e-6, bendLinks);
+                _linkedBendStarts = resolveLinkedBendStarts(bendLinks);
                 _linkNextTargetNotesRef = notes;
                 _linkNextTargetChordsRef = bundle.chords;
             }
@@ -14526,6 +14550,10 @@
                             // apply the wrong contour). Reset explicitly.
                             _scrChordNote.bnv = Array.isArray(cn.bnv) ? cn.bnv : undefined;
                             _scrChordNote.bt  = cn.bt || 0;
+                            // The drawing scratch has a different identity from
+                            // its authored member. Replace the cached start on
+                            // every reuse, including an ordinary zero start.
+                            _linkedBendStarts.set(_scrChordNote, _linkedBendStarts.get(cn) || 0);
                             // Same stale-scratch hazard for the teaching marks
                             // (§6.2.2): fg/sd are omit-when-default on the wire,
                             // so a chord note without them must reset to -1 or it
@@ -16302,18 +16330,48 @@
             return last.v;
         }
 
-        function bendSemisAtTime(n, chartTime) {
+        /**
+         * Render-only fallback for a curve that omits its onset. Feedpak makes
+         * samples authoritative but does not prescribe before-first sampling.
+         * Preserve authored t=0 values; release/pre-bend intent keeps the first
+         * value. Ordinary delayed targets rise from the linked predecessor's
+         * endpoint, or zero for a new attack. Never rewrite the wire curve.
+         */
+        function bendCurveStartSemis(n, inheritedStart = 0) {
+            const first = Array.isArray(n?.bnv) ? n.bnv[0] : null;
+            if (!first || !Number.isFinite(first.t) || first.t < 0
+                || !Number.isFinite(first.v)) return 0;
+            if (first.t <= 1e-6 || n.bt === 1 || n.bt === 2 || n.bt === 3) {
+                return Math.max(0, first.v);
+            }
+            return Number.isFinite(inheritedStart) ? Math.max(0, inheritedStart) : 0;
+        }
+
+        function bendCurveSemisAt(n, elapsed, inheritedStart = 0) {
+            const first = Array.isArray(n?.bnv) ? n.bnv[0] : null;
+            if (!first || !Number.isFinite(first.t) || first.t < 0
+                || !Number.isFinite(first.v) || !Number.isFinite(elapsed)) return 0;
+            if (elapsed < first.t && first.t > 1e-6) {
+                const start = bendCurveStartSemis(n, inheritedStart);
+                const p = Math.max(0, elapsed) / first.t;
+                return Math.max(0, start + (first.v - start) * p);
+            }
+            const value = bnvSampleAt(n.bnv, elapsed);
+            return Number.isFinite(value) ? Math.max(0, value) : 0;
+        }
+
+        function bendSemisAtElapsed(n, elapsed, inheritedStart = 0) {
             if (!(n?.sus > 0)) return 0;
             // When the note carries an authoritative bend curve (§6.2.1),
             // sample its real shape at the elapsed time so the gem's Y gesture
             // and sustain ribbon follow the actual bend (pre-bend, round-trip,
             // release, …). Negative samples clamp to 0 (upward-only Y offset).
             if (Array.isArray(n.bnv) && n.bnv.length) {
-                return Math.max(0, bnvSampleAt(n.bnv, chartTime - n.t));
+                return bendCurveSemisAt(n, elapsed, inheritedStart);
             }
             const bn = Number(n?.bn) || 0;
             if (!(bn > 0)) return 0;
-            const p = Math.max(0, Math.min(1, (chartTime - n.t) / Math.max(n.sus, 1e-6)));
+            const p = Math.max(0, Math.min(1, elapsed / Math.max(n.sus, 1e-6)));
             // Fallback: synthesize rise → hold → release from the scalar peak.
             // Ramp up over the first ~35 %, hold, then release over the last
             // ~30 % — the bend gesture rather than a monotone climb. Drives both
@@ -16326,6 +16384,22 @@
             return bn * Math.max(0, Math.min(1, env));
         }
 
+        /** Links arrive in chronological order within each string's lane. */
+        function resolveLinkedBendStarts(links) {
+            const starts = new WeakMap();
+            for (const [destination, link] of links) {
+                if (!link) continue;
+                const inherited = starts.get(link.source) || 0;
+                const end = bendSemisAtElapsed(link.source, link.source.sus, inherited);
+                if (end > 0) starts.set(destination, end);
+            }
+            return starts;
+        }
+
+        function bendSemisAtTime(n, chartTime) {
+            return bendSemisAtElapsed(n, chartTime - n.t, _linkedBendStarts.get(n) || 0);
+        }
+
         function vibratoSemisAtTime(n, chartTime) {
             if (!noteHasVibrato(n) || !(n?.sus > 0)) return 0;
             const elapsed = Math.max(0, chartTime - n.t);
@@ -16334,13 +16408,7 @@
 
         function prebendOffsetWorld(n) {
             if (!(n?.sus > 0) || !Array.isArray(n.bnv)) return 0;
-            const first = n.bnv[0];
-            if (!first || !Number.isFinite(first.t) || first.t < 0
-                || !Number.isFinite(first.v) || !(first.v > 0)) return 0;
-            // The ribbon clamps a curve's first value back to note onset,
-            // even when that sample is authored slightly later. Sample the
-            // same envelope here so its approaching head starts attached.
-            // Scalar peaks and curves starting at zero still approach unbent.
+            // Head, attached markers and ribbon sample the same resolved start.
             return bendVisualDirY(n.s) * BEND_HALFSTEP_WORLD_Y * bendSemisAtTime(n, n.t);
         }
 
@@ -17427,7 +17495,10 @@
             // Preserve source fret/identity for note-detect matching. Only this
             // local drawing view treats an unpitched muted strike as a slab.
             const sourceNote = n;
-            if (isUnpitchedMute(n)) n = { ...n, f: 0 };
+            if (isUnpitchedMute(n)) {
+                n = { ...n, f: 0 };
+                _linkedBendStarts.set(n, _linkedBendStarts.get(sourceNote) || 0);
+            }
             const nxFrame = _drawNextByString && _drawNextByString[s];
             const dt = n.t - now;
             const ghostHold = fromChord ? linger : GHOST_HOLD_AFTER_ONSET;
@@ -19630,6 +19701,7 @@
             _linkNextTargetSet = null;
             _linkNextTargetNotesRef = null;
             _linkNextTargetChordsRef = null;
+            _linkedBendStarts = new WeakMap();
             trailVisibilityReleaseChartReferences();
         }
 

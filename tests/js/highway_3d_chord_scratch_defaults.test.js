@@ -8,7 +8,13 @@ const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/sc
 const start = source.indexOf('Object.assign(_scrChordNote, cn);');
 const end = source.indexOf('drawNote(', start);
 assert.ok(start >= 0 && end > start, 'actual chord scratch preparation must be present');
-const prepare = new Function('_scrChordNote', 'cn', 'ch', source.slice(start, end) + 'return _scrChordNote;');
+const prepare = new Function(`
+    const _linkedBendStarts = new WeakMap();
+    return function(_scrChordNote, cn, ch) {
+        ${source.slice(start, end)}
+        return _scrChordNote;
+    };
+`)();
 const templateStart = source.indexOf('function chordNotesFromTemplate(');
 const templateEnd = source.indexOf('\n        /**', templateStart);
 assert.ok(templateStart >= 0 && templateEnd > templateStart, 'actual synthesized chord builder must be present');

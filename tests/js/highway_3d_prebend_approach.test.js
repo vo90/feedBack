@@ -11,25 +11,24 @@ function extract(name) {
     return src.slice(start,end);
 }
 function offset(n, now, sustained, dir = 1) {
-    // Run both approach and sustain through the real bend envelope. Stubbing
-    // the sustain sampler hid disagreement at the first curve point.
+    // Execute the actual assignment and envelope used by both the approaching
+    // head and active sustain, including linked-start lookup.
     const assignment = src.match(/const techniqueYNow = [\s\S]*?;/)[0];
+    const helpers = ['bnvSampleAt','bendCurveStartSemis','bendCurveSemisAt',
+        'bendSemisAtElapsed','bendSemisAtTime','noteHasVibrato','vibratoSemisAtTime',
+        'techniqueYOffsetWorld','prebendOffsetWorld'].map(extract).join('\n');
     return new Function('n','now','sustained','dir', `
         const BEND_HALFSTEP_WORLD_Y=1, bendVisualDirY=()=>dir;
-        const BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.3, VIBRATO_HALF_WAVE_S=.08;
-        ${extract('noteHasVibrato')}
-        ${extract('bnvSampleAt')}
-        ${extract('bendSemisAtTime')}
-        ${extract('vibratoSemisAtTime')}
-        ${extract('techniqueYOffsetWorld')}
-        ${extract('prebendOffsetWorld')}
+        const BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.30, VIBRATO_HALF_WAVE_S=.08;
+        const _linkedBendStarts=new WeakMap();
+        ${helpers}
         ${assignment}
         return techniqueYNow;
     `)(n,now,sustained,dir);
 }
 const mamma = {t:86.739,s:5,f:12,sus:.325,bn:2,bnv:[{t:0,v:2},{t:.216003,v:0}]};
 // The reported Train Kept A-Rollin' Lead chord at 22.172001 s: its first
-// authored sample is later than onset, and the ribbon clamps it backwards.
+// authored sample is later than onset, with no explicit pre-bend intent.
 const train = {t:22.172001,s:3,f:14,sus:1.68,bn:2,bnv:[
     {t:.157999,v:2},{t:.316999,v:2},{t:.632999,v:0},{t:1.230999,v:2},
 ]};
@@ -37,11 +36,15 @@ const train = {t:22.172001,s:3,f:14,sus:1.68,bn:2,bnv:[
 const alignment = new Function('n', 'now', 'nStr', '_invertedCached', `
     const BEND_HALFSTEP_WORLD_Y=1, BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.3;
     const VIBRATO_HALF_WAVE_S=.08, SLIDE_RIBBON_SAMPLES=8;
+    const _linkedBendStarts=new WeakMap();
     const TRAIL_YIELD_DEFAULTS={minScale:.3};
     const dZ=t=>-t*10, sustainTrailCenterXAt=(n,x)=>x;
     ${extract('bendVisualDirY')}
     ${extract('noteHasVibrato')}
     ${extract('bnvSampleAt')}
+    ${extract('bendCurveStartSemis')}
+    ${extract('bendCurveSemisAt')}
+    ${extract('bendSemisAtElapsed')}
     ${extract('bendSemisAtTime')}
     ${extract('vibratoSemisAtTime')}
     ${extract('prebendOffsetWorld')}
@@ -71,19 +74,19 @@ test('initial bend uses the same direction for low strings and inverted layouts'
     assert.equal(offset(mamma,86.4,false,1),2);
 });
 test('ordinary and scalar bends remain on the string while approaching', () => {
-    for(const bnv of [undefined,[],[{t:0,v:0},{t:.2,v:2}],[{t:.2,v:0},{t:.3,v:2}]]) {
+    for(const bnv of [undefined,[],[{t:0,v:0},{t:.2,v:2}],[{t:.2,v:2}],[{t:.2,v:0},{t:.3,v:2}]]) {
         assert.equal(offset({...mamma,bnv},86.4,false),0);
     }
 });
 
-test('a delayed first positive curve sample aligns the approach gem with the ribbon', () => {
+test('an ordinary delayed positive curve starts unbent and keeps the gem aligned with the ribbon', () => {
     for (const time of [train.t-1, train.t-1e-6, train.t, train.t+1e-6, train.t+.4]) {
         const rendered=alignment(train,time,6,false);
         assert.ok(Math.abs(rendered.gem-rendered.body)<1e-10,
             'the gem and actual first ribbon cross-section must share their center');
         assert.ok(Math.abs(rendered.gem-rendered.outline)<1e-10);
     }
-    assert.equal(offset(train,train.t-1,false),2);
+    assert.equal(offset(train,train.t-1,false),0);
 });
 
 test('fractional onset bends align every string in normal and inverted layouts', () => {
@@ -91,13 +94,14 @@ test('fractional onset bends align every string in normal and inverted layouts',
         for (const inverted of [false,true]) {
             for (let s=0;s<count;s++) {
                 for (const firstTime of [0,.0005,.157999]) {
-                    for (const semis of [.5,1.5,2.5]) {
-                        const n={...train,s,bnv:[{t:firstTime,v:semis},{t:.4,v:0}]};
+                    for (const semis of [.5,1.5,2.5]) for (const bt of [0,1,2,3]) {
+                        const n={...train,s,bt,bnv:[{t:firstTime,v:semis},{t:.4,v:0}]};
                         for (const time of [n.t-.2,n.t,n.t+1e-6]) {
                             const r=alignment(n,time,count,inverted);
                             assert.ok(Math.abs(r.gem-r.body)<1e-10);
                             assert.ok(Math.abs(r.gem-r.outline)<1e-10);
-                            if (time<=n.t) assert.equal(r.gem,10+r.dir*semis);
+                            const initial=firstTime<=1e-6 || bt>0 ? semis : 0;
+                            if (time<=n.t) assert.equal(r.gem,10+r.dir*initial);
                         }
                     }
                 }

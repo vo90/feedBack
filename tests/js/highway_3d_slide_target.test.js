@@ -235,10 +235,9 @@ test('standalone and chord render paths pass explicit target membership separate
         /_slideTargetSet|const\s+checkSrc/,
         'timing-only target inference must not override explicit LinkNext data',
     );
-    assert.match(
-        src,
-        /_linkNextTargetSet\s*=\s*hwyLinkNextTargetNotes\(notes,\s*bundle\.chords\)/,
-        'the chart-static cache must include both note representations',
+    assert.ok(
+        /_linkNextTargetSet\s*=\s*hwyLinkNextTargetNotes\(notes,\s*bundle\.chords,\s*1e-6,\s*bendLinks\)/.test(src),
+        'the chart-static cache includes both note representations and gathers bend-source metadata',
     );
 
     const standalone = sourceBetween('const _isLinkNextTgt', 'if (arGhostCid != null)');

@@ -48,13 +48,29 @@ Current retains its existing Glow behavior and full-scene **Glow bloom**, which 
 
 The split-screen panel's **3D settings** expose notation style, Glow, and Soft glow / bloom independently for each panel. Global settings apply wherever no panel override is saved.
 
-The note and technique vocabulary follows [Ubisoft's RS+ notehead guide](https://www.ubisoft.com/en-gb/game/rocksmith/plus/news-updates/11LCT7xGpOMZrwjrRMbZbS/rocksmith-notehead-guide). This is an original visual approximation with deliberate readability choices, including no approach-distance dimming of playable notes. It does not change chart data, timing or scoring. Bend chevrons use the string color, without an added amount label; fractional bend values still drive the complete curve. Pre-bent gems meet the trail at its initial pitch, including imported curves whose first point follows note onset.
+The note and technique vocabulary follows [Ubisoft's RS+ notehead guide](https://www.ubisoft.com/en-gb/game/rocksmith/plus/news-updates/11LCT7xGpOMZrwjrRMbZbS/rocksmith-notehead-guide). This is an original visual approximation with deliberate readability choices, including no approach-distance dimming of playable notes. It does not change chart data, timing or scoring. Bend chevrons use the string color, without an added amount label; fractional bend values still drive the complete curve. Gems meet the trail at its resolved initial pitch. The bend-start rules below distinguish delayed ordinary bends from explicit pre-bends.
 
 Open strings use colored bars with a vertical pale marker rather than a stretched gem outline. Sustains have narrower colored strokes; full-height purple side brackets with short caps identify arpeggio guidance. With no saved arrow preference, RS+ slides use the trail alone. Explicitly enabled slide arrows remain available, and switching to Current restores its usual defaults. Very light custom note colors receive a thin contour around pale technique marks to keep them readable.
 
 With the **Default** highway theme, RS+ inspired uses a graphite floor, grey inner fret dividers, cyan outer rails, muted inlays and grey idle fret labels. Named highway themes keep their chosen colors, and background settings remain independent.
 
 Across RS+ highway themes, active and per-note fret labels render their intended gold without the previous cream washout; chord names are white.
+
+### Bend starts and linked slides
+
+An explicit bend sample at note onset sets both the approaching gem's height and
+the trail's starting height. When a curve omits that sample, the renderer uses a
+fallback: an ordinary bend rises from zero to its first timed target; a release
+or pre-bend keeps its first value. A contiguous authored link can instead carry
+the preceding note's ending bend into an ordinary continuation whose curve
+omits its onset. Authored onset
+samples take precedence, including zero. This fills missing visual information
+without changing the chart, note detection, or whether a note must be picked.
+
+For example, a linked slide from fret 22 to 24 followed by a delayed bend target
+remains one continuous gesture with no second attack gem at fret 24. Explicit
+pre-bends still approach at their bent height. Scalar-only bends retain their
+existing synthesized rise/hold/release shape.
 
 ## Contributing / development
 
