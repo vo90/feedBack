@@ -31,7 +31,7 @@ function harness() {
         ${source.slice(stateStart, stateEnd)}
         let _stableCameraResetSerial = 0, stableCameraPreset = 'straight', stableCameraFollow = true;
         let _leftyCached = false, _songKey = 'song', nStr = 6, cameraSmoothing = .5, zoomSmoothing = .5;
-        let wall = 0, fixturePoints = [], curX = 60;
+        let wall = 0, fixturePoints = [], focusFixture = null, curX = 60;
         const cam = { aspect: 16 / 9 };
         const T = { Vector3: class {} }; // sprite collection uses matrix scalars only
         const performance = { now: () => wall * 1000 };
@@ -53,10 +53,20 @@ function harness() {
                 _stableCam.maxX = Math.max(_stableCam.maxX, point[0]);
             });
         }
+        // Resolver behavior is covered separately; these fixtures isolate the
+        // controller's primary-focus versus secondary-visibility priorities.
+        function stablePlayingFocus() {
+            if (focusFixture) return focusFixture;
+            const minX = Math.min(...fixturePoints.map(p => p[0]));
+            const maxX = Math.max(...fixturePoints.map(p => p[0]));
+            return { valid: fixturePoints.length > 0, x: (minX + maxX) / 2, minX, maxX };
+        }
         function stableApplyPose() { curX = _stableCam.x; }
         const bundle = { currentTime: 0, isPlaying: true, notes: [], chords: [] };
         return {
             setPoints(points) { fixturePoints = points; },
+            setFocus(x, minX = x, maxX = x) { focusFixture = {valid:true,x,minX,maxX}; },
+            silence() { focusFixture = {valid:false,x:0,minX:Infinity,maxX:-Infinity}; },
             settings(values) {
                 if ('follow' in values) stableCameraFollow = values.follow;
                 if ('preset' in values) stableCameraPreset = values.preset;
@@ -358,4 +368,73 @@ test('zoom closes a residual below three percent instead of keeping an inherited
         const settled = advanceCamera(h, 0, 8, fps);
         assertSameComposition(settled, expected, `zoom at ${fps} FPS`);
     }
+});
+
+test('a distant note that fits does not change the primary playing composition', () => {
+    for (const preset of ['straight', 'angled']) {
+        const h = harness(); h.settings({ preset });
+        h.setFocus(20); h.setPoints([[20, 13, 0]]);
+        const original = h.frame(0, 0);
+        h.setPoints([[20, 13, 0], [120, 13, -2.8 * 230]]);
+        const moved = advanceCamera(h, 0, 3, 20);
+        assert.equal(moved.x, original.x, 'future geometry must not steal primary centre');
+        assert.equal(moved.distance, original.distance, 'both groups already fit');
+        h.reset();
+        const direct = h.frame(3, 0);
+        assert.equal(direct.x, original.x, 'direct opening uses the same primary position');
+    }
+});
+
+test('changing distant extrema cannot block return to the current group', () => {
+    const h = harness(); h.setFocus(70); h.setPoints([[70, 13, 0]]); h.frame(0, 0);
+    h.setFocus(20);
+    for (let i = 1; i <= 240; i++) {
+        const futureX = Math.floor(i / 18) % 2 ? 120 : 150;
+        h.setPoints([[20, 13, 0], [futureX, 13, -2.8 * 230]]);
+        h.frame(i / 60, 1 / 60);
+    }
+    const settled = h.frame(4, 0);
+    assert.ok(Math.abs(settled.x - 20) < .1, JSON.stringify(settled));
+    assert.equal(settled.distance, 100);
+    assert.ok(settled.quietPanTime > 3, 'secondary changes must not restart primary dwell');
+});
+
+test('necessary secondary widening preserves the primary centre', () => {
+    for (const preset of ['straight', 'angled']) {
+        const h = harness(); h.settings({ preset }); h.setFocus(20);
+        const points = [[20, 13, 0], [300, 13, -30]];
+        h.setPoints(points); const s = h.frame(0, 0);
+        assert.equal(s.x, 20, 'minimum zoom must not take precedence over musical focus');
+        assert.ok(s.distance > 100);
+        assertFits(h, points, s, .35, .68);
+    }
+});
+
+test('a medium position change does not stop inside the comfort band before settling', () => {
+    const final = [];
+    for (const fps of [10, 20, 60, 120]) {
+        const h = harness(); h.setPoints([[0, 13, 0]]); h.setFocus(0); h.frame(0, 0);
+        h.setPoints([[20, 13, 0]]); h.setFocus(20);
+        let previous = 0, state;
+        for (let i = 1; i <= fps; i++) {
+            state = h.frame(i / fps, 1 / fps);
+            assert.ok(state.x > previous, `${fps} FPS: pan stopped at ${i / fps}s`);
+            previous = state.x;
+        }
+        final.push(state.x);
+    }
+    assert.ok(Math.max(...final) - Math.min(...final) < 1e-8, JSON.stringify(final));
+});
+
+test('a distant entry stays visible during silence without taking over the held centre', () => {
+    const h = harness(); h.settings({aspect:.5}); h.setFocus(20);
+    h.setPoints([[20,13,0]]); const initial = h.frame(0, 0);
+    h.silence(); const entry = [[190,13,-230]]; h.setPoints(entry);
+    const rest = h.frame(.1, .1);
+    assert.equal(rest.x, initial.x, 'silence holds the playing position');
+    assert.ok(rest.distance > initial.distance, 'an off-axis entry needs more room');
+    assertFits(h, entry, rest, 0, .92);
+    h.frame(.1, .1, false);
+    const paused = h.frame(.1, 2, false);
+    assert.equal(paused.distance, rest.distance, 'paused previews do not change pose');
 });
