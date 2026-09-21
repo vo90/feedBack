@@ -56,6 +56,8 @@ function harness() {
                 _prewarmRsNotation(_rsPrewarmBundle);
             },
             drawMask(flags,string=0){return rsPlusNoteFaceMat(flags,activePalette[string]);},
+            drawBend(steps,string=0){return rsPlusTechniqueMat('bend',activePalette[string],steps);},
+            uploadsFor(mat){return uploads.filter(texture=>texture===mat.map).length;},
             cached(code,string=0){return _techMatCache.get(-(activePalette[string]*1024+code+1));},
             restoreContext(){_resetRsNotationPrewarm();uploads.length=0;},
             reinit(){_resetRsNotationPrewarm();_techMatCache.clear();textCache.clear();uploads.length=0;},
@@ -82,6 +84,35 @@ test('cold RS+ chart warms only observed valid masks and bends before their firs
     const before=h.snapshot();
     assert.equal(h.drawMask(33,1),h.cached(33,1));
     assert.equal(h.snapshot().canvases,before.canvases,'the actual draw factory finds its cold texture already cached');
+    assert.equal(before.warnings,0);
+});
+
+test('cold bend warming matches rendered peak counts, including curves, chords and a black custom string', () => {
+    const h=harness(), palette=h.palette();
+    palette[0]=0;
+    const bundle={notes:[
+        ...[.25,.5,1,1.49,1.5,2,2.49,2.5,3,3.5,4,12].map(bn=>({s:0,f:5,bn})),
+        {s:1,f:6,bn:0,bnv:[{v:.5},{v:2.5},{v:1}]},
+        {s:2,f:7,bn:4,bnv:[{v:1},{v:2}]},
+        {s:3,f:8,bn:1,bnv:[{v:.5},{v:2},{v:1}]},
+        {s:4,f:6,bn:0,bnv:[{v:0},{v:-1}]},
+        {s:4,f:6,bn:-1}, {s:9,f:6,bn:3}, {s:5,f:90,bn:3},
+    ],chords:[{notes:[
+        {s:4,f:4,bn:0,bnv:[{v:1},{v:8},{v:0}]},
+        {s:5,f:5,bn:.5},
+    ]}]};
+    h.settings({style:true,palette});h.warm(bundle);
+    assert.equal(h.snapshot().materials,9,'only the observed string/count combinations are allocated');
+    const before=h.snapshot();
+    for (const [string,steps] of [[0,1],[0,2],[0,3],[0,4],[1,3],[2,4],[3,2],[4,4],[5,1]]) {
+        const material=h.cached(512+(steps-1)*4,string);
+        assert.ok(material,`string ${string}, ${steps} arrows must be warm before drawing`);
+        assert.equal(material.map.image.width,512);
+        assert.equal(material.map.image.height,Math.round(512*(1+.4*(steps-1))));
+        assert.equal(h.drawBend(steps,string),material,'the render factory reuses the warmed count and color');
+        assert.equal(h.uploadsFor(material),1,'duplicate chart amounts upload a texture once per warm pass');
+    }
+    assert.deepEqual(h.snapshot(),before,'drawing every observed bend adds no first-use canvas or upload');
     assert.equal(before.warnings,0);
 });
 
@@ -136,14 +167,15 @@ test('RS+ numeric and white chord variants warm once with the active theme refer
 });
 
 test('context restore reuploads cached assets, and renderer reinitialization builds a fresh cold cache', () => {
-    const h=harness(), bundle={notes:[{s:0,f:5,ho:true}],chords:[]};
+    const h=harness(), bundle={notes:[{s:0,f:5,ho:true},
+        ...[1,2,3,4].map(bn=>({s:1,f:5,bn}))],chords:[]};
     h.settings({style:true});h.warm(bundle);
     const warm=h.snapshot();
     h.restoreContext();h.warm(bundle);
     assert.equal(h.snapshot().canvases,warm.canvases);
     assert.equal(h.snapshot().uploads,warm.uploads);
     h.reinit();h.warm(bundle);
-    assert.equal(h.snapshot().canvases,warm.canvases+1);
+    assert.equal(h.snapshot().canvases,warm.canvases+warm.materials);
     assert.equal(h.snapshot().uploads,warm.uploads);
 });
 

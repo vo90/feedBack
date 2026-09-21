@@ -10,6 +10,7 @@
  * --chords-only captures and validates just the chord sequence in both styles.
  * --orientation-only checks stable RS+ gems/markers across approach and live style reuse.
  * --open-chords-only checks open stems inside ordinary frames and through pool reuse.
+ * --bends-only checks bend chevron amounts, colors, orientation and style reuse.
  * --source-ref <git-ref> serves screen.js from a Git revision for before/after evidence.
  * --reference captures older notation for comparison without new geometry checks.
  * --detail-filter name,name limits closeups; --times t,t and --fixture-name name
@@ -35,6 +36,7 @@ const fidelityOnly = args.includes('--fidelity-only');
 const chordsOnly = args.includes('--chords-only');
 const orientationOnly = args.includes('--orientation-only');
 const openChordsOnly = args.includes('--open-chords-only');
+const bendsOnly = args.includes('--bends-only');
 const reference = args.includes('--reference');
 const perfOnly=args.includes('--perf-only'),perfRounds=Number(option('--perf-rounds',1));
 const width=Number(option('--width',1280)),height=Number(option('--height',720));
@@ -67,6 +69,8 @@ if(orientationOnly)for(const [anchor,name,kind] of [
   ['const edges = pNoteEdge.get();','edges','verdict-edge'],
 ])served=once(served,anchor,`${anchor}
   if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'${kind}',mesh:${name}});`);
+if(bendsOnly&&!orientationOnly)served=once(served,'const l = pTechPlane.get();',`const l = pTechPlane.get();
+  if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'bend',steps,mesh:l});`);
 served = once(served, "contextType: 'webgl2',", `__notationAudit() { return {
   scene, cam, ren, noteG, pNote, pTechPlane, projMeshArr, composer:_composer, bloom:_bloom,
   style:typeof rsPlusNotation === 'undefined' ? 'current' : rsPlusNotation ? 'rsplus' : 'current',
@@ -153,6 +157,19 @@ async function main() {
     await page.evaluate(()=>{
       window.__probeMaterial=m=>({type:m.type,opacity:m.opacity,transparent:m.transparent,fog:m.fog,color:m.color?.toArray(),emissive:m.emissive?.toArray(),emissiveIntensity:m.emissiveIntensity,vertexColors:m.vertexColors,blending:m.blending,depthTest:m.depthTest,depthWrite:m.depthWrite,uniforms:m.uniforms?Object.fromEntries(Object.entries(m.uniforms).map(([k,v])=>[k,v.value?.toArray?v.value.toArray():v.value])):undefined});
       window.__probeMesh=m=>({material:__probeMaterial(m.material),geometry:m.geometry.type,triangles:(m.geometry.index?.count||m.geometry.attributes.position.count)/3,position:m.position.toArray(),rotation:m.rotation.toArray().slice(0,3),scale:m.scale.toArray(),renderOrder:m.renderOrder,visible:m.visible});
+      window.__probeBendTexture=m=>{
+        const source=m.material.map?.image;if(!source?.getContext)return null;
+        const {width,height}=source,rgba=source.getContext('2d').getImageData(0,0,width,height).data;
+        const x=Math.floor(width/2),runs=[];let start=-1;const colors=new Map();
+        for(let y=0;y<height;y++){
+          const i=(y*width+x)*4,solid=rgba[i+3]>128;
+          if(solid&&start<0)start=y;
+          if(!solid&&start>=0){runs.push([start,y-1]);start=-1;}
+        }
+        if(start>=0)runs.push([start,height-1]);
+        for(let i=0;i<rgba.length;i+=4)if(rgba[i+3]>250){const rgb=`${rgba[i]},${rgba[i+1]},${rgba[i+2]}`;colors.set(rgb,(colors.get(rgb)||0)+1);}
+        return {width,height,centerRuns:runs,opaqueColors:[...colors.entries()].sort((a,b)=>b[1]-a[1]).slice(0,5)};
+      };
       window.__fillAlpha=m=>{const source=m.map?.image;if(!source)return null;const rgba=source.data||source.getContext?.('2d').getImageData(0,0,source.width,source.height).data;if(!rgba)return null;let min=255,max=0;for(let i=3;i<rgba.length;i+=4){min=Math.min(min,rgba[i]);max=Math.max(max,rgba[i]);}return {min,max,width:source.width,height:source.height};};
       window.__captureNotation=()=>{
         const a=r.__notationAudit();
@@ -166,7 +183,7 @@ async function main() {
           frames:p.frames.map(({fill,...metadata})=>({...metadata,fill:__probeMesh(fill),textureAlpha:__fillAlpha(fill.material)})),
           edges:p.edges.map(({t,dt,isRepeat,mesh})=>({t,dt,isRepeat,mesh:__probeMesh(mesh)})),
           roundedFrames:p.roundedFrames.map(({mesh,...rest})=>({...rest,mesh:__probeMesh(mesh)})),
-          markers:p.markers.map(({mesh,...rest})=>({...rest,mesh:__probeMesh(mesh)})),
+          markers:p.markers.map(({mesh,...rest})=>{const v=mesh.getWorldPosition(mesh.position.clone()).project(a.cam);return {...rest,mesh:__probeMesh(mesh),texture:rest.kind==='bend'?__probeBendTexture(mesh):undefined,screen:[(v.x+1)*innerWidth/2,(1-v.y)*innerHeight/2]};}),
           ghosts:(a.projMeshArr||[]).flat().filter(m=>m.visible).map(__probeMesh)};
       };
     });
@@ -232,6 +249,59 @@ async function main() {
       return chords;
     }
     const styles=baseline?['current']:option('--style')?[option('--style')]:['current','rsplus'];
+    if(bendsOnly){
+      const onset=10.15,settings={notationStyle:'rsplus',glow:0,bloom:false};
+      const member=n=>({sus:1.3,sl:-1,slu:-1,bn:0,ho:false,po:false,hm:false,hp:false,
+        pm:false,mt:false,fhm:false,vb:false,tr:false,ac:false,tp:false,slp:false,plk:false,...n});
+      function bendScene(amount,{strings=[0,1,2,5],inverted=false,lefty=false,curveOnly=false,chord=false}={}){
+        const b=baseBundle();b.inverted=inverted;b.lefty=lefty;b.anchors=[{time:0,fret:3,width:4}];
+        const notes=strings.map(s=>member({t:onset,s,f:5,bn:curveOnly?0:amount,
+          bnv:[{t:0,v:0},{t:.7,v:amount},{t:1.3,v:amount}]}));
+        if(chord){
+          b.chordTemplates=[{name:'Bend',frets:[-1,-1,5,5,-1,-1],fingers:[-1,-1,1,1,-1,-1]}];
+          b.chords=[{t:onset,id:0,notes}];
+          b.handShapes=[{chord_id:0,start_time:onset,end_time:onset+1.3}];
+        }else b.notes=notes;
+        return b;
+      }
+      function assertBends(proof,label,{amount,strings,inverted=false}={}){
+        const markers=proof.markers.filter(m=>m.kind==='bend');
+        check(markers.length===strings.length,`${label}: expected ${strings.length} bend marker meshes, got ${markers.length}`);
+        for(const marker of markers){
+          const expectedSteps=Math.max(1,Math.min(4,Math.round(amount)));
+          const expectedRuns=proof.style==='rsplus'&&reference?1:expectedSteps;
+          check(marker.steps===expectedSteps,`${label}: note ${marker.note.s} got wrong semitone amount`);
+          check(marker.texture?.centerRuns.length===expectedRuns,`${label}: note ${marker.note.s} texture has ${marker.texture?.centerRuns.length} chevrons, expected ${expectedRuns}`);
+          check(marker.mesh.visible&&marker.mesh.material.opacity===1,`${label}: bend marker disappeared or faded`);
+          const visualString=inverted?marker.note.s:5-marker.note.s;
+          const expectedRotation=(proof.style==='rsplus'?0:.15/3*Math.PI/2)+(visualString>=2.5?Math.PI:0);
+          check(Math.abs(marker.mesh.rotation[2]-expectedRotation)<1e-8,`${label}: bend direction or orientation changed`);
+        }
+      }
+      async function captureBends(name,b,amount,strings,config=settings){
+        const proof=await capture(name,b,config,{expectBodies:true});
+        assertBends(proof,name,{amount,strings,inverted:b.inverted});
+        const marker=proof.markers.find(m=>m.kind==='bend');
+        const [px,py]=marker.screen,clipWidth=Math.min(width,600),clipHeight=Math.min(height,450);
+        await page.screenshot({path:path.join(out,name+'-close.png'),clip:{
+          x:Math.max(0,Math.min(width-clipWidth,Math.round(px-clipWidth*.5))),
+          y:Math.max(0,Math.min(height-clipHeight,Math.round(py-clipHeight*.5))),width:clipWidth,height:clipHeight}});
+        return proof;
+      }
+      for(const amount of [1,2])await captureBends(`bend-${amount}-colors`,bendScene(amount),amount,[0,1,2,5]);
+      for(const amount of [1,2,3])await captureBends(`bend-${amount}-yellow`,bendScene(amount,{strings:[1]}),amount,[1]);
+      await captureBends('bend-2-curve-only',bendScene(2,{strings:[2],curveOnly:true}),2,[2]);
+      await captureBends('bend-2-inverted-lefty',bendScene(2,{inverted:true,lefty:true}),2,[0,1,2,5]);
+      await captureBends('bend-2-chord',bendScene(2,{strings:[2,3],chord:true}),2,[2,3]);
+      await captureBends('bend-2-current',bendScene(2),2,[0,1,2,5],{...settings,notationStyle:'current'});
+      const live=bendScene(2);await init(live,settings);
+      const passes=[];
+      for(const style of ['rsplus','current','rsplus','current']){
+        const proof=await page.evaluate(style=>{h3dBgSetNotationStyle(style);for(let i=0;i<45;i++)r.draw(bundle);return __captureNotation();},style);
+        assertBends(proof,`bend live ${style}`,{amount:2,strings:[0,1,2,5]});passes.push(proof);
+      }
+      results.push({name:'bend-live-style-reuse',passes});
+    }
     if(openChordsOnly){
       const onset=10.4;
       const member=n=>({sus:0,sl:-1,slu:-1,bn:0,ho:false,po:false,hm:false,hp:false,
@@ -386,7 +456,7 @@ async function main() {
       results.push({name:'orientation-live-style-roundtrip',passes});
     }
     if(chordsOnly)for(const style of styles)await captureChordSequence(style);
-    if(!openChordsOnly&&!orientationOnly&&!chordsOnly&&!perfOnly&&!fidelityOnly)for(const style of styles){
+    if(!bendsOnly&&!openChordsOnly&&!orientationOnly&&!chordsOnly&&!perfOnly&&!fidelityOnly)for(const style of styles){
       const effectProofs=[];
       for(const [effect,glow,bloom] of [['zero',0,false],['soft',.25,true],['user',.05,false]]){
         const proof=await capture(`${style}-eight-strings-${effect}`,matrix(),{notationStyle:style,glow,bloom},{expectBodies:true});
@@ -420,7 +490,7 @@ async function main() {
         }
       }
     }
-    if(!openChordsOnly&&!orientationOnly&&!chordsOnly&&fidelityOnly){
+    if(!bendsOnly&&!openChordsOnly&&!orientationOnly&&!chordsOnly&&fidelityOnly){
       for(const [index,[name,flags]] of techniqueFlags.entries()){
         if(option('--detail-filter')&&!option('--detail-filter').split(',').includes(name))continue;
         const string = name==='tap'?4:name==='half-bend'?2:
@@ -468,7 +538,7 @@ async function main() {
         }
       }
     }
-    if(!openChordsOnly&&!orientationOnly&&!chordsOnly&&!baseline&&!perfOnly&&!fidelityOnly){
+    if(!bendsOnly&&!openChordsOnly&&!orientationOnly&&!chordsOnly&&!baseline&&!perfOnly&&!fidelityOnly){
       await init(matrix(),{notationStyle:'current',glow:0,bloom:false});
       const controls=await page.evaluate(()=>feedBackViz_highway_3d.panelControls);
       for(const key of ['notationStyle','glow','bloom'])check(controls.some(c=>c.key===key),`Missing panel control ${key}`);
@@ -519,7 +589,7 @@ async function main() {
         await page.evaluate(()=>{for(const x of __splitInstances)x.destroy();delete window.feedBackSplitscreen;window.r=null;const host=document.getElementById('host');host.style.display='block';host.innerHTML='<canvas id="highway"></canvas>';});
       }
     }
-    if(!openChordsOnly&&!orientationOnly&&!chordsOnly&&((!quick&&!fidelityOnly)||perfOnly))for(let round=0;round<perfRounds;round++)for(const style of (round%2?[...styles].reverse():styles))for(const [effect,glow,bloom] of (perfOnly?[['zero',0,false],['soft',.25,true]]:[['soft',.25,true]])){
+    if(!bendsOnly&&!openChordsOnly&&!orientationOnly&&!chordsOnly&&((!quick&&!fidelityOnly)||perfOnly))for(let round=0;round<perfRounds;round++)for(const style of (round%2?[...styles].reverse():styles))for(const [effect,glow,bloom] of (perfOnly?[['zero',0,false],['soft',.25,true]]:[['soft',.25,true]])){
       await init(denseScene(),{notationStyle:style,glow,bloom});
       const perf=await page.evaluate(async()=>{
         const a=r.__notationAudit(),gl=a.ren.getContext(),samples=[],cpuSamples=[],finishSamples=[];
