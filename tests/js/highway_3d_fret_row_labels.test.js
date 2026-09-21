@@ -30,8 +30,8 @@ test('fret row uses anchorPlayedFretSpanAt to get anchor range [f0, f1]', () => 
     // the wire span used by fret wires (anchorLaneBoundsAt: dMin=fret-1, dMax=fret+width-1).
     assert.match(
         src(),
-        /anchorPlayedFretSpanAt\(\s*anchors\s*,\s*now\s*\)/,
-        'fret row must call anchorPlayedFretSpanAt(anchors, now)',
+        /anchorPlayedFretSpanAt\(\s*positionAnchors\s*,\s*now\s*\)/,
+        'fret row must use the same effective positions as the lane and fret wires',
     );
 });
 

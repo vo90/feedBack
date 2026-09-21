@@ -31,7 +31,12 @@ function harness() {
         ${source.slice(stateStart, stateEnd)}
         let _stableCameraResetSerial = 0, stableCameraPreset = 'straight', stableCameraFollow = true;
         let _leftyCached = false, _songKey = 'song', nStr = 6, cameraSmoothing = .5, zoomSmoothing = .5;
-        let wall = 0, fixturePoints = [], focusFixture = null, curX = 60;
+        let wall = 0, fixturePoints = [], regionFixture = null, regionRows = null, lastRegionTime = NaN, curX = 60;
+        const S_GAP = 4, NH = 3, _textSizeMul = 1, _frameNow = 0;
+        const pNote = null, pSus = null, pSusRibbon = null, pChordBox = null,
+            pRsChordFrame = null, pArpBracket = null, pSusRail = null, pTechPlane = null;
+        const _incomingFloorLabelCount = 0, _incomingFloorLabels = [];
+        let _incomingFixedFretLabels = {};
         const cam = { aspect: 16 / 9 };
         const T = { Vector3: class {} }; // sprite collection uses matrix scalars only
         const performance = { now: () => wall * 1000 };
@@ -44,6 +49,7 @@ function harness() {
         ${extractFunction('stableIntervalAt')}
         ${extractFunction('stableSolve')}
         ${extractFunction('stableCamUpdate')}
+        ${extractFunction('stableCollectGeometry').replace('function stableCollectGeometry(', 'function collectRealRegionGeometry(')}
         function stableCollectGeometry() {
             _stableCam.pointCount = fixturePoints.length * 3;
             _stableCam.minX = Infinity; _stableCam.maxX = -Infinity;
@@ -54,19 +60,40 @@ function harness() {
             });
         }
         // Resolver behavior is covered separately; these fixtures isolate the
-        // controller's primary-focus versus secondary-visibility priorities.
-        function stablePlayingFocus() {
-            if (focusFixture) return focusFixture;
+        // controller's playing-area target from secondary note geometry.
+        function stablePlayingRegion(bundle, renderTime) {
+            lastRegionTime = renderTime;
+            if (regionRows?.length) {
+                let region = regionRows[0];
+                for (const row of regionRows) if (row.time <= renderTime) region = row;
+                return region;
+            }
+            if (regionFixture) return regionFixture;
             const minX = Math.min(...fixturePoints.map(p => p[0]));
             const maxX = Math.max(...fixturePoints.map(p => p[0]));
-            return { valid: fixturePoints.length > 0, x: (minX + maxX) / 2, minX, maxX };
+            return { valid: fixturePoints.length > 0, x: (minX + maxX) / 2, minX, maxX,
+                dMin: minX / 10, dMax: maxX / 10, time: 0, source: 'fixture', row: null };
         }
         function stableApplyPose() { curX = _stableCam.x; }
-        const bundle = { currentTime: 0, isPlaying: true, notes: [], chords: [] };
+        const bundle = { currentTime: 0, isPlaying: true, notes: [], chords: [], anchors: [] };
         return {
             setPoints(points) { fixturePoints = points; },
-            setFocus(x, minX = x, maxX = x) { focusFixture = {valid:true,x,minX,maxX}; },
-            silence() { focusFixture = {valid:false,x:0,minX:Infinity,maxX:-Infinity}; },
+            setRegion(minX, maxX, time = 0) {
+                regionFixture = { valid: true, x: (minX + maxX) / 2, minX, maxX,
+                    dMin: minX / 10, dMax: maxX / 10, time, source: 'anchor',
+                    row: { time, dMin: minX / 10, dMax: maxX / 10 } };
+            },
+            setRegionTimeline(rows) {
+                regionRows = rows.map(({time,minX,maxX}) => ({valid:true,time,minX,maxX,x:(minX+maxX)/2,
+                    dMin:minX/10,dMax:maxX/10,source:'anchor',row:null}));
+            },
+            regionLookupTime() { return lastRegionTime; },
+            setFocus(x, minX = x, maxX = x) {
+                regionFixture = {valid:true,x,minX,maxX,dMin:minX/10,dMax:maxX/10,time:0,source:'fixture',row:null};
+            },
+            noRegion() { regionFixture = {valid:false,x:0,minX:Infinity,maxX:-Infinity,time:0,row:null}; },
+            replaceAnchors(rows = []) { bundle.anchors = rows; },
+            appendAnchor(row) { bundle.anchors.push(row); },
             settings(values) {
                 if ('follow' in values) stableCameraFollow = values.follow;
                 if ('preset' in values) stableCameraPreset = values.preset;
@@ -74,16 +101,31 @@ function harness() {
                 if ('aspect' in values) cam.aspect = values.aspect;
                 if ('strings' in values) nStr = values.strings;
                 if ('pan' in values) cameraSmoothing = values.pan;
+                if ('rate' in values) bundle.playbackRate = values.rate;
             },
-            frame(time, elapsed = 1 / 60, playing = true) {
+            frame(time, elapsed = 1 / 60, playing = true, frameTime) {
                 wall += elapsed; bundle.currentTime = time; bundle.isPlaying = playing;
-                stableCamUpdate(bundle); return { ..._stableCam };
+                stableCamUpdate(bundle, frameTime); return { ..._stableCam };
             },
             solve(x, distance, prediction = 0, margin = .90, fixed = false) {
                 stableCollectGeometry(); return { ...stableSolve(x, distance, prediction, margin, fixed) };
             },
             interval(distance, prediction = 0, margin = .90, fixed = null) {
                 stableCollectGeometry(); return { ...stableIntervalAt(distance, prediction, margin, fixed) };
+            },
+            collectRegion(region, labels = []) {
+                _incomingFixedFretLabels = {};
+                for (const {fret, x, y, z, size} of labels) {
+                    _incomingFixedFretLabels[fret] = { visible: true, isSprite: true, userData: {},
+                        material: {opacity: 1}, center: {x: .5, y: 1}, updateWorldMatrix() {},
+                        matrixWorld: {elements: [size,0,0,0,0,size,0,0,0,0,1,0,x,y,z,1]} };
+                }
+                collectRealRegionGeometry(region);
+                const points = [];
+                for (let i = 0; i < _stableCam.pointCount; i += 3) {
+                    points.push(Array.from(_stablePoints.slice(i, i + 3)));
+                }
+                return points;
             },
             spritePoints({ x, y, z, size, centerY }) {
                 for (const bin of _stableBins) {
@@ -110,7 +152,7 @@ function harness() {
                     depth };
             },
             reset() { ++_stableCameraResetSerial; },
-            changeSong() { _songKey += '-next'; bundle.notes = []; bundle.chords = []; },
+            changeSong() { _songKey += '-next'; bundle.notes = []; bundle.chords = []; bundle.anchors = []; },
         };
     `)();
 }
@@ -231,7 +273,7 @@ test('resize protects geometry while preserving the fixed horizontal center', ()
 
 test('pan damping follows elapsed time rather than rendered frame count', () => {
     const results = [];
-    for (const fps of [10, 30, 60, 120]) {
+    for (const fps of [10, 20, 60, 120]) {
         const h = harness(); h.setPoints([[0, 13, 0]]); h.frame(0, 0);
         h.setPoints([[75, 13, 0]]);
         let state;
@@ -311,9 +353,9 @@ test('repeated passages do not retain bias from successive left and right excurs
     }
 });
 
-test('small geometry fluctuations do not make a settled camera chase individual notes', () => {
+test('small geometry fluctuations inside an unchanged area do not move a settled camera', () => {
     for (const preset of ['straight', 'angled']) {
-        const h = harness(); h.settings({ preset });
+        const h = harness(); h.settings({ preset }); h.setRegion(10, 30);
         h.setPoints([[10, 13, 0], [30, 13, 0]]);
         const initial = h.frame(0, 0);
         let maxPan = 0, maxZoom = 0;
@@ -329,16 +371,15 @@ test('small geometry fluctuations do not make a settled camera chase individual 
     }
 });
 
-test('silence, pause and follow-off hold an unfinished return without preventing later settling', () => {
+test('pause and follow-off hold an unfinished return without preventing later settling', () => {
     const original = [[10, 13, 0], [30, 13, 0]];
-    for (const hold of ['silence', 'pause', 'follow-off']) {
+    for (const hold of ['pause', 'follow-off']) {
         const h = harness(); h.setPoints(original);
         const initial = h.frame(0, 0);
         h.setPoints([[110, 13, 0], [130, 13, 0]]);
         advanceCamera(h, 0, 3);
         h.setPoints(original);
         const settling = advanceCamera(h, 3, .75);
-        if (hold === 'silence') h.setPoints([]);
         if (hold === 'follow-off') h.settings({ follow: false });
         let time = 3.75;
         for (let i = 0; i < 180; i++) {
@@ -396,7 +437,6 @@ test('changing distant extrema cannot block return to the current group', () => 
     const settled = h.frame(4, 0);
     assert.ok(Math.abs(settled.x - 20) < .1, JSON.stringify(settled));
     assert.equal(settled.distance, 100);
-    assert.ok(settled.quietPanTime > 3, 'secondary changes must not restart primary dwell');
 });
 
 test('necessary secondary widening preserves the primary centre', () => {
@@ -429,7 +469,7 @@ test('a medium position change does not stop inside the comfort band before sett
 test('a distant entry stays visible during silence without taking over the held centre', () => {
     const h = harness(); h.settings({aspect:.5}); h.setFocus(20);
     h.setPoints([[20,13,0]]); const initial = h.frame(0, 0);
-    h.silence(); const entry = [[190,13,-230]]; h.setPoints(entry);
+    h.noRegion(); const entry = [[190,13,-230]]; h.setPoints(entry);
     const rest = h.frame(.1, .1);
     assert.equal(rest.x, initial.x, 'silence holds the playing position');
     assert.ok(rest.distance > initial.distance, 'an off-axis entry needs more room');
@@ -437,4 +477,247 @@ test('a distant entry stays visible during silence without taking over the held 
     h.frame(.1, .1, false);
     const paused = h.frame(.1, 2, false);
     assert.equal(paused.distance, rest.distance, 'paused previews do not change pose');
+});
+
+test('open strings, fretted notes and chords within one playing area leave the camera steady', () => {
+    for (const preset of ['straight', 'angled']) for (const lefty of [false, true]) {
+        const sign = lefty ? -1 : 1;
+        const h = harness(); h.settings({ preset, lefty });
+        h.setRegion(Math.min(20 * sign, 50 * sign), Math.max(20 * sign, 50 * sign));
+        h.setPoints([[35 * sign, 13, 0]]);
+        const initial = h.frame(0, 0);
+        const passages = [
+            [[20 * sign, 13, 0]],
+            [[20 * sign, 23, 0], [50 * sign, 23, 0]], // open-string lane rail
+            [[20 * sign, 19, 0], [40 * sign, 15, 0]], // fretted chord
+            [[50 * sign, 7, 0]],
+            [], // no attack between strokes
+        ];
+        for (let i = 1; i <= 600; i++) {
+            h.setPoints(passages[Math.floor(i / 6) % passages.length]);
+            const state = h.frame(i / 60, 1 / 60);
+            assert.equal(state.x, initial.x, `${preset}/${lefty}: attack ${i} moved the camera`);
+            assert.equal(state.targetX, initial.targetX);
+            assert.equal(state.distance, initial.distance, 'ordinary lane contents do not pulse the zoom');
+        }
+    }
+});
+
+test('a disjoint playing-area change follows during a rest and settles without waiting for a note', () => {
+    for (const preset of ['straight', 'angled']) {
+        const h = harness(); h.settings({ preset }); h.setRegion(20, 50); h.setPoints([]);
+        const original = h.frame(108.7, 0);
+        h.setRegion(100, 130, 108.72);
+        const first = h.frame(108.75, .05);
+        assert.ok(first.x > original.x, 'the current chart area immediately starts a smooth move');
+        assert.ok(first.x < 115, 'ordinary playback must not snap to the new area');
+        const settled = advanceCamera(h, 108.75, 1, 60);
+        assert.ok(Math.abs(settled.x - 115) < Math.abs(original.x - 115) * .05,
+            `${preset}: after one second camera is not 95% settled: ${settled.x}`);
+        assert.equal(settled.focusValid, true, 'a current area remains valid without attacks');
+        assert.equal(settled.focusX, 115);
+    }
+});
+
+test('a currently marked area remains primary while upcoming geometry moves within another area', () => {
+    const h = harness(); h.setRegion(20, 50); h.setPoints([]);
+    const initial = h.frame(0, 0);
+    for (let i = 1; i <= 120; i++) {
+        h.setPoints([[110 + Math.sin(i) * 10, 13, -500]]);
+        const state = h.frame(i / 60, 1 / 60);
+        assert.equal(state.x, initial.x, 'future geometry must not anticipate the next chart position');
+    }
+    h.setRegion(100, 130, 2);
+    assert.ok(h.frame(2.05, .05).x > initial.x, 'following starts at the effective area boundary');
+});
+
+test('equal-bounds markers do not restart a playing-area transition', () => {
+    const h = harness(); h.setRegion(20, 50); h.frame(0, 0);
+    h.setRegion(100, 130, 0);
+    let previous = 35;
+    for (let i = 1; i <= 120; i++) {
+        h.setRegion(100, 130, i / 60);
+        const state = h.frame(i / 60, 1 / 60);
+        assert.ok(state.x > previous, `same bounds restarted or stopped transition at ${i / 60}s`);
+        previous = state.x;
+    }
+    assert.ok(Math.abs(previous - 115) < .15);
+});
+
+test('a width-only playing-area change updates the preferred centre', () => {
+    const h = harness(); h.setRegion(20, 50); h.frame(0, 0);
+    h.setRegion(20, 80, .1);
+    const state = advanceCamera(h, 0, 2, 60);
+    assert.equal(state.focusX, 50);
+    assert.ok(Math.abs(state.x - 50) < .1, JSON.stringify(state));
+});
+
+test('small overlapping areas get a short persistence delay only when the current view safely contains them', () => {
+    const h = harness(); h.setRegion(20, 60); h.frame(0, 0);
+    h.setRegion(25, 65, 0);
+    assert.equal(h.frame(.1, .1).x, 40, 'brief adjacent area should not start a pan');
+    assert.equal(h.frame(.2, .1).x, 40, 'delay is split at its exact boundary');
+    const moved = h.frame(.3, .1);
+    assert.ok(moved.x > 40 && moved.x < 45, 'persistent adjacent area begins a smooth pan after 0.2s');
+    const settled = advanceCamera(h, .3, 2, 60);
+    assert.ok(Math.abs(settled.x - 45) < .05);
+});
+
+test('a brief overlapping area that reverts before the delay does not cause a camera excursion', () => {
+    const h = harness(); h.setRegion(20, 60); h.frame(0, 0);
+    h.setRegion(25, 65, 0);
+    assert.equal(h.frame(.1, .1).x, 40);
+    h.setRegion(20, 60, .1);
+    const returned = advanceCamera(h, .1, 1, 60);
+    assert.equal(returned.x, 40);
+});
+
+test('continuing nearby region changes cannot perpetually postpone following', () => {
+    const h = harness(); h.setRegion(20, 60); h.frame(0, 0);
+    let state;
+    for (let i = 1; i <= 10; i++) {
+        h.setRegion(24 + i, 64 + i, i / 10);
+        state = h.frame(i / 10, .1);
+        if (i >= 4) assert.ok(state.x > 40, `area change ${i} restarted the persistence timer`);
+    }
+    assert.ok(state.x > 48, JSON.stringify(state));
+});
+
+test('disjoint changes and threatened visibility bypass the overlapping-area delay', () => {
+    const disjoint = harness(); disjoint.setRegion(20, 60); disjoint.frame(0, 0);
+    disjoint.setRegion(100, 140, 0);
+    assert.ok(disjoint.frame(.05, .05).x > 40, 'disjoint transition begins on the first frame');
+
+    const threatened = harness(); threatened.setRegion(20, 60); threatened.frame(0, 0);
+    threatened.setRegion(25, 65, 0);
+    const points = [[240, 13, 0]];
+    threatened.setPoints(points);
+    const state = threatened.frame(.05, .05);
+    assert.ok(state.x > 40, 'secondary geometry outside the safe view bypasses the delay');
+    assertFits(threatened, points, state, 0, .92);
+});
+
+test('playing-area transition and persistence use elapsed seconds consistently at 10 to 120 FPS', () => {
+    for (const bounds of [[25, 65], [100, 140]]) {
+        const states = [];
+        for (const fps of [10, 20, 60, 120]) {
+            const h = harness(); h.setRegion(20, 60); h.frame(0, 0);
+            h.setRegion(...bounds);
+            states.push(advanceCamera(h, 0, 1, fps));
+        }
+        const xs = states.map(state => state.x);
+        assert.ok(Math.max(...xs) - Math.min(...xs) < 1e-8, `${bounds}: ${xs}`);
+        assert.ok(Math.abs(xs[0] - (bounds[0] + bounds[1]) / 2) < 4,
+            'one second must allow a visible transition to nearly finish');
+    }
+});
+
+test('playback speed does not change the real-time playing-area damping', () => {
+    const xs = [];
+    for (const rate of [.5, 1, 1.5]) {
+        const h = harness(); h.settings({ rate }); h.setRegion(20, 60); h.frame(0, 0);
+        h.setRegion(100, 140);
+        let state;
+        for (let i = 1; i <= 60; i++) state = h.frame(i / 60 * rate, 1 / 60);
+        xs.push(state.x);
+    }
+    assert.ok(Math.max(...xs) - Math.min(...xs) < 1e-8, JSON.stringify(xs));
+});
+
+test('anchor-only replacement and streamed anchor counts invalidate the camera position', () => {
+    for (const replace of [true, false]) {
+        const h = harness(); h.setRegion(20, 50); h.frame(1, 0);
+        h.setRegion(100, 130);
+        if (replace) h.replaceAnchors([{ t: 0, fret: 10, width: 4 }]);
+        else h.appendAnchor({ t: 0, fret: 10, width: 4 });
+        const refreshed = h.frame(1, .1, false);
+        assert.equal(refreshed.x, 115,
+            `${replace ? 'replacement' : 'stream'}: new effective anchors must reset stale camera state`);
+    }
+});
+
+test('seek resolves the playing area directly and uninterrupted playback converges to the same view', () => {
+    for (const preset of ['straight', 'angled']) {
+        const played = harness(); played.settings({ preset }); played.setRegion(20, 50); played.frame(0, 0);
+        played.setRegion(100, 130, .1);
+        const settled = advanceCamera(played, 0, 5, 60);
+        const sought = harness(); sought.settings({ preset }); sought.setRegion(20, 50); sought.frame(0, 0);
+        sought.setRegion(100, 130, .1);
+        assertSameComposition(settled, sought.frame(5, 1 / 60), preset);
+    }
+});
+
+test('the geometry collector protects an empty area and its gold numbers without collecting distant grey numbers', () => {
+    for (const preset of ['straight', 'angled']) for (const lefty of [false, true]) {
+        const sign = lefty ? -1 : 1;
+        const h = harness(); h.settings({ preset, lefty, aspect: .5 }); h.frame(0, 0);
+        const region = {valid: true, minX: Math.min(90 * sign, 130 * sign),
+            maxX: Math.max(90 * sign, 130 * sign), dMin: 9, dMax: 13};
+        const points = h.collectRegion(region, [
+            {fret: 10, x: 100 * sign, y: -10, z: 0, size: 12},
+            {fret: 24, x: 400 * sign, y: -10, z: 0, size: 12},
+        ]);
+        assert.ok(points.length > 0, 'an empty lane must still produce framing constraints');
+        assert.ok(Math.min(...points.map(p => p[0])) <= region.minX - 3);
+        assert.ok(Math.max(...points.map(p => p[0])) >= region.maxX + 3);
+        assert.ok(Math.min(...points.map(p => p[1])) < -20, 'gold glyph bottom is part of the envelope');
+        assert.ok(Math.max(...points.map(p => p[1])) >= 26, 'the top string and gem height are protected');
+        assert.ok(points.every(p => Math.abs(p[0]) < 150), 'unrelated grey fret 24 must not widen the area');
+        h.setPoints(points);
+        const fit = h.solve(110 * sign, 100, 0, .68, true);
+        assertFits(h, points, fit, 0, .68);
+    }
+});
+
+test('the playing-area lookup crosses a boundary with the visible render clock before the next audio timestamp', () => {
+    const h = harness();
+    h.setRegionTimeline([{time:0,minX:20,maxX:50},{time:1,minX:100,maxX:130}]);
+    const initial = h.frame(.989, 0, true, .992);
+    assert.equal(initial.focusX, 35);
+    const crossed = h.frame(.989, .016, true, 1.008);
+    assert.equal(h.regionLookupTime(), 1.008, 'camera and rendered lane must resolve the same current area');
+    assert.equal(crossed.focusX, 115, 'the visually current new lane is already the camera target');
+    assert.ok(crossed.x > initial.x && crossed.x < 115, 'the boundary begins a smooth pan, not a seek snap');
+    assert.equal(crossed.lastTime, .989, 'the audio time still controls seek and rate bookkeeping');
+});
+
+test('render-clock interpolation does not replace raw audio in playback-rate estimates', () => {
+    const rendered = harness(), raw = harness();
+    rendered.setRegion(20, 50); raw.setRegion(20, 50);
+    rendered.frame(0, 0, true, .01); raw.frame(0, 0);
+    for (let i = 1; i <= 120; i++) {
+        const wallTime = i / 60;
+        const audioTime = Math.floor(wallTime / .023) * .023;
+        const interpolated = rendered.frame(audioTime, 1 / 60, true, wallTime + .01);
+        const reference = raw.frame(audioTime, 1 / 60);
+        assert.equal(interpolated.rate, reference.rate);
+        assert.equal(interpolated.rateTime, reference.rateTime);
+        assert.equal(interpolated.lastTime, audioTime);
+        assert.equal(rendered.regionLookupTime(), wallTime + .01);
+    }
+});
+
+test('a raw audio seek still snaps even if the supplied render clock changes only slightly', () => {
+    const h = harness();
+    h.setRegionTimeline([{time:0,minX:20,maxX:50},{time:1,minX:100,maxX:130}]);
+    h.frame(5, 0, true, .99);
+    const sought = h.frame(10, .016, true, 1.006);
+    assert.equal(sought.x, 115, 'the five-second audio jump must retain seek semantics');
+    assert.equal(h.regionLookupTime(), 1.006, 'the area itself still comes from the supplied render clock');
+    assert.equal(sought.lastTime, 10);
+    assert.equal(sought.rateTime, 10);
+});
+
+test('the stable camera update entry point forwards the shared floor render clock', () => {
+    const run = new Function(`
+        const cameraMode = 'stable', _frameNow = 108.735;
+        let call;
+        function stableCamUpdate(bundle, frameTime) { call = {bundle, frameTime}; }
+        ${extractFunction('camUpdate')}
+        return bundle => { camUpdate(bundle); return call; };
+    `)();
+    const bundle = {currentTime:108.719,isPlaying:true};
+    const call = run(bundle);
+    assert.equal(call.bundle, bundle);
+    assert.equal(call.frameTime, 108.735);
 });

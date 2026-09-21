@@ -234,8 +234,8 @@ test('update() sets fret wire FRET_WIRE_ACTIVE_HEX (gold) for in-anchor frets, F
     );
     assert.match(
         s,
-        /anchorLaneBoundsAt\(\s*anchors\s*,\s*now\s*\)/,
-        'update() must use anchorLaneBoundsAt(anchors, now) to get fret wire range',
+        /anchorLaneBoundsAt\(\s*positionAnchors\s*,\s*now\s*\)/,
+        'update() must use the same effective positions as the lane and gold row',
     );
     assert.match(
         s,

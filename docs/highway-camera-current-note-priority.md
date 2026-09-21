@@ -1,5 +1,10 @@
 # Stable camera: playing-position priority
 
+Historical design at `a42a719`. The note-driven target and its resolver tests
+are superseded by [playing-area guidance](highway-camera-playing-area.md).
+Use `tests/browser/highway-camera-playing-area.cjs` for current acceptance;
+the older browser harness remains useful against its historical source refs.
+
 The stable camera previously chose its horizontal centre from the extrema of
 everything visible across three chart seconds. An upcoming high fret or floor
 label could displace currently played low notes, and changes to those distant

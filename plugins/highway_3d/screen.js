@@ -2960,6 +2960,180 @@
     }
 
     /**
+     * Effective hand positions for the stable camera and its floor. Authored
+     * positions include rests; inference changes only at actual local events.
+     * Build once per chart/spacing change, never by scanning notes each frame.
+     * The source records where a row's bounds originated, including when those
+     * same bounds are subsequently retained through missing position data.
+     */
+    function hwyBuildPlayingRegions(notes, chords, anchors, stringCount = 6) {
+        const count = Number.isInteger(stringCount) && stringCount > 0 ? stringCount : 6;
+        const eps = CHORD_ANCHOR_TIME_EPS;
+        const positionRows = [];
+        for (const anchor of anchors || []) {
+            if (!anchor || !Number.isFinite(anchor.time)) continue;
+            const f = Number(anchor.fret), w = anchor.width == null ? 4 : Number(anchor.width);
+            const fret = Math.max(1, Math.round(f)), width = Math.round(w);
+            const valid = anchor.fret != null && Number.isFinite(f) && f >= 0 && fret <= NFRETS
+                && Number.isFinite(w) && width >= 1 && fret + width - 1 <= NFRETS
+                && !(fret === 1 && width === NFRETS);
+            positionRows.push({ time: anchor.time, bounds: valid ? { fret, width } : null });
+        }
+        positionRows.sort((a, b) => a.time - b.time);
+        // At an exact duplicate timestamp the last source row wins, just as
+        // getChartAnchorAt does. An invalid row ends the preceding valid span.
+        const positions = [];
+        for (const row of positionRows) {
+            if (positions.length && positions[positions.length - 1].time === row.time) positions.pop();
+            positions.push(row);
+        }
+
+        const members = [];
+        const add = (note, time) => {
+            if (!note || !Number.isFinite(time) || !Number.isInteger(note.s) || note.s < 0
+                || note.s >= count || !isRenderableNote(note)) return;
+            const duration = Number.isFinite(note.sus) ? Math.max(0, note.sus) : 0;
+            members.push({ note, time, end: time + duration });
+        };
+        for (const note of notes || []) add(note, note?.t);
+        for (const chord of chords || []) {
+            if (chord?.h3dSynth) continue;
+            for (const note of chord?.notes || []) add(note, chord.t);
+        }
+        members.sort((a, b) => a.time - b.time);
+        const attacks = [];
+        for (const member of members) {
+            let group = attacks[attacks.length - 1];
+            if (!group || member.time - group.time > eps) {
+                group = { time: member.time, members: [] };
+                attacks.push(group);
+            }
+            group.members.push(member);
+        }
+        const nextByString = new Float64Array(count); nextByString.fill(Infinity);
+        for (let i = attacks.length - 1; i >= 0; i--) {
+            const group = attacks[i];
+            for (const member of group.members) member.focusEnd = Math.min(member.end, nextByString[member.note.s]);
+            for (const member of group.members) nextByString[member.note.s] = group.time;
+        }
+
+        const events = [];
+        for (const group of attacks) for (const member of group.members) {
+            const note = member.note;
+            events.push({ time: group.time, fret: usesUnfrettedPosition(note) ? 0 : note.f, attack: true });
+            const slide = slideTrailEnd(note);
+            if (usesUnfrettedPosition(note) || !(member.end > member.time) || !slide || !isPlayableFret(slide.endFret)
+                || slide.endFret === note.f) continue;
+            const sign = Math.sign(slide.endFret - note.f);
+            const startX = fretMid(note.f), spanX = fretMid(slide.endFret) - startX;
+            // Invert the renderer's easing at each crossed fret centre. This
+            // follows the actual slide now, not its destination at the attack.
+            // At most NFRETS checkpoints, independent of sustain duration/FPS.
+            for (let f = note.f + sign; sign * (slide.endFret - f) >= 0; f += sign) {
+                if (f <= 0) continue;
+                const weight = Math.max(0, Math.min(1, (fretMid(f) - startX) / spanX));
+                const progress = slide.unpitched ? 1 - Math.asin(1 - weight) * 2 / Math.PI
+                    : Math.asin(Math.cbrt(weight)) * 2 / Math.PI;
+                const time = member.time + (member.end - member.time) * progress;
+                // An overlapping written sustain cannot reclaim a string after
+                // its next pick. Keep chart sustain/trail data untouched.
+                if (time >= member.focusEnd && member.focusEnd < member.end) break;
+                events.push({ time, fret: f, attack: false });
+            }
+        }
+        events.sort((a, b) => a.time - b.time);
+        const groups = [];
+        for (const event of events) {
+            let group = groups[groups.length - 1];
+            if (!group || event.time - group.time > eps) {
+                group = { time: event.time, low: Infinity, high: -Infinity, attackLow: Infinity, attackHigh: -Infinity };
+                groups.push(group);
+            }
+            if (event.fret <= 0) continue;
+            group.low = Math.min(group.low, event.fret); group.high = Math.max(group.high, event.fret);
+            if (event.attack) {
+                group.attackLow = Math.min(group.attackLow, event.fret);
+                group.attackHigh = Math.max(group.attackHigh, event.fret);
+            }
+        }
+
+        const equal = (a, b) => !!a && !!b && a.fret === b.fret && a.width === b.width;
+        const covers = (area, low, high) => low >= area.fret && high < area.fret + area.width;
+        const rows = [];
+        let current = positions[0]?.bounds || { fret: 1, width: Math.min(4, NFRETS) };
+        let authored = positions[0]?.bounds || null, mismatch = false;
+        let outliers = [], narrow = null;
+        const localArea = (low, high) => {
+            const width = Math.max(Math.min(4, NFRETS), high - low + 1);
+            const fret = Math.max(1, Math.min(NFRETS - width + 1,
+                Math.max(high - width + 1, Math.min(current.fret, low))));
+            return { fret, width };
+        };
+        const append = (time, area, source) => {
+            const previous = rows[rows.length - 1];
+            if (equal(previous, area)) return;
+            const row = { time, fret: area.fret, width: area.width, source };
+            if (previous?.time === time) rows[rows.length - 1] = row;
+            else rows.push(row);
+        };
+        append(Math.min(0, positions[0]?.time ?? Infinity, groups[0]?.time ?? Infinity), current,
+            authored ? 'authored' : 'inferred');
+        let p = positions.length ? 1 : 0, g = 0;
+        while (p < positions.length || g < groups.length) {
+            if (p < positions.length && (g >= groups.length || positions[p].time <= groups[g].time)) {
+                const position = positions[p++], next = position.bounds;
+                if (!equal(authored, next)) {
+                    // Repeated identical authored rows do not reset an already
+                    // established mismatch or restart a camera transition.
+                    authored = next; mismatch = false; outliers = []; narrow = null;
+                    if (authored) {
+                        current = authored;
+                        append(position.time, current, 'authored');
+                    }
+                }
+                continue;
+            }
+            const group = groups[g++];
+            if (!Number.isFinite(group.low)) continue; // Opens inherit the area.
+            if (authored && !mismatch) {
+                if (Number.isFinite(group.attackLow)) {
+                    if (covers(authored, group.attackLow, group.attackHigh)) outliers = [];
+                    else {
+                        outliers = outliers.filter(time => group.time - time <= 1);
+                        outliers.push(group.time);
+                        mismatch = outliers.length >= 3;
+                    }
+                }
+                // A single outlying pick/slide is a visibility constraint, not
+                // evidence that the chart's entire hand position is unusable.
+                if (!mismatch) continue;
+            }
+            if (covers(current, group.low, group.high)) {
+                // A genuine wide group may expand an inferred area, but should
+                // not keep a later ordinary passage zoomed out forever. Require
+                // at least three local picks spanning a full chart second; a
+                // lone note or sparse isolated picks do not shrink the window.
+                if (narrow && !covers(narrow, group.low, group.high)) narrow = null;
+                if (current.width > 4 && Number.isFinite(group.attackLow) && group.high - group.low < 4) {
+                    if (!narrow || group.time - narrow.last > 1) {
+                        narrow = { ...localArea(group.low, group.high), start: group.time, last: group.time, count: 1 };
+                    } else { narrow.last = group.time; narrow.count++; }
+                    if (narrow.count >= 3 && group.time - narrow.start >= 1) {
+                        current = { fret: narrow.fret, width: narrow.width };
+                        append(group.time, current, 'inferred');
+                        narrow = null;
+                    }
+                }
+                continue;
+            }
+            current = localArea(group.low, group.high);
+            narrow = null;
+            append(group.time, current, 'inferred');
+        }
+        return rows;
+    }
+
+    /**
      * Chart-static shared chord holds, separate from hand-position guidance.
      * Never infer ringing from a gap to the next note, a minimum display length,
      * or a synthesized preview. byChord preserves every attack's own interval;
@@ -14495,6 +14669,10 @@
             }
             const sections = bundle.sections;
             const anchors = bundle.anchors;
+            // Stable-camera fallback positions are chart-local too. Use the
+            // same region for the floor, gold row and camera, without changing
+            // the authored anchors used by chord/technique rendering.
+            const positionAnchors = cameraMode === 'stable' ? stableRegionAnchors(bundle) : anchors;
 
             // ── Fret wire anchor highlight ─────────────────────────────────
             // Default all wires to gray; wires inside the active anchor range
@@ -14504,8 +14682,8 @@
             //   dMin = fret - 1,  dMax = fret + width - 1
             // e.g. { fret:3, width:4 } → dMin=2, dMax=6 → wires 2,3,4,5,6 gold.
             if (fretWireMats.length) {
-                const _fwBounds = anchors && anchors.length
-                    ? anchorLaneBoundsAt(anchors, now) : null;
+                const _fwBounds = positionAnchors && positionAnchors.length
+                    ? anchorLaneBoundsAt(positionAnchors, now) : null;
                 const _fwMin = _fwBounds ? _fwBounds.dMin : -1;
                 const _fwMax = _fwBounds ? _fwBounds.dMax : -1;
                 for (let _f = 0; _f <= NFRETS; _f++) {
@@ -16551,14 +16729,14 @@
             // ── Dynamic highway lane ──────────────────────────────────────
             // Chart <anchor> tags drive the lane whenever they exist — do not
             // require nearby notes (activeFrets) or camera-driven activity.
-            const hasChartAnchors = anchors && anchors.length;
+            const hasChartAnchors = positionAnchors && positionAnchors.length;
             if (hasChartAnchors || activeFrets.size > 0) {
                 // Lane tint: one translucent quad per playable fret column, exact
                 // wire→wire span (no horizontal pad) — see HWY_LANE_STRIPE_*.
                 const boardY = S_BASE - NH / 2 - 2 * K;
 
                 if (hasChartAnchors) {
-                    const nearB = laneBoundsFromAnchor(getChartAnchorAt(anchors, now));
+                    const nearB = laneBoundsFromAnchor(getChartAnchorAt(positionAnchors, now));
                     if (nearB) {
                         hwyLaneFretClipMin = nearB.dMin;
                         hwyLaneFretClipMax = nearB.dMax;
@@ -16578,8 +16756,13 @@
                     for (let k = 0; k < HWY_LANE_TIME_SLICES; k++) {
                         const dt0 = k * sliceDt;
                         const dt1 = (k + 1) * sliceDt;
-                        const tC = now + (dt0 + dt1) * 0.5 - BEHIND;
-                        const b = laneBoundsFromAnchor(getChartAnchorAt(anchors, tC));
+                        // The slice clipped at the strike line represents the
+                        // current position, even if its original midpoint was
+                        // still in the past. Keep stable-area floor and gold
+                        // markers synchronized at an exact anchor boundary.
+                        const tC = cameraMode === 'stable' && dt0 <= BEHIND && dt1 > BEHIND
+                            ? now : now + (dt0 + dt1) * 0.5 - BEHIND;
+                        const b = laneBoundsFromAnchor(getChartAnchorAt(positionAnchors, tC));
                         if (!b) continue;
                         // The lane STOPS AT THE HIT LINE (z = 0) — issue #991. The
                         // slice window starts BEHIND seconds in the past, so the
@@ -16801,7 +16984,7 @@
                 const yBottom = Math.min(sY(0), sY(nStr - 1));
                 // anchorSpan: [f0, f1] = [anchor.fret, anchor.fret + width - 1]
                 // e.g. { fret:3, width:4 } → f0=3, f1=6 → frets 3,4,5,6 gold.
-                const anchorSpan = anchorPlayedFretSpanAt(anchors, now);
+                const anchorSpan = anchorPlayedFretSpanAt(positionAnchors, now);
                 for (let f = 1; f <= NFRETS; f++) {
                     const isInAnchor = anchorSpan
                         && f >= anchorSpan.f0 && f <= anchorSpan.f1;
@@ -20830,12 +21013,13 @@
         const _stableCam = {
             active: false, initialized: false, x: 0, distance: 100 * K,
             lastTime: NaN, lastWall: NaN, rate: 1, rateTime: NaN, rateWall: NaN, preset: '', lefty: false, strings: 0,
-            reset: -1, song: null, notes: null, chords: null, aspect: 0,
+            reset: -1, song: null, notes: null, chords: null, anchors: null, anchorCount: -1, aspect: 0,
             quietZoomTime: 0, quietPanTime: 0, centreCandidateX: NaN,
             pointCount: 0, minX: 0, maxX: 0,
             targetX: 0, targetDistance: 0, correction: false,
             focusValid: false, focusX: 0, focusMinX: 0, focusMaxX: 0,
-            followingPrimary: false,
+            regionTime: NaN, regionSource: '', regionMinX: NaN, regionMaxX: NaN,
+            panPending: false,
         };
         const _stableBins = Array.from({ length: 32 }, () => ({
             minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity,
@@ -20902,7 +21086,7 @@
             }
         }
 
-        function stableCollectGeometry() {
+        function stableCollectGeometry(region) {
             for (const bin of _stableBins) {
                 bin.minX = bin.minY = bin.minZ = Infinity;
                 bin.maxX = bin.maxY = bin.maxZ = -Infinity;
@@ -20923,6 +21107,17 @@
             // Reserve the readable number band below nearby playable frets,
             // not every reference digit across the full neck.
             const rowY = Math.min(sY(0), sY(nStr - 1)) - (S_GAP * 1.4 + 4 * K * _textSizeMul);
+            if (region?.valid) {
+                // An empty marked position is still the player's playing
+                // area. Reserve its full strike-line footprint, not every
+                // distant lane slice or grey reference number across the neck.
+                const topY = Math.max(sY(0), sY(nStr - 1)) + NH;
+                stableAddPoint(region.minX - 3 * K, rowY, 0);
+                stableAddPoint(region.maxX + 3 * K, topY, 0);
+                for (let f = region.dMin + 1; f <= region.dMax; f++) {
+                    stableCollectObject(_incomingFixedFretLabels[f]);
+                }
+            }
             for (const bin of _stableBins) {
                 if (!Number.isFinite(bin.minX) || bin.maxZ < dZ(Math.min(AHEAD, 1.2 * _stableCam.rate))) continue;
                 const lo = bin.minX, hi = bin.maxX, z = bin.maxZ;
@@ -21040,206 +21235,48 @@
             _fretRowFitBoost = 1;
         }
 
-        // Primary camera focus is chart-local: distant mesh/label extrema belong
-        // to visibility fitting, never to deciding which passage is being played.
-        // Index once per chart. Queries touch nearby attacks and active sustains
-        // only; the maximum-end tree prunes old notes even after a long sustain.
-        const _stableFocus = {
-            notes: null, chords: null, noteCount: -1, chordCount: -1, strings: 0,
-            groups: [], ends: null, size: 0,
+        const _stableRegions = {
+            notes: null, chords: null, anchors: null, noteCount: -1, chordCount: -1,
+            anchorCount: -1, strings: 0, uniform: null, rows: [],
         };
-        const _stableFocusResult = {};
-        const _stableFocusNext = {};
+        const _stableRegionResult = {};
 
-        function stableFocusClear(out) {
-            out.valid = false; out.x = 0; out.minX = Infinity; out.maxX = -Infinity;
-            out.minF = Infinity; out.maxF = -Infinity;
-            out.openGroup = null; out.moving = false;
+        function stableRegionReset() {
+            const cache = _stableRegions;
+            cache.notes = cache.chords = cache.anchors = null;
+            cache.noteCount = cache.chordCount = cache.anchorCount = -1;
+            cache.strings = 0; cache.uniform = null; cache.rows = [];
+            _stableRegionResult.row = null;
         }
 
-        function stableFocusReset() {
-            const cache = _stableFocus;
-            cache.notes = cache.chords = null;
-            cache.noteCount = cache.chordCount = -1; cache.strings = 0;
-            cache.groups = []; cache.ends = null; cache.size = 0;
-            stableFocusClear(_stableFocusResult); stableFocusClear(_stableFocusNext);
+        function stableRegionAnchors(bundle) {
+            const c = _stableRegions;
+            const notes = bundle.notes, chords = bundle.chords, anchors = bundle.anchors;
+            if (c.notes !== notes || c.chords !== chords || c.anchors !== anchors
+                || c.noteCount !== (notes?.length || 0) || c.chordCount !== (chords?.length || 0)
+                || c.anchorCount !== (anchors?.length || 0) || c.strings !== nStr || c.uniform !== _h3dFretUniform) {
+                c.rows = hwyBuildPlayingRegions(notes, chords, anchors, nStr);
+                c.notes = notes; c.chords = chords; c.anchors = anchors;
+                c.noteCount = notes?.length || 0; c.chordCount = chords?.length || 0;
+                c.anchorCount = anchors?.length || 0; c.strings = nStr; c.uniform = _h3dFretUniform;
+            }
+            return c.rows;
         }
 
-        function stableFocusIndex(bundle) {
-            const cache = _stableFocus, notes = bundle.notes, chords = bundle.chords;
-            if (cache.notes === notes && cache.chords === chords && cache.strings === nStr
-                && cache.noteCount === (notes?.length || 0) && cache.chordCount === (chords?.length || 0)) return cache;
-            cache.notes = notes; cache.chords = chords; cache.strings = nStr;
-            cache.noteCount = notes?.length || 0; cache.chordCount = chords?.length || 0;
-            const members = [];
-            const add = (note, time) => {
-                if (!note || !Number.isFinite(time) || !validString(note.s) || !isRenderableNote(note)) return;
-                // Chord members carry the enclosing onset on the wire. Retain
-                // an immutable timed view for the shared slide-position helper.
-                const view = note.t === time ? note : { ...note, t: time };
-                const sustain = Number.isFinite(note.sus) ? Math.max(0, note.sus) : 0;
-                members.push({ note: view, end: time + sustain, slide: slideTrailEnd(view) });
-            };
-            for (const note of notes || []) add(note, note?.t);
-            for (const chord of chords || []) {
-                // Synthesized arpeggio frames are previews, not simultaneous
-                // attacks. Their actual played members are in the note stream.
-                if (chord?.h3dSynth) continue;
-                for (const note of chord?.notes || []) add(note, chord.t);
-            }
-            members.sort((a, b) => a.note.t - b.note.t);
-            const groups = [];
-            for (const member of members) {
-                let group = groups[groups.length - 1];
-                if (!group || member.note.t - group.t > 0.000501) {
-                    group = { t: member.note.t, end: member.end, members: [], minF: Infinity, maxF: -Infinity,
-                        previousFretted: -1, nextFretted: -1, moving: false };
-                    groups.push(group);
-                }
-                group.members.push(member); group.end = Math.max(group.end, member.end);
-                if (!usesUnfrettedPosition(member.note)) {
-                    group.minF = Math.min(group.minF, member.note.f);
-                    group.maxF = Math.max(group.maxF, member.note.f);
-                }
-                group.moving ||= !!member.slide;
-            }
-            // A new onset replaces the playable position on that string even
-            // when imported written sustains overlap. Keep authored end/sus
-            // intact: visible trails and shared slide interpolation still use
-            // their original timing. Coincident members are one onset group.
-            const nextByString = new Float64Array(nStr); nextByString.fill(Infinity);
-            for (let i = groups.length - 1; i >= 0; i--) {
-                const group = groups[i];
-                group.focusEnd = group.t;
-                for (const member of group.members) {
-                    member.focusEnd = Math.min(member.end, nextByString[member.note.s]);
-                    group.focusEnd = Math.max(group.focusEnd, member.focusEnd);
-                }
-                for (const member of group.members) nextByString[member.note.s] = group.t;
-            }
-            let previous = -1;
-            for (let i = 0; i < groups.length; i++) {
-                groups[i].previousFretted = previous;
-                if (Number.isFinite(groups[i].minF)) previous = i;
-            }
-            let next = -1;
-            for (let i = groups.length - 1; i >= 0; i--) {
-                groups[i].nextFretted = next;
-                if (Number.isFinite(groups[i].minF)) next = i;
-            }
-            let size = 1;
-            while (size < groups.length) size *= 2;
-            const ends = new Float64Array(size * 2); ends.fill(-Infinity);
-            for (let i = 0; i < groups.length; i++) ends[size + i] = groups[i].focusEnd;
-            for (let i = size - 1; i > 0; i--) ends[i] = Math.max(ends[i * 2], ends[i * 2 + 1]);
-            cache.groups = groups; cache.ends = ends; cache.size = size;
-            return cache;
-        }
-
-        function stableFocusUpperBound(groups, time) {
-            let lo = 0, hi = groups.length;
-            while (lo < hi) {
-                const mid = (lo + hi) >>> 1;
-                if (groups[mid].t <= time) lo = mid + 1;
-                else hi = mid;
-            }
-            return lo;
-        }
-
-        function stableFocusAccumulate(group, now, out, activeOnly = false) {
-            for (const member of group.members) {
-                const note = member.note;
-                if (activeOnly && (note.t > now || member.focusEnd <= now)) continue;
-                if (usesUnfrettedPosition(note)) {
-                    if (!out.openGroup || group.t > out.openGroup.t) out.openGroup = group;
-                    continue;
-                }
-                const moving = !!member.slide && note.sus > 0 && now > note.t;
-                const x = xFretMid(note.f) + (moving
-                    ? (_leftyCached ? -1 : 1) * slideOffsetWorldX(note, Math.min(now, member.end), member.slide) : 0);
-                if (!Number.isFinite(x)) continue;
-                out.minX = Math.min(out.minX, x); out.maxX = Math.max(out.maxX, x);
-                out.minF = Math.min(out.minF, note.f); out.maxF = Math.max(out.maxF, note.f);
-                out.valid = true; out.moving ||= moving;
-            }
-        }
-
-        function stableFocusActive(cache, node, lo, hi, now, out) {
-            if (lo >= cache.groups.length || cache.groups[lo].t > now || cache.ends[node] <= now) return;
-            if (hi - lo === 1) {
-                stableFocusAccumulate(cache.groups[lo], now, out, true);
-                return;
-            }
-            const mid = (lo + hi) >>> 1;
-            stableFocusActive(cache, node * 2, lo, mid, now, out);
-            stableFocusActive(cache, node * 2 + 1, mid, hi, now, out);
-        }
-
-        function stableFocusOpenContext(out, bundle, cache, speed) {
-            if (out.valid || !out.openGroup) return;
-            const group = out.openGroup;
-            const bounds = anchorLaneBoundsAt(bundle.anchors, group.t);
-            let x;
-            if (bounds) x = (xFret(bounds.dMin) + xFret(bounds.dMax)) / 2;
-            else {
-                const previous = cache.groups[group.previousFretted], next = cache.groups[group.nextFretted];
-                // No authored position: infer only local musical context. A
-                // fretted entry minutes away must not move an open-string intro.
-                const context = previous && group.t - previous.focusEnd <= 2 * speed ? previous
-                    : next && next.t - group.t <= 0.6 * speed ? next : null;
-                x = context ? (xFretMid(context.minF) + xFretMid(context.maxF)) / 2 : xFretMid(CAM_LOCK_CENTER_FRET);
-            }
-            out.valid = Number.isFinite(x); out.minX = out.maxX = x;
-        }
-
-        function stablePlayingFocus(bundle, now, rate) {
-            const cache = stableFocusIndex(bundle), groups = cache.groups, out = _stableFocusResult;
-            stableFocusClear(out);
-            if (!groups.length || !Number.isFinite(now)) return out;
-            const speed = Number.isFinite(rate) ? Math.max(0.1, Math.min(4, rate)) : 1;
-            const ahead = 0.35 * speed, behind = 0.60 * speed;
-            const nextIndex = stableFocusUpperBound(groups, now), current = groups[nextIndex - 1], next = groups[nextIndex];
-            stableFocusActive(cache, 1, 0, cache.size, now, out);
-            // Brief inter-note gaps retain the last attack as musical context;
-            // a true rest is invalid so the controller holds its existing pose.
-            const recent = current && (now - current.t <= 0.18 * speed
-                || (now - current.t <= behind && next && next.t - now <= ahead));
-            if (recent) stableFocusAccumulate(current, now, out);
-            if (out.valid && !out.moving) {
-                // A small locally played span (e.g. alternating 3/5) is one
-                // position. This bounded time window cannot import a distant
-                // note or an unused edge of a wide chart anchor.
-                const start = stableFocusUpperBound(groups, now - behind);
-                const end = stableFocusUpperBound(groups, now + ahead);
-                for (let i = start; i < end; i++) {
-                    const group = groups[i];
-                    if (group.moving || !Number.isFinite(group.minF)
-                        || Math.max(out.maxF, group.maxF) - Math.min(out.minF, group.minF) > 3) continue;
-                    stableFocusAccumulate(group, group.t, out);
-                }
-            }
-            stableFocusOpenContext(out, bundle, cache, speed);
-            if (out.valid) out.x = (out.minX + out.maxX) / 2;
-            if (next && next.t - now <= ahead) {
-                const target = _stableFocusNext;
-                stableFocusClear(target); stableFocusAccumulate(next, next.t, target);
-                stableFocusOpenContext(target, bundle, cache, speed);
-                if (target.valid) {
-                    target.x = (target.minX + target.maxX) / 2;
-                    if (!out.valid) {
-                        out.valid = true; out.x = target.x; out.minX = target.minX; out.maxX = target.maxX;
-                    } else if (target.x < out.minX || target.x > out.maxX) {
-                        const p = Math.max(0, Math.min(1, 1 - (next.t - now) / ahead));
-                        // Even just before a wide jump, currently sounding
-                        // notes keep the larger share of the preferred centre.
-                        out.x += (target.x - out.x) * (0.30 * p * p * (3 - 2 * p));
-                    }
-                }
-            }
+        function stablePlayingRegion(bundle, now) {
+            const row = getChartAnchorAt(stableRegionAnchors(bundle), now);
+            const out = _stableRegionResult;
+            out.row = row; out.valid = !!row;
+            out.time = row?.time ?? NaN; out.source = row?.source || '';
+            out.dMin = row ? row.fret - 1 : 0;
+            out.dMax = row ? row.fret + row.width - 1 : 0;
+            const a = xFret(out.dMin), b = xFret(out.dMax);
+            out.minX = Math.min(a, b); out.maxX = Math.max(a, b);
+            out.x = (a + b) / 2;
             return out;
         }
 
-        function stableCamUpdate(bundle) {
+        function stableCamUpdate(bundle, frameTime = Number(bundle.currentTime) || 0) {
             const s = _stableCam, b = _stableBasis;
             const wall = performance.now() / 1000;
             const elapsed = Number.isFinite(s.lastWall) ? Math.max(0, wall - s.lastWall) : 0;
@@ -21262,22 +21299,28 @@
             if (Number.isFinite(declaredRate) && declaredRate >= 0.1 && declaredRate <= 4) s.rate = declaredRate;
             const reset = !s.active || s.reset !== _stableCameraResetSerial
                 || s.preset !== stableCameraPreset || s.lefty !== _leftyCached || s.strings !== nStr
-                || s.song !== _songKey || s.notes !== bundle.notes || s.chords !== bundle.chords;
+                || s.song !== _songKey || s.notes !== bundle.notes || s.chords !== bundle.chords
+                || s.anchors !== bundle.anchors || s.anchorCount !== (bundle.anchors?.length || 0);
             const resize = s.aspect !== cam.aspect;
             s.active = true; s.lastWall = wall; s.lastTime = now;
             s.reset = _stableCameraResetSerial; s.preset = stableCameraPreset;
             s.lefty = _leftyCached; s.strings = nStr; s.song = _songKey;
             s.notes = bundle.notes; s.chords = bundle.chords; s.aspect = cam.aspect;
+            s.anchors = bundle.anchors; s.anchorCount = bundle.anchors?.length || 0;
             const yaw = stableCameraPreset === 'angled' ? STABLE_CAMERA_YAW * (_leftyCached ? -1 : 1) : 0;
             const cp = Math.cos(STABLE_CAMERA_PITCH), sp = Math.sin(STABLE_CAMERA_PITCH);
             b.bx = Math.sin(yaw) * cp; b.by = sp; b.bz = Math.cos(yaw) * cp;
             b.rx = Math.cos(yaw); b.rz = -Math.sin(yaw);
             b.ux = -Math.sin(yaw) * sp; b.uy = cp; b.uz = -Math.cos(yaw) * sp;
             b.y = (sY(0) + sY(nStr - 1)) / 2;
-            stableCollectGeometry();
-            const focus = stablePlayingFocus(bundle, now, s.rate);
+            // update() has already interpolated the display clock. Resolve
+            // the same position as this frame's lane and gold labels, while
+            // raw audio time remains the source for seek/rate detection.
+            const focus = stablePlayingRegion(bundle, frameTime);
+            stableCollectGeometry(focus);
             s.focusValid = focus.valid;
             s.focusX = focus.x; s.focusMinX = focus.minX; s.focusMaxX = focus.maxX;
+            s.regionTime = focus.time; s.regionSource = focus.source;
             const baseDistance = Math.max(100 * K, (Math.abs(sY(0) - sY(nStr - 1)) + 14 * K) * 2.3);
             // Short real-time anticipation protects approaching geometry. It
             // never contributes to the preferred centre; fit at that centre
@@ -21293,7 +21336,8 @@
                 s.x = fit.x; s.distance = fit.distance;
                 s.targetX = s.x; s.targetDistance = s.distance;
                 s.centreCandidateX = focus.valid ? s.x : NaN;
-                s.followingPrimary = false;
+                s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
+                s.panPending = false;
                 s.quietPanTime = 0;
                 s.quietZoomTime = 0; s.initialized = true;
             } else if (resize) {
@@ -21301,48 +21345,49 @@
                 // viewing angle, even with following switched off.
                 const fit = stableSolve(s.x, baseDistance, 0, 0.90, true);
                 s.distance = fit.distance; s.quietZoomTime = 0;
-                s.centreCandidateX = NaN; s.quietPanTime = 0;
-                s.followingPrimary = false;
+                s.quietPanTime = 0; s.panPending = false;
             } else if (stableCameraFollow && bundle.isPlaying !== false && focus.valid && !seek) {
                 const fit = stableSolve(focus.x, baseDistance, prediction, 0.68, true);
                 const neutralX = fit.x, neutralDistance = fit.distance;
-                // Roughly 1% of the horizontal half-view at the play line.
-                // Compare with a retained reference, not the preceding frame:
-                // gradual position changes must eventually start a new dwell.
-                const quietBand = Math.max(0.25 * K,
-                    neutralDistance * Math.tan(STABLE_CAMERA_FOV * Math.PI / 360) * cam.aspect * 0.01);
-                if (!Number.isFinite(s.centreCandidateX) || Math.abs(neutralX - s.centreCandidateX) > quietBand) {
-                    s.centreCandidateX = neutralX; s.quietPanTime = 0;
+                // The accepted centre belongs to an area, never an attack.
+                // Brief overlapping area changes may wait at most 0.2 real
+                // seconds while both positions fit. Continuing changes cannot
+                // keep restarting that timer; disjoint/unsafe changes bypass it.
+                const oldTarget = Number.isFinite(s.centreCandidateX) ? s.centreCandidateX : s.x;
+                s.centreCandidateX = oldTarget;
+                const changed = Math.abs(neutralX - oldTarget) > 1e-7;
+                let oldDt = 0;
+                if (changed) {
+                    const overlap = Math.max(s.regionMinX, focus.minX) <= Math.min(s.regionMaxX, focus.maxX);
+                    const small = Math.abs(neutralX - oldTarget) <= Math.min(
+                        s.regionMaxX - s.regionMinX, focus.maxX - focus.minX) * 0.5;
+                    const safe = overlap && small && stableIntervalAt(s.distance, 0, 0.68, s.x).valid;
+                    if (safe) {
+                        const previous = s.panPending ? s.quietPanTime : 0;
+                        s.panPending = true; s.quietPanTime = previous + dt;
+                        oldDt = Math.min(dt, Math.max(0, 0.2 - previous));
+                        if (s.quietPanTime >= 0.2) {
+                            s.centreCandidateX = neutralX; s.panPending = false;
+                            s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
+                        }
+                    } else {
+                        s.centreCandidateX = neutralX; s.panPending = false; s.quietPanTime = 0;
+                        s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
+                    }
+                } else {
+                    s.centreCandidateX = neutralX; s.panPending = false; s.quietPanTime = 0;
+                    s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
                 }
-                const previousQuiet = s.quietPanTime;
-                s.quietPanTime += dt;
-                // Split the frame at the dwell boundary so low frame rates do
-                // not get an extra full frame of return movement.
-                const returnDt = Math.min(dt, Math.max(0, s.quietPanTime - 0.6)
-                    - Math.max(0, previousQuiet - 0.6));
-                // Do not wait for a completely unchanged passage before
-                // following a real position change. The comfort band uses
-                // the base view, so a temporary safety zoom cannot mask a
-                // badly displaced playing area. Small local changes still
-                // settle gently; unrelated far geometry cannot reset dwell.
-                const comfort = baseDistance * Math.tan(STABLE_CAMERA_FOV * Math.PI / 360)
-                    * cam.aspect * 0.12;
-                if (Math.abs(neutralX - s.x) > comfort) s.followingPrimary = true;
-                // Once a position change starts, finish it. Rechecking only
-                // the comfort threshold would stop mid-pan and then restart
-                // at the dwell boundary (with frame-rate-dependent timing).
-                const followDt = s.followingPrimary ? dt : returnDt;
+                const panTau = 0.2 + cameraSmoothing * 0.2;
+                // Continue an already accepted pan while a small replacement
+                // is pending. Split at acceptance for frame-rate independence.
+                s.x += (oldTarget - s.x) * (1 - Math.exp(-oldDt / panTau));
                 const returnX = s.centreCandidateX;
-                // This target follows the playing hand, including a moving
-                // slide. The old distant-window target used a much slower
-                // pan that could trail the hand by several frets.
-                const panTau = 0.08 + cameraSmoothing * 0.16;
-                s.x += (returnX - s.x) * (1 - Math.exp(-followDt / panTau));
-                if (s.quietPanTime >= 0.6 && Math.abs(s.x - returnX) <= quietBand) s.followingPrimary = false;
-                s.targetX = followDt > 0 ? returnX : s.x;
+                s.x += (returnX - s.x) * (1 - Math.exp(-(dt - oldDt) / panTau));
+                s.targetX = returnX;
                 s.targetDistance = neutralDistance;
                 const settleEpsilon = 0.0001 * K;
-                if (followDt > 0 && Math.abs(s.x - returnX) < settleEpsilon) s.x = returnX;
+                if (Math.abs(s.x - returnX) < settleEpsilon) s.x = returnX;
                 // Once a wider view is returning, finish the return. A relative
                 // 3% cutoff used to reset this timer just before convergence.
                 if (neutralDistance >= s.distance - settleEpsilon) s.quietZoomTime = 0;
@@ -21353,10 +21398,10 @@
                 }
                 if (Math.abs(s.distance - neutralDistance) < settleEpsilon) s.distance = neutralDistance;
             } else if (!focus.valid || !stableCameraFollow) {
-                // Silence and Follow off hold the pose; their elapsed time must
-                // not secretly satisfy the dwell for the next live passage.
+                // No usable position and Follow off hold the pose. Silence
+                // with a chart-defined area still follows the ordinary path.
                 s.centreCandidateX = NaN; s.quietPanTime = 0; s.quietZoomTime = 0;
-                s.followingPrimary = false;
+                s.panPending = false;
                 if (stableCameraFollow && bundle.isPlaying !== false && s.pointCount > 0) {
                     // During a rest hold the playing position, but make room
                     // for a distant entry if needed. Primary silence must not
@@ -21378,7 +21423,7 @@
 
         /* ── Camera smooth lerp ──────────────────────────────────────────── */
         function camUpdate(bundle) {
-            if (cameraMode === 'stable') { stableCamUpdate(bundle); return; }
+            if (cameraMode === 'stable') { stableCamUpdate(bundle, _frameNow); return; }
             if (_stableCam.active) {
                 _stableCam.active = false;
                 cam.updateProjectionMatrix(); // clear the experimental lens shift
@@ -21638,8 +21683,8 @@
             _stableCam.active = _stableCam.initialized = false;
             _stableCam.lastTime = _stableCam.lastWall = NaN;
             _stableCam.rate = 1; _stableCam.rateTime = _stableCam.rateWall = NaN;
-            _stableCam.notes = _stableCam.chords = null;
-            stableFocusReset();
+            _stableCam.notes = _stableCam.chords = _stableCam.anchors = null;
+            stableRegionReset();
             _resetChordCullIndex();
             // Background animations (#13). Drop the listener first so any
             // mid-teardown settings change doesn't try to rebuild a torn-
