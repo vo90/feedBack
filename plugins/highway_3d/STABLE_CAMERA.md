@@ -32,18 +32,27 @@ renderer's three chart seconds. Within that window the camera prepares for about
 geometry toward the play line before solving the safe frame. Playback speed is
 estimated across multiple audio samples when the host does not supply it.
 
-The horizontal comfort region occupies 68% of the view. If the passage fits,
-the centre stays unchanged. Otherwise the solver finds the smallest translation
-and distance that fit; it does not force a fret centroid on every frame. A wider
-view is held briefly before returning gradually. Pan and zoom smoothing control
-this movement using elapsed time, independently of BPM and render frame rate.
+The horizontal comfort region occupies 68% of the view. Playback and seeking
+use the same preferred centre and required distance for the current passage.
+During a changing passage, the camera makes only the movement needed to fit.
+Once the preferred centre remains within a small tolerance for 0.6 seconds, it
+gently returns toward that composition. The tolerance is approximately 1% of the
+horizontal half-view at the play line; small note/label fluctuations therefore
+do not make the camera chase each note. A correction needed for visibility is
+never adopted as the permanent resting centre. A wider view is held briefly
+before returning all the way, without the former 3% residual zoom offset.
+Pan and zoom smoothing control this movement using elapsed time, independently
+of BPM and render frame rate. The pan dwell boundary splits a frame's damping
+time so a low frame rate does not receive an extra frame of return movement.
 A second fit against actual geometry protects against clipping after an unusually
 large frame step. An extreme passage can therefore require a prompt correction.
 
 Pause freezes automatic following. Turning Follow off holds the base pose through
 playback and seeks. Reset, preset changes and a new arrangement explicitly
 establish a new composition. Resizing retains the centre and angle while fitting
-the changed viewport. Silence holds the last useful composition. With Follow on,
+the changed viewport. Silence holds the last useful composition. Silence and
+Follow off clear pending settling time; paused time does not advance it. The
+first playable passage after silence establishes its own return target. With Follow on,
 seeks and loop jumps reframe directly rather than flying from the old passage.
 
 ## Camera Director and legacy views
@@ -84,3 +93,9 @@ node tests/browser/highway-stable-camera.cjs --out <fresh-output-directory>
 The harness checks real rendered geometry, pause/follow behaviour, seeks, frame
 rates, playback rates, handedness, string layouts and viewport changes, and
 captures both presets for visual review.
+
+`tests/browser/highway-camera-recentring.cjs` additionally checks continuous
+playback versus direct seeking, low/high/low and repeated passages, and full-song
+Airbourne coverage when supplied with the optional private chart. Preserve these
+history-sensitive checks: a seek-to-fresh-open comparison alone cannot detect a
+camera that retains an offset during continuous playback.

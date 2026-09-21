@@ -241,3 +241,121 @@ test('the undamped safety guard fits a sudden nearby note when following', () =>
     assert.equal(state.correction, true);
     assertFits(h, points, { x: state.x, distance: state.distance }, 0, .92);
 });
+
+
+function advanceCamera(h, start, seconds, fps = 60) {
+    let state;
+    for (let i = 1; i <= Math.round(seconds * fps); i++) {
+        state = h.frame(start + i / fps, 1 / fps);
+    }
+    return state;
+}
+
+function assertSameComposition(actual, direct, context) {
+    // The harness uses K=1 and five-unit gems. Half a unit of lateral
+    // residual is a tenth of a gem, not the forty-unit bias in the report.
+    assert.ok(Math.abs(actual.x - direct.x) < .5,
+        `${context}: x=${actual.x}, direct=${direct.x}`);
+    assert.ok(Math.abs(actual.distance - direct.distance) < .15,
+        `${context}: distance=${actual.distance}, direct=${direct.distance}`);
+}
+
+test('returning to a passage settles to its direct view across presets, handedness and frame rates', () => {
+    for (const preset of ['straight', 'angled']) for (const lefty of [false, true]) {
+        const results = [];
+        const sign = lefty ? -1 : 1;
+        const original = [[10 * sign, 13, 0], [30 * sign, 13, 0]];
+        const excursion = [[110 * sign, 13, 0], [130 * sign, 13, 0]];
+        for (const fps of [10, 20, 60]) {
+            const h = harness(); h.settings({ preset, lefty });
+            h.setPoints(original); const initial = h.frame(0, 0);
+            h.setPoints(excursion);
+            const moved = advanceCamera(h, 0, 3, fps);
+            assert.ok(Math.abs(moved.x - initial.x) > 15,
+                `${preset}/${lefty}/${fps}: fixture must cause real horizontal movement`);
+            h.setPoints(original);
+            const returned = advanceCamera(h, 3, 8, fps);
+            const direct = harness(); direct.settings({ preset, lefty });
+            direct.setPoints(original);
+            assertSameComposition(returned, direct.frame(11, 0), `${preset}/${lefty}/${fps}`);
+            results.push(returned.x);
+        }
+        assert.ok(Math.max(...results) - Math.min(...results) < .1,
+            `${preset}/${lefty}: settled composition depends on frame rate: ${results}`);
+    }
+});
+
+test('repeated passages do not retain bias from successive left and right excursions', () => {
+    for (const preset of ['straight', 'angled']) {
+        const h = harness(); h.settings({ preset });
+        const original = [[10, 13, 0], [30, 13, 0]];
+        h.setPoints(original); const initial = h.frame(0, 0);
+        let time = 0;
+        for (const centre of [120, -80, 160, -110, 120]) {
+            h.setPoints([[centre - 10, 13, 0], [centre + 10, 13, 0]]);
+            advanceCamera(h, time, 3, 20); time += 3;
+            h.setPoints(original);
+            const returned = advanceCamera(h, time, 8, 20); time += 8;
+            assertSameComposition(returned, initial, `${preset}, excursion ${centre}`);
+        }
+    }
+});
+
+test('small geometry fluctuations do not make a settled camera chase individual notes', () => {
+    for (const preset of ['straight', 'angled']) {
+        const h = harness(); h.settings({ preset });
+        h.setPoints([[10, 13, 0], [30, 13, 0]]);
+        const initial = h.frame(0, 0);
+        let maxPan = 0, maxZoom = 0;
+        for (let i = 1; i <= 600; i++) {
+            const shift = Math.sin(i / 15) * .35;
+            h.setPoints([[10 + shift, 13, 0], [30 + shift, 13, 0]]);
+            const state = h.frame(i / 60, 1 / 60);
+            maxPan = Math.max(maxPan, Math.abs(state.x - initial.x));
+            maxZoom = Math.max(maxZoom, Math.abs(state.distance - initial.distance));
+        }
+        assert.ok(maxPan < .05, `${preset}: tiny note changes moved the camera by ${maxPan}`);
+        assert.ok(maxZoom < .05, `${preset}: tiny note changes changed zoom by ${maxZoom}`);
+    }
+});
+
+test('silence, pause and follow-off hold an unfinished return without preventing later settling', () => {
+    const original = [[10, 13, 0], [30, 13, 0]];
+    for (const hold of ['silence', 'pause', 'follow-off']) {
+        const h = harness(); h.setPoints(original);
+        const initial = h.frame(0, 0);
+        h.setPoints([[110, 13, 0], [130, 13, 0]]);
+        advanceCamera(h, 0, 3);
+        h.setPoints(original);
+        const settling = advanceCamera(h, 3, .75);
+        if (hold === 'silence') h.setPoints([]);
+        if (hold === 'follow-off') h.settings({ follow: false });
+        let time = 3.75;
+        for (let i = 0; i < 180; i++) {
+            if (hold !== 'pause') time += 1 / 60;
+            const held = h.frame(time, 1 / 60, hold !== 'pause');
+            assert.equal(held.x, settling.x, `${hold}: horizontal following must remain frozen`);
+            assert.equal(held.distance, settling.distance, `${hold}: zoom must remain frozen`);
+        }
+        h.setPoints(original); h.settings({ follow: true });
+        const returned = advanceCamera(h, time, 8);
+        assertSameComposition(returned, initial, hold);
+    }
+});
+
+test('zoom closes a residual below three percent instead of keeping an inherited wider view', () => {
+    const normal = [[-70.5, 13, 0], [70.5, 13, 0]];
+    for (const fps of [10, 20, 60]) {
+        const h = harness();
+        h.setPoints([[-72.5, 13, 0], [72.5, 13, 0]]);
+        const wider = h.frame(0, 0);
+        const direct = harness(); direct.setPoints(normal);
+        const expected = direct.frame(8, 0);
+        assert.ok(wider.distance > expected.distance + 1, 'fixture needs a visible zoom difference');
+        assert.ok((wider.distance - expected.distance) / wider.distance < .03,
+            'fixture must exercise the old three-percent stopping condition');
+        h.setPoints(normal);
+        const settled = advanceCamera(h, 0, 8, fps);
+        assertSameComposition(settled, expected, `zoom at ${fps} FPS`);
+    }
+});
