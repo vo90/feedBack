@@ -250,6 +250,17 @@ Anything that indexes a per-string array MUST be guarded by `validString(s)`. Th
 
 ## RS+ readability sizing
 
+RS+ default-theme inner dividers use `rsLaneDividerMaterial()` with a shared
+plane and analytic pixel coverage. Preserve their authored Z endpoints and
+clamp the interpolated width in the fragment shader so splitting a segment
+does not change its appearance. `uViewport` uses the actual drawing-buffer
+size, including render scale and DPR. The 2.01 render order keeps these lines
+above coincident extension lines (2) and below inlays (3), independent of
+transparent distance sorting. Every `pLaneDivider` caller must restore the
+geometry through `setLaneDividerGeometry()` when a pooled mesh changes role.
+`tests/browser/highway-rsplus-dividers.cjs` checks actual GPU pixel continuity,
+segment joins, style reuse, resizing, clipping and bounded GPU resources.
+
 `RSPLUS_SUSTAIN_STROKE_SCALE` keeps individual ribbons and their edge padding
 at 60% of Current's dimensions. `sustainMotionWidth` divides out that same scale
 so tremolo sweep and its visibility bounds remain independent of stroke weight.

@@ -341,6 +341,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RS+ distant fret dividers stay continuous.** Grey inner highway lines retain
+  a soft one-pixel minimum at the render resolution, preventing the centre line
+  from disappearing near the horizon. Joined segments keep consistent brightness
+  through playing-position changes.
 - **Continuous widths across linked sustain trails.** Visibility narrowing follows
   a validated linked note path through slides and other techniques, so an
   internal chart boundary cannot create a pinched trail followed by a wider

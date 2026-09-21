@@ -7329,7 +7329,80 @@
         /** Lane fret dividers: default white vs arpeggio frame tint on outer wires only. */
         let mLaneDivider = null, mLaneDividerExt = null;
         let mHandPositionEdge = null, mHandPositionFill = null;
-        let mRsLaneDivider = null;
+        let mRsLaneDivider = null, gLaneDivider = null, gRsLaneDivider = null;
+
+        function setLaneDividerGeometry(div) {
+            const rs = div.material === mRsLaneDivider;
+            div.geometry = rs ? gRsLaneDivider : gLaneDivider;
+            // The shader expands beyond the world-space strip's bounds.
+            div.frustumCulled = !rs;
+        }
+
+        function rsLaneDividerMaterial() {
+            return new T.ShaderMaterial({
+                uniforms: {
+                    uViewport: { value: new T.Vector2(1, 1) },
+                    uWidth: { value: 0.15 * K },
+                    uMinPixels: { value: 1 },
+                    uColor: { value: new T.Color(RSPLUS_DEFAULT_HIGHWAY.divider) },
+                    uOpacity: { value: RSPLUS_DEFAULT_HIGHWAY.dividerOpacity },
+                },
+                transparent: true, depthWrite: false, fog: false,
+                side: T.DoubleSide, forceSinglePass: true,
+                vertexShader: `
+                    uniform vec2 uViewport;
+                    uniform float uWidth, uMinPixels;
+                    varying vec3 vStroke;
+                    void main() {
+                        // Match the original box's top surface. Scale.z and
+                        // position retain the exact authored segment endpoints.
+                        vec4 start = modelViewMatrix * vec4(0.0, uWidth * 0.5, -0.5, 1.0);
+                        vec4 end = modelViewMatrix * vec4(0.0, uWidth * 0.5, 0.5, 1.0);
+                        vec4 c0 = projectionMatrix * start;
+                        vec4 c1 = projectionMatrix * end;
+                        float d0 = c0.z + c0.w, d1 = c1.z + c1.w;
+                        vStroke = vec3(0.0, 0.0, 1.0);
+                        if (d0 <= 0.0 && d1 <= 0.0) {
+                            gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+                            return;
+                        }
+                        // Clip before perspective division, including free-camera views.
+                        if (d0 < 0.0) start = mix(start, end, d0 / (d0 - d1));
+                        else if (d1 < 0.0) end = mix(end, start, d1 / (d1 - d0));
+                        c0 = projectionMatrix * start;
+                        c1 = projectionMatrix * end;
+                        vec2 delta = (c1.xy / c1.w - c0.xy / c0.w) * uViewport;
+                        float len = length(delta);
+                        vec2 normal = len > 0.00001 ? vec2(-delta.y, delta.x) / len : vec2(1.0, 0.0);
+                        vec4 view = mix(start, end, uv.y);
+                        vec4 clip = projectionMatrix * view;
+                        vec4 side = projectionMatrix * (view + modelViewMatrix * vec4(uWidth * 0.5, 0.0, 0.0, 0.0));
+                        float naturalHalf = abs(dot((side.xy / side.w - clip.xy / clip.w) * uViewport * 0.5, normal));
+                        float halfWidth = max(naturalHalf, uMinPixels * 0.5);
+                        // One extra pixel supplies fragments for analytic edge coverage;
+                        // it adds no visible width and avoids relying on MSAA sample hits.
+                        float offset = (uv.x * 2.0 - 1.0) * (halfWidth + 1.0);
+                        gl_Position = clip;
+                        gl_Position.xy += normal * offset * 2.0 / uViewport * clip.w;
+                        // Cancel perspective interpolation for screen-pixel distances.
+                        vStroke = vec3(offset, naturalHalf, 1.0) * clip.w;
+                    }`,
+                fragmentShader: `
+                    uniform vec3 uColor;
+                    uniform float uOpacity, uMinPixels;
+                    varying vec3 vStroke;
+                    void main() {
+                        vec2 stroke = vStroke.xy / vStroke.z;
+                        // Clamp after interpolation so splitting a lane segment
+                        // cannot change the width or brightness on either side.
+                        float halfWidth = max(stroke.y, uMinPixels * 0.5);
+                        float coverage = clamp(halfWidth + 0.5 - abs(stroke.x), 0.0, 1.0);
+                        gl_FragColor = vec4(uColor, uOpacity * coverage);
+                        #include <tonemapping_fragment>
+                        #include <colorspace_fragment>
+                    }`,
+            });
+        }
         /** Shared XY plane for ghost fret digits (lies on board like proj, not billboarding). */
         let gGhostFretPlane = null, pGhostFretLbl = null;
         // Anchor-driven lane scratch buffers. Per-frame the loop builds up
@@ -10306,17 +10379,16 @@
             });
 
             // Vertical fret dividers within active lane
-            const gLaneDivider = new T.BoxGeometry(0.15 * K, 0.15 * K, 1);
+            gLaneDivider = new T.BoxGeometry(0.15 * K, 0.15 * K, 1);
+            gRsLaneDivider = new T.PlaneGeometry(1, 1);
+            _ownedSharedGeos.push(gLaneDivider, gRsLaneDivider);
             mLaneDivider = new T.MeshBasicMaterial({
                 color: 0x46DDE6, transparent: true, opacity: 1.00, fog: false, depthWrite: false,
             });
             mLaneDividerExt = new T.MeshBasicMaterial({
                 color: 0x364D5F, transparent: true, opacity: 0.4, fog: false, depthWrite: false,
             });
-            mRsLaneDivider = new T.MeshBasicMaterial({
-                color: RSPLUS_DEFAULT_HIGHWAY.divider, transparent: true,
-                opacity: RSPLUS_DEFAULT_HIGHWAY.dividerOpacity, fog: false, depthWrite: false,
-            });
+            mRsLaneDivider = rsLaneDividerMaterial();
             _ownedSharedMats.push(mLaneDivider, mLaneDividerExt, mRsLaneDivider);
             pLaneDivider = pool(noteG, () => new T.Mesh(gLaneDivider, mLaneDivider));
             mHandPositionEdge = new T.MeshBasicMaterial({
@@ -12894,6 +12966,7 @@
                 for (let side = 0; side < 2; side++) {
                     const positionRail = pLaneDivider.get();
                     positionRail.material = mHandPositionEdge;
+                    setLaneDividerGeometry(positionRail);
                     positionRail.position.set(side === 0 ? xl : xr, boardY + 0.03 * K, zMid);
                     positionRail.scale.set(1, 1, length);
                     positionRail.renderOrder = 2;
@@ -14034,7 +14107,14 @@
             // mid-song. Chart-dependent labels (chord names, section names)
             // live in _prewarmChart.
             try {
-                if (ren && scene && cam) ren.compile(scene, cam);
+                if (ren && scene && cam) {
+                    // Pool slots initially carry the ordinary box material.
+                    // Compile the RS+ variant before its first visible frame too.
+                    const dividerWarm = new T.Mesh(gRsLaneDivider, mRsLaneDivider);
+                    scene.add(dividerWarm);
+                    try { ren.compile(scene, cam); }
+                    finally { scene.remove(dividerWarm); }
+                }
             } catch (e) { console.warn('[3D-Hwy] prewarm compile:', e); }
             try {
                 // Fret-number labels in the per-frame style/colour combos.
@@ -16658,8 +16738,11 @@
                                 div.material = f === fDiv0 || f === fDiv1
                                     ? mHandPositionEdge
                                     : _usesRsDefaultHighway() ? mRsLaneDivider : mLaneDivider;
+                                setLaneDividerGeometry(div);
                                 div.scale.set(1, 1, dz);
-                                div.renderOrder = 2;
+                                // Always above coincident extension lines: transparent
+                                // distance sorting must not brighten a split segment.
+                                div.renderOrder = div.material === mRsLaneDivider ? 2.01 : 2;
                             }
                         }
                     }
@@ -16736,8 +16819,9 @@
                             div.material = f === fDivA || f === fDivB
                                 ? mHandPositionEdge
                                 : _usesRsDefaultHighway() ? mRsLaneDivider : mLaneDivider;
+                            setLaneDividerGeometry(div);
                             div.scale.set(1, 1, divLen);
-                            div.renderOrder = 2;
+                            div.renderOrder = div.material === mRsLaneDivider ? 2.01 : 2;
                         }
                     }
                 }
@@ -16755,6 +16839,7 @@
                         const div = pLaneDivider.get();
                         div.position.set(xFret(f), extYPos, extZMid);
                         div.material = mLaneDividerExt;
+                        setLaneDividerGeometry(div);
                         div.scale.set(1, 1, extLaneLen);
                         div.renderOrder = 2;
                     }
@@ -21276,6 +21361,7 @@
             if (gPMXLines) { gPMXLines.dispose(); gPMXLines = null; }
             if (gFHXLines) { gFHXLines.dispose(); gFHXLines = null; }
             mLaneOdd = mLaneEven = mLaneDivider = mRsLaneDivider = gLanePlane = gGhostFretPlane = null;
+            gLaneDivider = gRsLaneDivider = null;
             mHandPositionEdge = mHandPositionFill = null;
             chordFrameGradTex = chordFrameGradTexRs = chordFrameGradTexArp = null;
             pFretColMarker = null;
@@ -21662,6 +21748,9 @@
                     _streakHeat += (Math.min(1, _streakHits / 16) - _streakHeat) * 0.08;   // #7 ease heat
                 }
                 {
+                    if (_usesRsDefaultHighway()) {
+                        ren.getDrawingBufferSize(mRsLaneDivider.uniforms.uViewport.value);
+                    }
                     const comp = (!rsPlusNotation && _bloom && !_ssActive()) ? _bloomEnsure() : null;
                     if (comp) {
                         const bsz = canvasSize(highwayCanvas);
