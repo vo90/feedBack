@@ -101,18 +101,35 @@ function inkBounds(calls) {
     return result;
 }
 
+// Inspect the actual compound mask, including its cell-dependent strokes.
+function glyphCalls(material) {
+    const groups = [];
+    let group;
+    for (const call of material.map.image.context.calls) {
+        if (call.method === 'save') { group = []; groups.push(group); }
+        else if (call.method === 'restore') group = null;
+        else if (group) group.push(call);
+    }
+    return groups;
+}
+
 test('every supported 2–5 symbol combination stays square with separate unclipped ink', () => {
     const f = factory(), seenCounts = new Set();
     for (const attack of [{}, { ho: true }, { po: true }, { tp: true }]) {
         for (const slp of [false, true]) for (const plk of [false, true]) {
             for (const mute of [{}, { pm: true }, { fhm: true }]) {
                 for (const harmonic of [{}, { hm: true }, { hp: true }]) {
-                    const cells = f.cells(f.flags({ ...attack, slp, plk, ...mute, ...harmonic }));
+                    const flags = f.flags({ ...attack, slp, plk, ...mute, ...harmonic });
+                    const cells = f.cells(flags);
                     if (cells.length < 2) continue;
                     seenCounts.add(cells.length);
-                    const ink = cells.map(cell => {
+                    const painted = glyphCalls(f.faceMat(flags, 0xffcc00));
+                    assert.equal(painted.length, cells.length, 'each family is painted once');
+                    const ink = cells.map((cell, index) => {
                         assert.equal(cell.w, cell.h, cell.kind);
-                        const bounds = inkBounds(f.mat(cell.kind, 0xffcc00).map.image.context.calls);
+                        assert.deepEqual(painted[index].find(c => c.method === 'translate').args, [cell.x, cell.y]);
+                        assert.deepEqual(painted[index].find(c => c.method === 'scale').args, [cell.w, cell.h]);
+                        const bounds = inkBounds(painted[index]);
                         return { minX: cell.x + bounds.minX * cell.w, maxX: cell.x + bounds.maxX * cell.w,
                             minY: cell.y + bounds.minY * cell.h, maxY: cell.y + bounds.maxY * cell.h };
                     });
@@ -133,6 +150,42 @@ test('every supported 2–5 symbol combination stays square with separate unclip
         }
     }
     assert.deepEqual([...seenCounts].sort(), [2, 3, 4, 5]);
+});
+
+test('reduced face cells strengthen fine strokes without losing mute contrast or harmonic holes', () => {
+    const f = factory();
+    for (const note of [
+        { tp: true, pm: true },
+        { ho: true, pm: true, hp: true },
+        { po: true, slp: true, pm: true, hm: true },
+        { tp: true, slp: true, plk: true, pm: true, hp: true },
+    ]) {
+        const flags = f.flags(note), cells = f.cells(flags);
+        const groups = glyphCalls(f.faceMat(flags, 0xffcc00));
+        for (let i = 0; i < cells.length; i++) {
+            const kind = cells[i].kind, calls = groups[i];
+            const strokes = calls.filter(c => c.method === 'stroke');
+            const standalone = f.mat(kind, 0xffcc00).map.image.context.calls.filter(c => c.method === 'stroke');
+            assert.equal(strokes.length, standalone.length);
+            strokes.forEach((stroke, j) => {
+                assert.equal(stroke.stroke, standalone[j].stroke, 'the symbol palette is preserved');
+                assert.ok(stroke.width > standalone[j].width, 'reduced cells strengthen each stroke');
+                assert.ok(stroke.width <= standalone[j].width * 1.5, 'bounded weight avoids flooding small cells');
+            });
+            if (kind === 'palmMute') {
+                assert.equal(strokes[0].stroke, '#fff8f6');
+                assert.equal(strokes[1].stroke, '#614e00');
+                assert.ok(strokes[0].width > strokes[1].width * 1.8, 'PM keeps a clear pale edge and dark core');
+            }
+            if (kind === 'naturalHarmonic' || kind === 'pinchHarmonic') {
+                assert.equal(calls.some(c => c.method === 'fill'), false);
+                for (const curve of calls.filter(c => c.method === 'arc' || c.method === 'ellipse')) {
+                    const radius = curve.method === 'arc' ? curve.args[2] : Math.min(curve.args[2], curve.args[3]);
+                    assert.ok(radius - strokes[0].width / 2 > 0.09, 'the hollow center survives compensated outlines');
+                }
+            }
+        }
+    }
 });
 
 test('tap stays angular while slap and pop have opposite curved silhouettes', () => {
@@ -227,8 +280,8 @@ test('pale face marks keep their ink over a narrow dark contour across bright an
             assert.notEqual(last[last.method], '#18222c', 'keyline must not replace the pale mark');
             if (kind.endsWith('Harmonic')) {
                 assert.equal(calls(color).some(c => c.method === 'fill'), false, 'the harmonic center remains open');
-                assert.ok(Math.abs(outline.width - last.width - 0.024) < 1e-12, 'contour stays narrow');
-                assert.equal(last.width, kind === 'naturalHarmonic' ? 0.085 : 0.052);
+                assert.ok(Math.abs(outline.width - last.width - 0.032) < 1e-12, 'contour separates pale ink without filling the ring');
+                assert.equal(last.width, kind === 'naturalHarmonic' ? 0.085 : 0.060);
             }
         }
     }

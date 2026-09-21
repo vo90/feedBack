@@ -154,6 +154,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in that mode.
 
 ### Changed
+- **RS+ highway readability.** Individual sustain trails are 20% thicker,
+  retaining the existing visibility settings and technique motion. Palm-mute
+  borders and harmonic contours are clearer, and combined technique symbols
+  gain bounded stroke compensation as their face cells shrink.
 - **3D Highway 3.36.2: slide-in cues in RS+ and chord-hold guidance.**
   Destination-only incoming slides retain their fade, direction and real attack
   timing alongside linked trails. Chords with a rendered incoming technique keep
