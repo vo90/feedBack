@@ -1130,7 +1130,9 @@ test('yielding uses the existing ribbon path and gem front priority is optional'
         'moving and yielding ribbon trails must participate in the same rule',
     );
     assert.match(src, /hwyTrailPriorityWorldZ\([\s\S]{0,180}?strandYieldStarts,\s*strandYieldCount,[\s\S]{0,100}?trailYieldGemInFront,\s*TS/);
-    assert.match(src, /const\s+matchingVisibleEnd\s*=\s*visibleEnd/);
+    assert.match(src, /const\s+matchingVisibleEnd\s*=\s*Math\.min\(sourceEnd,\s*geometryEnd\s*\+\s*Math\.max\(cfg\.leadTime,\s*cfg\.endLeadTime\)\)/);
+    assert.match(src, /ctx\.path\s*\?\s*null\s*:\s*priorityTimes/,
+        'linked width queries must not scan the entire chain for cached mode-3 priority');
     assert.match(
         src,
         /hwyFillTrailYieldTimes\([\s\S]{0,420}?priorityTimes,\s*priorityIndex/,
@@ -1270,7 +1272,12 @@ test('rendering and eligibility share one rendered footprint model', () => {
     assert.match(matcherBody, /if\s*\(!visuallyBelow\)\s*return false/);
     assert.doesNotMatch(matcherBody, /techniqueMovesY|techniqueYOffsetWorld/);
     assert.match(matcherBody, /Math\.min\(event\.t,\s*ctx\.susEnd\)/);
-    assert.match(matcherBody, /sustainTrailCenterXAt\(/);
+    assert.match(matcherBody, /trailVisibilitySourceCenterXAt\(/);
+    const pathCenterDecl = src.indexOf('        function trailVisibilitySourceCenterXAt(');
+    assert.notEqual(pathCenterDecl, -1);
+    const pathCenterBody = src.slice(pathCenterDecl, src.indexOf('\n        }', pathCenterDecl) + 10);
+    assert.match(pathCenterBody, /sustainTrailCenterXAt\(/,
+        'the linked-piece sampler must reuse the actual rendered center model');
     assert.match(matcherBody, /trailYieldOpenTargetXBounds\(/);
     assert.match(matcherBody, /hwyTrailFootprintsCanOcclude\(/);
     assert.doesNotMatch(matcherBody, /trailYieldSettings\.(?:gemInFront|includeTrails)/);
