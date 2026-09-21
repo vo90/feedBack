@@ -6,7 +6,7 @@
 // --repo <checkout> --out <fresh-dir> --six <private compact chart>
 // --airbourne <private compact chart> --compare-ref <ref> --perf
 // --case <comma-separated name fragments> --reference (report expected old failures)
-// --source-ref <ref> reads that committed renderer instead of the working source.
+// --source-ref <ref> or --source-file <snapshot> reads a renderer instead of the working source.
 // --motion records every submitted frame at wall-clock playback speed (use --case).
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict');
 const {execFileSync}=require('node:child_process');

@@ -87,6 +87,13 @@ comparison uses `a42a719`. Private charts and generated recordings are not
 committed. Deterministic renderer timings are not a measurement of complete
 native app performance with live audio and scoring.
 
+Validation on 2026-09-21 passed all 821 highway unit tests and 70 renderer
+scenarios (30,470 frames), including full Six and Runnin' Wild in both presets.
+The sampled 101.5–107.4-second Six passage changed from 13 lateral reversals
+to zero. A quantized-audio-clock regression reproduces the earlier lane/camera
+handoff mismatch and passes with the shared render clock. Four representative
+chord, bend and slide captures retain identical mesh geometry to `a42a719`.
+
 Wide authored areas or simultaneous holds across a position change can still
 require a wider view. The camera frames a playing area rather than keeping
 each gem exactly at screen centre. This branch remains separate for visual
