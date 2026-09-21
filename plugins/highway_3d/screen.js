@@ -20800,7 +20800,8 @@
             active: false, initialized: false, x: 0, distance: 100 * K,
             lastTime: NaN, lastWall: NaN, rate: 1, rateTime: NaN, rateWall: NaN, preset: '', lefty: false, strings: 0,
             reset: -1, song: null, notes: null, chords: null, aspect: 0,
-            quietZoomTime: 0, pointCount: 0, minX: 0, maxX: 0,
+            quietZoomTime: 0, quietPanTime: 0, centreCandidateX: NaN,
+            pointCount: 0, minX: 0, maxX: 0,
             targetX: 0, targetDistance: 0, correction: false,
         };
         const _stableBins = Array.from({ length: 32 }, () => ({
@@ -21050,29 +21051,66 @@
                     : s.initialized ? s.x : curX;
                 const fit = stableSolve(centre, baseDistance, Math.min(AHEAD, 1.2 * s.rate), 0.68);
                 s.x = fit.x; s.distance = fit.distance;
+                s.targetX = s.x; s.targetDistance = s.distance;
+                s.centreCandidateX = s.pointCount > 0 ? s.x : NaN;
+                s.quietPanTime = 0;
                 s.quietZoomTime = 0; s.initialized = true;
             } else if (resize) {
                 // A resize can change distance, but never the held centre or
                 // viewing angle, even with following switched off.
                 const fit = stableSolve(s.x, baseDistance, 0, 0.90, true);
                 s.distance = fit.distance; s.quietZoomTime = 0;
+                s.centreCandidateX = NaN; s.quietPanTime = 0;
             } else if (stableCameraFollow && bundle.isPlaying !== false && s.pointCount > 0 && !seek) {
-                const fit = stableSolve(s.x, baseDistance, Math.min(AHEAD, 1.2 * s.rate), 0.68);
-                s.targetX = fit.x; s.targetDistance = fit.distance;
-                const panAlpha = 1 - Math.exp(-dt / (0.14 + cameraSmoothing * 0.42));
-                s.x += (fit.x - s.x) * panAlpha;
-                if (fit.distance >= s.distance * 0.97) s.quietZoomTime = 0;
-                else s.quietZoomTime += dt;
-                if (fit.distance > s.distance || s.quietZoomTime > 0.65 + zoomSmoothing * 0.6) {
-                    const tau = fit.distance > s.distance ? 0.16 : 0.65 + zoomSmoothing * 1.1;
-                    s.distance += (fit.distance - s.distance) * (1 - Math.exp(-dt / tau));
+                // Seeking and playing share a neutral composition. The fit's
+                // feasible interval still allows immediate minimum movement
+                // for visibility, but that correction is not our resting goal.
+                const centre = (s.minX + s.maxX) / 2;
+                const fit = stableSolve(centre, baseDistance, Math.min(AHEAD, 1.2 * s.rate), 0.68);
+                const neutralX = fit.x, neutralDistance = fit.distance;
+                const minX = _stableInterval.min, maxX = _stableInterval.max;
+                // Roughly 1% of the horizontal half-view at the play line.
+                // Compare with a retained reference, not the preceding frame:
+                // gradual position changes must eventually start a new dwell.
+                const quietBand = Math.max(0.25 * K,
+                    neutralDistance * Math.tan(STABLE_CAMERA_FOV * Math.PI / 360) * cam.aspect * 0.01);
+                if (!Number.isFinite(s.centreCandidateX) || Math.abs(neutralX - s.centreCandidateX) > quietBand) {
+                    s.centreCandidateX = neutralX; s.quietPanTime = 0;
                 }
+                const previousQuiet = s.quietPanTime;
+                s.quietPanTime += dt;
+                // Split the frame at the dwell boundary so low frame rates do
+                // not get an extra full frame of return movement.
+                const returnDt = Math.min(dt, Math.max(0, s.quietPanTime - 0.6)
+                    - Math.max(0, previousQuiet - 0.6));
+                const holdX = Math.max(minX, Math.min(maxX, s.x));
+                const returnX = Math.max(minX, Math.min(maxX, s.centreCandidateX));
+                const panTau = 0.14 + cameraSmoothing * 0.42;
+                s.x += (holdX - s.x) * (1 - Math.exp(-(dt - returnDt) / panTau));
+                s.x += (returnX - s.x) * (1 - Math.exp(-returnDt / panTau));
+                s.targetX = returnDt > 0 ? returnX : holdX;
+                s.targetDistance = neutralDistance;
+                const settleEpsilon = 0.0001 * K;
+                if (returnDt > 0 && Math.abs(s.x - returnX) < settleEpsilon) s.x = returnX;
+                // Once a wider view is returning, finish the return. A relative
+                // 3% cutoff used to reset this timer just before convergence.
+                if (neutralDistance >= s.distance - settleEpsilon) s.quietZoomTime = 0;
+                else s.quietZoomTime += dt;
+                if (neutralDistance > s.distance || s.quietZoomTime > 0.65 + zoomSmoothing * 0.6) {
+                    const tau = neutralDistance > s.distance ? 0.16 : 0.65 + zoomSmoothing * 1.1;
+                    s.distance += (neutralDistance - s.distance) * (1 - Math.exp(-dt / tau));
+                }
+                if (Math.abs(s.distance - neutralDistance) < settleEpsilon) s.distance = neutralDistance;
                 // Last-resort visibility guard uses actual geometry, not the
                 // prediction. An unexpectedly large frame step cannot leave a
                 // playable note outside the view while damping catches up.
                 const safe = stableSolve(s.x, s.distance, 0, 0.92);
                 s.correction = Math.abs(safe.x - s.x) > 1e-7 || safe.distance > s.distance + 1e-7;
                 s.x = safe.x; s.distance = safe.distance;
+            } else if (s.pointCount === 0 || !stableCameraFollow) {
+                // Silence and Follow off hold the pose; their elapsed time must
+                // not secretly satisfy the dwell for the next live passage.
+                s.centreCandidateX = NaN; s.quietPanTime = 0; s.quietZoomTime = 0;
             }
             stableApplyPose();
         }
