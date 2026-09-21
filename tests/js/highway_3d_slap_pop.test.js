@@ -62,6 +62,7 @@ test('optional attack flags do not leak from one reused chord member to the next
     const copy = new Function(`
         const _linkedBendStarts = new WeakMap(), _linkedBendEnds = new WeakMap();
         const _linkedVibratoRuns = new WeakMap();
+    const _linkedTrailPaths = { byNote: new WeakMap() };
         return function(_scrChordNote, cn, ch) {
             ${src.slice(start, end)}
             return _scrChordNote;
