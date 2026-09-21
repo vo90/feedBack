@@ -2195,7 +2195,7 @@
     const BEND_ENV_RISE_FRAC = 0.35;
     const BEND_ENV_RELEASE_FRAC = 0.30;
     const TREMOLO_BUMP_S = 0.06;
-    const RSPLUS_SUSTAIN_STROKE_SCALE = 0.5;
+    const RSPLUS_SUSTAIN_STROKE_SCALE = 0.6;
 
     /** Longitudinal samples for sustain-technique prism (indexed BufferGeometry). */
     const SLIDE_RIBBON_SAMPLES = 96;
@@ -8021,8 +8021,12 @@
                 .toString(16).padStart(6, '0');
         }
 
-        function drawRsPlusTechniqueGlyph(g, kind, stringHex = 0xffffff) {
+        function drawRsPlusTechniqueGlyph(g, kind, stringHex = 0xffffff, cellScale = 1) {
             const white = '#fff8f6';
+            // Compensate fine strokes when multiple techniques share a face.
+            // Keep the silhouettes/cells fixed and cap the weight so hollow
+            // marks retain their gaps. This runs only when caching a mask.
+            const strokeScale = Math.min(1.5, 1 / Math.sqrt(cellScale));
             const keyline = width => {
                 g.strokeStyle = '#18222c'; g.lineWidth = width;
                 g.lineJoin = g.lineCap = 'round'; g.stroke();
@@ -8031,7 +8035,7 @@
                 // Pale ink stays distinct on bright string colors as well as
                 // custom white faces. Keep this contour in the cached mask;
                 // off-face direction cues retain their string-colored fill.
-                if (onFace) keyline(0.028);
+                if (onFace) keyline(0.028 * strokeScale);
                 g.fillStyle = color; g.fill();
             };
             g.beginPath();
@@ -8058,16 +8062,18 @@
                 fill('#ffe593');
             } else if (kind === 'palmMute' || kind === 'fretHandMute') {
                 const palm = kind === 'palmMute';
-                const left = palm ? 0.10 : 0.26, right = 1 - left;
+                // Inset the wider PM's endpoints by its extra stroke radius
+                // so compensated compound marks keep their antialiasing room.
+                const left = palm ? 0.10 + 0.07 * (strokeScale - 1) : 0.26, right = 1 - left;
                 g.moveTo(left, 0.25); g.lineTo(right, 0.75);
                 g.moveTo(right, 0.25); g.lineTo(left, 0.75);
                 g.lineCap = 'round';
-                if (!palm) keyline(0.168);
+                if (!palm) keyline(0.168 * strokeScale);
                 g.strokeStyle = white;
-                g.lineWidth = palm ? 0.12 : 0.14; g.stroke();
+                g.lineWidth = 0.14 * strokeScale; g.stroke();
                 if (palm) {
                     g.strokeStyle = rsPlusTechniqueColor(stringHex, 0, 0.38);
-                    g.lineWidth = 0.072; g.stroke();
+                    g.lineWidth = 0.072 * strokeScale; g.stroke();
                 }
             } else if (kind === 'naturalHarmonic' || kind === 'pinchHarmonic') {
                 if (kind === 'naturalHarmonic') {
@@ -8079,8 +8085,8 @@
                     g.moveTo(0.69, 0.50);
                     g.ellipse(0.50, 0.50, 0.19, 0.17, 0, 0, Math.PI * 2);
                 }
-                const width = kind === 'naturalHarmonic' ? 0.085 : 0.052;
-                keyline(width + 0.024);
+                const width = (kind === 'naturalHarmonic' ? 0.085 : 0.060) * strokeScale;
+                keyline(width + 0.032 * strokeScale);
                 g.strokeStyle = white; g.lineWidth = width; g.stroke();
             } else if (kind === 'bend' || kind === 'slideRight' || kind === 'slideLeft') {
                 if (kind === 'bend') {
@@ -8131,7 +8137,7 @@
                 g.save();
                 g.translate(cell.x, cell.y);
                 g.scale(cell.w, cell.h);
-                drawRsPlusTechniqueGlyph(g, cell.kind, hex);
+                drawRsPlusTechniqueGlyph(g, cell.kind, hex, cell.w);
                 g.restore();
             }
             const texture = new T.CanvasTexture(c);

@@ -21,6 +21,7 @@ assert.ok(sizeStart >= 0 && sizeEnd > sizeStart);
 const sizing = src.slice(sizeStart, sizeEnd);
 const scaleDeclaration = src.match(/const RSPLUS_SUSTAIN_STROKE_SCALE = [^;]+;/)[0];
 const sampleDeclaration = src.match(/const SLIDE_RIBBON_SAMPLES = [^;]+;/)[0];
+const yieldDefaultsDeclaration = src.match(/const TRAIL_YIELD_DEFAULTS = Object\.freeze\(\{[\s\S]*?\}\);/)[0];
 
 function harness() {
     return new Function(`
@@ -34,7 +35,10 @@ function harness() {
         const _slideRibbonTimesScratch=[];
         ${scaleDeclaration}
         ${sampleDeclaration}
-        const TRAIL_YIELD_DEFAULTS={minScale:.3};
+        ${yieldDefaultsDeclaration}
+        ${fn('hwySmoothstep01')}
+        ${fn('hwyTrailYieldAmountAt')}
+        ${fn('hwyAppendTrailYieldContourTimes')}
         let rsPlusNotation=false, _leftyCached=false, _invertedCached=false;
         const sY=s=>s*S_GAP, fretMid=f=>f*10, xFretMid=fretMid, dZ=t=>-t*10;
         const _drawAnchors=[], curX=0;
@@ -62,11 +66,13 @@ function harness() {
         ${fn('ensureSlideRibbonCapacity')}
         ${fn('slideRibbonUpdatePair')}
         function dimensions(n, openWScale=1, susTrailMatchArpFrame=false) {
-            const openSlabThickMul=1;
+            const openSlabThickMul=n.f===0?1.5:1;
             ${sizing}
             return {tw,th,outlineW:tw+trailEdgePad,outlineH:th+trailEdgePad};
         }
-        const geometry=()=>({userData:{},setDrawRange(){},attributes:{position:{count:(SLIDE_RIBBON_SAMPLES+1)*4,array:new Float64Array((SLIDE_RIBBON_SAMPLES+1)*12)}}});
+        // Leave room for one visibility notch's exact contour knots while
+        // keeping the same pooled arrays across Current/RS+ draws.
+        const geometry=()=>({userData:{},setDrawRange(){},attributes:{position:{count:(SLIDE_RIBBON_SAMPLES+17)*4,array:new Float64Array((SLIDE_RIBBON_SAMPLES+17)*12)}}});
         const outline=geometry(), body=geometry();
         return {
             size(style,n,openWidth=1,arp=false) {
@@ -79,12 +85,14 @@ function harness() {
                     standaloneTrailVisible:true,chordTrailMeta:null});
                 return {count,width:_trailCrossingTargetWidths[0],bases:Array.from(_trailCrossingTargetBases)};
             },
-            render(style,n,lefty=false,inverted=false) {
+            render(style,n,lefty=false,inverted=false,yieldTarget=null) {
                 rsPlusNotation=style; _leftyCached=lefty; _invertedCached=inverted;
                 const size=dimensions(n);
                 slideRibbonUpdatePair(outline,body,10,size.outlineW,size.outlineH,size.tw,size.th,
-                    5,n.sus,n.t,n.t-.5,n,slideTrailEnd(n));
-                return {body:Array.from(body.attributes.position.array),outline:Array.from(outline.attributes.position.array),
+                    5,n.sus,n.t,n.t-.5,n,slideTrailEnd(n),
+                    yieldTarget?[yieldTarget]:null,yieldTarget?[yieldTarget]:null,yieldTarget?1:0,n.t+n.sus);
+                const count=(body.userData.ribbonSlices+1)*12;
+                return {body:Array.from(body.attributes.position.array.slice(0,count)),outline:Array.from(outline.attributes.position.array.slice(0,count)),
                     bodyBuffer:body.attributes.position.array,outlineBuffer:outline.attributes.position.array};
             },
             reach(style,width) { rsPlusNotation=style; return sustainMotionWidth(width)*.375; },
@@ -97,11 +105,37 @@ test('RS+ sustain strokes and thin borders scale together for ordinary, open and
     const h=harness();
     for (const f of [0,5]) for (const openWidth of [.22,1,2]) for (const arp of [false,true]) {
         const current=h.size(false,{f},openWidth,arp), rs=h.size(true,{f},openWidth,arp);
-        for (const key of ['tw','th','outlineW','outlineH']) assert.equal(rs[key],current[key]*.5);
+        for (const key of ['tw','th','outlineW','outlineH']) assert.ok(Math.abs(rs[key]-current[key]*.6)<1e-12);
         assert.ok(rs.outlineW>rs.tw && rs.outlineH>rs.th);
     }
-    assert.equal(h.size(false,{f:5}).tw,4.25,'Current retains its original .85-head-width stroke');
-    assert.equal(h.size(true,{f:5}).tw,2.125);
+    assert.deepEqual(h.size(false,{f:5}),{tw:4.25,th:.36,outlineW:4.65,outlineH:.76},
+        'Current retains its original cross-section and border');
+    assert.equal(h.size(true,{f:5}).tw,2.55);
+});
+
+test('default visibility notches retain 18 percent of normal Current width and height in RS+', () => {
+    const h=harness(), n={t:1,s:3,f:5,sus:2};
+    const fullSize=h.size(false,n);
+    for (const style of [false,true]) {
+        const ribbon=h.render(style,n,false,false,1.8);
+        for (const [key,width,height] of [['body',fullSize.tw,fullSize.th],
+            ['outline',fullSize.outlineW,fullSize.outlineH]]) {
+            const vertices=ribbon[key];
+            let minWidth=Infinity,minHeight=Infinity,maxWidth=0;
+            for (let i=0;i<vertices.length;i+=12) {
+                const sampleWidth=vertices[i+3]-vertices[i];
+                const sampleHeight=vertices[i+7]-vertices[i+1];
+                minWidth=Math.min(minWidth,sampleWidth);
+                minHeight=Math.min(minHeight,sampleHeight);
+                maxWidth=Math.max(maxWidth,sampleWidth);
+            }
+            const narrowedRatio=style ? .18 : .30;
+            assert.ok(Math.abs(minWidth-width*narrowedRatio)<1e-10);
+            assert.ok(Math.abs(minHeight-height*narrowedRatio)<1e-10);
+            assert.ok(Math.abs(maxWidth-width*(style ? .6 : 1))<1e-10,
+                'the same ribbon returns to its normal width outside the overlap');
+        }
+    }
 });
 
 test('narrow trail-to-trail footprints match both fretted strokes and standalone open rails', () => {
@@ -134,7 +168,7 @@ test('RS+ ribbons preserve all bend, slide, unpitched slide, vibrato and tremolo
             for (let axis=0;axis<3;axis++) assert.ok(Math.abs(center(rs[key],i,axis)-center(current[key],i,axis))<1e-10);
             const currentWidth=current[key][i+3]-current[key][i];
             const newWidth=rs[key][i+3]-rs[key][i];
-            assert.ok(Math.abs(newWidth-currentWidth*.5)<1e-10);
+            assert.ok(Math.abs(newWidth-currentWidth*.6)<1e-10);
         }
         assert.equal(JSON.stringify(n),saved,'restyling must not rewrite chart motion');
     }
