@@ -91,6 +91,7 @@ dlc_dir_env = None      # the raw DLC_DIR env string, "" if unset — distinguis
 static_dir = None
 sloppak_cache_dir = None
 audio_cache_dir = None
+harmony_jobs = None  # profile-local, lazily started chart-analysis worker
 
 # Injected callables (not values): server owns the impl + its state, routers call
 # through the seam. get_progression_content wraps a lazy content cache that stays
@@ -131,7 +132,7 @@ _SLOTS = frozenset({
     "meta_db", "audio_effect_mappings", "tuning_providers",
     "library_providers", "local_library_provider",
     "config_dir", "dlc_dir", "dlc_dir_env",
-    "static_dir", "sloppak_cache_dir", "audio_cache_dir",
+    "static_dir", "sloppak_cache_dir", "audio_cache_dir", "harmony_jobs",
     "get_progression_content", "builtin_diagnostic_filename",
     "running_version",
     "art_cache_dir", "song_pack_art_exists", "art_override_paths", "art_safe_name",
