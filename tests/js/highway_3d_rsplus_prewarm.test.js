@@ -74,15 +74,16 @@ test('cold RS+ chart warms only observed valid masks and bends before their firs
         {s:0,f:5,ho:true}, {s:0,f:5,ho:true},
         {s:1,f:3,pm:true,ho:true}, {s:2,f:7,bn:0,bnv:[{t:.2,v:.5}]},
         {s:3,f:8,sl:12,sus:1}, {s:9,f:4,hp:true}, {s:1,f:90,tp:true},
-        {s:2,f:6},
+        {s:2,f:6}, {s:3,f:6,ho:true,slp:true,plk:true,pm:true,hp:true},
     ], chords:[{notes:[{s:4,f:127,mt:true},{s:5,f:4,hp:true,ac:true}]}]};
     h.warm(bundle);
     assert.equal(h.snapshot().canvases,0,'Current must not allocate RS+ masks');
     h.settings({style:true});
-    assert.equal(h.snapshot().materials,5,'duplicates, plain notes, invalid notes and disabled arrows are excluded');
-    for (const [code,string] of [[1,0],[33,1],[512,2],[64,4],[256,5]]) assert.ok(h.cached(code,string));
+    assert.equal(h.snapshot().materials,6,'duplicates, plain notes, invalid notes and disabled arrows are excluded');
+    for (const [code,string] of [[1,0],[33,1],[512,2],[313,3],[64,4],[256,5]]) assert.ok(h.cached(code,string));
     const before=h.snapshot();
     assert.equal(h.drawMask(33,1),h.cached(33,1));
+    assert.equal(h.drawMask(313,3),h.cached(313,3),'five-family compensated face reuses its warmed mask');
     assert.equal(h.snapshot().canvases,before.canvases,'the actual draw factory finds its cold texture already cached');
     assert.equal(before.warnings,0);
 });
