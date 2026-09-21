@@ -8049,14 +8049,15 @@
         // straight into note Z-positions it makes the whole highway step in
         // micro-jumps (1–2 static frames, then a jump), most visible as a
         // "stutter" across a dense wall of repeated chords even when FPS is
-        // steady. smoothNow() interpolates forward with performance.now()
-        // between distinct audio samples (mirroring core highway.js
-        // getTime()), tracking the observed playback rate so the speed slider
-        // stays accurate, and falls back to the raw value on pause / seek /
-        // stall so the scroll never drifts against silent audio.
+        // steady. smoothNow() advances with performance.now() at the declared
+        // playback rate and eases small sample corrections across frames.
+        // Downlevel hosts get a longer-window rate estimate. Pause / seek /
+        // stall still re-anchor to audio so the scroll cannot run away.
         let _clkAudioT = NaN;   // last distinct bundle.currentTime sample
         let _clkPerf = NaN;     // performance.now() when that sample arrived
         let _clkRate = 1;       // observed chart-seconds per real-second
+        let _clkFramePerf = NaN;
+        let _clkRateAudioT = NaN, _clkRatePerf = NaN;
         let _frameNow = 0;      // smoothed time for THIS frame (update → camUpdate)
 
         // Lifecycle flags
@@ -14091,6 +14092,9 @@
         function smoothNow(bundle) {
             const raw = bundle.currentTime;
             const p = performance.now();
+            const declaredRate = bundle.playbackRate ?? bundle.speed;
+            const hasRate = Number.isFinite(declaredRate) && declaredRate > 0 && declaredRate < 5;
+            const frameDt = (p - _clkFramePerf) / 1000;
             // Host pause signal (feedBack core's bundle.isPlaying): when the
             // chart clock isn't advancing (paused / stalled / mid-seek), don't
             // extrapolate forward against a frozen audio sample — that creeps
@@ -14099,32 +14103,48 @@
             // playing frame resumes from a clean segment. `=== false` so
             // downlevel hosts (isPlaying undefined) fall through to the
             // staleness-based cap below, preserving prior behavior there.
-            if (bundle.isPlaying === false) {
+            if (bundle.isPlaying === false || Number.isNaN(_clkPerf)
+                || !Number.isFinite(frameDt) || frameDt > 0.1
+                || (raw !== _clkAudioT && p - _clkPerf > 100)
+                || raw < _clkAudioT
+                || Math.abs(raw - _frameNow) > 0.1 + Math.max(0, frameDt) * _clkRate) {
                 _clkAudioT = raw;
                 _clkPerf = p;
-                _clkRate = 1;
+                _clkFramePerf = p;
+                _clkRateAudioT = raw; _clkRatePerf = p;
+                _clkRate = hasRate ? declaredRate : 1;
                 return (_frameNow = raw);
             }
+            if (hasRate) _clkRate = declaredRate;
             if (raw !== _clkAudioT) {
-                // New audio sample — re-anchor and refine the rate estimate.
-                if (!Number.isNaN(_clkPerf)) {
-                    const dP = (p - _clkPerf) / 1000;
-                    if (dP > 0.001 && dP < 0.5) {
-                        const r = (raw - _clkAudioT) / dP;
-                        _clkRate = (r > 0.05 && r < 5) ? r : 1; // seek/loop → reset
-                    } else if (dP >= 0.5) {
-                        _clkRate = 1; // long gap (paused / tab inactive)
-                    }
+                // Downlevel/contained hosts may omit the rate. Estimate over a
+                // quarter second, not one coarse audio sample (which alternated
+                // between e.g. 0.6x and 2x during steady 1x playback).
+                const rateDt = (p - _clkRatePerf) / 1000;
+                if (rateDt >= 0.25) {
+                    const rate = (raw - _clkRateAudioT) / rateDt;
+                    if (!hasRate && rate > 0.05 && rate < 5) _clkRate = rate;
+                    _clkRateAudioT = raw; _clkRatePerf = p;
                 }
                 _clkAudioT = raw;
                 _clkPerf = p;
-                return (_frameNow = raw);
             }
-            // Same audio sample as last call — interpolate forward, capped so a
-            // stalled main thread or paused audio can't run the clock away.
+            _clkFramePerf = p;
+            // Preserve the existing stall backstop for hosts without isPlaying.
             const dt = (p - _clkPerf) / 1000;
-            if (dt <= 0 || dt > 0.1) return (_frameNow = raw);
-            return (_frameNow = _clkAudioT + _clkRate * dt);
+            if (dt > 0.1) return (_frameNow = raw);
+            if (frameDt <= 0) return _frameNow;
+            // Advance continuously, then ease small phase errors toward audio.
+            // Snapping to EVERY new sample defeats interpolation: a 17 ms frame
+            // could move notes by 40 ms. Bound the correction to 20% of normal
+            // travel so jitter never stalls/reverses notes or causes a jump.
+            // Discontinuities above (seek/loop/pause/resume) still snap to audio.
+            const advance = frameDt * _clkRate;
+            const predicted = _frameNow + advance;
+            const target = _clkAudioT + _clkRate * dt;
+            const correction = (target - predicted) * Math.min(1, frameDt / 0.12);
+            const limit = advance * 0.2;
+            return (_frameNow = predicted + Math.max(-limit, Math.min(limit, correction)));
         }
 
         /* ── Per-frame rendering ─────────────────────────────────────────── */
@@ -15320,6 +15340,7 @@
                     // re-anchors cleanly instead of measuring a bogus rate
                     // across the seek-to-0 discontinuity.
                     _clkAudioT = NaN; _clkPerf = NaN; _clkRate = 1;
+                    _clkFramePerf = NaN; _clkRateAudioT = NaN; _clkRatePerf = NaN;
                 }
             }
 
@@ -22268,6 +22289,7 @@
             _lookaheadHiNeckLatch = false;
             _measureStarts = []; _measureStartsRef = null;
             _clkAudioT = NaN; _clkPerf = NaN; _clkRate = 1; _frameNow = 0;
+            _clkFramePerf = NaN; _clkRateAudioT = NaN; _clkRatePerf = NaN;
             _coincidentRepeatNoteSet = null;
             _coincidentRepeatNotesRef = null;
             _coincidentRepeatChordsRef = null;

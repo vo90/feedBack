@@ -61,7 +61,7 @@ function buildClockSandbox(perfNowImpl) {
     };
     vm.createContext(sandbox);
     const src = highwaySources();
-    const setTimeBody = extractBlock(src, 'setTime(t) {');
+    const setTimeBody = extractBlock(src, 'setTime(t, playbackRate) {');
     const freezeTimeBody = extractBlock(src, 'freezeTime(t) {');
     const getTimeBody = extractBlock(src, 'getTime() {');
     // Strip trailing comma if present (object-literal method declarations).
@@ -170,6 +170,23 @@ test('api.stop() clears the chart anchor state so re-init starts fresh', () => {
 });
 
 // ── Behavioral tests (run extracted setTime/getTime in vm sandbox) ──────
+
+test('setTime carries an optional transport rate without changing chart time', () => {
+    const sb = buildClockSandbox(() => 0);
+    sb.setTime(10, 0.5);
+    assert.equal(sb.hwState._playbackRate, 0.5);
+    assert.equal(sb.getTime(), 10);
+    sb.setTime(11, 1.5);
+    assert.equal(sb.hwState._playbackRate, 1.5);
+    for (const rate of [undefined, NaN, 0, -1, Infinity]) {
+        sb.setTime(12, rate);
+        assert.equal(sb.hwState._playbackRate, undefined);
+        assert.equal(sb.getTime(), 12);
+    }
+    const src = fs.readFileSync(HIGHWAY_JS, 'utf8');
+    assert.match(extractBlock(src, 'function _makeBundle()'), /b\.playbackRate\s*=\s*hwState\._playbackRate/);
+    assert.match(extractBlock(src, 'stop() {'), /hwState\._playbackRate\s*=\s*undefined/);
+});
 
 test('behavior: getTime interpolates smoothly between two anchors at 1x', () => {
     let now = 0;

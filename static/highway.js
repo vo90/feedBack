@@ -198,6 +198,7 @@ function createHighway() {
     // re-anchor refines the estimate from the latest segment. Default
     // to 1 until we have two anchors to compare.
     hwState._chartObservedRate = 1;
+    hwState._playbackRate = undefined;
     // Visibility-aware rAF (feedBack#246): when the canvas is hidden
     // (display:none on itself or any ancestor — e.g. splitscreen's
     // workaround), pause renderer.draw and emit highway:visibility on
@@ -553,6 +554,7 @@ function createHighway() {
         const b = _bundleReused;
         // Timing
         b.currentTime = hwState.currentTime;
+        b.playbackRate = hwState._playbackRate;
         b.songInfo = hwState.songInfo;
         b.isReady = hwState.ready;
         // True while the chart clock is actively advancing; false when
@@ -2485,7 +2487,11 @@ function createHighway() {
             };
         },
 
-        setTime(t) {
+        setTime(t, playbackRate) {
+            // A host that knows the transport rate can supply it independently
+            // of the quantized audio timestamps. Older callers remain valid.
+            hwState._playbackRate = Number.isFinite(playbackRate) && playbackRate > 0
+                ? playbackRate : undefined;
             // chartTime is what getTime() exposes to plugins — bake the
             // per-song offset in here so plugins (scoring, note detect,
             // etc.) see the same chart-aligned clock the renderer does.
@@ -2926,6 +2932,7 @@ function createHighway() {
             hwState._chartAnchorPerfNow = NaN;
             hwState._chartLastAdvanceAt = 0;
             hwState._chartObservedRate = 1;
+            hwState._playbackRate = undefined;
             // Release the renderer's GPU / DOM / event-listener resources
             // when leaving the player — anything it allocated in init()
             // should be torn down here so navigating away doesn't leak.
