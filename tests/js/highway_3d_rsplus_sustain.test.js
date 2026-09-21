@@ -30,6 +30,7 @@ function harness() {
         const TREMOLO_BUMP_S=.06, VIBRATO_HALF_WAVE_S=.08;
         const _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap();
         const _linkedVibratoRuns=new WeakMap();
+        const _linkedTrailPaths={byNote:new WeakMap()};
         const _slideRibbonTimesScratch=[];
         ${scaleDeclaration}
         ${sampleDeclaration}

@@ -3172,6 +3172,7 @@
         return marks;
     }
     function slideOutCueAt(n, chartTime) {
+        if (!Array.isArray(n?.slide_out_marks) || n.slide_out_marks.length === 0) return 0;
         // Known-target slides retain their established geometry.
         if (slideTrailEnd(n) || !(n.f > 0)) return 0;
         const elapsed = chartTime - n.t;
@@ -17466,9 +17467,9 @@
         /** Rendered X centre of one sustain strand at a chart time. */
         function sustainTrailCenterXAt(n, strandBaseX, chartTime, slideSt, trailW) {
             return strandBaseX
-                + (_leftyCached ? -1 : 1) * (slideOffsetWorldX(n, chartTime, slideSt)
-                    + slideOutOffsetWorldX(n, chartTime))
-                + tremoloOffsetWorldX(n, chartTime, trailW);
+                + (_leftyCached ? -1 : 1) * (slideSt ? slideOffsetWorldX(n, chartTime, slideSt) : 0)
+                + (_leftyCached ? -1 : 1) * (n.slide_out_marks?.length ? slideOutOffsetWorldX(n, chartTime) : 0)
+                + (n.tr ? tremoloOffsetWorldX(n, chartTime, trailW) : 0);
         }
 
         // Shared, allocation-free footprint matcher. Candidate discovery has
@@ -17594,14 +17595,24 @@
         }
 
         /** Sample the complete authored path for visibility, never extend its geometry. */
-        function trailVisibilitySourceNoteAt(chartTime) {
+        function trailVisibilitySourceMemberAt(chartTime) {
             const ctx = _trailYieldMatchContext;
-            return ctx.path ? hwyLinkedTrailMemberAt(ctx.path, chartTime).view : ctx.note;
+            if (!ctx.path) return null;
+            if (ctx.sourceSampleTime !== chartTime || !ctx.sourceSampleMember) {
+                ctx.sourceSampleTime = chartTime;
+                ctx.sourceSampleMember = hwyLinkedTrailMemberAt(ctx.path, chartTime);
+            }
+            return ctx.sourceSampleMember;
+        }
+        function trailVisibilitySourceNoteAt(chartTime) {
+            return trailVisibilitySourceMemberAt(chartTime)?.view || _trailYieldMatchContext.note;
         }
         function trailVisibilitySourceCenterXAt(chartTime, trailWidth) {
             const ctx = _trailYieldMatchContext;
-            const n = trailVisibilitySourceNoteAt(chartTime);
-            let base = ctx.path && n.f > 0 ? xFretMid(n.f) : ctx.strandBaseX;
+            const member = trailVisibilitySourceMemberAt(chartTime);
+            const n = member?.view || ctx.note;
+            if (member && member.slideSt === undefined) member.slideSt = slideTrailEnd(n);
+            let base = member && n.f > 0 ? xFretMid(n.f) : ctx.strandBaseX;
             if (ctx.path && n.f === 0) {
                 const anchor = anchorLaneBoundsAt(_drawAnchors, n.t);
                 const center = anchor ? (xFret(anchor.dMin) + xFret(anchor.dMax)) * 0.5 : curX;
@@ -17609,7 +17620,7 @@
                 base = center + (ctx.strandIndex === 0 ? -1 : 1) * NW * 3 * scale;
             }
             return sustainTrailCenterXAt(n, base, chartTime,
-                ctx.path ? slideTrailEnd(n) : ctx.slideSt, trailWidth);
+                member ? member.slideSt : ctx.slideSt, trailWidth);
         }
         function trailVisibilitySourceWidthAt(chartTime) {
             const ctx = _trailYieldMatchContext;
@@ -17617,6 +17628,41 @@
             if (!ctx.path || note.f > 0) return ctx.trailW;
             const scale = Math.max(0.22, openNoteLaneBoxW(note.t) * 0.96 / (40 * K));
             return ctx.trailBodyW / ctx.openWScale * scale + ctx.trailEdgePad;
+        }
+        // Bound every local path leg, including return-to-start slides. This
+        // rejects disjoint candidates before the dense crossing sampler without
+        // assuming a whole linked path is monotonic or always moving.
+        const _trailSourceSweepBounds = new Float64Array(2);
+        function trailVisibilitySourceSweep(start, end) {
+            const ctx = _trailYieldMatchContext, path = ctx.path;
+            const bounds = _trailSourceSweepBounds;
+            bounds[0] = Infinity; bounds[1] = -Infinity;
+            let moves = false, previousX = null;
+            let index = path ? _linkedTrailPaths.byNote.get(hwyLinkedTrailMemberAt(path, start).note).index : 0;
+            const limit = path ? path.members.length : 1;
+            for (; index < limit; index++) {
+                const member = path ? path.members[index] : null;
+                const note = member?.view || ctx.note;
+                if (note.t > end) break;
+                const a = Math.max(start, note.t), b = Math.min(end, note.t + note.sus);
+                if (b < a) continue;
+                // Sample the ending member itself, not the successor chosen by
+                // the shared seam lookup at its exact end time.
+                ctx.sourceSampleMember = member; ctx.sourceSampleTime = a;
+                const width = trailVisibilitySourceWidthAt(a);
+                const x0 = trailVisibilitySourceCenterXAt(a, width);
+                ctx.sourceSampleMember = member; ctx.sourceSampleTime = b;
+                const x1 = trailVisibilitySourceCenterXAt(b, width);
+                const slideOut = note.slide_out_marks?.length > 0 && !(member ? member.slideSt : ctx.slideSt);
+                const reach = (note.tr ? sustainMotionWidth(width) * 0.375 : 0) + (slideOut ? slideOutReach(note) : 0);
+                bounds[0] = Math.min(bounds[0], x0 - reach - width * 0.5, x1 - reach - width * 0.5);
+                bounds[1] = Math.max(bounds[1], x0 + reach + width * 0.5, x1 + reach + width * 0.5);
+                moves ||= !!(note.tr || slideOut || x0 !== x1 || (previousX !== null && previousX !== x0));
+                previousX = x1;
+                if (b >= end) break;
+            }
+            ctx.sourceSampleMember = null;
+            return moves;
         }
         function appendLinkedTrailContourTimes(path, start, end, out) {
             if (!path) return;
@@ -18419,9 +18465,8 @@
                 const targetStrandCount = trailCrossingTargetStrands(target);
                 if (targetStrandCount === 0) continue;
                 const span = overlapEnd - overlapStart;
-                const sourceSlideOut = slideOutMarks(n).length > 0 && !ctx.slideSt;
                 const targetSlideOut = slideOutMarks(target).length > 0 && !ctx.crossingTargetSlideSt;
-                const sourceMovesX = !!(ctx.path || ctx.slideSt || n.tr || sourceSlideOut);
+                const sourceMovesX = trailVisibilitySourceSweep(overlapStart, overlapEnd);
                 const targetMovesX = !!(ctx.crossingTargetSlideSt || target.tr || targetSlideOut);
                 const ribbonStep = span / SLIDE_RIBBON_SAMPLES;
                 const hasTremolo = !!(ctx.path?.hasTremolo || n.tr || target.tr);
@@ -18442,10 +18487,6 @@
                     // Slides are monotonic and tremolo has a fixed bounded
                     // lateral reach. Reject disjoint complete sweeps before
                     // entering the denser transition sampler.
-                    const sourceStartX = trailVisibilitySourceCenterXAt(overlapStart, ctx.trailW);
-                    const sourceEndX = trailVisibilitySourceCenterXAt(overlapEnd, ctx.trailW);
-                    const sourceReach = (n.tr ? sustainMotionWidth(ctx.trailW) * 0.375 : 0)
-                        + (sourceSlideOut ? slideOutReach(n) : 0);
                     const targetStartX = sustainTrailCenterXAt(
                         target, ctx.crossingTargetBaseX, overlapStart,
                         ctx.crossingTargetSlideSt, ctx.crossingTargetW,
@@ -18456,17 +18497,11 @@
                     );
                     const targetReach = (target.tr ? sustainMotionWidth(ctx.crossingTargetW) * 0.375 : 0)
                         + (targetSlideOut ? slideOutReach(target) : 0);
-                    const sourceLo = Math.min(sourceStartX, sourceEndX)
-                        - sourceReach - ctx.trailW * 0.5;
-                    const sourceHi = Math.max(sourceStartX, sourceEndX)
-                        + sourceReach + ctx.trailW * 0.5;
                     const targetLo = Math.min(targetStartX, targetEndX)
                         - targetReach - ctx.crossingTargetW * 0.5;
                     const targetHi = Math.max(targetStartX, targetEndX)
                         + targetReach + ctx.crossingTargetW * 0.5;
-                    // A multi-leg path may return to its start: endpoint-only bounds
-                    // cannot reject its intermediate sweep.
-                    if (!ctx.path && (sourceHi < targetLo || targetHi < sourceLo)) continue;
+                    if (_trailSourceSweepBounds[1] < targetLo || targetHi < _trailSourceSweepBounds[0]) continue;
                     // A short authored mark can lie wholly between regular
                     // ribbon ticks. Partition at the same contour rings used
                     // by geometry, including both moving trails, then refine.
@@ -18507,6 +18542,7 @@
             );
             ctx.strandBaseX = strandBaseX;
             ctx.path = _linkedTrailPaths.byNote.get(n)?.path || null;
+            ctx.sourceSampleMember = null;
             ctx.strandIndex = priorityIndex;
             const sourceStart = ctx.path?.start ?? n.t;
             const sourceEnd = ctx.path?.end ?? susEnd;
@@ -19314,7 +19350,9 @@
                         const sliceDur = Math.min(remSus, AHEAD);
                         let tw = NW * 0.85 * (n.f === 0 ? openWScale : 1);
                         let th = NH * 0.12 * (n.f === 0 ? openWScale : 1) * openSlabThickMul;
-                        if (susTrailMatchArpFrame) {
+                        // One linked sound keeps one normal cross-section even when
+                        // only its first chart segment belongs to an arpeggio frame.
+                        if (susTrailMatchArpFrame && !_linkedTrailPaths.byNote.has(n)) {
                             const yA = sY(0), yB = sY(nStr - 1);
                             const yMinF = Math.min(yA, yB) - S_GAP * 0.8;
                             const yMaxF = Math.max(yA, yB) + S_GAP * 0.8;

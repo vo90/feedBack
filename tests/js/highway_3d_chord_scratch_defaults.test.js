@@ -11,6 +11,7 @@ assert.ok(start >= 0 && end > start, 'actual chord scratch preparation must be p
 const prepare = new Function(`
     const _linkedBendStarts = new WeakMap(), _linkedBendEnds = new WeakMap();
     const _linkedVibratoRuns = new WeakMap();
+        const _linkedTrailPaths={byNote:new WeakMap()};
     return function(_scrChordNote, cn, ch) {
         ${source.slice(start, end)}
         return _scrChordNote;
