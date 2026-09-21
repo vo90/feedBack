@@ -1605,7 +1605,15 @@
         return current;
     }
 
+    function isVisible() {
+        const screen = document.getElementById('plugin-capability_inspector');
+        return !!screen && screen.classList.contains('active') && !document.hidden;
+    }
+
     function render() {
+        // Diagnostics events also fire throughout playback. Building the entire
+        // inspector while its screen is hidden wastes the player's frame budget.
+        if (!isVisible()) return;
         const filter = document.getElementById('capability-inspector-filter');
         const content = document.getElementById('capability-inspector-content');
         const empty = document.getElementById('capability-inspector-empty');
@@ -1656,7 +1664,7 @@
     }
 
     function scheduleRender() {
-        if (renderScheduled) return;
+        if (!isVisible() || renderScheduled) return;
         renderScheduled = true;
         const schedule = window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : callback => setTimeout(callback, 0);
         schedule(() => {
@@ -1750,4 +1758,8 @@
     else install();
     window.addEventListener('feedBack:capabilities:ready', render);
     window.addEventListener('feedBack:capabilities:changed', scheduleRender);
+    if (window.feedBack && typeof window.feedBack.on === 'function') {
+        window.feedBack.on('screen:changed', scheduleRender);
+    }
+    document.addEventListener('visibilitychange', scheduleRender);
 })();

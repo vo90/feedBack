@@ -38,17 +38,22 @@ function loadInspector(snapshot, options = {}) {
 
     const listeners = new Map();
     const elements = new Map([
+        ['plugin-capability_inspector', makeElement('plugin-capability_inspector')],
         ['capability-inspector-filter', makeElement('capability-inspector-filter')],
         ['capability-inspector-content', makeElement('capability-inspector-content')],
         ['capability-inspector-empty', makeElement('capability-inspector-empty')],
         ['capability-inspector-summary', makeElement('capability-inspector-summary')],
         ['capability-inspector-refresh', makeElement('capability-inspector-refresh')],
     ]);
+    if (options.visible !== false) elements.get('plugin-capability_inspector').classList.add('active');
+    const frames = [];
+    const documentListeners = new Map();
     const window = {
         console,
         CustomEvent,
         setTimeout(callback) { callback(); return 1; },
         clearTimeout() {},
+        requestAnimationFrame(callback) { frames.push(callback); return frames.length; },
         addEventListener(type, handler) {
             const list = listeners.get(type) || [];
             list.push(handler);
@@ -59,6 +64,7 @@ function loadInspector(snapshot, options = {}) {
             return true;
         },
         feedBack: {
+            on(type, handler) { window.addEventListener(type, handler); },
             capabilities: {
                 snapshotDiagnostics: () => (typeof snapshot === 'function' ? snapshot() : snapshot),
             },
@@ -69,9 +75,10 @@ function loadInspector(snapshot, options = {}) {
         navigator: { clipboard: { writeText: async () => {} } },
         document: {
             readyState: 'complete',
+            hidden: false,
             getElementById(id) { return elements.get(id) || null; },
             createElement(tagName) { return makeElement(tagName); },
-            addEventListener() {},
+            addEventListener(type, handler) { documentListeners.set(type, handler); },
         },
     };
     window.window = window;
@@ -79,8 +86,52 @@ function loadInspector(snapshot, options = {}) {
     window.__listeners = listeners;
     const context = vm.createContext(window);
     vm.runInContext(fs.readFileSync(INSPECTOR_JS, 'utf8'), context, { filename: INSPECTOR_JS });
-    return { window, elements };
+    return { window, elements, frames, documentListeners };
 }
+
+test('hidden inspector defers diagnostics and refreshes the latest state on entry', () => {
+    let reads = 0;
+    let pipelines = [];
+    const { window, elements, frames } = loadInspector(() => {
+        reads++;
+        return { pipelines, participants: [], compatibilityShims: [] };
+    }, { visible: false });
+    window.dispatchEvent(new window.CustomEvent('feedBack:capabilities:ready'));
+    for (let i = 0; i < 100; i++) window.dispatchEvent(new window.CustomEvent('feedBack:capabilities:changed'));
+    assert.equal(reads, 0);
+    assert.equal(frames.length, 0);
+    assert.equal(elements.get('capability-inspector-content').innerHTML, '');
+
+    pipelines = [{ name: 'playback', participants: [], conflicts: [] }];
+    elements.get('plugin-capability_inspector').classList.add('active');
+    window.dispatchEvent(new window.CustomEvent('screen:changed', { detail: { id: 'plugin-capability_inspector' } }));
+    window.dispatchEvent(new window.CustomEvent('feedBack:capabilities:changed'));
+    assert.equal(frames.length, 1);
+    frames.shift()();
+    assert.equal(reads, 1);
+    assert.match(elements.get('capability-inspector-content').innerHTML, /playback/);
+
+    window.dispatchEvent(new window.CustomEvent('feedBack:capabilities:changed'));
+    elements.get('plugin-capability_inspector').classList.remove('active');
+    frames.shift()();
+    assert.equal(reads, 1, 'a pending frame must not rebuild after navigation away');
+});
+
+test('inspector pauses with its document and refreshes when it returns', () => {
+    let reads = 0;
+    const { window, frames, documentListeners } = loadInspector(() => {
+        reads++;
+        return { pipelines: [], participants: [], compatibilityShims: [] };
+    });
+    assert.equal(reads, 1);
+    window.document.hidden = true;
+    window.dispatchEvent(new window.CustomEvent('feedBack:capabilities:changed'));
+    assert.equal(frames.length, 0);
+    window.document.hidden = false;
+    documentListeners.get('visibilitychange')();
+    frames.shift()();
+    assert.equal(reads, 2);
+});
 
 test('capability inspector renders playback session route loop bridges and outcomes', () => {
     const snapshot = {
@@ -487,7 +538,7 @@ test('capability inspector refreshes collapsed counts after runtime capability c
         compatibilityShims: [],
         expectedCompatibilityShims: [],
     };
-    const { window, elements } = loadInspector(() => currentSnapshot);
+    const { window, elements, frames } = loadInspector(() => currentSnapshot);
     assert.match(elements.get('capability-inspector-content').innerHTML, /data-domain-graph="library" data-domain-graph-expanded="false"[\s\S]*?title="0 participants"/);
 
     currentSnapshot = {
@@ -504,6 +555,7 @@ test('capability inspector refreshes collapsed counts after runtime capability c
     };
     window.dispatchEvent(new window.CustomEvent('feedBack:capabilities:changed'));
 
+    frames.shift()();
     const refreshedContent = elements.get('capability-inspector-content').innerHTML;
     assert.match(refreshedContent, /data-domain-graph="library" data-domain-graph-expanded="false"[\s\S]*?title="2 participants"/);
     assert.match(refreshedContent, /title="2 shimmed links"/);
