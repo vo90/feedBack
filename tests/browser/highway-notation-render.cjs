@@ -11,6 +11,9 @@
  * --orientation-only checks stable RS+ gems/markers across approach and live style reuse.
  * --open-chords-only checks open stems inside ordinary frames and through pool reuse.
  * --bends-only checks bend chevron amounts, colors, orientation and style reuse.
+ * --readability-only samples technique contrast and moving trails; --quick omits yellow-only masks.
+ * --readability-extra checks scored accented chord/slides and records real RAF playback to WebM.
+ * --readability-motion-only samples deterministic trail poses without repeating face captures.
  * --source-ref <git-ref> serves screen.js from a Git revision for before/after evidence.
  * --reference captures older notation for comparison without new geometry checks.
  * --detail-filter name,name limits closeups; --times t,t and --fixture-name name
@@ -37,6 +40,9 @@ const chordsOnly = args.includes('--chords-only');
 const orientationOnly = args.includes('--orientation-only');
 const openChordsOnly = args.includes('--open-chords-only');
 const bendsOnly = args.includes('--bends-only');
+const readabilityExtra = args.includes('--readability-extra');
+const readabilityMotionOnly = args.includes('--readability-motion-only');
+const readabilityOnly = args.includes('--readability-only') || readabilityExtra || readabilityMotionOnly;
 const reference = args.includes('--reference');
 const perfOnly=args.includes('--perf-only'),perfRounds=Number(option('--perf-rounds',1));
 const width=Number(option('--width',1280)),height=Number(option('--height',720));
@@ -71,10 +77,19 @@ if(orientationOnly)for(const [anchor,name,kind] of [
   if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'${kind}',mesh:${name}});`);
 if(bendsOnly&&!orientationOnly)served=once(served,'const l = pTechPlane.get();',`const l = pTechPlane.get();
   if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'bend',steps,mesh:l});`);
+if(readabilityOnly){
+  if(!orientationOnly)served=once(served,'const face = pTechPlane.get();',`const face = pTechPlane.get();
+    if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'face',mesh:face});`);
+  served=once(served,'const tr = pSus.get();',`const tr = pSus.get();
+    if(window.__notationProbe)window.__notationProbe.trails.push({note:{...n},width:tw,height:th,yieldCount:0,mesh:tr,ribbon:false});`);
+  served=once(served,'const body = pSusRibbon.get();',`const body = pSusRibbon.get();
+    if(window.__notationProbe)window.__notationProbe.trails.push({note:{...n},width:tw,height:th,yieldCount:strandYieldCount,mesh:body,ribbon:true});`);
+}
 served = once(served, "contextType: 'webgl2',", `__notationAudit() { return {
   scene, cam, ren, noteG, pNote, pTechPlane, projMeshArr, composer:_composer, bloom:_bloom,
   style:typeof rsPlusNotation === 'undefined' ? 'current' : rsPlusNotation ? 'rsplus' : 'current',
-  settings:{glow:glowMul,vibrancy,cinematic:_cinematic,hitFx:_hitFx,bloom:_bloom},
+  settings:{glow:glowMul,vibrancy,cinematic:_cinematic,hitFx:_hitFx,bloom:_bloom,
+    ${readabilityOnly?'trailYield:{...trailYieldSettings},sustainStroke:rsPlusNotation?RSPLUS_SUSTAIN_STROKE_SCALE:1,':''}},
 }; }, contextType: 'webgl2',`);
 
 function baseBundle(stringCount=6) {
@@ -139,7 +154,8 @@ async function main() {
   fs.writeFileSync(path.join(out,'source-sha256.txt'),`${sha(source)}  ${sourcePath}\n${git}\n`);
   const browser=await chromium.launch({headless:true});
   try {
-    const context=await browser.newContext({viewport:{width,height},deviceScaleFactor:dpr});
+    const context=await browser.newContext({viewport:{width,height},deviceScaleFactor:dpr,
+      ...(readabilityExtra?{recordVideo:{dir:path.join(out,'video'),size:{width,height}}}:{})});
     const page=await context.newPage();
     page.on('pageerror',e=>errors.push(e.stack));
     page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
@@ -170,10 +186,20 @@ async function main() {
         for(let i=0;i<rgba.length;i+=4)if(rgba[i+3]>250){const rgb=`${rgba[i]},${rgba[i+1]},${rgba[i+2]}`;colors.set(rgb,(colors.get(rgb)||0)+1);}
         return {width,height,centerRuns:runs,opaqueColors:[...colors.entries()].sort((a,b)=>b[1]-a[1]).slice(0,5)};
       };
+      window.__probeTrail=({mesh,ribbon,...rest})=>{
+        const samples=[];
+        if(ribbon){
+          const a=mesh.geometry.attributes.position.array;
+          for(let k=0;k<=mesh.geometry.userData.ribbonSlices;k++){
+            const i=k*12;samples.push([(a[i]+a[i+3])*.5,(a[i+1]+a[i+7])*.5,a[i+2],a[i+3]-a[i],a[i+7]-a[i+1]]);
+          }
+        }else samples.push([...mesh.position.toArray(),mesh.scale.x,mesh.scale.y]);
+        return {...rest,ribbon,mesh:__probeMesh(mesh),samples};
+      };
       window.__fillAlpha=m=>{const source=m.map?.image;if(!source)return null;const rgba=source.data||source.getContext?.('2d').getImageData(0,0,source.width,source.height).data;if(!rgba)return null;let min=255,max=0;for(let i=3;i<rgba.length;i+=4){min=Math.min(min,rgba[i]);max=Math.max(max,rgba[i]);}return {min,max,width:source.width,height:source.height};};
       window.__captureNotation=()=>{
         const a=r.__notationAudit();
-        window.__notationProbe={notes:[],frames:[],edges:[],roundedFrames:[],markers:[]};
+        window.__notationProbe={notes:[],frames:[],edges:[],roundedFrames:[],markers:[],trails:[]};
         a.ren.info.autoReset=false;a.ren.info.reset();r.draw(bundle);
         const p=window.__notationProbe;window.__notationProbe=null;
         const gl=a.ren.getContext();
@@ -183,7 +209,8 @@ async function main() {
           frames:p.frames.map(({fill,...metadata})=>({...metadata,fill:__probeMesh(fill),textureAlpha:__fillAlpha(fill.material)})),
           edges:p.edges.map(({t,dt,isRepeat,mesh})=>({t,dt,isRepeat,mesh:__probeMesh(mesh)})),
           roundedFrames:p.roundedFrames.map(({mesh,...rest})=>({...rest,mesh:__probeMesh(mesh)})),
-          markers:p.markers.map(({mesh,...rest})=>{const v=mesh.getWorldPosition(mesh.position.clone()).project(a.cam);return {...rest,mesh:__probeMesh(mesh),texture:rest.kind==='bend'?__probeBendTexture(mesh):undefined,screen:[(v.x+1)*innerWidth/2,(1-v.y)*innerHeight/2]};}),
+          markers:p.markers.map(({mesh,...rest})=>{const v=mesh.getWorldPosition(mesh.position.clone()).project(a.cam);return {...rest,mesh:__probeMesh(mesh),texture:['bend','face'].includes(rest.kind)?__probeBendTexture(mesh):undefined,screen:[(v.x+1)*innerWidth/2,(1-v.y)*innerHeight/2]};}),
+          trails:p.trails.map(__probeTrail),
           ghosts:(a.projMeshArr||[]).flat().filter(m=>m.visible).map(__probeMesh)};
       };
     });
@@ -249,6 +276,95 @@ async function main() {
       return chords;
     }
     const styles=baseline?['current']:option('--style')?[option('--style')]:['current','rsplus'];
+    if(readabilityOnly){
+      const member=n=>({sus:0,sl:-1,slu:-1,bn:0,ho:false,po:false,hm:false,hp:false,
+        pm:false,mt:false,fhm:false,vb:false,tr:false,ac:false,tp:false,slp:false,plk:false,...n});
+      function faceScene(compound){
+        const b=baseBundle();b.anchors=[{time:0,fret:3,width:6}];
+        const flags=compound?[{pm:true,ho:true},{hp:true,ho:true},{pm:true,hp:true},
+          {fhm:true,tp:true,hp:true},{pm:true,po:true,hm:true},{slp:true,pm:true,hm:true}]
+          :[{pm:true},{fhm:true},{hm:true},{hp:true},{ho:true},{tp:true}];
+        b.notes=flags.map((flag,s)=>member({t:10.22,s,f:3+s,...flag}));return b;
+      }
+      function trailScene(){
+        const b=baseBundle();b.anchors=[{time:0,fret:3,width:6}];
+        b.notes=[
+          {t:10.1,s:0,f:5,sus:2.6},
+          {t:10.35,s:3,f:7,sus:1.6,bn:2,bnv:[{t:0,v:0},{t:.8,v:2},{t:1.6,v:0}]},
+          {t:10.45,s:4,f:8,sus:1.5,tr:true},
+          {t:10.5,s:5,f:3,sus:1.4,vb:true},
+          {t:10.8,s:1,f:5,pm:true},{t:11.3,s:2,f:5,sus:.7,hp:true},
+        ].map(member);return b;
+      }
+      for(const style of styles){
+        const settings={notationStyle:style,glow:0,bloom:false};
+        if(readabilityExtra){
+          const chord=baseBundle();chord.anchors=[{time:0,fret:3,width:6}];
+          chord.chordTemplates=[{name:'Mixed techniques',frets:[4,5,7,-1,-1,-1],fingers:[1,2,4,-1,-1,-1]}];
+          chord.chords=[{t:10.15,id:0,notes:[
+            {s:0,f:4,pm:true,ho:true,hp:true,slp:true,plk:true,ac:true,sus:1.3},
+            {s:1,f:5,hp:true,tp:true,pm:true,slp:true,ac:true,sus:1.3},
+            {s:2,f:7,sl:9,ac:true,sus:1.5},
+          ].map(member)}];
+          chord.handShapes=[{chord_id:0,start_time:10.15,end_time:11.65}];
+          for(const time of [10,10.15]){
+            chord.currentTime=time;
+            const proof=await capture(`readability-${style}-scored-chord-${time}`,chord,
+              {...settings,scored:true,slideArrowApproachVisible:true},{expectBodies:true});
+            check(proof.notes.length===3&&proof.notes.every(n=>n.note.ac),`${style}/${time}: accented chord coverage missing`);
+            check(proof.trails.some(t=>t.note.sl===9),`${style}/${time}: slide trail missing`);
+          }
+          await init(trailScene(),settings);
+          const motion=await page.evaluate(async()=>{
+            const started=performance.now(),samples=[];
+            bundle.isPlaying=true;
+            await new Promise(resolve=>{
+              const frame=()=>{
+                const elapsed=(performance.now()-started)/1000;
+                bundle.currentTime=10+Math.min(elapsed,2);r.draw(bundle);
+                samples.push({elapsed,chartTime:bundle.currentTime});
+                if(elapsed>=2)resolve();else requestAnimationFrame(frame);
+              };requestAnimationFrame(frame);
+            });
+            return {durationSeconds:(performance.now()-started)/1000,samples,finalProof:__captureNotation()};
+          });
+          check(motion.samples.length>=5&&motion.durationSeconds>=2,`${style}: real RAF playback did not advance`);
+          check(motion.samples.every((s,i)=>i===0||s.chartTime>=motion.samples[i-1].chartTime),`${style}: real playback moved backward`);
+          results.push({name:`readability-${style}-realtime-playback`,...motion});
+          console.log(`Recorded ${style}: ${motion.samples.length} real RAF frames over ${motion.durationSeconds.toFixed(2)} s`);
+          continue;
+        }
+        if(!readabilityMotionOnly)for(const palette of style==='current'?['default']:quick?['default','white']:['default','yellow','white']){
+          const config={...settings,...(palette==='default'?{}:{customColors:Array(8).fill(palette==='white'?'#ffffff':'#ffe04b')})};
+          for(const compound of [false,true]){
+            const name=`readability-${style}-${palette}-${compound?'combined':'single'}`;
+            const proof=await capture(name,faceScene(compound),config,{expectBodies:true});
+            check(proof.notes.length===6,`${name}: missing note bodies`);
+            if(style==='rsplus')check(proof.markers.length===6&&proof.markers.every(m=>m.mesh.visible&&m.mesh.material.opacity===1),`${name}: missing or faded face masks`);
+          }
+        }
+        await init(trailScene(),settings);
+        const frames=[];
+        for(const [index,time] of [10,10.2,10.4,10.6,10.8,11,11.2,11.4].entries()){
+          // Paused chart poses bypass the renderer's wall-clock interpolation;
+          // real time advancement has its own RAF/video probe above.
+          const proof=await page.evaluate(time=>{bundle.currentTime=time;bundle.isPlaying=false;
+            for(let i=0;i<4;i++)r.draw(bundle);return __captureNotation();},time);
+          check(proof.trails.length>0,`${style}/${time}: no sustain meshes`);
+          check(proof.settings.trailYield.minScale===.3,`${style}/${time}: shared visibility minimum changed`);
+          check(proof.settings.sustainStroke===(style==='rsplus'?(reference ? .5 : .6):1),`${style}/${time}: wrong sustain stroke scale`);
+          for(const trail of proof.trails){
+            check(trail.samples.length>0&&trail.samples.every(s=>s.every(Number.isFinite)),`${style}/${time}: invalid trail samples`);
+            check(trail.samples.every(s=>s[3]>0&&s[4]>0),`${style}/${time}: collapsed trail width/height`);
+          }
+          if([0,3,6].includes(index))await page.screenshot({path:path.join(out,`readability-${style}-trails-${time}.png`)});
+          frames.push({time,...proof});
+        }
+        check(frames.some(f=>f.trails.some(t=>t.yieldCount>0&&t.samples.some(s=>Math.abs(s[3]/t.width-.30)<1e-5))),`${style}: fixture did not exercise the .30 minimum-width reveal`);
+        results.push({name:`readability-${style}-moving-trails`,frames});
+        console.log(`Sampled readability ${style}: ${frames.length} moving frames`);
+      }
+    }
     if(bendsOnly){
       const onset=10.15,settings={notationStyle:'rsplus',glow:0,bloom:false};
       const member=n=>({sus:1.3,sl:-1,slu:-1,bn:0,ho:false,po:false,hm:false,hp:false,
@@ -456,7 +572,7 @@ async function main() {
       results.push({name:'orientation-live-style-roundtrip',passes});
     }
     if(chordsOnly)for(const style of styles)await captureChordSequence(style);
-    if(!bendsOnly&&!openChordsOnly&&!orientationOnly&&!chordsOnly&&!perfOnly&&!fidelityOnly)for(const style of styles){
+    if(!readabilityOnly&&!bendsOnly&&!openChordsOnly&&!orientationOnly&&!chordsOnly&&!perfOnly&&!fidelityOnly)for(const style of styles){
       const effectProofs=[];
       for(const [effect,glow,bloom] of [['zero',0,false],['soft',.25,true],['user',.05,false]]){
         const proof=await capture(`${style}-eight-strings-${effect}`,matrix(),{notationStyle:style,glow,bloom},{expectBodies:true});
@@ -490,7 +606,7 @@ async function main() {
         }
       }
     }
-    if(!bendsOnly&&!openChordsOnly&&!orientationOnly&&!chordsOnly&&fidelityOnly){
+    if(!readabilityOnly&&!bendsOnly&&!openChordsOnly&&!orientationOnly&&!chordsOnly&&fidelityOnly){
       for(const [index,[name,flags]] of techniqueFlags.entries()){
         if(option('--detail-filter')&&!option('--detail-filter').split(',').includes(name))continue;
         const string = name==='tap'?4:name==='half-bend'?2:
@@ -538,7 +654,7 @@ async function main() {
         }
       }
     }
-    if(!bendsOnly&&!openChordsOnly&&!orientationOnly&&!chordsOnly&&!baseline&&!perfOnly&&!fidelityOnly){
+    if(!readabilityOnly&&!bendsOnly&&!openChordsOnly&&!orientationOnly&&!chordsOnly&&!baseline&&!perfOnly&&!fidelityOnly){
       await init(matrix(),{notationStyle:'current',glow:0,bloom:false});
       const controls=await page.evaluate(()=>feedBackViz_highway_3d.panelControls);
       for(const key of ['notationStyle','glow','bloom'])check(controls.some(c=>c.key===key),`Missing panel control ${key}`);
@@ -589,7 +705,7 @@ async function main() {
         await page.evaluate(()=>{for(const x of __splitInstances)x.destroy();delete window.feedBackSplitscreen;window.r=null;const host=document.getElementById('host');host.style.display='block';host.innerHTML='<canvas id="highway"></canvas>';});
       }
     }
-    if(!bendsOnly&&!openChordsOnly&&!orientationOnly&&!chordsOnly&&((!quick&&!fidelityOnly)||perfOnly))for(let round=0;round<perfRounds;round++)for(const style of (round%2?[...styles].reverse():styles))for(const [effect,glow,bloom] of (perfOnly?[['zero',0,false],['soft',.25,true]]:[['soft',.25,true]])){
+    if(!readabilityOnly&&!bendsOnly&&!openChordsOnly&&!orientationOnly&&!chordsOnly&&((!quick&&!fidelityOnly)||perfOnly))for(let round=0;round<perfRounds;round++)for(const style of (round%2?[...styles].reverse():styles))for(const [effect,glow,bloom] of (perfOnly?[['zero',0,false],['soft',.25,true]]:[['soft',.25,true]])){
       await init(denseScene(),{notationStyle:style,glow,bloom});
       const perf=await page.evaluate(async()=>{
         const a=r.__notationAudit(),gl=a.ren.getContext(),samples=[],cpuSamples=[],finishSamples=[];
@@ -610,7 +726,8 @@ async function main() {
       }
     }
     check(errors.length===0,`Browser errors: ${errors.join('\n')}`);
-    const report={repo,git,sourceRef,sourceSha256:sha(source),baseline,reference,viewport:[width,height],deviceScaleFactor:dpr,renderScale,comparisons,results,errors,failures};
+    const videoPath=readabilityExtra?await page.video().path():undefined;
+    const report={repo,git,sourceRef,sourceSha256:sha(source),baseline,reference,viewport:[width,height],deviceScaleFactor:dpr,renderScale,videoPath,comparisons,results,errors,failures};
     fs.writeFileSync(path.join(out,'results.json'),JSON.stringify(report,null,2));
     console.log(JSON.stringify({output:out,cases:results.length,errors,failures},null,2));
     if(failures.length)process.exitCode=1;
