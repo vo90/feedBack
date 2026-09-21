@@ -48,19 +48,17 @@ This prevents a position handoff mismatch between coarse audio updates.
 
 ## Motion and visibility
 
-A current-area change starts a damped lateral transition, even during a rest.
-There is no preferred-centre anticipation of future anchors. Small overlapping
-changes may wait up to 0.2 real seconds if the existing view comfortably fits
-the geometry. Continuing shifts cannot keep restarting the delay. Disjoint
-changes or threatened visibility bypass it. Pan damping uses elapsed time,
-with a 0.3-second time constant at the default smoothing setting.
+Camera movement is now scheduled by the transition planner described in
+`highway-camera-transitions.md`. The musical region remains the source for the
+lane and gold labels. A separate sequence of camera stops can share a centre
+through readable short detours or temporary width extensions. Persistent moves
+begin shortly before their chart boundary using finite, continuous easing.
 
-The current area's full strike-line width, string heights and gold label
-extents contribute to visibility fitting even when there are no notes.
-Rendered notes, sustains, techniques and chord frames remain additional
-constraints. Distant floor slices and unrelated grey labels do not move the
-preferred centre. The existing fixed-centre fit can widen the view as needed
-and returns gradually when the additional space is no longer necessary.
+The current area's footprint, imminent empty-area footprints, gold labels and
+rendered notes/holds/techniques remain visibility constraints. The camera can
+make a limited smooth correction if actual geometry makes shared framing
+substantially less readable than framing the current area directly. The final
+geometry guard remains available to prevent clipping.
 
 Straight and Angled keep their fixed orientations. Manual Camera Director
 offsets, pause, Follow off/on, resizing, seeking and playback speeds retain
@@ -87,7 +85,7 @@ comparison uses `a42a719`. Private charts and generated recordings are not
 committed. Deterministic renderer timings are not a measurement of complete
 native app performance with live audio and scoring.
 
-Validation on 2026-09-21 passed all 821 highway unit tests and 70 renderer
+The preceding reactive-camera implementation on 2026-09-21 passed all 821 highway unit tests and 70 renderer
 scenarios (30,470 frames), including full Six and Runnin' Wild in both presets.
 The sampled 101.5–107.4-second Six passage changed from 13 lateral reversals
 to zero. A quantized-audio-clock regression reproduces the earlier lane/camera

@@ -2959,6 +2959,86 @@
         return anchorPlayedFretInclusiveSpan(getChartAnchorAt(anchorArr, t));
     }
 
+    // Camera stops are separate from musical regions. Brief detours can share
+    // a view only when their full footprint passes the caller's readable fit.
+    // Inspect at most 32 neighbours / 1.5 real seconds, never distant notes.
+    function hwyBuildCameraStops(regions, rate, canHold) {
+        rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
+        const stops = [];
+        let held = null;
+        for (let i = 0; i < regions.length; i++) {
+            const row = regions[i], next = regions[i + 1];
+            const duration = next ? (next.time - row.time) / rate : Infinity;
+            let x = row.x, reason = 'position';
+            if (held && duration < 0.75 && Math.abs(x - held.x) > 1e-8) {
+                let returns = false;
+                for (let j = i + 1; j < Math.min(regions.length, i + 33); j++) {
+                    const future = regions[j];
+                    if (future.time - row.time > 1.5 * rate) break;
+                    // A-B-A and A-B-C where B is an unnecessary excursion.
+                    if ((x - held.x) * (future.x - x) < 0) { returns = true; break; }
+                }
+                const extension = Math.abs(row.minX - held.minX) < 1e-8
+                    || Math.abs(row.maxX - held.maxX) < 1e-8;
+                const bounded = Math.abs(x - held.x) <= Math.max(held.maxX - held.minX,
+                    row.maxX - row.minX) + 1e-7;
+                if ((returns || extension) && bounded && canHold(row, held.x)) {
+                    x = held.x; reason = extension ? 'extension' : 'detour';
+                }
+            }
+            if (!held || Math.abs(x - held.x) > 1e-8) {
+                held = { ...row, x, reason };
+                stops.push(held);
+            }
+        }
+        return stops;
+    }
+
+    // Compact quintic easing is a finite convolution of the stop timeline.
+    // Overlapping moves add smoothly (continuous velocity and acceleration),
+    // finish without residual drift, and evaluate identically after seeking.
+    function hwyCameraPlanAt(stops, now, rate, smoothing, out) {
+        out = out || {};
+        rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
+        const lead = 0.5 * rate;
+        const baseDuration = 0.5 + Math.max(0, Math.min(1, smoothing)) * 0.2;
+        const maxDuration = (baseDuration + 0.4) * rate;
+        let lo = 0, hi = stops.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (stops[mid].time <= now + lead - maxDuration) lo = mid + 1;
+            else hi = mid;
+        }
+        const first = Math.max(0, lo - 1);
+        let x = stops[first]?.x ?? 0, velocity = 0;
+        // Only transitions overlapping this instant contribute. This is a
+        // bounded time window; coalesced equal targets are absent entirely.
+        for (let i = first + 1; i < stops.length && stops[i].time < now + lead; i++) {
+            const delta = stops[i].x - stops[i - 1].x;
+            const width = Math.max(1e-8, stops[i].maxX - stops[i].minX,
+                stops[i - 1].maxX - stops[i - 1].minX);
+            // Crossing more than one whole playing area needs more time.
+            // Keep the early start, but do not race to the far side while the
+            // previous area's notes and labels still need to remain readable.
+            const extra = Math.min(0.4, Math.max(0, Math.abs(delta) / width - 1) * 0.8);
+            const duration = (baseDuration + extra) * rate;
+            const u = Math.max(0, Math.min(1, (now - stops[i].time + lead) / duration));
+            x += delta * u * u * u * (10 + u * (-15 + 6 * u));
+            velocity += delta * 30 * u * u * (1 - u) * (1 - u) * rate / duration;
+        }
+        out.x = x; out.velocity = velocity; out.valid = stops.length > 0;
+        return out;
+    }
+
+    // Only lifecycle changes need catch-up. Ordinary playback samples the
+    // scheduled curve directly, without stacking another lag filter on it.
+    function hwyCameraRejoin(offset, velocity, dt, omega = 16) {
+        const c = velocity + omega * offset;
+        const decay = Math.exp(-omega * dt);
+        return { offset: (offset + c * dt) * decay,
+            velocity: (velocity - omega * c * dt) * decay };
+    }
+
     /**
      * Effective hand positions for the stable camera and its floor. Authored
      * positions include rests; inference changes only at actual local events.
@@ -21020,6 +21100,9 @@
             focusValid: false, focusX: 0, focusMinX: 0, focusMaxX: 0,
             regionTime: NaN, regionSource: '', regionMinX: NaN, regionMaxX: NaN,
             panPending: false,
+            planRevision: -1, planX: 0, planVelocity: 0, following: false,
+            rejoinOffset: 0, rejoinVelocity: 0,
+            safetyOffset: 0, safetyVelocity: 0,
         };
         const _stableBins = Array.from({ length: 32 }, () => ({
             minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity,
@@ -21086,7 +21169,7 @@
             }
         }
 
-        function stableCollectGeometry(region) {
+        function stableCollectGeometry(region, forecast, now) {
             for (const bin of _stableBins) {
                 bin.minX = bin.minY = bin.minZ = Infinity;
                 bin.maxX = bin.maxY = bin.maxZ = -Infinity;
@@ -21103,6 +21186,24 @@
                 const record = _incomingFloorLabels[i];
                 if (record.time < _frameNow - 0.03) continue;
                 stableCollectObject(record.sprite);
+            }
+            // Include imminent area footprints even during rests. Pan and
+            // zoom then prepare together instead of discovering a wide empty
+            // lane only when its gold labels appear at the strike line.
+            if (forecast?.length) {
+                let lo = 0, hi = forecast.length;
+                while (lo < hi) {
+                    const mid = (lo + hi) >>> 1;
+                    if (forecast[mid].time <= now) lo = mid + 1; else hi = mid;
+                }
+                const rowBottom = Math.min(sY(0), sY(nStr - 1)) - S_GAP * 1.4 - 10 * K * _textSizeMul;
+                const rowTop = Math.max(sY(0), sY(nStr - 1)) + NH;
+                for (let i = lo; i < Math.min(forecast.length, lo + 32); i++) {
+                    const row = forecast[i], dt = row.time - now;
+                    if (dt > 0.8 * _stableCam.rate) break;
+                    stableAddPoint(row.minX - 3 * K, rowBottom, dZ(dt));
+                    stableAddPoint(row.maxX + 3 * K, rowTop, dZ(dt));
+                }
             }
             // Reserve the readable number band below nearby playable frets,
             // not every reference digit across the full neck.
@@ -21240,6 +21341,7 @@
             anchorCount: -1, strings: 0, uniform: null, rows: [],
         };
         const _stableRegionResult = {};
+        const _stablePlan = { rows: null, key: '', rate: 1, stops: [], regions: [], revision: 0, result: {} };
 
         function stableRegionReset() {
             const cache = _stableRegions;
@@ -21247,6 +21349,7 @@
             cache.noteCount = cache.chordCount = cache.anchorCount = -1;
             cache.strings = 0; cache.uniform = null; cache.rows = [];
             _stableRegionResult.row = null;
+            _stablePlan.rows = null; _stablePlan.stops = []; _stablePlan.regions = []; _stablePlan.key = '';
         }
 
         function stableRegionAnchors(bundle) {
@@ -21274,6 +21377,50 @@
             out.minX = Math.min(a, b); out.maxX = Math.max(a, b);
             out.x = (a + b) / 2;
             return out;
+        }
+
+        function stableRegionFitDistance(row, centre, baseDistance) {
+            const b = _stableBasis, tan = Math.tan(STABLE_CAMERA_FOV * Math.PI / 360);
+            const horizontal = tan * cam.aspect * 0.68;
+            const bottom = Math.min(sY(0), sY(nStr - 1)) - S_GAP * 1.4 - 10 * K * _textSizeMul;
+            const top = Math.max(sY(0), sY(nStr - 1)) + NH;
+            let distance = baseDistance;
+            for (let i = 0; i < 8; i++) {
+                const x = (i & 1 ? row.maxX + 3 * K : row.minX - 3 * K) - centre;
+                const y = (i & 2 ? top : bottom) - b.y, z = i & 4 ? 4 * K : 0;
+                const depthOffset = b.bx * x + b.by * y + b.bz * z;
+                const right = b.rx * x + b.rz * z, up = b.ux * x + b.uy * y + b.uz * z;
+                distance = Math.max(distance, depthOffset + Math.abs(right) / horizontal,
+                    depthOffset + up / (tan * (0.90 + STABLE_CAMERA_SHIFT)),
+                    depthOffset - up / (tan * (0.90 - STABLE_CAMERA_SHIFT)), depthOffset + 0.02);
+            }
+            return distance;
+        }
+
+        function stableCameraPlan(bundle, now, baseDistance) {
+            const cache = _stablePlan, rows = stableRegionAnchors(bundle);
+            // Honour explicit speed exactly. Estimates need a small dead band:
+            // coarse audio ticks must not repeatedly reclassify brief regions.
+            const declaredRate = bundle.playbackRate ?? bundle.speed;
+            const explicit = Number.isFinite(declaredRate) && declaredRate >= 0.1 && declaredRate <= 4;
+            const rate = explicit ? declaredRate : !cache.rows || Math.abs(_stableCam.rate - cache.rate) > 0.1
+                ? Math.max(0.1, Math.round(_stableCam.rate * 10) / 10) : cache.rate;
+            const key = [rate, cam.aspect, stableCameraPreset, _leftyCached, nStr,
+                _textSizeMul, baseDistance, cameraSmoothing].join('/');
+            if (cache.rows !== rows || cache.key !== key) {
+                const regions = rows.map(row => {
+                    const a = xFret(row.fret - 1), b = xFret(row.fret + row.width - 1);
+                    return { time: row.time, minX: Math.min(a, b), maxX: Math.max(a, b), x: (a + b) / 2 };
+                });
+                cache.stops = hwyBuildCameraStops(regions, rate, (row, centre) =>
+                    stableRegionFitDistance(row, centre, baseDistance)
+                        <= stableRegionFitDistance(row, row.x, baseDistance) * 1.35);
+                cache.regions = regions;
+                cache.rows = rows; cache.key = key; cache.rate = rate; cache.revision++;
+            }
+            hwyCameraPlanAt(cache.stops, now, rate, cameraSmoothing, cache.result);
+            cache.result.revision = cache.revision;
+            return cache.result;
         }
 
         function stableCamUpdate(bundle, frameTime = Number(bundle.currentTime) || 0) {
@@ -21317,20 +21464,21 @@
             // the same position as this frame's lane and gold labels, while
             // raw audio time remains the source for seek/rate detection.
             const focus = stablePlayingRegion(bundle, frameTime);
-            stableCollectGeometry(focus);
+            const baseDistance = Math.max(100 * K, (Math.abs(sY(0) - sY(nStr - 1)) + 14 * K) * 2.3);
+            const plan = stableCameraPlan(bundle, frameTime, baseDistance);
+            stableCollectGeometry(focus, _stablePlan.regions, frameTime);
             s.focusValid = focus.valid;
             s.focusX = focus.x; s.focusMinX = focus.minX; s.focusMaxX = focus.maxX;
             s.regionTime = focus.time; s.regionSource = focus.source;
-            const baseDistance = Math.max(100 * K, (Math.abs(sY(0) - sY(nStr - 1)) + 14 * K) * 2.3);
             // Short real-time anticipation protects approaching geometry. It
             // never contributes to the preferred centre; fit at that centre
             // first, widening only when needed instead of stealing the focus
             // to achieve the smallest possible viewing distance.
-            const prediction = Math.min(AHEAD, 0.35 * s.rate);
+            const prediction = Math.min(AHEAD, 0.5 * s.rate);
             const snap = reset || !s.initialized || (seek && stableCameraFollow);
             s.correction = false;
             if (snap) {
-                const centre = focus.valid ? focus.x
+                const centre = plan.valid ? plan.x : focus.valid ? focus.x
                     : s.initialized ? s.x : curX;
                 const fit = stableSolve(centre, baseDistance, prediction, 0.68, true);
                 s.x = fit.x; s.distance = fit.distance;
@@ -21340,6 +21488,8 @@
                 s.panPending = false;
                 s.quietPanTime = 0;
                 s.quietZoomTime = 0; s.initialized = true;
+                s.rejoinOffset = s.rejoinVelocity = 0;
+                s.safetyOffset = s.safetyVelocity = 0;
             } else if (resize) {
                 // A resize can change distance, but never the held centre or
                 // viewing angle, even with following switched off.
@@ -21347,47 +21497,49 @@
                 s.distance = fit.distance; s.quietZoomTime = 0;
                 s.quietPanTime = 0; s.panPending = false;
             } else if (stableCameraFollow && bundle.isPlaying !== false && focus.valid && !seek) {
-                const fit = stableSolve(focus.x, baseDistance, prediction, 0.68, true);
-                const neutralX = fit.x, neutralDistance = fit.distance;
-                // The accepted centre belongs to an area, never an attack.
-                // Brief overlapping area changes may wait at most 0.2 real
-                // seconds while both positions fit. Continuing changes cannot
-                // keep restarting that timer; disjoint/unsafe changes bypass it.
-                const oldTarget = Number.isFinite(s.centreCandidateX) ? s.centreCandidateX : s.x;
-                s.centreCandidateX = oldTarget;
-                const changed = Math.abs(neutralX - oldTarget) > 1e-7;
-                let oldDt = 0;
-                if (changed) {
-                    const overlap = Math.max(s.regionMinX, focus.minX) <= Math.min(s.regionMaxX, focus.maxX);
-                    const small = Math.abs(neutralX - oldTarget) <= Math.min(
-                        s.regionMaxX - s.regionMinX, focus.maxX - focus.minX) * 0.5;
-                    const safe = overlap && small && stableIntervalAt(s.distance, 0, 0.68, s.x).valid;
-                    if (safe) {
-                        const previous = s.panPending ? s.quietPanTime : 0;
-                        s.panPending = true; s.quietPanTime = previous + dt;
-                        oldDt = Math.min(dt, Math.max(0, 0.2 - previous));
-                        if (s.quietPanTime >= 0.2) {
-                            s.centreCandidateX = neutralX; s.panPending = false;
-                            s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
-                        }
-                    } else {
-                        s.centreCandidateX = neutralX; s.panPending = false; s.quietPanTime = 0;
-                        s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
-                    }
-                } else {
-                    s.centreCandidateX = neutralX; s.panPending = false; s.quietPanTime = 0;
-                    s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
+                const plannedX = plan.valid ? plan.x : focus.x;
+                if (s.planRevision !== plan.revision || !s.following) {
+                    if (!s.following) s.safetyVelocity = 0;
+                    s.rejoinOffset = s.x - plannedX - s.safetyOffset;
+                    s.rejoinVelocity = s.following
+                        ? s.planVelocity + s.rejoinVelocity - (plan.velocity || 0) : -(plan.velocity || 0);
                 }
-                const panTau = 0.2 + cameraSmoothing * 0.2;
-                // Continue an already accepted pan while a small replacement
-                // is pending. Split at acceptance for frame-rate independence.
-                s.x += (oldTarget - s.x) * (1 - Math.exp(-oldDt / panTau));
-                const returnX = s.centreCandidateX;
-                s.x += (returnX - s.x) * (1 - Math.exp(-(dt - oldDt) / panTau));
-                s.targetX = returnX;
+                const rejoin = hwyCameraRejoin(s.rejoinOffset, s.rejoinVelocity, dt);
+                s.rejoinOffset = rejoin.offset; s.rejoinVelocity = rejoin.velocity;
+                s.x = plannedX + rejoin.offset;
+                s.targetX = plannedX;
+                // A chart footprint cannot predict every protruding bend,
+                // hold or chord frame. If sharing a centre costs substantially
+                // more readability than the current area's own view, smoothly
+                // take the minimum necessary step back toward that area.
+                let safetyTarget = 0;
+                if (Math.abs(s.x - focus.x) > 1e-7) {
+                    const sharedDistance = stableSolve(s.x, baseDistance, prediction, 0.68, true).distance;
+                    if (sharedDistance > baseDistance * 1.35) {
+                        const localDistance = stableSolve(focus.x, baseDistance, prediction, 0.68, true).distance;
+                        const budget = localDistance * 1.35;
+                        if (sharedDistance > budget) {
+                            const nearest = stableSolve(s.x, budget, prediction, 0.68).x;
+                            safetyTarget = Math.max(Math.min(s.x, focus.x),
+                                Math.min(Math.max(s.x, focus.x), nearest)) - s.x;
+                        }
+                    }
+                }
+                const safety = hwyCameraRejoin(s.safetyOffset - safetyTarget, s.safetyVelocity, dt, 8);
+                s.safetyOffset = safetyTarget + safety.offset; s.safetyVelocity = safety.velocity;
+                s.x += s.safetyOffset;
+                const fit = stableSolve(s.x, baseDistance, prediction, 0.68, true);
+                const neutralDistance = fit.distance;
+                s.centreCandidateX = plannedX;
+                s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
                 s.targetDistance = neutralDistance;
                 const settleEpsilon = 0.0001 * K;
-                if (Math.abs(s.x - returnX) < settleEpsilon) s.x = returnX;
+                if (Math.abs(s.safetyOffset) < settleEpsilon && Math.abs(s.safetyVelocity) < settleEpsilon) {
+                    s.x -= s.safetyOffset; s.safetyOffset = s.safetyVelocity = 0;
+                }
+                if (Math.abs(s.rejoinOffset) < settleEpsilon && Math.abs(s.rejoinVelocity) < settleEpsilon) {
+                    s.x = plannedX + s.safetyOffset; s.rejoinOffset = s.rejoinVelocity = 0;
+                }
                 // Once a wider view is returning, finish the return. A relative
                 // 3% cutoff used to reset this timer just before convergence.
                 if (neutralDistance >= s.distance - settleEpsilon) s.quietZoomTime = 0;
@@ -21411,6 +21563,9 @@
                     s.distance += (s.targetDistance - s.distance) * (1 - Math.exp(-dt / 0.16));
                 }
             }
+            s.planRevision = plan.revision;
+            s.planX = plan.x; s.planVelocity = plan.velocity || 0;
+            s.following = stableCameraFollow && bundle.isPlaying !== false && (snap || !resize);
             if (!snap && !resize && stableCameraFollow && bundle.isPlaying !== false && s.pointCount > 0) {
                 // Last-resort actual-geometry guard also covers upcoming notes
                 // during a rest. It may widen, but never redirects the centre.

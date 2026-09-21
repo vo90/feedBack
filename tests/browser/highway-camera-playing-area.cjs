@@ -68,6 +68,9 @@ const fixture=kind=>{
  if(kind==='width')return base({notes:[],anchors:[{time:0,fret:2,width:4},{time:8,fret:2,width:8}]});
  if(kind==='rapid')return base({notes:[],anchors:[{time:0,fret:2,width:4},...Array.from({length:20},(_,i)=>({time:7+i*.1,fret:i%2?2:3,width:4})),{time:9,fret:2,width:4}]});
  if(kind==='disjoint')return base({notes:[],anchors:[{time:0,fret:2,width:4},{time:8,fret:16,width:4}]});
+ if(kind==='short-detour')return base({notes:[note({t:7.7,f:8}),note({t:8,f:14,sus:.526,slu:5}),note({t:8.601,f:2})],anchors:[{time:0,fret:8,width:4},{time:8,fret:12,width:4},{time:8.601,fret:2,width:4}]});
+ if(kind==='width-burst')return base({notes:[note({t:7.8,f:9}),note({t:8.16,f:14}),note({t:8.315,f:9})],anchors:[{time:0,fret:9,width:4},{time:8,fret:9,width:6},{time:8.315,fret:9,width:4}]});
+ if(kind==='progressive')return base({notes:[],anchors:[{time:0,fret:2,width:4},...Array.from({length:9},(_,i)=>({time:7+i*.15,fret:2+i,width:4}))]});
  if(kind==='missing')return {...stable,anchors:[]};
  if(kind==='malformed')return {...stable,anchors:[{time:0,fret:-3,width:4},{time:7,fret:4,width:-1}]};
  if(kind==='placeholder')return {...stable,anchors:[{time:0,fret:1,width:24}]};
@@ -82,6 +85,10 @@ const fixture=kind=>{
 const chart=file=>{const r=JSON.parse(fs.readFileSync(file,'utf8'));return base({...r,currentTime:0,chordTemplates:r.templates||r.chordTemplates||[],handShapes:r.handshapes||r.handShapes||[]});};
 const cases=[];
 for(const preset of ['straight','angled']){
+ for(const kind of ['short-detour','width-burst','progressive']){
+ for(const fps of [10,60])cases.push({name:`${kind}-${preset}-${fps}`,kind,preset,fps,b:fixture(kind),start:6,end:10});
+ }
+ for(const rate of [.5,1.5])cases.push({name:`short-detour-${preset}-rate${rate}`,kind:'speed-detour',preset,fps:30,b:{...fixture('short-detour'),playbackRate:rate},start:6,end:11});
  cases.push({name:`quantized-${preset}`,kind:'quantized',preset,fps:60,b:fixture('quantized'),start:6,end:10});
  for(const fps of [10,20,60,120])cases.push({name:`fixed-${preset}-${fps}`,kind:'fixed',preset,fps,b:fixture('fixed'),start:6,end:12,captureTimes:fps===20?[9]:[]});
  for(const kind of ['duplicates','rest','width','rapid','disjoint','missing','malformed','placeholder','mismatch','wide','sustain','slides','controls','invalidation','fallback-wide-release','parity'])cases.push({name:`${kind}-${preset}`,kind,preset,fps:20,b:fixture(kind),start:6,end:kind==='rest'?18:kind==='sustain'?13:12,captureTimes:kind==='parity'?[7.5,9.5]:kind==='slides'?[7,11]:['rest','wide','sustain','missing','placeholder'].includes(kind)?[9]:[]});
@@ -89,6 +96,8 @@ for(const preset of ['straight','angled']){
  for(const rate of [.5,1.5])cases.push({name:`fixed-${preset}-rate${rate}`,kind:'fixed',preset,fps:20,b:{...fixture('fixed'),playbackRate:rate},start:6,end:12});
  for(const stringCount of [4,7])cases.push({name:`fixed-${preset}-strings${stringCount}-lefty`,kind:'fixed',preset,fps:20,b:{...fixture('fixed'),lefty:true,stringCount,tuning:Array(stringCount).fill(0),notes:fixedNotes().map(n=>({...n,s:n.s%stringCount}))},start:6,end:12});
  if(option('--six')){
+ cases.push({name:`six-detour-${preset}`,kind:'six-detour',preset,fps:30,b:chart(option('--six')),start:54,end:62,captureTimes:[58.5,58.9,59.3,60]});
+ cases.push({name:`six-width-${preset}`,kind:'six-width',preset,fps:30,b:chart(option('--six')),start:153,end:161,captureTimes:[158.2,158.5,158.9]});
  cases.push({name:`six-full-${preset}`,kind:'six',preset,fps:20,b:chart(option('--six')),start:0,end:212,captureTimes:[104,109.75,119,160.1],checkTimes:[30.4,160.1,199]});
  cases.push({name:`six-motion-${preset}`,kind:'six-motion',preset,fps:20,b:chart(option('--six')),start:101,end:111,captureTimes:[104,109.75]});
  cases.push({name:`six-shifts-${preset}`,kind:'six-shifts',preset,fps:20,b:chart(option('--six')),start:140,end:150,captureTimes:[142,148.5]});
@@ -126,10 +135,27 @@ function validate(c,run){
  check(settled.every(s=>s.region.floor&&s.region.gold.length>=4),prefix+'fallback lacks matching floor/gold numbers');
  }
  if(['rest','disjoint','width'].includes(c.kind)){
- const pre=samples.filter(s=>s.time<8),after=samples.filter(s=>s.time>=9.1);
- check(range(pre.map(s=>s.state.x))<.001,prefix+'camera moves toward future region before boundary');
+ const pre=samples.filter(s=>s.time<=7.5),after=samples.filter(s=>s.time>=9.1);
+ check(range(pre.map(s=>s.state.x))<.001,prefix+'camera anticipates beyond the half-second transition window');
  check(after.length&&after.every(s=>Math.abs(s.state.x-s.region.expected.x)<.10),prefix+'camera does not settle on new region during rest');
  check(Math.abs(run.last.state.x-run.first.state.x)>.1,prefix+'region change ignored without notes');
+ }
+ if(c.kind==='short-detour'){
+ check(samples.every((s,i)=>!i||s.state.x<=samples[i-1].state.x+1e-6),prefix+'unnecessary high-region detour');
+ }
+ if(c.kind==='width-burst')check(range(samples.map(s=>s.state.x))<.001,prefix+'brief width extension causes a pan');
+ if(c.kind==='progressive'){
+ check(samples.every((s,i)=>!i||s.state.x>=samples[i-1].state.x-1e-6),prefix+'forward positions cause a reverse pan');
+ check(Math.abs(run.last.state.x-run.last.state.focusX)<.001,prefix+'camera failed to follow cumulative position movement');
+ }
+ if(c.kind==='six-detour'){
+ const detour=samples.filter(s=>s.time>=58.2&&s.time<=60);
+ check(detour.every((s,i)=>!i||s.state.x<=detour[i-1].state.x+1e-7),prefix+'short high-position detour causes a right/left excursion');
+ check(reversals(detour.map(s=>s.state.x))===0,prefix+'detour has lateral reversal');
+ }
+ if(c.kind==='six-width'){
+ const width=samples.filter(s=>s.time>=158.0&&s.time<=158.7);
+ check(range(width.map(s=>s.state.x))<.001,prefix+'temporary lane width causes a lateral excursion');
  }
  if(c.kind==='rapid')check(range(samples.map(s=>s.state.x))<.15,prefix+'brief overlapping lane changes cause unnecessary pan');
  if(c.kind==='fallback-wide-release')check(samples.filter(s=>s.time>=10).every(s=>s.region.resolved?.dMax-s.region.resolved?.dMin<=5),prefix+'temporary wide fallback never contracts for later compact playing');
