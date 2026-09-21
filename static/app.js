@@ -1898,8 +1898,10 @@ setInterval(() => {
     if (_sectionPracticeBarIsReady() && _sectionPracticeSourceSections().length) {
         _updateSectionPracticeHighlight(ct);
     }
-    if (!isCountingIn()) window.highway.setTime(ct,
-        window._juceMode ? jucePlayer._speed : audio.playbackRate);
+    if (!isCountingIn()) {
+        window.highway.setPlaybackRate(window._juceMode ? jucePlayer._speed : audio.playbackRate);
+        window.highway.setTime(ct);
+    }
 }, 1000 / 60);
 
 _installSectionPracticeDrawHook();

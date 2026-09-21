@@ -2487,11 +2487,13 @@ function createHighway() {
             };
         },
 
-        setTime(t, playbackRate) {
-            // A host that knows the transport rate can supply it independently
-            // of the quantized audio timestamps. Older callers remain valid.
+        setPlaybackRate(playbackRate) {
+            // Keep rate metadata separate: legacy offset plugins wrap setTime
+            // with a one-argument function and drop additional arguments.
             hwState._playbackRate = Number.isFinite(playbackRate) && playbackRate > 0
                 ? playbackRate : undefined;
+        },
+        setTime(t) {
             // chartTime is what getTime() exposes to plugins — bake the
             // per-song offset in here so plugins (scoring, note detect,
             // etc.) see the same chart-aligned clock the renderer does.

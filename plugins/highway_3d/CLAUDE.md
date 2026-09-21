@@ -209,7 +209,7 @@ Each entry names the function or banner you should grep for, plus key sub-blocks
 Every per-frame renderer call receives a `bundle` from feedBack core. Fields used by this plugin:
 
 - `currentTime` — playback time in seconds (drives `dt` for everything)
-- `playbackRate` — optional transport rate supplied through core `setTime(time, rate)`. `smoothNow()` advances the visual clock at that rate and eases small timestamp errors instead of snapping the notes to every audio sample. Older hosts omit it and get a quarter-second rate estimate. Pause, backward seeks, large forward jumps and long frame gaps re-anchor immediately. This changes visual timing only; the transport and scoring clocks remain authoritative. Regression coverage: `highway_3d_smooth_clock_motion.test.js` and `highway_3d_smooth_clock_pause.test.js`.
+- `playbackRate` — optional transport rate supplied through core `setPlaybackRate(rate)`, separately from `setTime(time)` so legacy offset wrappers cannot drop it. `smoothNow()` advances the visual clock at that rate and eases small timestamp errors instead of snapping the notes to every audio sample. Older hosts omit it and get a quarter-second rate estimate. Pause, backward seeks, large forward jumps and long frame gaps re-anchor immediately. This changes visual timing only; the transport and scoring clocks remain authoritative. Regression coverage: `highway_3d_smooth_clock_motion.test.js` and `highway_3d_smooth_clock_pause.test.js`.
 - `notes`, `chords`, `beats`, `sections` — chart arrays (already difficulty-filtered by core)
 - `chordTemplates` — array indexed by `ch.id`; each `{ name, frets: [N] }`
 - `lyrics` — syllable array `[{ w, t, d }, …]`

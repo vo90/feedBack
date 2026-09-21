@@ -61,13 +61,15 @@ function buildClockSandbox(perfNowImpl) {
     };
     vm.createContext(sandbox);
     const src = highwaySources();
-    const setTimeBody = extractBlock(src, 'setTime(t, playbackRate) {');
+    const setTimeBody = extractBlock(src, 'setTime(t) {');
+    const setRateBody = extractBlock(src, 'setPlaybackRate(playbackRate) {');
     const freezeTimeBody = extractBlock(src, 'freezeTime(t) {');
     const getTimeBody = extractBlock(src, 'getTime() {');
     // Strip trailing comma if present (object-literal method declarations).
     const cleanup = (s) => s.replace(/,?\s*$/, '');
     vm.runInContext(`
         globalThis.setTime = function ${cleanup(setTimeBody)};
+        globalThis.setPlaybackRate = function ${cleanup(setRateBody)};
         globalThis.freezeTime = function ${cleanup(freezeTimeBody)};
         globalThis.getTime = function ${cleanup(getTimeBody)};
     `, sandbox);
@@ -171,17 +173,22 @@ test('api.stop() clears the chart anchor state so re-init starts fresh', () => {
 
 // ── Behavioral tests (run extracted setTime/getTime in vm sandbox) ──────
 
-test('setTime carries an optional transport rate without changing chart time', () => {
+test('transport rate survives a legacy one-argument offset wrapper', () => {
     const sb = buildClockSandbox(() => 0);
-    sb.setTime(10, 0.5);
+    const original = sb.setTime;
+    sb.setTime = t => original(t + 0.1);
+    sb.setPlaybackRate(0.5);
+    sb.setTime(10);
     assert.equal(sb.hwState._playbackRate, 0.5);
-    assert.equal(sb.getTime(), 10);
-    sb.setTime(11, 1.5);
+    assert.equal(sb.getTime(), 10.1);
+    sb.setPlaybackRate(1.5);
+    sb.setTime(11);
     assert.equal(sb.hwState._playbackRate, 1.5);
     for (const rate of [undefined, NaN, 0, -1, Infinity]) {
-        sb.setTime(12, rate);
+        sb.setPlaybackRate(rate);
+        sb.setTime(12);
         assert.equal(sb.hwState._playbackRate, undefined);
-        assert.equal(sb.getTime(), 12);
+        assert.equal(sb.getTime(), 12.1);
     }
     const src = fs.readFileSync(HIGHWAY_JS, 'utf8');
     assert.match(extractBlock(src, 'function _makeBundle()'), /b\.playbackRate\s*=\s*hwState\._playbackRate/);
