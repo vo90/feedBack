@@ -16,7 +16,7 @@ function fn(name) {
     throw new Error('Unclosed function ' + name);
 }
 const sizeStart = src.indexOf('let tw = NW * 0.85');
-const sizeEnd = src.indexOf('// Standalone open strings get two parallel trails', sizeStart);
+const sizeEnd = src.indexOf('// Independent open strings get two parallel trails', sizeStart);
 assert.ok(sizeStart >= 0 && sizeEnd > sizeStart);
 const sizing = src.slice(sizeStart, sizeEnd);
 const scaleDeclaration = src.match(/const RSPLUS_SUSTAIN_STROKE_SCALE = [^;]+;/)[0];
@@ -30,6 +30,7 @@ function harness() {
         const TREMOLO_BUMP_S=.06, VIBRATO_HALF_WAVE_S=.08;
         const _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap();
         const _linkedVibratoRuns=new WeakMap();
+        const _linkedTrailPaths={byNote:new WeakMap()};
         const _slideRibbonTimesScratch=[];
         ${scaleDeclaration}
         ${sampleDeclaration}
@@ -37,8 +38,11 @@ function harness() {
         let rsPlusNotation=false, _leftyCached=false, _invertedCached=false;
         const sY=s=>s*S_GAP, fretMid=f=>f*10, xFretMid=fretMid, dZ=t=>-t*10;
         const _drawAnchors=[], curX=0;
+        const CHORD_ANCHOR_TIME_EPS=.000501;
+        const getChartAnchorAt=()=>null, laneBoundsFromAnchor=()=>null;
         const anchorLaneBoundsAt=()=>null, openNoteLaneBoxW=()=>80;
-        const _trailCrossingTargetBases=new Float64Array(2), _trailYieldMatchContext={};
+        const _trailCrossingTargetBases=new Float64Array(4), _trailCrossingTargetWidths=new Float64Array(4);
+        const _trailOpenLayoutScratch=new Float64Array(2), _trailYieldMatchContext={};
         let _trailCrossingTargetBaseCount=0;
         ${src.slice(src.indexOf('    function slideTrailEnd('), src.indexOf('    // Camera tgtDist building blocks'))}
         ${fn('bendVisualDirY')}
@@ -53,6 +57,7 @@ function harness() {
         ${fn('sustainMotionWidth')}
         ${fn('tremoloOffsetWorldX')}
         ${fn('sustainTrailCenterXAt')}
+        ${fn('trailOpenLayoutAt')}
         ${fn('trailCrossingTargetStrands')}
         ${fn('ensureSlideRibbonCapacity')}
         ${fn('slideRibbonUpdatePair')}
@@ -70,8 +75,9 @@ function harness() {
             },
             crossing(style,n) {
                 rsPlusNotation=style;
-                const count=trailCrossingTargetStrands({...n,end:n.t+n.sus,standalone:true});
-                return {count,width:_trailYieldMatchContext.crossingTargetW,bases:Array.from(_trailCrossingTargetBases)};
+                const count=trailCrossingTargetStrands({...n,end:n.t+n.sus,standalone:true,
+                    standaloneTrailVisible:true,chordTrailMeta:null});
+                return {count,width:_trailCrossingTargetWidths[0],bases:Array.from(_trailCrossingTargetBases)};
             },
             render(style,n,lefty=false,inverted=false) {
                 rsPlusNotation=style; _leftyCached=lefty; _invertedCached=inverted;

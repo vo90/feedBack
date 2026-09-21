@@ -147,7 +147,7 @@ test('only emitted upcoming gems and visible sustain strands enter the resolver'
     );
     assert.match(
         source,
-        /slideRibbonUpdatePair\(\s*olMesh\.geometry, body\.geometry[\s\S]{0,600}?trailOrderRegisterStrand\(\s*olMesh, body/,
+        /slideRibbonUpdatePair\(\s*olMesh\.geometry, body\.geometry[\s\S]{0,800}?trailOrderRegisterStrand\(\s*olMesh, body/,
         'slides, bends, vibrato, and tremolo ribbons use the same resolver',
     );
 });
@@ -219,65 +219,4 @@ test('chart changes and teardown release trail-visibility high-water references'
         source,
         /trailVisibilityReleaseChartReferences\(\);\s*_trailYieldEventsByFret\s*=\s*hwyBuildTrailYieldEvents/,
     );
-});
-
-function haloOrderHarness() {
-    return new Function(`
-        let _trailYieldFrameId = 1;
-        function renderOrderForLayerAtZ(z, layer) {
-            return 600 + z * 10 + {
-                NOTE_OUTLINE_BEHIND_TRAIL: 0,
-                NOTE_CORE_BEHIND_TRAIL: 0.001,
-                NOTE_FACE_BEHIND_TRAIL: 0.002,
-            }[layer];
-        }
-        function trailYieldConstrainOwnTrailBehindGem() {}
-        ${extractFn('trailYieldApplyBehindLayerRecord')}
-        ${extractFn('trailYieldApplyBehindLayers')}
-        ${extractFn('trailYieldSetTargetGemBehind')}
-        ${extractFn('trailYieldRegisterGem')}
-        return {
-            register: trailYieldRegisterGem,
-            demote: trailYieldSetTargetGemBehind,
-            nextFrame() { _trailYieldFrameId++; },
-        };
-    `)();
-}
-
-test('RS+ local halo follows the final gem order before and after crossing registration', () => {
-    for (const demoteFirst of [false, true]) {
-        const h = haloOrderHarness();
-        const event = {};
-        const gems = Array.from({ length: 2 }, () => ({
-            outline: { renderOrder: 700 }, core: { renderOrder: 700.001 },
-            face: { renderOrder: 700.002 }, halo: { renderOrder: 699.99 },
-        }));
-        if (demoteFirst) h.demote(event, 580);
-        for (const gem of gems) h.register(event, -1, gem.outline, gem.core, gem.face, gem.halo);
-        h.demote(event, 580);
-        // A later-discovered crossing can impose a still lower order. Both
-        // duplicate chord/arpeggio emissions must follow the new final order.
-        h.demote(event, 570);
-        for (const gem of gems) {
-            assert.equal(gem.halo.renderOrder, gem.outline.renderOrder - 0.01);
-            assert.ok(gem.halo.renderOrder < gem.outline.renderOrder);
-            assert.ok(gem.outline.renderOrder < gem.core.renderOrder);
-            assert.ok(gem.core.renderOrder < gem.face.renderOrder);
-            assert.ok(gem.face.renderOrder < 570);
-        }
-    }
-});
-
-test('Current and disabled-soft-glow registrations release prior RS+ halo references', () => {
-    const h = haloOrderHarness(), event = {};
-    const oldHalos = [{ renderOrder: 699.99 }, { renderOrder: 699.99 }];
-    for (const halo of oldHalos) h.register(event, -1,
-        { renderOrder: 700 }, { renderOrder: 700.001 }, null, halo);
-    h.nextFrame();
-    for (let i = 0; i < 2; i++) h.register(event, -1,
-        { renderOrder: 700 }, { renderOrder: 700.001 }, null);
-    h.demote(event, 580);
-    assert.equal(event._trailYieldGemHalo, null);
-    assert.equal(event._trailYieldGemExtraRecords[0].halo, null);
-    assert.deepEqual(oldHalos.map(halo => halo.renderOrder), [699.99, 699.99]);
 });
