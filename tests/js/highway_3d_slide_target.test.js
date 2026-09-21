@@ -247,7 +247,7 @@ test('standalone and chord render paths pass explicit target membership separate
 
     const chord = sourceBetween('if (!deferChordGems', 'lastFretForString[cn.s] = cn.f;');
     assert.match(chord, /_linkNextTargetSet\.has\(cn\)/);
-    assert.match(chord, /chordWireHighDensity\(ch\),[\s\S]*?_isLinkNextTgt,\s*!!sharedChordHold\?\.suppressMemberTrails,\s*\);/);
+    assert.match(chord, /chordWireHighDensity\(ch\),[\s\S]*?_isLinkNextTgt,\s*!!sharedChordHold\?\.suppressMemberTrails,\s*hasEnclosingChordFrame,\s*\);/);
 });
 
 test('explicit suppression skips attack/drop-line but leaves the continuation trail', () => {

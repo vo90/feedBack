@@ -61,10 +61,11 @@ const harness = new Function('assert', `
             assert.equal(trailYieldOpenTargetXBounds(event, bounds), true);
             return Array.from(bounds);
         },
-        renderedOpenWidth(laneWidth, accent, rsPlus) {
+        renderedOpenWidth(laneWidth, accent, rsPlus, hasEnclosingChordFrame = false) {
             rsPlusNotation = rsPlus;
             const K = 1, NW = 8, NH = 3, S_GAP = 4, nStr = 6;
             const n = { f: 0, ac: accent };
+            const sourceNote = n;
             const x = 0, y = 0, noteZ = 0, techniqueYNow = 0;
             const fromChord = true, _leftyCached = false, rsMiss = false, rsHit = false;
             const sY = s => s * S_GAP, gNote = {}, mRsOpenStem = {};
@@ -73,12 +74,14 @@ const harness = new Function('assert', `
             const openWScale = laneWidth * 0.96 / 40;
             let rimWidth = 0, rimX = 0, coreWidth = 0;
             const outline = {
+                visible: true,
                 position: { set(x) { rimX = x; } },
                 scale: { set(x) { rimWidth = NW * x; } },
             };
             const core = { scale: { set(x) { coreWidth = NW * x; } } };
             ${openRimSizing}
             ${openCoreSizing}
+            if (!outline.visible) return coreWidth;
             return Math.max(coreWidth / 2, rimX + rimWidth / 2)
                 - Math.min(-coreWidth / 2, rimX - rimWidth / 2);
         },
@@ -109,17 +112,17 @@ test('covered open chord footprints retain the authored anchor wires', () => {
     }, anchor), [21, 69]);
 });
 
-test('RS+ open footprints reach the actual ordinary and accent bar/stem union in every lane placement', () => {
+test('RS+ open footprints match visible bar geometry with and without a chord-frame stem in every lane placement', () => {
     const placements = [
         { standalone: true, laneWidth: 40, center: 45 },
         { chordMeta: { size: 2, minF: 3, maxF: 7 }, laneWidth: 50, center: 45 },
         { chordMeta: { size: 2, minF: 2, maxF: 2 }, laneWidth: 40, center: 30 },
     ];
     for (const placement of placements) {
-        for (const accent of [false, true]) {
+        for (const accent of [false, true]) for (const enclosed of placement.standalone ? [false] : [false,true]) {
             const event = { t: 1, standalone: !!placement.standalone, chordMeta: placement.chordMeta, accent };
             const [left, right] = resolver(event, anchor, true);
-            const width = harness.renderedOpenWidth(placement.laneWidth, accent, true);
+            const width = harness.renderedOpenWidth(placement.laneWidth, accent, true, enclosed);
             assert.ok(Math.abs(left - (placement.center - width / 2)) < 1e-10);
             assert.ok(Math.abs(right - (placement.center + width / 2)) < 1e-10);
             // An approaching strand at the visible rim must be a potential
