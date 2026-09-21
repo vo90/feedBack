@@ -200,7 +200,7 @@ Each entry names the function or banner you should grep for, plus key sub-blocks
 - Keep glyph/artwork masks free of baked blur and mark CanvasTexture CSS colors as `SRGBColorSpace`. `_techMatCache` owns RS+ technique textures/materials in a separate negative-key namespace, including disposal of each cached `h3dTechMeshMat` base; `_techMeshMatClones` owns the per-mesh conversions. Keys include string color. Pale face symbols add a narrow dark contour across palettes; palm mute retains its own pale edge/string-dark center and off-face arrows stay solid string color. Compound cells use uniform scale and centered incomplete rows. Check actual ink bounds, including strokes, when changing padding; nominal two-mark cells slightly overlap but their ink must not. New style resources must be covered by pool reset and teardown paths; chord fill textures and frame shaders are shared and reused.
 - RS+ attack combinations use one padded mask rather than overlapping several full-size symbols. The static attack precedence matches Current for contradictory imported flags. Accent rims and chart-driven sustain techniques remain independent of the face mask.
 - `settings.html` hydrates the style dropdown and changes descriptions of Vibrancy, Glow and Bloom to match the selected style. The Bloom title becomes **Soft glow** in RS+ inspired. Text size applies to text labels; RS+ glyph masks use square world planes so circle/triangle proportions are not stretched to gem aspect ratio. Some reference glyphs deliberately cross the gem edges.
-- RS+ open bars reuse their outline mesh as the vertical stem; accent changes the bar thickness, not its horizontal extent. Keep lefty mirroring, stem bounds, halos and verdict faces consistent. The original open rim remains available for Current.
+- RS+ open/muted bars reuse their outline mesh as the vertical stem: hide it inside a visible enclosing ordinary chord frame; otherwise extend it fully to the floor. Never select a short tick via `fromChord`, which also includes standalone hand-shape/arpeggio association. Accent changes the bar thickness, not its horizontal extent. Keep lefty mirroring, stem bounds, halos and verdict faces consistent. The original open rim remains available for Current.
 - `prebendOffsetWorld()` samples the same onset envelope as the trail. Do not require the first imported curve point to be exactly at time zero: the trail clamps a later first point back to onset.
 - Regression entry points: `highway_3d_rsplus_settings.test.js` (coercion, panel refresh, storage failure, UI hydration), `highway_3d_rsplus_techniques.test.js` (mask combinations, contrast, caching/teardown, fractional bends), `highway_3d_rsplus_highway_theme.test.js` (default-only surface and theme/style round-trips), the RS+ chord tests, and the existing live-settings/bend/repeat/trail suites. Screenshot and motion review are still required for proportions, layering, and readability.
 
@@ -250,6 +250,17 @@ const noteState = {
 Anything that indexes a per-string array MUST be guarded by `validString(s)`. The function checks that `s` is an integer in `[0, nStr)` (returning `false` otherwise so the caller can skip), warns once when an out-of-range index is seen, and keeps the `mStr / mGlow / mSus / projMeshArr` lookups safe. It does NOT clamp — out-of-range strings are dropped, not silently mapped to a valid one. `filterValidNotes(notes)` is the chord-note equivalent (allocates only when something would actually be dropped).
 
 ## RS+ readability sizing
+
+RS+ default-theme inner dividers use `rsLaneDividerMaterial()` with a shared
+plane and analytic pixel coverage. Preserve their authored Z endpoints and
+clamp the interpolated width in the fragment shader so splitting a segment
+does not change its appearance. `uViewport` uses the actual drawing-buffer
+size, including render scale and DPR. The 2.01 render order keeps these lines
+above coincident extension lines (2) and below inlays (3), independent of
+transparent distance sorting. Every `pLaneDivider` caller must restore the
+geometry through `setLaneDividerGeometry()` when a pooled mesh changes role.
+`tests/browser/highway-rsplus-dividers.cjs` checks actual GPU pixel continuity,
+segment joins, style reuse, resizing, clipping and bounded GPU resources.
 
 `RSPLUS_SUSTAIN_STROKE_SCALE` keeps individual ribbons and their edge padding
 at 60% of Current's dimensions. `sustainMotionWidth` divides out that same scale
