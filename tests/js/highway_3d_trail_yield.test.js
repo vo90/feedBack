@@ -16,11 +16,16 @@ function loadHelpers() {
     const end = src.indexOf('    /** Fixed pre-impact ramp window', start);
     assert.notEqual(start, -1, 'trail-yield helper block start not found');
     assert.notEqual(end, -1, 'trail-yield helper block end not found');
+    const depthStart = src.indexOf('    const RENDER_ORDER_LAYER_STACK =');
+    const depthEnd = src.indexOf('    /** Labels yield to the actual final order', depthStart);
+    assert.notEqual(depthStart, -1, 'render-order helper block start not found');
+    assert.notEqual(depthEnd, -1, 'render-order helper block end not found');
     const block = src.slice(start, end);
     return vm.runInNewContext(
-        'const NFRETS = 24; const MAX_RENDER_STRINGS = 8;\n'
+        'const K = 1; const NFRETS = 24; const MAX_RENDER_STRINGS = 8;\n'
+        + src.slice(depthStart, depthEnd)
         + block
-        + '\n({ hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyFillTrailCrossingWindows, hwyTrailOverlapsGemX, hwyTrailYieldAmountAt,'
+        + '\n({ renderOrderForLayerAtZ, hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyFillTrailCrossingWindows, hwyTrailOverlapsGemX, hwyTrailYieldAmountAt,'
         + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailPriorityStringOffset, hwyTrailYieldGemLayer,'
         + ' hwyTrailTargetBehindOrder, hwyBuildTrailOcclusionIndex, hwyFillTrailOcclusionTargets, hwyTrailOcclusionFarthestTargetTime, hwyTrailVisibilityScratchCapacity, hwyMergeTrailPriorityWorldZ, hwyTrailOcclusionFrontMask, hwyTrailVisibilityFrontMask, hwyTrailOcclusionFlagsForPair, hwyTrailOcclusionTrailShouldStayBehind, hwyTrailOcclusionTrailShouldMoveInFront,'
         + ' TRAIL_OCCLUSION_GEM, TRAIL_OCCLUSION_TRAIL, TRAIL_OCCLUSION_TRAIL_FRONT, TRAIL_YIELD_DEFAULTS })',
@@ -925,14 +930,124 @@ test('a demoted gem stays above its own attached trail while both stay behind th
     assert.ok(ownTrailBodyOrder > ownTrailOutlineOrder);
 });
 
-test('a narrowed trail endpoint uses its upcoming gem depth in both priority modes', () => {
+test('a post-end target cannot move a trail behind an intervening ordinary gem', () => {
     const endpointTarget = new Float64Array([10.1]);
-    for (const gemInFront of [false, true]) {
-        const worldZ = helpers.hwyTrailPriorityWorldZ(
-            -10, 10, endpointTarget, 1, gemInFront, 230,
+    const naturalZ = -10;
+    const interveningGemZ = -(10.06 - 10) * 230;
+    const trailFirstZ = helpers.hwyTrailPriorityWorldZ(
+        naturalZ, 10, endpointTarget, 1, false, 230,
+    );
+    assert.equal(trailFirstZ, naturalZ, 'the trail already lies in front of its target');
+    assert.ok(
+        helpers.renderOrderForLayerAtZ(trailFirstZ, 'SUSTAIN_TRAIL')
+            > helpers.renderOrderForLayerAtZ(interveningGemZ, 'NOTE_CORE'),
+        'an unrelated gem between the real endpoint and target must remain behind',
+    );
+
+    const gemFirstZ = helpers.hwyTrailPriorityWorldZ(
+        naturalZ, 10, endpointTarget, 1, true, 230,
+    );
+    assert.ok(Math.abs(gemFirstZ + 23) < 1e-9, 'explicit gem promotion is unchanged');
+});
+
+test('trail-first constraints preserve natural depth or move only toward qualifying targets', () => {
+    const now = 10, speed = 230, naturalZ = -230;
+    // A sustain spans 10..12 with its natural midpoint at 11. Targets cover
+    // both sides of that midpoint, the endpoint window, and mixed ordering.
+    for (const times of [[], [10.25], [11], [11.75], [12.2], [12.2, 10.5, 11.75]]) {
+        const starts = new Float64Array(times);
+        const actual = helpers.hwyTrailPriorityWorldZ(
+            naturalZ, now, starts, starts.length, false, speed,
         );
-        assert.ok(Math.abs(worldZ + 23) < 1e-9);
+        assert.ok(actual >= naturalZ, `targets ${times} must not send the mesh backward`);
+        if (times.every(t => t >= 11)) {
+            assert.equal(actual, naturalZ, 'no movement is needed for already-farther targets');
+        }
+        for (const targetTime of times) {
+            const targetZ = -(targetTime - now) * speed;
+            assert.ok(
+                helpers.renderOrderForLayerAtZ(actual, 'SUSTAIN_TRAIL')
+                    > helpers.renderOrderForLayerAtZ(targetZ, 'NOTE_CORE_BEHIND_TRAIL'),
+                `the trail must still cover its qualifying target at ${targetTime}`,
+            );
+        }
     }
+    assert.equal(
+        helpers.hwyTrailPriorityWorldZ(
+            naturalZ, now, new Float64Array([NaN, Infinity]), 2, false, speed,
+        ),
+        naturalZ,
+        'invalid target times cannot replace the real depth',
+    );
+});
+
+test('Airbourne endpoint narrowing preserves intervening E5 gem order in modes 0 and 1', () => {
+    const source = { t: 25, s: 0, f: 3, sus: 0.139, bn: 0.5 };
+    const chords = [
+        { t: 25.184999, notes: [{ s: 0, f: 0 }, { s: 1, f: 2 }, { s: 2, f: 2 }] },
+        { t: 25.370001, notes: [{ s: 1, f: 0, ac: true }, { s: 2, f: 2 }, { s: 3, f: 2 }] },
+    ];
+    const index = helpers.hwyBuildTrailYieldEvents([source], chords, 6);
+    const sourceEnd = source.t + source.sus;
+    const starts = new Float64Array(8), ends = new Float64Array(8);
+    // The open A5 string spans the red fret; the intervening E5 fret-2 gems
+    // lie outside it. Supply the already-selected open footprint bucket.
+    const count = helpers.hwyFillTrailYieldTimes(
+        index[0], source.t, source.s, 24, sourceEnd, false, starts, ends,
+    );
+    assert.equal(count, 1);
+    assert.equal(starts[0], chords[1].t);
+    for (const t of [source.t, source.t + source.sus / 2, sourceEnd]) {
+        assert.equal(
+            helpers.hwyTrailYieldAmountAt(t, starts, ends, count, sourceEnd),
+            1,
+            'the existing fully narrowed short bend must retain its geometry',
+        );
+    }
+
+    const speed = 230;
+    for (const now of [23.5, 24, 24.8, 25.1]) {
+        const visibleStart = Math.max(source.t, now);
+        const naturalZ = -((visibleStart + sourceEnd) / 2 - now) * speed;
+        for (const mode of [0, 1, 2, 3]) {
+            const enabled = mode !== 0;
+            const frontMask = helpers.hwyTrailVisibilityFrontMask(enabled, mode >= 2, mode === 3);
+            const gemFirst = !!(frontMask & helpers.TRAIL_OCCLUSION_GEM);
+            const orderZ = helpers.hwyTrailPriorityWorldZ(
+                naturalZ, now, starts, enabled ? count : 0, gemFirst, speed,
+                mode === 3 ? starts : null,
+            );
+            const trailOrder = helpers.renderOrderForLayerAtZ(orderZ, 'SUSTAIN_TRAIL');
+            const gemZ = -(chords[0].t - now) * speed;
+            for (const layer of ['NOTE_OUTLINE', 'NOTE_CORE', 'TECHNIQUE_MARKER']) {
+                const gemOrder = helpers.renderOrderForLayerAtZ(gemZ, layer);
+                assert.equal(
+                    trailOrder > gemOrder,
+                    mode < 2,
+                    `mode ${mode}, time ${now}, ${layer}: only explicit promotion may put E5 in front`,
+                );
+            }
+        }
+    }
+});
+
+test('an added far endpoint target cannot pull an existing trail-first constraint backward', () => {
+    const naturalZ = -115, now = 10, speed = 230;
+    const nearTargets = new Float64Array([10.2]);
+    const farTargets = new Float64Array([11.2]);
+    const nearZ = helpers.hwyTrailPriorityWorldZ(naturalZ, now, nearTargets, 1, false, speed);
+    const farZ = helpers.hwyTrailPriorityWorldZ(naturalZ, now, farTargets, 1, false, speed);
+    assert.ok(farZ >= naturalZ, 'endpoint-only candidate sets must retain the baseline');
+    assert.equal(
+        helpers.hwyMergeTrailPriorityWorldZ(naturalZ, nearZ, 1, farZ, 1, false),
+        nearZ,
+        'a separate endpoint bucket must not weaken an existing physical constraint',
+    );
+    assert.equal(
+        helpers.hwyMergeTrailPriorityWorldZ(naturalZ, nearZ, 0, farZ, 1, false),
+        naturalZ,
+        'removing the near target must return to real geometry, not the endpoint target depth',
+    );
 });
 
 test('short-note notch eases in, reaches 30 percent, then recovers', () => {
