@@ -15664,6 +15664,25 @@
                             }
                         }
                     }
+                    const chDt = chDtEarly; // already computed above for anchor selection
+                    const chordTailMul = (() => {
+                        // When a next event (chord OR single note) has already crossed
+                        // the hit line, hide this frame immediately — no fadeout overlap
+                        // when another event is already playing.
+                        if (chDt < 0 && _chNextEventT < Infinity && now >= _chNextEventT) {
+                            return 0;
+                        }
+                        return hwyPostHitTailFadeMul(chDt, chordTailHoldS, chordNextSoon, chordTailFadeS);
+                    })();
+                    const chordFrameEligible = chShape.size > 1 && chDt > -chordTailHoldS && chDt < AHEAD && chordOpenBoxW != null
+                        && (!suppressSynthChord || chordTemplateMarkedArpeggio(ch.id, bundle.chordTemplates));
+                    // The flying box is drawn only before onset. Its side replaces
+                    // the open-note stem; arpeggio brackets and post-onset notes
+                    // still need their own marker. Share eligibility with the frame
+                    // below so a suppressed frame cannot hide a note's stem.
+                    const hasEnclosingChordFrame = chordFrameEligible && chDt > 0
+                        && chordTailMul > 0 && !chordHighwayLavenderArpVisual;
+
                     // Repeat gems remain visible for technique cues or visible sustains.
                     const suppressRepeatGems = repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes);
                     let retainsChordGems = false;
@@ -15754,6 +15773,7 @@
                                 chordHighwayLavenderArpVisual || suppressSynthChord || chordWireHighDensity(ch),
                                 _isLinkNextTgt,
                                 !!sharedChordHold?.suppressMemberTrails,
+                                hasEnclosingChordFrame,
                             );
                             // Frame height follows the gems this path actually retains,
                             // including arpeggio deferral and linked continuation skips.
@@ -15835,19 +15855,7 @@
                     }
 
                     // Chord frame-box: rim bars + interior fill gradient.
-                    const chDt = chDtEarly; // already computed above for anchor selection
-                    const chordTailMul = (() => {
-                        // When a next event (chord OR single note) has already crossed
-                        // the hit line, hide this frame immediately — no fadeout overlap
-                        // when another event is already playing.
-                        if (chDt < 0 && _chNextEventT < Infinity && now >= _chNextEventT) {
-                            return 0;
-                        }
-                        return hwyPostHitTailFadeMul(chDt, chordTailHoldS, chordNextSoon, chordTailFadeS);
-                    })();
-                    if (chShape.size > 1 && chDt > -chordTailHoldS && chDt < AHEAD && chordOpenBoxW != null
-                        && (!suppressSynthChord || chordTemplateMarkedArpeggio(ch.id, bundle.chordTemplates))
-                    ) {
+                    if (chordFrameEligible) {
                         const z = Math.min(0, dZ(chDt));
                         const width = chordOpenBoxW;
                         const xLeft = chordFrameXL;
@@ -18349,36 +18357,37 @@
             }
             _trailOrderGemCount++;
 
-            // Union both actual meshes without Box3/Vector churn: an open
-            // core is wider than its outline, and a hit punch can also expand
-            // the core. Both meshes carry the ghost-parenthesis geometry.
+            // Union visible meshes without Box3/Vector churn: an open core
+            // is wider than its outline, and a hit punch can also expand it.
+            // A stem hidden inside a chord box must not enlarge the footprint.
+            const visibleOutline = outline.visible === false ? core : outline;
             const width = NW * (n.ghost === true ? 1.48 : 1);
             const height = NH * (n.ghost === true ? 1.16 : 1);
-            const outlineBounds = n.ghost === true && n.f === 0 ? outline.geometry?.boundingBox : null;
+            const outlineBounds = n.ghost === true && n.f === 0 ? visibleOutline.geometry?.boundingBox : null;
             const coreBounds = n.ghost === true && n.f === 0 ? core.geometry?.boundingBox : null;
             const outlineWidth = outlineBounds ? outlineBounds.max.x - outlineBounds.min.x : width;
             const outlineHeight = outlineBounds ? outlineBounds.max.y - outlineBounds.min.y : height;
             const coreWidth = coreBounds ? coreBounds.max.x - coreBounds.min.x : width;
             const coreHeight = coreBounds ? coreBounds.max.y - coreBounds.min.y : height;
-            const cos = Math.abs(Math.cos(outline.rotation.z));
-            const sin = Math.abs(Math.sin(outline.rotation.z));
+            const cos = Math.abs(Math.cos(visibleOutline.rotation.z));
+            const sin = Math.abs(Math.sin(visibleOutline.rotation.z));
             const coreCos = Math.abs(Math.cos(core.rotation.z));
             const coreSin = Math.abs(Math.sin(core.rotation.z));
-            const outlineHalfX = (outlineWidth * Math.abs(outline.scale.x) * cos
-                + outlineHeight * Math.abs(outline.scale.y) * sin) * 0.5;
-            const outlineHalfY = (outlineWidth * Math.abs(outline.scale.x) * sin
-                + outlineHeight * Math.abs(outline.scale.y) * cos) * 0.5;
+            const outlineHalfX = (outlineWidth * Math.abs(visibleOutline.scale.x) * cos
+                + outlineHeight * Math.abs(visibleOutline.scale.y) * sin) * 0.5;
+            const outlineHalfY = (outlineWidth * Math.abs(visibleOutline.scale.x) * sin
+                + outlineHeight * Math.abs(visibleOutline.scale.y) * cos) * 0.5;
             const coreHalfX = (coreWidth * Math.abs(core.scale.x) * coreCos
                 + coreHeight * Math.abs(core.scale.y) * coreSin) * 0.5;
             const coreHalfY = (coreWidth * Math.abs(core.scale.x) * coreSin
                 + coreHeight * Math.abs(core.scale.y) * coreCos) * 0.5;
-            const minX = Math.min(outline.position.x - outlineHalfX, core.position.x - coreHalfX);
-            const maxX = Math.max(outline.position.x + outlineHalfX, core.position.x + coreHalfX);
-            const minY = Math.min(outline.position.y - outlineHalfY, core.position.y - coreHalfY);
-            const maxY = Math.max(outline.position.y + outlineHalfY, core.position.y + coreHalfY);
-            const minZ = Math.min(outline.position.z - ND * Math.abs(outline.scale.z) * 0.5,
+            const minX = Math.min(visibleOutline.position.x - outlineHalfX, core.position.x - coreHalfX);
+            const maxX = Math.max(visibleOutline.position.x + outlineHalfX, core.position.x + coreHalfX);
+            const minY = Math.min(visibleOutline.position.y - outlineHalfY, core.position.y - coreHalfY);
+            const maxY = Math.max(visibleOutline.position.y + outlineHalfY, core.position.y + coreHalfY);
+            const minZ = Math.min(visibleOutline.position.z - ND * Math.abs(visibleOutline.scale.z) * 0.5,
                 core.position.z - ND * Math.abs(core.scale.z) * 0.5);
-            const maxZ = Math.max(outline.position.z + ND * Math.abs(outline.scale.z) * 0.5,
+            const maxZ = Math.max(visibleOutline.position.z + ND * Math.abs(visibleOutline.scale.z) * 0.5,
                 core.position.z + ND * Math.abs(core.scale.z) * 0.5);
             gem.x = (minX + maxX) * 0.5;
             gem.y = (minY + maxY) * 0.5;
@@ -18967,7 +18976,7 @@
             drawNote(view, now, undefined, true, true);
         }
 
-        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false) {
+        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, hasEnclosingChordFrame = false) {
             const s = n.s;
             // Belt + suspenders: callers already gate via validString(),
             // but drawNote is also entered through { ...cn } chord-note
@@ -19509,6 +19518,10 @@
                     outline.position.set(x + (_leftyCached ? 1 : -1) * (barW - stemW) * 0.5,
                         (stemTop + stemBottom) * 0.5, noteZ);
                     outline.scale.set(stemW / NW, Math.max(stemW, stemTop - stemBottom) / NH, 0.6);
+                    // Ordinary chord boxes already supply this edge. Keep the
+                    // marker for unpitched mute slabs, which only borrow f:0
+                    // locally, and let the pool restore it on the next draw.
+                    outline.visible = !(hasEnclosingChordFrame && sourceNote.f === 0);
                 } else if (n.f === 0) {
                     outline.scale.set(
                         (35 * K / NW) * ndRim * rimXY * openWScale,

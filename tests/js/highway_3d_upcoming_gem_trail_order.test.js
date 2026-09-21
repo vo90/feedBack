@@ -82,6 +82,45 @@ test('visible footprint matching is direction-neutral across string rows', () =>
     );
 });
 
+test('a hidden chord open-string stem does not enlarge the trail-overlap footprint', () => {
+    const register = new Function(`
+        const NW = 5, NH = 3, ND = .25;
+        const _trailOrderGems = [], _trailOrderGemBuckets = [[]];
+        const _trailOrderGemBucketCounts = [0];
+        let _trailOrderGemCount = 0;
+        const trailOrderDepthBucket = () => 0;
+        ${extractFn('trailOrderRegisterUpcomingGem')}
+        return (outline, core) => {
+            trailOrderRegisterUpcomingGem({ s: 1, f: 0 }, 1, {}, outline, core);
+            return _trailOrderGems[_trailOrderGemCount - 1];
+        };
+    `)();
+    const outline = {
+        visible: false,
+        position: { x: -19.85, y: 0, z: -10 },
+        scale: { x: .06, y: .9, z: .6 },
+        rotation: { z: 0 },
+    };
+    const core = {
+        visible: true,
+        position: { x: 0, y: 0, z: -9.999 },
+        scale: { x: 8, y: .15, z: .6 },
+        rotation: { z: 0 },
+    };
+    const framed = register(outline, core);
+    assert.equal(framed.width, 40, 'the full colored bar still participates');
+    assert.ok(Math.abs(framed.height - .45) < 1e-10,
+        'only the bar height can overlap a trail while the stem is hidden');
+    assert.equal(framed.z, core.position.z);
+    assert.equal(framed.outline, outline, 'retain the pooled outline for layer bookkeeping');
+
+    outline.visible = true;
+    const unframed = register(outline, core);
+    assert.equal(unframed.width, 40);
+    assert.ok(Math.abs(unframed.height - 2.7) < 1e-10,
+        'a restored stem contributes its actual height again');
+});
+
 test('ordinary and physical corrections share one finalizer in every mode', () => {
     const finalizer = extractFn('trailOcclusionFinalizeFrame');
     const baselineCall = finalizer.indexOf('trailOrderResolveUpcomingGems()');
