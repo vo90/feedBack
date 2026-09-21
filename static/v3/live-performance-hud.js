@@ -85,21 +85,29 @@
 
     function applyHudClasses(el, state) {
         if (!el || !el.classList) return;
-        STATE_CLASSES.forEach((cls) => el.classList.remove(cls));
-        if (state) el.classList.add('is-' + state);
+        const desired = state ? 'is-' + state : '';
+        for (const cls of STATE_CLASSES) {
+            if (cls !== desired && el.classList.contains(cls)) el.classList.remove(cls);
+        }
+        if (desired && !el.classList.contains(desired)) el.classList.add(desired);
+    }
+
+    function setText(el, text) {
+        if (el && el.textContent !== text) el.textContent = text;
     }
 
     function renderHudDom(els, stats) {
         if (!els) return stats;
         const s = stats || calculateLivePerformanceState();
         if (els.root) applyHudClasses(els.root, s.state);
-        if (els.percent) els.percent.textContent = formatPercentText(s);
-        if (els.hits) els.hits.textContent = formatHitsText(s);
-        if (els.streak) els.streak.textContent = formatStreakText(s);
+        setText(els.percent, formatPercentText(s));
+        setText(els.hits, formatHitsText(s));
+        setText(els.streak, formatStreakText(s));
         if (els.state) {
-            els.state.textContent = formatStateText(s);
-            if (els.state.setAttribute) {
-                els.state.setAttribute('aria-hidden', s.judged === 0 ? 'true' : 'false');
+            setText(els.state, formatStateText(s));
+            const hidden = s.judged === 0 ? 'true' : 'false';
+            if (els.state.getAttribute('aria-hidden') !== hidden) {
+                els.state.setAttribute('aria-hidden', hidden);
             }
         }
         return s;

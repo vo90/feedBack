@@ -134,10 +134,12 @@ test('DOM text updates after hit and miss events', () => {
             this.attrs = {};
         }
         classList = {
+            contains: (c) => this.className.split(/\s+/).includes(c),
             add: (c) => { if (!this.className.includes(c)) this.className += (this.className ? ' ' : '') + c; },
             remove: (c) => { this.className = this.className.split(/\s+/).filter((x) => x && x !== c).join(' '); },
         };
         setAttribute(k, v) { this.attrs[k] = String(v); }
+        getAttribute(k) { return this.attrs[k] ?? null; }
     }
 
     const els = {
@@ -185,6 +187,7 @@ test('HUD stays hidden until the first note arrives, then reveals', () => {
             this.className = 'hidden is-idle';
         }
         classList = {
+            contains: (c) => this.className.split(/\s+/).includes(c),
             add: (c) => { if (!this.className.includes(c)) this.className += (this.className ? ' ' : '') + c; },
             remove: (c) => { this.className = this.className.split(/\s+/).filter((x) => x && x !== c).join(' '); },
         };
