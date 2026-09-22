@@ -61,7 +61,7 @@ const harness = new Function('assert', `
             assert.equal(trailYieldOpenTargetXBounds(event, bounds), true);
             return Array.from(bounds);
         },
-        renderedOpenWidth(laneWidth, accent, rsPlus, hasEnclosingChordFrame = false) {
+        renderedOpenWidth(laneWidth, accent, rsPlus, hasEnclosingChordFrame = false, openStringStemsVisible = true) {
             rsPlusNotation = rsPlus;
             const K = 1, NW = 8, NH = 3, S_GAP = 4, nStr = 6;
             const n = { f: 0, ac: accent };
@@ -119,10 +119,10 @@ test('RS+ open footprints match visible bar geometry with and without a chord-fr
         { chordMeta: { size: 2, minF: 2, maxF: 2 }, laneWidth: 40, center: 30 },
     ];
     for (const placement of placements) {
-        for (const accent of [false, true]) for (const enclosed of placement.standalone ? [false] : [false,true]) {
+        for (const accent of [false, true]) for (const enclosed of placement.standalone ? [false] : [false,true]) for (const stems of [false,true]) {
             const event = { t: 1, standalone: !!placement.standalone, chordMeta: placement.chordMeta, accent };
             const [left, right] = resolver(event, anchor, true);
-            const width = harness.renderedOpenWidth(placement.laneWidth, accent, true, enclosed);
+            const width = harness.renderedOpenWidth(placement.laneWidth, accent, true, enclosed, stems);
             assert.ok(Math.abs(left - (placement.center - width / 2)) < 1e-10);
             assert.ok(Math.abs(right - (placement.center + width / 2)) < 1e-10);
             // An approaching strand at the visible rim must be a potential
