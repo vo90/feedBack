@@ -2817,6 +2817,13 @@
         return n.f === 0 || isUnpitchedMute(n);
     }
 
+    // A chord box replaces every member's stem for the whole event, including
+    // its post-onset sustain. Unboxed notes use only their own stem preference.
+    function noteStemVisible(n, belongsToBoxedChord, noteStemsVisible, openStringStemsVisible) {
+        return !belongsToBoxedChord
+            && (usesUnfrettedPosition(n) ? openStringStemsVisible : noteStemsVisible);
+    }
+
     /**
      * Return the chart time of the first fretted event that can still affect
      * the camera at `now`, or the next fretted onset after it.
@@ -16107,14 +16114,13 @@
                         }
                         return hwyPostHitTailFadeMul(chDt, chordTailHoldS, chordNextSoon, chordTailFadeS);
                     })();
-                    const chordFrameEligible = chShape.size > 1 && chDt > -chordTailHoldS && chDt < AHEAD && chordOpenBoxW != null
+                    const chordHasFrame = chShape.size > 1 && chordOpenBoxW != null
                         && (!suppressSynthChord || chordTemplateMarkedArpeggio(ch.id, bundle.chordTemplates));
-                    // The flying box is drawn only before onset. Its side replaces
-                    // the open-note stem; arpeggio brackets and post-onset notes
-                    // still need their own marker. Share eligibility with the frame
-                    // below so a suppressed frame cannot hide a note's stem.
-                    const hasEnclosingChordFrame = chordFrameEligible && chDt > 0
-                        && chordTailMul > 0 && !chordHighwayLavenderArpVisual;
+                    const chordFrameEligible = chordHasFrame && chDt > -chordTailHoldS && chDt < AHEAD;
+                    // Membership outlives the flying frame. Do not restore stems
+                    // at onset, during a sustain, or when a newer event fades the
+                    // box. Open arpeggio brackets are not enclosing chord boxes.
+                    const belongsToBoxedChord = chordHasFrame && !chordHighwayLavenderArpVisual;
 
                     // Repeat gems remain visible for technique cues or visible sustains.
                     const suppressRepeatGems = repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes);
@@ -16206,7 +16212,7 @@
                                 chordHighwayLavenderArpVisual || suppressSynthChord || chordWireHighDensity(ch),
                                 _isLinkNextTgt,
                                 !!sharedChordHold?.suppressMemberTrails,
-                                hasEnclosingChordFrame,
+                                belongsToBoxedChord,
                             );
                             // Frame height follows the gems this path actually retains,
                             // including arpeggio deferral and linked continuation skips.
@@ -19422,7 +19428,7 @@
             drawNote(view, now, undefined, true, true);
         }
 
-        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, hasEnclosingChordFrame = false) {
+        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, belongsToBoxedChord = false) {
             _stableNoteRelevant = n.t + Math.max(0.03, n.sus || 0) >= now;
             const s = n.s;
             // Belt + suspenders: callers already gate via validString(),
@@ -19530,6 +19536,7 @@
                 ? techniqueYOffsetWorld(n, Math.min(now, susEnd))
                 : now <= n.t ? prebendOffsetWorld(n) : 0;
             const noteZ = sustained ? 0 : Math.min(0, dZ(dt));
+            const stemVisible = noteStemVisible(n, belongsToBoxedChord, noteStemsVisible, openStringStemsVisible);
             // Per-note Z-based renderOrder: far notes get a low value (render
             // first, get overdrawn by close geometry), close notes get a high
             // value (render last, appear on top). RENDER_ORDER_LAYER_STACK decides
@@ -19963,12 +19970,7 @@
                     outline.position.set(x + (_leftyCached ? 1 : -1) * (barW - stemW) * 0.5,
                         (stemTop + stemBottom) * 0.5, noteZ);
                     outline.scale.set(stemW / NW, Math.max(stemW, stemTop - stemBottom) / NH, 0.6);
-                    // An enclosing ordinary chord box supplies this edge for
-                    // both open strings and unpitched mute slabs. Otherwise the
-                    // enabled stem reaches the floor: fromChord also describes
-                    // hand-shape/arpeggio association, not physical enclosure.
-                    // Pool reuse restores the full stem once the frame ends.
-                    outline.visible = openStringStemsVisible && !hasEnclosingChordFrame;
+                    outline.visible = stemVisible;
                 } else if (n.f === 0) {
                     outline.scale.set(
                         (35 * K / NW) * ndRim * rimXY * openWScale,
@@ -20647,9 +20649,9 @@
                     // depth so they stay above non-arp connector lines of the same chord.
                     const _isArpNote = arpBounds !== null;
 
-                    // The RS+ stem preference only gates the connector;
+                    // The stem preference only gates the connector;
                     // the fret number retains its own visibility and position.
-                    if (!fromChord && (!rsPlusNotation || noteStemsVisible)) {
+                    if (!fromChord && stemVisible) {
                         const line = pConnectorLine.get();
                         line.position.set(x, labelY, noteZ);
                         // RS+ connects the moving gem all the way to the floor.
@@ -20762,9 +20764,7 @@
             // fret-label end), instead of a full-height white line to the board.
             const _wantDropLine = pDropLine && n.f > 0 && dt >= 0 && fromChord
                 && showDropLine && !skipBody && !explicitLinkTarget
-                // Individual gems associated with an arpeggio/hand shape use
-                // this path. Apply their stem preference; chord members are separate.
-                && (!rsPlusNotation || noteStemsVisible || arpBounds === null);
+                && stemVisible;
             if (_wantDropLine) {
                 const _minStrY = Math.min(sY(0), sY(nStr - 1));
                 const _dropY = _minStrY - S_GAP * 0.8;
@@ -22876,8 +22876,8 @@
             options: [{ id: 'current', label: 'Current' }, { id: 'rsplus', label: 'RS+ inspired' }],
             default: BG_DEFAULTS.notationStyle,
         },
-        { key: 'noteStemsVisible', label: 'Note-gem stems (RS+)', type: 'toggle', default: BG_DEFAULTS.noteStemsVisible },
-        { key: 'openStringStemsVisible', label: 'Open-string stems (RS+)', type: 'toggle', default: BG_DEFAULTS.openStringStemsVisible },
+        { key: 'noteStemsVisible', label: 'Note-gem stems', type: 'toggle', default: BG_DEFAULTS.noteStemsVisible },
+        { key: 'openStringStemsVisible', label: 'Open-string stems', type: 'toggle', default: BG_DEFAULTS.openStringStemsVisible },
         { key: 'glow', label: 'Highway glow', type: 'range', min: 0, max: 1, step: 0.05, default: BG_DEFAULTS.glow },
         { key: 'bloom', label: 'Soft glow / bloom', type: 'toggle', default: BG_DEFAULTS.bloom },
         {

@@ -232,8 +232,8 @@ test('stem setters retain in-session choices and notify renderers when storage r
 });
 
 test('stem checkboxes hydrate, save and retain choices across notation changes', () => {
-    for(const useSetter of [false,true]) {
-        const h=hydrate('rsplus',useSetter,false,{h3d_bg_noteStemsVisible:'false'});
+    for(const useSetter of [false,true]) for(const style of ['current','rsplus']) {
+        const h=hydrate(style,useSetter,false,{h3d_bg_noteStemsVisible:'false'});
         const note=h.elements.get('h3d-note-stems-visible');
         const open=h.elements.get('h3d-open-string-stems-visible');
         assert.equal(note.checked,false);assert.equal(open.checked,true);
@@ -251,7 +251,7 @@ test('stem checkboxes hydrate, save and retain choices across notation changes',
             assert.equal(h.storage.getItem('h3d_bg_openStringStemsVisible'),'false');
         }
         h.select.value='current';h.select.listeners.change();
-        assert.equal(note.disabled,true);assert.equal(open.disabled,true);
+        assert.equal(note.disabled,false);assert.equal(open.disabled,false);
         h.select.value='rsplus';h.select.listeners.change();
         assert.equal(note.checked,true);assert.equal(open.checked,false);
     }

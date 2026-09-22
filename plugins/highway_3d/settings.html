@@ -116,16 +116,16 @@
     <div class="mt-3">
         <label class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
             <input type="checkbox" id="h3d-note-stems-visible" checked class="accent-accent">
-            Note-gem stems (RS+)
+            Note-gem stems
         </label>
-        <p class="text-[10px] text-gray-500 mt-1 ml-6">Vertical connectors beneath individual fretted notes, including arpeggio notes. Fret numbers and sustain trails stay visible.</p>
+        <p class="text-[10px] text-gray-500 mt-1 ml-6">Vertical connectors beneath unboxed fretted notes, including arpeggio notes. Boxed chords never show stems. Fret numbers and sustain trails stay visible.</p>
     </div>
     <div class="mt-3">
         <label class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
             <input type="checkbox" id="h3d-open-string-stems-visible" checked class="accent-accent">
-            Open-string stems (RS+)
+            Open-string stems
         </label>
-        <p class="text-[10px] text-gray-500 mt-1 ml-6">Vertical stems beside open-string and unpitched muted-note bars. Bars inside chord boxes already omit their stems.</p>
+        <p class="text-[10px] text-gray-500 mt-1 ml-6">Vertical stems beside unboxed open-string and unpitched muted-note bars in RS+ notation. Boxed chords never show stems. Independent of Note-gem stems.</p>
     </div>
 </div>
 
@@ -1631,7 +1631,7 @@
             });
             function showNotationDescription(value) {
                 for (const element of notationStemControls) {
-                    if (element) element.disabled = value !== 'rsplus';
+                    if (element) element.disabled = false;
                 }
                 for (const item of notationSlideArrows) {
                     if (!item.element) continue;

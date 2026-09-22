@@ -9,7 +9,7 @@
  * --fidelity-only reviews each technique plus open-marker and arpeggio layouts.
  * --chords-only captures and validates just the chord sequence in both styles.
  * --orientation-only checks stable RS+ gems/markers across approach and live style reuse.
- * --open-chords-only checks open/muted floor stems, hand-shape association and pool reuse.
+ * --open-chords-only checks boxed/standalone stem settings, hand-shape association and pool reuse.
  * --bends-only checks bend chevron amounts, colors, orientation and style reuse.
  * --readability-only samples technique contrast and moving trails; --quick omits yellow-only masks.
  * --readability-extra checks scored accented chord/slides and records real RAF playback to WebM.
@@ -60,7 +60,12 @@ function once(text, marker, replacement) {
   return text.replace(marker, replacement);
 }
 let served = once(source, 'const core = pNote.get();', `const core = pNote.get();
-  if (window.__notationProbe) window.__notationProbe.notes.push({ note: {...n}, sourceFret:sourceNote.f, dt, fromChord, core, outline });`);
+  if (window.__notationProbe) window.__notationProbe.notes.push({ note: {...n}, sourceFret:sourceNote.f, dt, fromChord, boxed:typeof belongsToBoxedChord!=='undefined'&&belongsToBoxedChord, core, outline });`);
+for (const anchor of ['const line = pConnectorLine.get();','const dl = pDropLine.get();']) {
+  const mesh=anchor.includes('const line')?'line':'dl';
+  served=once(served,anchor,`${anchor}
+    if(window.__notationProbe)window.__notationProbe.stems.push({note:{...n},fromChord,mesh:${mesh}});`);
+}
 served = once(served, 'const fill = pChordFrameFill.get();', `const fill = pChordFrameFill.get();
   if (window.__notationProbe) window.__notationProbe.frames.push({ t:ch.t, dt:chDt, isRepeat, isArpeggioFrame, compactRepeatFrame, palmMuted:chordNotes.some(cn=>cn.pm), fill });`);
 served = once(served, 'const b = pChordBox.get();', `const b = pChordBox.get();
@@ -200,18 +205,19 @@ async function main() {
       window.__fillAlpha=m=>{const source=m.map?.image;if(!source)return null;const rgba=source.data||source.getContext?.('2d').getImageData(0,0,source.width,source.height).data;if(!rgba)return null;let min=255,max=0;for(let i=3;i<rgba.length;i+=4){min=Math.min(min,rgba[i]);max=Math.max(max,rgba[i]);}return {min,max,width:source.width,height:source.height};};
       window.__captureNotation=()=>{
         const a=r.__notationAudit();
-        window.__notationProbe={notes:[],frames:[],edges:[],roundedFrames:[],markers:[],trails:[]};
+        window.__notationProbe={notes:[],frames:[],edges:[],roundedFrames:[],markers:[],trails:[],stems:[]};
         a.ren.info.autoReset=false;a.ren.info.reset();r.draw(bundle);
         const p=window.__notationProbe;window.__notationProbe=null;
         const gl=a.ren.getContext();
         return {style:a.style,settings:a.settings,openStemFloor:a.openStemFloor,noteHeight:a.noteHeight,canvas:[a.ren.domElement.width,a.ren.domElement.height],
           renderer:{calls:a.ren.info.render.calls,triangles:a.ren.info.render.triangles,memory:{...a.ren.info.memory}},
-          notes:p.notes.map(({note,sourceFret,dt,fromChord,core,outline})=>{const v=core.getWorldPosition(core.position.clone()).project(a.cam);const rgba=new Uint8Array(4);gl.readPixels(Math.round((v.x+1)*a.ren.domElement.width/2),Math.round((v.y+1)*a.ren.domElement.height/2),1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba);return {note,sourceFret,dt,fromChord,core:__probeMesh(core),outline:__probeMesh(outline),screen:[(v.x+1)*innerWidth/2,(1-v.y)*innerHeight/2],centerPixel:Array.from(rgba)};}),
+          notes:p.notes.map(({note,sourceFret,dt,fromChord,boxed,core,outline})=>{const v=core.getWorldPosition(core.position.clone()).project(a.cam);const rgba=new Uint8Array(4);gl.readPixels(Math.round((v.x+1)*a.ren.domElement.width/2),Math.round((v.y+1)*a.ren.domElement.height/2),1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba);return {note,sourceFret,dt,fromChord,boxed,core:__probeMesh(core),outline:__probeMesh(outline),screen:[(v.x+1)*innerWidth/2,(1-v.y)*innerHeight/2],centerPixel:Array.from(rgba)};}),
           frames:p.frames.map(({fill,...metadata})=>({...metadata,fill:__probeMesh(fill),textureAlpha:__fillAlpha(fill.material)})),
           edges:p.edges.map(({t,dt,isRepeat,mesh})=>({t,dt,isRepeat,mesh:__probeMesh(mesh)})),
           roundedFrames:p.roundedFrames.map(({mesh,...rest})=>({...rest,mesh:__probeMesh(mesh)})),
           markers:p.markers.map(({mesh,...rest})=>{const v=mesh.getWorldPosition(mesh.position.clone()).project(a.cam);return {...rest,mesh:__probeMesh(mesh),texture:['bend','face'].includes(rest.kind)?__probeBendTexture(mesh):undefined,screen:[(v.x+1)*innerWidth/2,(1-v.y)*innerHeight/2]};}),
           trails:p.trails.map(__probeTrail),
+          stems:p.stems.map(({mesh,...rest})=>({...rest,mesh:__probeMesh(mesh)})),
           ghosts:(a.projMeshArr||[]).flat().filter(m=>m.visible).map(__probeMesh)};
       };
     });
@@ -432,7 +438,8 @@ async function main() {
         b.handShapes=[{chord_id:0,start_time:repeat?onset-.4:onset,end_time:onset+2,arp:arpeggio}];
         return b;
       }
-      const framedVisibility=reference&&!source.includes('hasEnclosingChordFrame');
+      const boxedStemPolicy=source.includes('function noteStemVisible(');
+      const framedVisibility=reference&&!source.includes('hasEnclosingChordFrame')&&!boxedStemPolicy;
       function assertFloorStems(proof,label){
         if(reference||proof.style!=='rsplus')return;
         for(const n of proof.notes.filter(n=>n.note.f===0&&n.outline.visible)){
@@ -468,10 +475,10 @@ async function main() {
       const repeatedProof=await captureOpen('open-chord-accented-repeat',repeated,modern,{visible:framedVisibility,frame:true});
       check(repeatedProof.frames.some(f=>f.isRepeat&&!f.compactRepeatFrame),'Open repeat fixture did not exercise a repeated full frame');
       const onsetBundle=openChord();onsetBundle.currentTime=onset;
-      const onsetProof=await captureOpen('open-chord-onset',onsetBundle,modern,{visible:true});
+      const onsetProof=await captureOpen('open-chord-onset',onsetBundle,modern,{visible:!boxedStemPolicy});
       check(onsetProof.frames.length===0,'Ordinary chord frame survived onset');
       onsetBundle.currentTime=onset+.03;
-      const postOnsetProof=await captureOpen('open-chord-after-onset',onsetBundle,modern,{visible:true});
+      const postOnsetProof=await captureOpen('open-chord-after-onset',onsetBundle,modern,{visible:!boxedStemPolicy});
       check(postOnsetProof.frames.length===0,'Ordinary chord frame survived after onset');
       const single=baseBundle();single.notes=[member({t:onset,s:0,f:0})];single.currentTime=onset-.3;
       await captureOpen('open-standalone',single,modern,{visible:true});
@@ -512,17 +519,23 @@ async function main() {
       check(muteProof.notes.every(n=>n.sourceFret===127),'Unpitched chord fixture lost its source frets');
       await captureOpen('unpitched-muted-chord-current',mutedChord,{...modern,notationStyle:'current'},{visible:true,frame:true});
       mutedChord.currentTime=onset;
-      await captureOpen('unpitched-muted-chord-onset',mutedChord,modern,{visible:true});
+      await captureOpen('unpitched-muted-chord-onset',mutedChord,modern,{visible:!boxedStemPolicy});
       // Read-only optional local chart evidence. Do not commit library data.
       if(option('--fixture')){
         const raw=JSON.parse(fs.readFileSync(option('--fixture'),'utf8'));
-        for(const style of ['rsplus','current'])for(const currentTime of option('--times','132,132.171005,132.485001').split(',').map(Number)){
+        for(const style of ['rsplus','current'])for(const currentTime of option('--times','132,132.171005,132.485001').split(',').map(Number))for(const enabled of reference?[true]:[true,false]){
           const b={...baseBundle(),...raw,handShapes:raw.handshapes||raw.handShapes,chordTemplates:raw.templates||raw.chordTemplates,currentTime};
-          const name=`${style}-${option('--fixture-name','open-muted')}-${currentTime}`;
-          const proof=await capture(name,b,{...modern,notationStyle:style},{expectBodies:true});
+          const name=`${style}-${option('--fixture-name','open-muted')}-${currentTime}-stems-${enabled?'on':'off'}`;
+          const proof=await capture(name,b,{...modern,notationStyle:style,noteStemsVisible:enabled,openStringStemsVisible:enabled},{expectBodies:true});
           assertFloorStems(proof,name);
-          const singles=proof.notes.filter(n=>n.note.f===0&&b.notes.some(s=>s.t===n.note.t&&s.s===n.note.s));
-          check(singles.length>0&&singles.every(n=>n.outline.visible),`${name}: standalone open bars lost their stems`);
+          if(!reference){
+            const boxed=proof.notes.filter(n=>n.boxed);
+            check(!proof.stems.some(s=>s.mesh.visible&&boxed.some(n=>n.note.t===s.note.t&&n.note.s===s.note.s&&n.note.f===s.note.f)),`${name}: a boxed chord has a fretted stem`);
+            if(!enabled)check(!proof.stems.some(s=>s.mesh.visible),`${name}: a fretted stem ignored the off setting`);
+            if(style==='rsplus')for(const n of proof.notes.filter(n=>n.note.f===0)){
+              check(n.outline.visible===(!n.boxed&&enabled),`${name}: open stem ignored box membership or its setting`);
+            }
+          }
         }
       }
       // The same renderer must reset pooled visibility at the frame boundary,
@@ -530,8 +543,8 @@ async function main() {
       await init(openChord(),modern);
       const passes=[];
       for(const [style,time,visible] of [
-        ['rsplus',onset-.3,framedVisibility],['rsplus',onset,true],
-        ['rsplus',onset+.03,true],
+        ['rsplus',onset-.3,framedVisibility],['rsplus',onset,!boxedStemPolicy],
+        ['rsplus',onset+.03,!boxedStemPolicy],
         ['rsplus',onset-.3,framedVisibility],['current',onset-.3,true],
         ['rsplus',onset-.3,framedVisibility],['current',onset-.3,true],
       ]){
@@ -541,6 +554,35 @@ async function main() {
         passes.push(proof);
       }
       results.push({name:'open-chord-live-style-and-onset-reuse',passes});
+      if(!reference){
+        // Exercise the complete renderer with both saved settings and live edits.
+        // High-density chords used to bypass the fretted setting; their open
+        // members used to regain stems at onset. Distinct standalone events
+        // prove that neither setting suppresses the other type of stem.
+        const b=openChord();b.chords[0].hd=true;
+        b.chords[0].notes.forEach(n=>{n.sus=1;});
+        b.notes=[member({t:onset+.2,s:4,f:5}),member({t:onset+.4,s:0,f:0})];
+        for(const style of ['rsplus','current']){
+          await init(b,{...modern,notationStyle:style,noteStemsVisible:false,openStringStemsVisible:false});
+          for(const notes of [false,true])for(const open of [false,true])for(const time of [onset-.3,onset,onset+.03,onset-.3]){
+            const proof=await page.evaluate(({notes,open,time})=>{
+              h3dBgSetNoteStemsVisible(notes);h3dBgSetOpenStringStemsVisible(open);bundle.currentTime=time;
+              return __captureNotation();
+            },{notes,open,time});
+            const label=`stem-matrix-${style}-${notes}-${open}-${time}`;
+            const chordNotes=proof.notes.filter(n=>n.fromChord&&n.note.t===onset);
+            check(chordNotes.length===3,`${label}: missing chord member bodies`);
+            check(!proof.stems.some(n=>n.mesh.visible&&n.note.t===onset),`${label}: boxed chord has a fretted stem`);
+            if(style==='rsplus')check(chordNotes.filter(n=>n.note.f===0).every(n=>!n.outline.visible),`${label}: boxed chord has an open stem`);
+            const singles=proof.notes.filter(n=>n.note.t>onset);
+            check(singles.length===2,`${label}: missing standalone bodies`);
+            check(proof.stems.some(n=>n.note.t===onset+.2&&n.mesh.visible)===notes,`${label}: fretted toggle ignored`);
+            if(style==='rsplus')check(singles.filter(n=>n.note.f===0).every(n=>n.outline.visible===open),`${label}: open toggle ignored`);
+            results.push({name:label,...proof});
+          }
+          await page.screenshot({path:path.join(out,`stem-matrix-${style}-both-on.png`)});
+        }
+      }
     }
     if(orientationOnly){
       const onset=13,distances=[2.7,1.5,.3,0];
