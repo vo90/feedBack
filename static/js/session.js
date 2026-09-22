@@ -37,6 +37,7 @@
 import {
     loadSettings,
 } from './settings.js';
+import { clearHiddenScreenCaret } from './screen-selection.js';
 import {
     clearLoop,
     loadSavedLoops,
@@ -160,6 +161,7 @@ export async function showScreen(id) {
     //     screen:changing  — before anything happens. "I am leaving `from`." Cancel/teardown here.
     //     screen:changed   — after the DOM and data are settled. "I am on `id`."
     if (window.feedBack) window.feedBack.emit('screen:changing', { id, from: prevScreenId || null });
+    clearHiddenScreenCaret(document.getElementById(id));
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.getElementById(id).classList.add('active');
     // Mark the next render as a screen-entry so it scrolls the
