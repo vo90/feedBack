@@ -53,6 +53,28 @@ test('preserve editing and form-control carets', () => {
     }
 });
 
+test('preserve focused editing controls when the document caret belongs to a screen', () => {
+    for (const control of ['input', 'textarea', 'select', '[role="textbox"]', 'contenteditable']) {
+        const f = fixture();
+        f.document.activeElement = {
+            isContentEditable: control === 'contenteditable',
+            matches: selector => selector.split(', ').includes(control),
+        };
+        assert.equal(f.clear(f.screens.player), false, control);
+        assert.equal(f.clears(), 0);
+    }
+});
+
+test('follow nested shadow-root focus before clearing a document caret', () => {
+    const f = fixture();
+    const input = { matches: selector => selector.split(', ').includes('input') };
+    f.document.activeElement = { shadowRoot: {
+        activeElement: { shadowRoot: { activeElement: input } },
+    } };
+    assert.equal(f.clear(f.screens.player), false);
+    assert.equal(f.clears(), 0);
+});
+
 test('ignore missing selections, outside-screen anchors and missing destinations', () => {
     const outside = fixture({ owner: 'outside' });
     assert.equal(outside.clear(outside.screens.player), false);

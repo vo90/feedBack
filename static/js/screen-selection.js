@@ -11,6 +11,12 @@ export function clearHiddenScreenCaret(nextScreen, doc = document) {
     const screen = element?.closest?.('.screen');
     if (!screen || screen === nextScreen) return false;
     if (element.isContentEditable || element.closest('input, textarea')) return false;
+    // Chromium may anchor the document selection at an input's parent. Clearing
+    // it can still reset the focused field's typing position, including in shadow DOM.
+    let active = doc.activeElement;
+    while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+    if (active?.isContentEditable
+        || active?.matches?.('input, textarea, select, [role="textbox"]')) return false;
     selection.removeAllRanges();
     return true;
 }
