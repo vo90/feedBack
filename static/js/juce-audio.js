@@ -1,3 +1,4 @@
+import { selectionLifecycle } from './screen-selection.js';
 // The desktop (JUCE) audio integration — three self-installing shims.
 //
 // The largest single slice out of app.js's core: 938 lines, ~12% of what was left.
@@ -171,7 +172,7 @@ import { S } from './player-state.js';
                 // reroute doesn't try to play() an empty element.
                 if (S.isPlaying && !_isStale(songAudio)) {
                     if (!audio.src) { audio.src = url; audio.load(); }
-                    try { await audio.play(); } catch (_) { /* ignore */ }
+                    try { selectionLifecycle().reconcileBeforePlayback(); await audio.play(); } catch (_) { /* ignore */ }
                 }
                 window.feedBack?.playback?.recordRouteChange?.({
                     routeKind: 'browser-media',
@@ -202,7 +203,7 @@ import { S } from './player-state.js';
                 const started = await jucePlayer.play();
                 if (started === false) {
                     if (!_isStale(songAudio) && S.isPlaying) {
-                        try { await audio.play(); } catch (_) { /* ignore */ }
+                        try { selectionLifecycle().reconcileBeforePlayback(); await audio.play(); } catch (_) { /* ignore */ }
                     }
                     throw new Error('jucePlayer.play() failed (transient transport start)');
                 }
@@ -243,7 +244,7 @@ import { S } from './player-state.js';
             // transient failures must retry on the next poll.
             if (S.isPlaying && !window._juceMode && !_isStale(songAudio)) {
                 if (!audio.src) { audio.src = url; audio.load(); }
-                try { await audio.play(); } catch (_) { /* ignore */ }
+                try { selectionLifecycle().reconcileBeforePlayback(); await audio.play(); } catch (_) { /* ignore */ }
             }
             window.feedBack?.playback?.recordRouteChange?.({
                 routeKind: 'browser-media',
@@ -317,6 +318,7 @@ import { S } from './player-state.js';
                     // have pressed Pause during jucePlayer.pause()/metadata
                     // load — don't resume a song they just paused.
                     if (S.isPlaying) {
+                        selectionLifecycle().reconcileBeforePlayback();
                         audio.play().catch(() => { /* ignore */ });
                     }
                 } finally {

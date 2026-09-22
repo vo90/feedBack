@@ -27,6 +27,9 @@ function build({ juce = true } = {}) {
         dispatchEvent(event) { calls.push(event.type); }
     }
     const context = {
+        // DOM selection ownership is exercised in the browser fixture suite.
+        selectionChecks: [],
+        selectionLifecycle: () => ({ reconcileBeforePlayback() { context.selectionChecks.push(now); } }),
         console, Promise, queueMicrotask, Event, HTMLMediaElement: Media,
         audio: new Media(), S: { isPlaying: false, lastAudioTime: 0 },
         performance: { now: () => now },

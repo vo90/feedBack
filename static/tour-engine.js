@@ -191,7 +191,9 @@
     function _hideMenu() {
         if (!_menuPopover) return;
         const wasOpen = _menuPopover.style.display !== 'none';
+        window.feedBack?.selectionLifecycle?.prepareToHide(_menuPopover);
         _menuPopover.style.display = 'none';
+        window.feedBack?.selectionLifecycle?.finishVisibilityChange();
         if (_menuBtn) {
             _menuBtn.setAttribute('aria-expanded', 'false');
             // Return focus to the trigger when closing — standard

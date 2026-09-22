@@ -30,6 +30,7 @@
 // a getter and left the writer in app.js.
 import { audio } from './audio-el.js';
 import { S } from './player-state.js';
+import { selectionLifecycle } from './screen-selection.js';
 
 // Sync the play/pause button's icon and accessible state in one place so
 // screen readers, tooltips, and aria-pressed stay aligned with playback.
@@ -99,6 +100,7 @@ export const jucePlayer = {
         return _queueBackingCommand(async () => {
             if (!permitted()) return false;
             try {
+                selectionLifecycle().reconcileBeforePlayback();
                 await window.feedBackDesktop.audio.startBacking();
                 if (!permitted()) {
                     // A replacement song waits for stop() before loading its
@@ -445,6 +447,7 @@ export async function startPhysicalPlayback(options = {}) {
         && attempt === _playAttemptGen && (!options.guard || options.guard());
     if (!permitted()) return { status: 'cancelled', completed: false };
     try {
+        selectionLifecycle().reconcileBeforePlayback();
         if (window._juceMode) {
             const started = await jucePlayer.play({ guard: permitted });
             if (!permitted()) return { status: 'cancelled', completed: false };
