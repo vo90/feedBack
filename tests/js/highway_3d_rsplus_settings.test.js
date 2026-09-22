@@ -101,7 +101,8 @@ function hydrate(saved, useSetter = true, brokenStorage = false, arrows = {}) {
     if (brokenStorage) localStorage.getItem = () => { throw new Error('blocked'); };
     const elements = new Map(['h3d-notation-style', 'h3d-vibrancy-description', 'h3d-glow-description',
         'h3d-bloom-title', 'h3d-bloom-description', 'h3d-slide-arrow-approach-visible',
-        'h3d-slide-arrow-neck-visible', 'h3d-slide-arrow-chain-preview-visible'].map(id => [id, {
+        'h3d-slide-arrow-neck-visible', 'h3d-slide-arrow-chain-preview-visible',
+        'h3d-note-stems-visible', 'h3d-open-string-stems-visible'].map(id => [id, {
         innerHTML: 'Current description: ' + id, listeners: {},
         addEventListener(name, fn) { this.listeners[name] = fn; },
     }]));
@@ -111,7 +112,7 @@ function hydrate(saved, useSetter = true, brokenStorage = false, arrows = {}) {
     const end = settings.indexOf("            const sel = document.getElementById('h3d-bg-style');", start);
     assert.ok(start >= 0 && end > start);
     new Function('document', 'window', 'localStorage', settings.slice(start, end))(document, window, localStorage);
-    return { elements, calls, storage: localStorage, select: elements.get('h3d-notation-style') };
+    return { elements, calls, window, storage: localStorage, select: elements.get('h3d-notation-style') };
 }
 
 test('settings hydrate the selected style and restore Current descriptions when switching back', () => {
@@ -193,4 +194,67 @@ test('slide checkboxes follow notation defaults without writing or discarding ex
     h.select.value = 'current'; h.select.listeners.change();
     h.select.value = 'rsplus'; h.select.listeners.change();
     assert.deepEqual(values(), [true, true, false]);
+});
+
+test('stem preferences default on, persist independently and honor panel overrides', () => {
+    const h = load();
+    for (const key of ['noteStemsVisible','openStringStemsVisible']) {
+        assert.equal(h.api.read('main',key),true);
+        assert.equal(h.api.coerce(key,'false'),false);
+        assert.equal(h.api.coerce(key,'0'),false);
+        assert.equal(h.api.coerce(key,'invalid'),true);
+    }
+    h.window.h3dBgSetNoteStemsVisible(false);
+    assert.equal(h.api.read('main','noteStemsVisible'),false);
+    assert.equal(h.api.read('main','openStringStemsVisible'),true);
+    h.window.h3dBgSetOpenStringStemsVisible(false);
+    assert.equal(h.storage.getItem('h3d_bg_openStringStemsVisible'),'false');
+    assert.equal(load(h.storage).api.read('main','noteStemsVisible'),false);
+    h.storage.setItem('h3d_bg_panel0_noteStemsVisible','true');
+    h.storage.setItem('h3d_bg_panel0_openStringStemsVisible','true');
+    for (const key of ['noteStemsVisible','openStringStemsVisible']) {
+        assert.equal(h.api.read('panel0',key),true);
+        assert.equal(h.api.read('panel1',key),false);
+        const control=h.window.feedBackViz_highway_3d.panelControls.find(c=>c.key===key);
+        assert.equal(control.type,'toggle');
+        assert.equal(control.default,true);
+    }
+});
+
+test('stem setters retain in-session choices and notify renderers when storage rejects writes', () => {
+    const h=load(store({},true)),events=[];
+    h.api.subscribe(key=>events.push(key));
+    h.window.h3dBgSetNoteStemsVisible(false);
+    h.window.h3dBgSetOpenStringStemsVisible(false);
+    assert.equal(h.api.read('main','noteStemsVisible'),false);
+    assert.equal(h.api.read('main','openStringStemsVisible'),false);
+    assert.deepEqual(events,['noteStemsVisible','openStringStemsVisible']);
+});
+
+test('stem checkboxes hydrate, save and retain choices across notation changes', () => {
+    for(const useSetter of [false,true]) {
+        const h=hydrate('rsplus',useSetter,false,{h3d_bg_noteStemsVisible:'false'});
+        const note=h.elements.get('h3d-note-stems-visible');
+        const open=h.elements.get('h3d-open-string-stems-visible');
+        assert.equal(note.checked,false);assert.equal(open.checked,true);
+        assert.equal(note.disabled,false);
+        const calls=[];
+        if(useSetter) {
+            h.window.h3dBgSetNoteStemsVisible=v=>calls.push(['notes',v]);
+            h.window.h3dBgSetOpenStringStemsVisible=v=>calls.push(['open',v]);
+        }
+        note.checked=true;note.listeners.change();
+        open.checked=false;open.listeners.change();
+        if(useSetter)assert.deepEqual(calls,[['notes',true],['open',false]]);
+        else {
+            assert.equal(h.storage.getItem('h3d_bg_noteStemsVisible'),'true');
+            assert.equal(h.storage.getItem('h3d_bg_openStringStemsVisible'),'false');
+        }
+        h.select.value='current';h.select.listeners.change();
+        assert.equal(note.disabled,true);assert.equal(open.disabled,true);
+        h.select.value='rsplus';h.select.listeners.change();
+        assert.equal(note.checked,true);assert.equal(open.checked,false);
+    }
+    const blocked=hydrate('rsplus',false,true);
+    assert.equal(blocked.elements.get('h3d-note-stems-visible').checked,true);
 });

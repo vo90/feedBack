@@ -113,6 +113,20 @@
         <option value="rsplus">RS+ inspired</option>
     </select>
     <p class="text-xs text-gray-500 mt-1">RS+ inspired keeps note faces solid and sharp, uses crisp accent rims and technique symbols, and gives chord frames steady contrast. Your colours and other settings are kept.</p>
+    <div class="mt-3">
+        <label class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
+            <input type="checkbox" id="h3d-note-stems-visible" checked class="accent-accent">
+            Note-gem stems (RS+)
+        </label>
+        <p class="text-[10px] text-gray-500 mt-1 ml-6">Vertical connectors beneath individual fretted notes, including arpeggio notes. Fret numbers and sustain trails stay visible.</p>
+    </div>
+    <div class="mt-3">
+        <label class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
+            <input type="checkbox" id="h3d-open-string-stems-visible" checked class="accent-accent">
+            Open-string stems (RS+)
+        </label>
+        <p class="text-[10px] text-gray-500 mt-1 ml-6">Vertical stems beside open-string and unpitched muted-note bars. Bars inside chord boxes already omit their stems.</p>
+    </div>
 </div>
 
 <div role="group" aria-labelledby="h3d-bg-heading" class="mt-6">
@@ -1236,7 +1250,7 @@
          no-selection / NaN state. -->
     <script>
         (function () {
-            const DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, trailYieldEnabled: true, trailYieldGemInFront: false, trailYieldIncludeTrails: false, trailYieldMinScale: 0.30, trailYieldLeadTime: 0.50, trailYieldTaperDuration: 0.05, trailYieldHoldAfter: 0.05, trailYieldRecoverDuration: 0.05, trailYieldEndLeadTime: 0.50, trailYieldEndTaperDuration: 0.05 };
+            const DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, trailYieldEnabled: true, trailYieldGemInFront: false, trailYieldIncludeTrails: false, trailYieldMinScale: 0.30, trailYieldLeadTime: 0.50, trailYieldTaperDuration: 0.05, trailYieldHoldAfter: 0.05, trailYieldRecoverDuration: 0.05, trailYieldEndLeadTime: 0.50, trailYieldEndTaperDuration: 0.05 };
             const VALID_STYLES = new Set(['off', 'particles', 'silhouettes', 'lights', 'geometric', 'butterchurn', 'image', 'video']);
             // Scene color themes — the single id+label source for BOTH the
             // Background and Highway dropdowns AND the validator below. The
@@ -1576,6 +1590,22 @@
             const customVideoName    = (typeof storedCustomVideoName === 'string')    ? storedCustomVideoName    : DEFAULTS.customVideoName;
 
             const notationSelect = document.getElementById('h3d-notation-style');
+            const notationStemControls = [
+                ['h3d-note-stems-visible', 'noteStemsVisible', 'h3dBgSetNoteStemsVisible'],
+                ['h3d-open-string-stems-visible', 'openStringStemsVisible', 'h3dBgSetOpenStringStemsVisible'],
+            ].map(([id, key, setter]) => {
+                const element = document.getElementById(id);
+                let saved = null;
+                try { saved = localStorage.getItem('h3d_bg_' + key); } catch (_) {}
+                if (element) {
+                    element.checked = !(saved === 'false' || saved === '0');
+                    element.addEventListener('change', () => {
+                        if (typeof window[setter] === 'function') window[setter](element.checked);
+                        else { try { localStorage.setItem('h3d_bg_' + key, String(element.checked)); } catch (_) {} }
+                    });
+                }
+                return element;
+            });
             const notationSlideArrows = [
                 ['h3d-slide-arrow-approach-visible', 'slideArrowApproachVisible'],
                 ['h3d-slide-arrow-neck-visible', 'slideArrowNeckVisible'],
@@ -1600,6 +1630,9 @@
                 return { element, current: element?.innerHTML, rsplus };
             });
             function showNotationDescription(value) {
+                for (const element of notationStemControls) {
+                    if (element) element.disabled = value !== 'rsplus';
+                }
                 for (const item of notationSlideArrows) {
                     if (!item.element) continue;
                     item.element.checked = item.saved == null ? value !== 'rsplus'

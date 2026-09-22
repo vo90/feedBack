@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Independent RS+ stem controls.** Toggle stems for individual fretted gems
+  and open-string/muted bars separately in Note appearance or per split-screen
+  panel. Both default on and update live without changing fret labels, sustain
+  trails, chord boxes or Current notation. 3D Highway updated to 3.38.0.
 - **Destination-only slide-in cues in both highways.** Valid incoming-slide
   marks now survive FeedPak loading and appear as short approaches into their
   authored destination. Linked sustain visibility retains its continuous width;

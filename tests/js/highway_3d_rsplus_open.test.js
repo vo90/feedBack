@@ -69,6 +69,8 @@ function harness() {
             const registrations = [];
             const _registerIncomingLabelOccluder = (mesh, z, outline) => registrations.push({mesh,z,outline});
             const rsPlusNotation = options.style !== 'current';
+            const noteStemsVisible = options.noteStems !== false;
+            const openStringStemsVisible = options.openStems !== false;
             const nStr = options.strings ?? 6, s = options.string ?? 0;
             const sY = index => (options.inverted ? nStr-1-index : index) * S_GAP;
             const n = {f:options.fret ?? 0, ac:!!options.accent, s};
@@ -91,10 +93,11 @@ function harness() {
             if (n.f > 0) {
                 const labelY = Math.min(sY(0),sY(nStr-1)) - S_GAP * .8;
                 const alpha = 1, _isArpNote = false;
-                ${between('if (!fromChord) {', '// Regular chord notes', src.indexOf('// ── Per-note fret connector label'))}
+                ${between('if (!fromChord && (!rsPlusNotation || noteStemsVisible)) {', '// Regular chord notes', src.indexOf('// ── Per-note fret connector label'))}
             }
             const showDropLine = options.drop !== false, skipBody = !!options.skipBody;
             const explicitLinkTarget = !!options.linked;
+            const arpBounds = options.arpeggio ? {} : null;
             ${between('const _wantDropLine =', '// ── Board ghost:')}
             return {outline, core, halo:noteHaloMesh, edges:noteFaceMesh, registrations,
                 connectors:groups.connectors.meshes.filter(m => m.visible),
@@ -243,17 +246,21 @@ test('a full floor stem returns when its enclosing frame ends at the play line',
     }
 });
 
-test('RS+ standalone fret connectors reach displaced gems and Current keeps its shorter guide', () => {
+test('RS+ fretted stems toggle live while Current keeps its shorter guide', () => {
     const draw = harness();
     for (const inverted of [false,true]) for (const offset of [-2.5,0,1.5,3]) {
         const r = draw({fret:12,string:3,offset,inverted});
         assert.equal(r.connectors.length,1);
-        const line = r.connectors[0];
-        close(line.position.y+line.scale.y,r.core.position.y);
+        close(r.connectors[0].position.y+r.connectors[0].scale.y,r.core.position.y);
+        assert.equal(draw({fret:12,string:3,offset,inverted,noteStems:false}).connectors.length,0);
         assert.equal(draw({fret:12,chord:true,offset,inverted}).connectors.length,0);
-        const current = draw({style:'current',fret:12,string:3,offset,inverted});
+        const current = draw({style:'current',fret:12,string:3,offset,inverted,noteStems:false});
         const c = current.connectors[0];
         close(c.scale.y,(current.core.position.y-offset-c.position.y)*.5);
+        assert.equal(draw({fret:12,string:3,offset,inverted,noteStems:false}).connectors.length,0,
+            'switching back from Current hides pooled connectors');
+        assert.equal(draw({fret:12,string:3,offset,inverted}).connectors[0],r.connectors[0],
+            're-enabling stems reuses the connector');
     }
 });
 
@@ -267,9 +274,38 @@ test('RS+ chord drop lines meet displaced gems without adding linked or disabled
         const current = draw({style:'current',fret:14,string:3,offset,inverted,chord:true});
         const c = current.drops[0];
         close(c.scale.y,(current.core.position.y-offset-c.position.y)*.5);
+        assert.equal(draw({fret:14,string:3,offset,inverted,chord:true,arpeggio:true,noteStems:false}).drops.length,0,
+            'individual arpeggio gems omit the pooled drop line');
+        assert.equal(draw({fret:14,chord:true,arpeggio:true}).drops.length,1);
+        assert.equal(draw({fret:14,chord:true,noteStems:false}).drops.length,1,
+            'the single-note preference does not remove chord-member guidance');
     }
     for (const options of [{linked:true},{skipBody:true},{drop:false},{dt:-.01}]) {
         assert.equal(draw({fret:14,chord:true,...options}).drops.length,0);
     }
     assert.equal(draw({fret:0,chord:true}).drops.length,0);
+});
+
+test('open and fretted stem switches are independent across pooled bars, verdicts and styles', () => {
+    const draw = harness();
+    for (const lefty of [false,true]) for (const inverted of [false,true]) {
+        for (const verdict of [null,'hit','miss']) for (const sourceFret of [0,-1]) {
+            const opts={lefty,inverted,verdict,sourceFret};
+            const enabled=draw({...opts,noteStems:false});
+            assert.equal(enabled.outline.visible,true,'fretted preference does not hide open stems');
+            const disabled=draw({...opts,openStems:false});
+            assert.equal(disabled.outline,enabled.outline);
+            assert.equal(disabled.outline.visible,false);
+            assert.equal(disabled.core.visible,true);
+            assert.equal(disabled.core.material.opacity,1);
+            assert.equal(draw({...opts,chord:true,enclosed:true}).outline.visible,false);
+            assert.equal(draw({...opts,chord:true,openStems:false}).outline.visible,false,
+                'stems stay off after chord-frame onset');
+            const restored=draw(opts);
+            assert.equal(restored.outline.visible,true);
+            close(restored.outline.position.y-restored.outline.scale.y*3/2,restored.floor);
+            assert.equal(draw({...opts,style:'current',openStems:false}).outline.visible,true);
+            assert.equal(draw({...opts,fret:7,openStems:false}).connectors.length,1);
+        }
+    }
 });
