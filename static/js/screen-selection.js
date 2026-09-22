@@ -41,6 +41,7 @@ export function selectionLifecycle(doc = document) {
     const shadowRoots = new WeakMap();
     const registrations = new Set(); // weak references, with explicit unmount cleanup
     let observed = new Set(), queued = false, disposed = false, busy = false;
+    let knownEmpty = false;
     let diagnostic = null;
 
     function focused() {
@@ -115,12 +116,18 @@ export function selectionLifecycle(doc = document) {
         const start = diagnostic ? win.performance.now() : 0;
         let cleared = false;
         try {
+            // Visibility changes cannot create a selection. Once empty, rely
+            // on selection/focus events to invalidate that knowledge. Explicit
+            // hide and playback checks still read current state synchronously,
+            // including selections created before selectionchange is delivered.
+            if (trigger === 'visibility' && knownEmpty) return false;
             let selection = doc.getSelection();
             // Avoid endpoint/editor traversal when the selection is empty.
             // Chromium can flush pending layout even for rangeCount; keep these
             // reads at lifecycle boundaries, never in a draw/transport loop.
             // An explicit hide still needs to preserve and blur its editor.
-            if (!selection?.rangeCount && !hiding) {
+            knownEmpty = !selection?.rangeCount;
+            if (knownEmpty && !hiding) {
                 watch(null);
                 return false;
             }
@@ -143,6 +150,7 @@ export function selectionLifecycle(doc = document) {
                 // parent. Preserve a different visible field's independent caret.
                 const position = fieldPosition(focused());
                 selection.removeAllRanges();
+                knownEmpty = true;
                 restoreField(position);
                 cleared = true;
             } else if (trigger === 'event' && selection?.rangeCount) {
@@ -162,6 +170,7 @@ export function selectionLifecycle(doc = document) {
     }
 
     function schedule() {
+        knownEmpty = false;
         if (queued || disposed) return;
         queued = true;
         win.queueMicrotask(() => {

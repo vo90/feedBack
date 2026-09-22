@@ -13,6 +13,7 @@ const cases = [
     'replaced editor', 'new pointer intent', 'backward editor', 'no idle work', '100 cycles',
     'closed details', 'visible summary', '100 mounts', 'nested shadow textarea',
     'unassigned light text', 'slot reassignment', 'slot fallback', 'empty selection fast path',
+    'cached empty visibility', 'new selection before start event',
 ];
 
 async function runCase(name) {
@@ -117,6 +118,24 @@ async function runCase(name) {
         if (name === 'visibility override') { panel.style.visibility = 'hidden'; root.style.visibility = 'visible'; }
         if (name === 'visible summary') root.open = false;
         service.reconcileBeforePlayback(); await settle(); equal(shape(), savedShape, 'visible selection preserved');
+    } else if (name === 'cached empty visibility') {
+        sel.removeAllRanges(); await settle();
+        let reads = 0;
+        const original = document.getSelection;
+        document.getSelection = function () { reads++; return original.call(this); };
+        try {
+            for (let i = 0; i < 20; i++) service.finishVisibilityChange();
+            equal(reads, 0, 'known-empty visibility checks do not flush Chromium selection layout');
+        } finally { document.getSelection = original; }
+        select(); panel.hidden = true;
+        await settle(); equal(sel.rangeCount, 0, 'native selectionchange still reconciles late selection');
+    } else if (name === 'new selection before start event') {
+        sel.removeAllRanges(); await settle();
+        // The queued selectionchange has not run yet. Start must read current
+        // state instead of trusting the prior empty-selection result.
+        select(); panel.hidden = true;
+        service.reconcileBeforePlayback();
+        equal(sel.rangeCount, 0, 'playback boundary clears before selectionchange');
     } else if (name === 'empty selection fast path') {
         sel.removeAllRanges(); await settle();
         let focusReads = 0, styleReads = 0, endpointReads = 0;

@@ -58,10 +58,14 @@ Unassigned light DOM and slot fallback replaced by assigned content are hidden;
 closed `details` content is hidden except for its visible summary.
 
 An empty selection releases all ancestry watchers and skips editor traversal.
-Chromium may nevertheless flush pending layout when reading even `rangeCount`.
-Reconciliation is therefore confined to lifecycle/selection events and physical
-start boundaries. It is not a guaranteed sub-millisecond operation during a
-large pending UI update; measure this separately from steady playback cadence.
+Repeated visibility-completion calls reuse that known-empty state until a
+selection/focus event invalidates it. Explicit hide and physical-start checks
+always inspect current state, including changes made before the browser delivers
+`selectionchange`. A selection created after a visibility hook is caught by its
+selection event; owners should still prepare their surface before hiding it.
+Chromium may flush pending layout when reading even `rangeCount`, so checks are
+confined to lifecycle/selection events and physical start boundaries. Measure
+initial-loading and navigation costs separately from steady playback cadence.
 
 ## Verification
 
