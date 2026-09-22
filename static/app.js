@@ -290,7 +290,7 @@ import {
 // The playback transport. These used to BE app.js — they are imported back now, and the
 // four modules that reached for them through the host seam import them directly instead.
 import {
-    setPlayButtonState, jucePlayer, _audioTime, _audioDuration, _songEventPayload,
+    setPlayButtonState, jucePlayer, _audioTime, _audioDuration, _audioElementEnded, _songEventPayload,
     _markPlaybackPaused, _markPlaybackResumed, _emitPlaybackStopped, _emitSongPositionChanged,
     _waitForSongReady, _resetAudioSeekState, _audioSeek, togglePlay, seekBy, audioSeekGen,
     setLoopPlayStartTargetResolver, setLoopRestartHandler, setPlaybackStartOwnerResolver,
@@ -1050,7 +1050,7 @@ function _handlePlaybackEnded() {
 audio.addEventListener('ended', () => {
     // An old queued event must not end a new source, or a seek that already
     // returned the current element to loop A. JUCE has its own terminal check.
-    if (!window._juceMode && audio.ended) _handlePlaybackEnded();
+    if (!window._juceMode && _audioElementEnded()) _handlePlaybackEnded();
 });
 audio.addEventListener('timeupdate', () => {
     _emitSongPositionChanged(audio.currentTime, audio.duration || null);
