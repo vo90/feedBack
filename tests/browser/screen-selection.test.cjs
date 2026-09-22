@@ -89,10 +89,53 @@ test('a focused navigation button does not block outgoing HUD caret cleanup', as
     assert.deepEqual(result, { cleared: true, focus: true });
 });
 
-test('preserve deliberate text selections', async () => {
+test('preserve deliberate text selections while their screen stays visible', async () => {
     const result = await page.evaluate(() => {
         getSelection().selectAllChildren(document.getElementById('label'));
-        return { cleared: clearHiddenScreenCaret(document.getElementById('player')), text: getSelection().toString() };
+        return { cleared: clearHiddenScreenCaret(document.getElementById('settings')), text: getSelection().toString() };
     });
     assert.deepEqual(result, { cleared: false, text: 'Settings label' });
+});
+
+for (const backward of [false, true]) {
+    test(`clear the captured stem-label range when leaving Settings (backward ${backward})`, async () => {
+        const result = await page.evaluate(backward => {
+            const label = document.createElement('label');
+            label.innerHTML = '<input type="checkbox" checked>\n            Note-gem stems (RS+)\n        ';
+            document.getElementById('settings').append(label);
+            const text = label.lastChild, selection = getSelection();
+            selection.setBaseAndExtent(text, backward ? 18 : 17, text, backward ? 17 : 18);
+            const before = selection.toString();
+            const cleared = clearHiddenScreenCaret(document.getElementById('player'));
+            document.getElementById('settings').classList.remove('active');
+            document.getElementById('player').classList.add('active');
+            return { before, cleared, ranges: selection.rangeCount, checked: label.firstChild.checked };
+        }, backward);
+        assert.deepEqual(result, { before: '-', cleared: true, ranges: 0, checked: true });
+    });
+}
+
+test('preserve a selected range inside contenteditable', async () => {
+    const result = await page.evaluate(() => {
+        const editor = document.createElement('div');
+        editor.contentEditable = 'true';
+        editor.textContent = 'editable text';
+        document.getElementById('settings').append(editor);
+        editor.focus();
+        getSelection().setBaseAndExtent(editor.firstChild, 1, editor.firstChild, 5);
+        return { cleared: clearHiddenScreenCaret(document.getElementById('player')), text: getSelection().toString() };
+    });
+    assert.deepEqual(result, { cleared: false, text: 'dita' });
+});
+
+test('preserve a range spanning different screens', async () => {
+    const result = await page.evaluate(() => {
+        const player = document.getElementById('player');
+        player.classList.add('active');
+        const label = document.getElementById('label').firstChild;
+        const artist = document.getElementById('artist').firstChild;
+        getSelection().setBaseAndExtent(label, 0, artist, 3);
+        return { cleared: clearHiddenScreenCaret(player), ranges: getSelection().rangeCount };
+    });
+    assert.deepEqual(result, { cleared: false, ranges: 1 });
 });
