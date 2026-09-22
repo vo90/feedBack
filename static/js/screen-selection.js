@@ -43,6 +43,63 @@ export function selectionLifecycle(doc = document) {
     let observed = new Set(), queued = false, disposed = false, busy = false;
     let knownEmpty = false;
     let diagnostic = null;
+    let lastComposed = null;
+
+    function currentSelection() {
+        const native = doc.getSelection();
+        if (!native?.rangeCount) {
+            lastComposed = null;
+            return null;
+        }
+        if (typeof native.getComposedRanges !== 'function') return native;
+        const roots = new Set();
+        for (const ref of registrations) {
+            const root = ref.deref();
+            if (root) roots.add(root);
+            else registrations.delete(ref);
+        }
+        function discover(node, offset) {
+            const ownRoot = node?.getRootNode();
+            if (ownRoot?.host) roots.add(ownRoot);
+            // Native mouse selections can be rescoped to the position before
+            // an open shadow host. Follow only the endpoint, not the DOM tree.
+            const childRoot = node?.childNodes[offset]?.shadowRoot;
+            if (childRoot) roots.add(childRoot);
+        }
+        discover(native.anchorNode, native.anchorOffset);
+        discover(native.focusNode, native.focusOffset);
+        if (!roots.size) return native;
+        let range, count;
+        do {
+            count = roots.size;
+            range = native.getComposedRanges({ shadowRoots: [...roots] })[0];
+            if (!range) return native;
+            discover(range.startContainer, range.startOffset);
+            discover(range.endContainer, range.endOffset);
+        } while (roots.size !== count);
+        // After CSS hides a native shadow range, Chromium can report direction
+        // "none" while retaining its composed endpoints. Reuse the last known
+        // direction only for that exact range; weak references retain no editor.
+        let direction = native.direction;
+        if (direction === 'none' && lastComposed &&
+            lastComposed.start.deref() === range.startContainer && lastComposed.a === range.startOffset &&
+            lastComposed.end.deref() === range.endContainer && lastComposed.b === range.endOffset) {
+            direction = lastComposed.direction;
+        }
+        if (direction === 'forward' || direction === 'backward') {
+            lastComposed = { start: new WeakRef(range.startContainer), a: range.startOffset,
+                end: new WeakRef(range.endContainer), b: range.endOffset, direction };
+        }
+        const backward = direction === 'backward';
+        return {
+            rangeCount: 1,
+            anchorNode: backward ? range.endContainer : range.startContainer,
+            anchorOffset: backward ? range.endOffset : range.startOffset,
+            focusNode: backward ? range.startContainer : range.endContainer,
+            focusOffset: backward ? range.startOffset : range.endOffset,
+            removeAllRanges: () => native.removeAllRanges(),
+        };
+    }
 
     function focused() {
         let active = doc.activeElement;
@@ -121,7 +178,7 @@ export function selectionLifecycle(doc = document) {
             // hide and playback checks still read current state synchronously,
             // including selections created before selectionchange is delivered.
             if (trigger === 'visibility' && knownEmpty) return false;
-            let selection = doc.getSelection();
+            let selection = currentSelection();
             // Avoid endpoint/editor traversal when the selection is empty.
             // Chromium can flush pending layout even for rangeCount; keep these
             // reads at lifecycle boundaries, never in a draw/transport loop.
@@ -140,7 +197,7 @@ export function selectionLifecycle(doc = document) {
                 const position = fieldPosition(activeEditor);
                 active.blur();
                 restoreField(position);
-                selection = doc.getSelection();
+                selection = currentSelection();
             }
             const hidden = selection?.rangeCount &&
                 (suppressed(selection.anchorNode, hiding) || suppressed(selection.focusNode, hiding));
@@ -159,7 +216,7 @@ export function selectionLifecycle(doc = document) {
                 const owner = editor(selection.anchorNode);
                 if (owner) bookmarks.delete(owner);
             }
-            watch(doc.getSelection());
+            watch(currentSelection());
         } finally {
             busy = false;
             diagnostic?.({ trigger, cleared, watchedNodes: observed.size,
@@ -217,7 +274,7 @@ export function selectionLifecycle(doc = document) {
     const service = {
         prepareToHide(root) {
             if (!root || disposed) return false;
-            const selection = doc.getSelection();
+            const selection = currentSelection();
             const endpoints = selection?.rangeCount ? [selection.anchorNode, selection.focusNode] : [];
             if (![...endpoints, focused()].some(n => contains(root, n))) return false;
             return reconcile('hide', root);
@@ -247,6 +304,7 @@ export function selectionLifecycle(doc = document) {
         setDiagnosticListener(listener) { diagnostic = listener; },
         dispose() {
             disposed = true;
+            lastComposed = null;
             observer.disconnect();
             for (const n of observed) if (n.host) n.removeEventListener('slotchange', watchSlotChange, true);
             observed.clear();

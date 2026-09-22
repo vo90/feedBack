@@ -4,12 +4,25 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const { cases, runCase } = require('./selection-fixture.cjs');
+const { nativeCases, setupNativeSelection, verifyNativeSelection } = require('./native-selection-fixture.cjs');
 const file = process.env.SELECTION_SOURCE || path.join(__dirname, '../../static/js/screen-selection.js');
 const source = fs.readFileSync(file, 'utf8');
 const url = 'data:text/javascript;base64,' + Buffer.from(source).toString('base64');
 let browser;
 before(async () => { browser = await chromium.launch({headless:true}); });
 after(async () => { await browser?.close(); });
+for (const config of nativeCases) test('native shadow mouse selection: ' + Object.values(config).join(' / '), async () => {
+    const page = await browser.newPage();
+    try {
+        await page.evaluate(async url => { window.__selectionModule = await import(url); }, url);
+        const box = await page.evaluate(setupNativeSelection, config);
+        await page.mouse.move(box.x + 62, box.y + box.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 8, box.y + box.height / 2, { steps: 4 });
+        await page.mouse.up();
+        await page.evaluate(verifyNativeSelection);
+    } finally { await page.close(); }
+});
 for (const name of cases) test(name, async () => {
     const page = await browser.newPage();
     try {

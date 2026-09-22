@@ -57,6 +57,15 @@ opacity, window occlusion and `aria-hidden` alone are not hiding boundaries.
 Unassigned light DOM and slot fallback replaced by assigned content are hidden;
 closed `details` content is hidden except for its visible summary.
 
+Native mouse selections inside shadow trees can be reported by Chromium as
+endpoints at the visible host's parent. On browsers with `getComposedRanges`,
+the coordinator resolves the actual endpoints through registered closed roots
+and open roots discovered at the endpoints, including nested roots. It does not
+scan the document. Older engines without this API retain ordinary endpoint
+handling; internal shadow visibility is not fully covered there.
+If hiding causes Chromium to drop the reported range direction, a weak record
+preserves the last direction only while the composed endpoints still match.
+
 An empty selection releases all ancestry watchers and skips editor traversal.
 Repeated visibility-completion calls reuse that known-empty state until a
 selection/focus event invalidates it. Explicit hide and physical-start checks
@@ -72,7 +81,10 @@ initial-loading and navigation costs separately from steady playback cadence.
 `tests/browser/screen-selection.test.cjs` runs actual DOM, editing, visibility,
 race and browser IME tests using an installed Playwright Chromium. The exported
 fixture in `selection-fixture.cjs` can also run unchanged in a managed Electron
-window. Native OS input-method combinations require separate interactive checks;
+window. `native-selection-fixture.cjs` covers backward mouse ranges in open,
+nested and registered closed roots, both explicit and observed hiding, and
+editor return positions. Programmatically created ranges alone miss this case.
+Native OS input-method combinations require separate interactive checks;
 synthetic DOM composition events alone are insufficient.
 
 The Node tests check screen event ordering and physical start/queue boundaries.
