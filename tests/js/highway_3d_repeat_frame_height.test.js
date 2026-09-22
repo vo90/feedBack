@@ -31,6 +31,9 @@ const dispatch = new Function('chordNotes', 'options', `
     ${fn('chordMuteKind')}
     ${fn('repeatChordMaySuppressGems')}
     ${fn('hwyPostHitTailFadeMul')}
+    ${fn('isUnpitchedMute')}
+    ${fn('usesUnfrettedPosition')}
+    ${fn('noteStemVisible')}
     const isRepeat = options.repeat !== false;
     const chordLinksSlide = !!options.slide;
     const deferChordGems = !!options.defer;
@@ -45,7 +48,6 @@ const dispatch = new Function('chordNotes', 'options', `
     const _linkedTrailPaths = { byNote: new WeakMap() };
     const now = 186, chDtEarly = options.dt ?? .460999;
     const ch = { t: now + chDtEarly, id: 1 };
-    const usesUnfrettedPosition = n => n.f === 0;
     const chordCX = 0, chordTailHoldS = 0.75, laneWForOpenStrings = 40;
     const chordTailFadeS = .15, chordNextSoon = false, AHEAD = 3;
     const _chNextEventT = options.nextEvent ?? Infinity;
@@ -54,17 +56,18 @@ const dispatch = new Function('chordNotes', 'options', `
     const bundle = {chordTemplates:[]};
     const chordTemplateMarkedArpeggio = () => !!options.markedArpeggio;
     const chordSusTrailMatchArpFrame = false, _ghostPrevBuf = new Map();
-    const chordHighwayLavenderArpVisual = !!options.arpeggio, chordWireHighDensity = () => false;
+    const chordHighwayLavenderArpVisual = !!options.arpeggio, chordWireHighDensity = () => !!options.highDensity;
     const lastFretForString = [], cameraMode = 'lookahead', drawn = [], drawCalls = [];
     function drawNote(note, at, openX, skipLabel, skipBody, linger, openWidth,
         fromChord, id, sustainFrame, arpBounds, previous, dropLine, linked,
-        sharedHold, hasEnclosingChordFrame) {
-        drawCalls.push({note:{...note},skipBody,linked,fromChord,hasEnclosingChordFrame});
+        sharedHold, belongsToBoxedChord) {
+        const stemVisible = noteStemVisible(note, belongsToBoxedChord, options.noteStems !== false, options.openStems !== false);
+        drawCalls.push({note:{...note},skipBody,linked,fromChord,belongsToBoxedChord,stemVisible,dropLine});
         if (!skipBody && !linked) drawn.push({ ...note });
     }
     ${between('const chDt = chDtEarly;', 'const suppressRepeatGems = repeatChordMaySuppressGems(')}
     ${between('const suppressRepeatGems = repeatChordMaySuppressGems(', '// ── Arpeggio note brackets')}
-    return { retainsChordGems, drawn, isRepeat, drawCalls, chordFrameEligible, hasEnclosingChordFrame };
+    return { retainsChordGems, drawn, isRepeat, drawCalls, chordFrameEligible, belongsToBoxedChord };
 `);
 const frameGeometry = new Function('isRepeat', 'retainsChordGems', 'inverted', `
     'use strict';
@@ -201,45 +204,65 @@ test('arpeggio fallback and partially linked repeats expand when even one gem is
     assertEnclosed(render(notes, { linked: notes.slice(1), first: notes[0] }));
 });
 
-test('ordinary visible chord frames supply explicit enclosure context to open members', () => {
+test('ordinary chord frames supply boxed membership to fretted and open members', () => {
     const notes = [{s:0,f:0},{s:1,f:2},{s:2,f:2}];
     for (const dt of [.001,.460999,2.999]) {
         const result = render(notes,{repeat:false,dt});
         assertEnclosed(result);
         assert.equal(result.chordFrameEligible,true);
-        assert.equal(result.hasEnclosingChordFrame,true);
-        assert.ok(result.drawCalls.every(call => call.fromChord && call.hasEnclosingChordFrame));
+        assert.equal(result.belongsToBoxedChord,true);
+        assert.ok(result.drawCalls.every(call => call.fromChord && call.belongsToBoxedChord));
     }
     const retainedRepeat = render(notes.map(n => ({...n,ac:true})),{repeat:true});
     assertEnclosed(retainedRepeat);
-    assert.equal(retainedRepeat.drawCalls[0].hasEnclosingChordFrame,true);
+    assert.equal(retainedRepeat.drawCalls[0].belongsToBoxedChord,true);
 });
 
-test('open chord enclosure ends at the play line even while member gems can linger', () => {
+test('boxed membership survives the play line, expired frames, new events and rewind', () => {
     const notes = [{s:0,f:0,sus:2},{s:1,f:2,sus:2}];
     for (const dt of [0,-.001,-.6]) {
         const result = render(notes,{repeat:false,dt});
         assert.equal(result.chordFrameEligible,true,'the outer chord context still exists during linger');
-        assert.equal(result.hasEnclosingChordFrame,false,'only a flying frame replaces the stem');
+        assert.equal(result.belongsToBoxedChord,true,'boxed membership outlives the flying frame');
         assert.ok(result.drawCalls.length > 0);
-        assert.ok(result.drawCalls.every(call => !call.hasEnclosingChordFrame));
+        assert.ok(result.drawCalls.every(call => call.belongsToBoxedChord));
     }
     const expired = render(notes,{repeat:false,dt:-.75});
     assert.equal(expired.chordFrameEligible,false);
-    assert.equal(expired.hasEnclosingChordFrame,false);
+    assert.equal(expired.belongsToBoxedChord,true);
+    for (const options of [{dt:-2},{dt:-.2,nextEvent:185},{dt:3},{dt:.001}]) {
+        const result = render(notes,{repeat:false,...options});
+        assert.ok(result.drawCalls.every(call => call.belongsToBoxedChord));
+    }
 });
 
 test('arpeggios, missing frames and single-member shapes do not claim open-note enclosure', () => {
     const notes = [{s:0,f:0},{s:1,f:2}];
-    for (const options of [{arpeggio:true},{width:null},{dt:3},{synth:true},
+    for (const options of [{arpeggio:true},{width:null},{synth:true},
         {defer:true,fallback:true,arpeggio:true}]) {
         const result = render(notes,{repeat:false,...options});
-        assert.equal(result.hasEnclosingChordFrame,false,JSON.stringify(options));
-        assert.ok(result.drawCalls.every(call => !call.hasEnclosingChordFrame));
+        assert.equal(result.belongsToBoxedChord,false,JSON.stringify(options));
+        assert.ok(result.drawCalls.every(call => !call.belongsToBoxedChord));
     }
     const single = render(notes.slice(0,1),{repeat:false});
     assert.equal(single.chordFrameEligible,false);
-    assert.equal(single.drawCalls[0].hasEnclosingChordFrame,false);
+    assert.equal(single.drawCalls[0].belongsToBoxedChord,false);
+});
+
+test('boxed high-density, repeat and fallback dispatch never permits member stems', () => {
+    const notes = [{s:0,f:0,sus:2},{s:1,f:5,sus:2},{s:2,f:127,mt:true,sus:2}];
+    for (const noteStems of [false,true]) for (const openStems of [false,true]) {
+        for (const options of [{repeat:false,highDensity:true},{repeat:true},
+            {defer:true,fallback:true},{linked:[notes[1]]},{synth:true,markedArpeggio:true}]) {
+            for (const dt of [1,.001,0,-.001,-2]) {
+                const result = render(notes,{...options,dt,noteStems,openStems});
+                assert.ok(result.drawCalls.length > 0);
+                assert.ok(result.drawCalls.every(call => call.belongsToBoxedChord && !call.stemVisible));
+            }
+        }
+        const unboxed = render(notes,{repeat:false,arpeggio:true,noteStems,openStems});
+        assert.deepEqual(unboxed.drawCalls.map(call => call.stemVisible),[openStems,noteStems,openStems]);
+    }
 });
 
 test('full frame sides, corners and halo geometry use the same compact decision', () => {
