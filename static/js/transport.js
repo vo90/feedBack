@@ -187,6 +187,18 @@ export function _audioTime() { return window._juceMode ? jucePlayer.currentTime 
 
 export function _audioDuration() { return window._juceMode ? jucePlayer.duration : audio.duration; }
 
+// Validate an element's ended event against its current transport. Stems
+// supplies currentTime/duration/paused through shims, but leaves the native
+// ended flag false. Require the exact terminal position so a stale event
+// after a seek or loop restart cannot finish the new playback position.
+export function _audioElementEnded() {
+    if (audio.ended) return true;
+    const time = audio.currentTime;
+    const duration = audio.duration;
+    return audio.paused && Number.isFinite(time) && Number.isFinite(duration)
+        && duration > 0 && time >= duration;
+}
+
 // Canonical payload for song:play/song:pause/song:ended. Plugins anchor
 // their own clocks against `perfNow` (a monotonic timestamp at the same
 // moment audio reports `audioT`) so they don't have to chase the chart
