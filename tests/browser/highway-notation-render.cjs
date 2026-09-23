@@ -271,7 +271,8 @@ async function main() {
         check(chords.roundedFrames.filter(f=>!f.halo).every(f=>f.mesh.material.uniforms.uOpacity===1),'RS+ frame rim opacity changed with distance/repeat');
         const rims=chords.roundedFrames.filter(f=>!f.halo);
         const full=rims.reduce((a,b)=>a.height>b.height?a:b),compact=rims.reduce((a,b)=>a.height<b.height?a:b);
-        check(rims.every(f=>!f.openTop),'RS+ modern repeat panels should have a closed top');
+        check(rims.every(f=>!f.openTop && Math.abs(f.mesh.material.uniforms.uTopCap / f.width - .06) < 1e-6),
+          'RS+ full and repeat panels should default to six-percent rounded top caps');
         check(full&&compact&&Math.abs(compact.height/full.height-.5)<1e-6,'RS+ ordinary repeat frame is not half height');
       }
       const palmBundle=chordScene();
