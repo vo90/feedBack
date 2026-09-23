@@ -135,6 +135,14 @@
             <option value="full">Full border</option>
         </select>
         <p id="h3d-chord-box-top-description" class="text-[10px] text-gray-500 mt-1">Short caps leave the middle open for upcoming notes. Full border restores the closed box. Applies to RS+ inspired and updates immediately.</p>
+        <div class="mt-3 ml-6">
+            <label class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
+                <input type="checkbox" id="h3d-repeat-chord-full-border" disabled class="accent-accent"
+                    aria-describedby="h3d-repeat-chord-full-border-description">
+                Full border on repeated chords
+            </label>
+            <p id="h3d-repeat-chord-full-border-description" class="text-[10px] text-gray-500 mt-1">Keep half-height repeated-chord boxes closed while full-height chords use short caps.</p>
+        </div>
     </div>
 </div>
 
@@ -1600,6 +1608,20 @@
 
             const notationSelect = document.getElementById('h3d-notation-style');
             const chordTopSelect = document.getElementById('h3d-chord-box-top');
+            const repeatChordBorder = document.getElementById('h3d-repeat-chord-full-border');
+            function refreshRepeatChordBorder() {
+                if (repeatChordBorder) repeatChordBorder.disabled = notationSelect?.value !== 'rsplus'
+                    || chordTopSelect?.value !== 'short-caps';
+            }
+            if (repeatChordBorder) {
+                let saved = null;
+                try { saved = localStorage.getItem('h3d_bg_repeatChordFullBorder'); } catch (_) {}
+                repeatChordBorder.checked = saved === 'true' || saved === '1';
+                repeatChordBorder.addEventListener('change', () => {
+                    if (typeof window.h3dBgSetRepeatChordFullBorder === 'function') window.h3dBgSetRepeatChordFullBorder(repeatChordBorder.checked);
+                    else { try { localStorage.setItem('h3d_bg_repeatChordFullBorder', String(repeatChordBorder.checked)); } catch (_) {} }
+                });
+            }
             if (chordTopSelect) {
                 let saved = null;
                 try { saved = localStorage.getItem('h3d_bg_chordBoxTop'); } catch (_) {}
@@ -1608,6 +1630,7 @@
                     const value = chordTopSelect.value === 'full' ? 'full' : 'short-caps';
                     if (typeof window.h3dBgSetChordBoxTop === 'function') window.h3dBgSetChordBoxTop(value);
                     else { try { localStorage.setItem('h3d_bg_chordBoxTop', value); } catch (_) {} }
+                    refreshRepeatChordBorder();
                 });
             }
             const notationStemControls = [
@@ -1651,6 +1674,7 @@
             });
             function showNotationDescription(value) {
                 if (chordTopSelect) chordTopSelect.disabled = value !== 'rsplus';
+                refreshRepeatChordBorder();
                 for (const element of notationStemControls) {
                     if (element) element.disabled = false;
                 }

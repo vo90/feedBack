@@ -54,6 +54,7 @@ function frameHarness() {
         const pRsChordFrame = trackedPool('rounded');
         const pools = [pChordBox, pHaloBar, pChordFrameFill, pRsChordFrame];
         let rsPlusNotation = false, glowMul = 0, _bloom = false, chordBoxTop = 'short-caps';
+        let repeatChordFullBorder = false;
         function notationSoftGlow() { return rsPlusNotation && _bloom ? glowMul : 0; }
         function renderOrderForLayerAtZ(z, layer) {
             return z * 100 + ['CHORD_FILL', 'CHORD_FRAME', 'CHORD_EDGE_GLOW'].indexOf(layer);
@@ -62,6 +63,7 @@ function frameHarness() {
         return function render(options = {}) {
             rsPlusNotation = options.style !== 'current';
             chordBoxTop = options.top ?? 'short-caps';
+            repeatChordFullBorder = !!options.repeatFull;
             glowMul = options.glow ?? 0;
             _bloom = options.soft ?? false;
             pools.forEach(p => p.reset());
@@ -132,6 +134,23 @@ test('full border restores the whole rim and pooled caps reset through live togg
             assert.equal(arp.material.uniforms.uTopCap.value, 0);
             assert.equal(arp.material.uniforms.uBracketCap.value, 30 * .12);
         }
+    }
+});
+
+test('repeat-only full borders close compact frames and halos without closing full-height chords', () => {
+    const render = frameHarness();
+    for (const repeatFull of [true, false, true]) {
+        for (const options of [{}, {repeat:true}, {repeat:true,retained:true}, {repeat:true,arpeggio:true}]) {
+            const frames = render({...options,repeatFull,glow:1,soft:true}).rounded;
+            const closed = repeatFull && options.repeat && !options.retained;
+            for (const frame of frames) {
+                assert.equal(frame.material.uniforms.uTopCap.value, closed || options.arpeggio ? 0 : 30*.06);
+            }
+        }
+    }
+    for (const repeatFull of [false, true]) {
+        assert.equal(render({repeat:true,repeatFull,top:'full'}).rounded[0].material.uniforms.uTopCap.value,0);
+        assert.equal(render({repeat:true,repeatFull,style:'current'}).rounded.length,0);
     }
 });
 

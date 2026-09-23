@@ -52,18 +52,19 @@ async function openPage(browser, code, reference) {
         window.bundle=bundle;window.r=feedBackViz_highway_3d();
         r.init(document.getElementById('highway'),bundle);await r.readyPromise;
         for(let i=0;i<45;i++)r.draw(bundle);
-        window.captureTop = (top, style='rsplus') => {
-            if(!reference)h3dBgSetChordBoxTop(top);
+        window.captureTop = (top, style='rsplus', repeatFull=false, compact=false) => {
+            if(!reference){h3dBgSetChordBoxTop(top);h3dBgSetRepeatChordFullBorder(repeatFull);}
             h3dBgSetNotationStyle(style);r.draw(bundle);
             const a=r.__topAudit();
             const rims=a.noteG.children.filter(m=>m.visible&&m.material?.uniforms?.uBracketCap);
-            const uniformRows=rims.map(m=>({top:m.material.uniforms.uTopCap?.value??0,bracket:m.material.uniforms.uBracketCap.value,width:m.material.uniforms.uSize.value.x,halo:m.material.uniforms.uHalo.value}));
+            const uniformRows=rims.map(m=>({top:m.material.uniforms.uTopCap?.value??0,bracket:m.material.uniforms.uBracketCap.value,width:m.material.uniforms.uSize.value.x,height:m.material.uniforms.uSize.value.y,halo:m.material.uniforms.uHalo.value}));
             const counts={geometries:a.ren.info.memory.geometries,textures:a.ren.info.memory.textures,programs:a.ren.info.programs.length,objects:a.noteG.children.length};
             if(style==='current')return {uniformRows,counts};
             // Isolate the actual ordinary rim + halo in a fixed orthographic view.
             // This makes before/after pixel comparisons independent of camera easing.
             const scene=new a.T.Scene();scene.background=new a.T.Color(0);
-            const first=rims.find(m=>m.material.uniforms.uHalo.value===0&&m.material.uniforms.uBracketCap.value===0);
+            const ordinary=rims.filter(m=>m.material.uniforms.uHalo.value===0&&m.material.uniforms.uBracketCap.value===0);
+            const first=compact?ordinary.reduce((smallest,m)=>m.material.uniforms.uSize.value.y<smallest.material.uniforms.uSize.value.y?m:smallest):ordinary[0];
             const u=first.material.uniforms,w=u.uSize.value.x,h=u.uSize.value.y;
             for(const m of rims.filter(m=>m.position.equals(first.position))){const copy=m.clone();copy.position.set(0,0,-1);scene.add(copy);}
             const camera=new a.T.OrthographicCamera(-w*.6,w*.6,h*.65,-h*.65,.1,5);
@@ -105,32 +106,66 @@ async function main(){
         assert.ok(full.topCenter>0&&short.topCorners>0,'Full top and retained corner strokes must be visible');
         assert.ok(short.uniformRows.every(m=>Math.abs(m.top/m.width-.06)<1e-8),'All full-height, repeat, accent and muted frame passes need six-percent caps');
         assert.equal(short.uniformRows.length,full.uniformRows.length,'The cap treatment must not add rim or halo passes');
+        const repeatFull=await page.evaluate(()=>captureTop('short-caps','rsplus',true));
+        await page.screenshot({path:path.join(out,'short-caps-full-repeat-borders.png')});
+        const fullHeight=Math.max(...repeatFull.uniformRows.map(m=>m.height));
+        const compactRows=repeatFull.uniformRows.filter(m=>m.height<fullHeight*.75);
+        const tallRows=repeatFull.uniformRows.filter(m=>m.height>=fullHeight*.75);
+        assert.ok(compactRows.length>0&&tallRows.length>0,'Fixture must contain both compact and full-height frames');
+        assert.ok(compactRows.every(m=>m.top===0),'Repeat override must close compact rims and halos');
+        assert.ok(tallRows.every(m=>Math.abs(m.top/m.width-.06)<1e-8),'Repeat override must retain full-height short caps');
+        assert.equal(repeatFull.whole,short.whole,'Repeat override must leave full-height frame pixels unchanged');
+        assert.equal(repeatFull.uniformRows.length,short.uniformRows.length,'Repeat override must reuse existing passes');
+        const compactOpen=await page.evaluate(()=>captureTop('short-caps','rsplus',false,true));
+        const compactClosed=await page.evaluate(()=>captureTop('short-caps','rsplus',true,true));
+        const compactFull=await page.evaluate(()=>captureTop('full','rsplus',false,true));
+        assert.equal(compactClosed.whole,compactFull.whole,'Repeat override must restore exact closed compact rim and halo pixels');
+        assert.equal(compactOpen.lower,compactClosed.lower,'Repeat override must preserve lower border pixels');
+        assert.ok(compactOpen.topCenter===0&&compactClosed.topCenter>0,'Repeat override must restore a visible top');
         const again=await page.evaluate(()=>captureTop('full'));
         assert.equal(again.whole,full.whole,'Live round trip must restore exact pixels');
-        const current=await page.evaluate(()=>captureTop('short-caps','current'));
+        const current=await page.evaluate(()=>captureTop('short-caps','current',true));
         assert.equal(current.uniformRows.length,0,'Current style keeps its original frame path');
         const returned=await page.evaluate(()=>captureTop('short-caps'));
         assert.equal(returned.whole,short.whole,'Notation round trip must retain the chosen caps');
-        const memory=await page.evaluate(()=>{for(let i=0;i<20;i++)captureTop(i%2?'full':'short-caps');const before=captureTop('short-caps').counts;for(let i=0;i<40;i++)captureTop(i%2?'full':'short-caps');return {before,after:captureTop('short-caps').counts};});
+        const memory=await page.evaluate(()=>{for(let i=0;i<20;i++)captureTop(i%2?'full':'short-caps','rsplus',i%3===0);const before=captureTop('short-caps').counts;for(let i=0;i<40;i++)captureTop(i%2?'full':'short-caps','rsplus',i%3===0);return {before,after:captureTop('short-caps').counts};});
         assert.deepEqual(memory.before,memory.after,'Live toggles must not grow GPU resources');
         // Exercise the actual Settings markup and hydration against the running renderer.
         await page.evaluate(({markup,script})=>{const div=document.createElement('div');div.id='settings';div.innerHTML=markup;document.body.append(div);new Function(script)();},{markup:notationMarkup,script:settings.slice(settingsStart,settingsEnd)});
         const topSelect=page.locator('#h3d-chord-box-top');
+        const repeatCheckbox=page.locator('#h3d-repeat-chord-full-border');
         assert.equal(await topSelect.inputValue(),'short-caps');
+        assert.equal(await repeatCheckbox.isChecked(),false);
+        assert.equal(await repeatCheckbox.isEnabled(),true);
+        await repeatCheckbox.check();
+        assert.equal(await page.evaluate(()=>localStorage.getItem('h3d_bg_repeatChordFullBorder')),'true');
         await topSelect.selectOption('full');
         assert.equal(await page.evaluate(()=>localStorage.getItem('h3d_bg_chordBoxTop')),'full');
+        assert.equal(await repeatCheckbox.isDisabled(),true);
+        assert.equal(await repeatCheckbox.isChecked(),true);
+        await topSelect.selectOption('short-caps');
         await page.locator('#h3d-notation-style').selectOption('current');
         assert.equal(await topSelect.isDisabled(),true);
+        assert.equal(await repeatCheckbox.isDisabled(),true);
         await page.locator('#h3d-notation-style').selectOption('rsplus');
-        assert.equal(await topSelect.inputValue(),'full');
+        assert.equal(await topSelect.inputValue(),'short-caps');
         assert.equal(await topSelect.isEnabled(),true);
-        const persisted=await page.evaluate(async()=>{r.destroy();r=feedBackViz_highway_3d();r.init(document.getElementById('highway'),bundle);await r.readyPromise;r.draw(bundle);return r.__topAudit().noteG.children.filter(m=>m.visible&&m.material?.uniforms?.uTopCap).every(m=>m.material.uniforms.uTopCap.value===0);});
-        assert.equal(persisted,true,'Full border must survive renderer remount');
-        results.push({baselineRef,defaultFrames:defaultTops.length,original,full,short,memory,persisted});
+        assert.equal(await repeatCheckbox.isEnabled(),true);
+        assert.equal(await repeatCheckbox.isChecked(),true);
+        await repeatCheckbox.uncheck();
+        assert.equal(await page.evaluate(()=>localStorage.getItem('h3d_bg_repeatChordFullBorder')),'false');
+        await repeatCheckbox.check();
+        const persisted=await page.evaluate(async()=>{r.destroy();r=feedBackViz_highway_3d();r.init(document.getElementById('highway'),bundle);await r.readyPromise;r.draw(bundle);return r.__topAudit().noteG.children.filter(m=>m.visible&&m.material?.uniforms?.uTopCap).map(m=>({top:m.material.uniforms.uTopCap.value,width:m.material.uniforms.uSize.value.x,height:m.material.uniforms.uSize.value.y}));});
+        assert.ok(persisted.some(m=>m.height<fullHeight*.75)&&persisted.some(m=>m.height>=fullHeight*.75));
+        assert.ok(persisted.every(m=>m.height<fullHeight*.75?m.top===0:Math.abs(m.top/m.width-.06)<1e-8),'Repeat override and short caps must survive renderer remount');
+        await topSelect.selectOption('full');
+        const persistedFull=await page.evaluate(async()=>{r.destroy();r=feedBackViz_highway_3d();r.init(document.getElementById('highway'),bundle);await r.readyPromise;r.draw(bundle);return r.__topAudit().noteG.children.filter(m=>m.visible&&m.material?.uniforms?.uTopCap).every(m=>m.material.uniforms.uTopCap.value===0);});
+        assert.equal(persistedFull,true,'Full border must survive renderer remount');
+        results.push({baselineRef,defaultFrames:defaultTops.length,original,full,short,repeatFull,compactOpen,compactClosed,compactFull,memory,persisted,persistedFull});
         assert.deepEqual(errors,[]);
         fs.writeFileSync(path.join(out,'results.json'),JSON.stringify({errors,results},null,2));
         await context.close();
-        console.log('Passed: baseline pixels, default caps, lower-edge preservation, glow gap, live/style toggles, stable GPU resources, Settings and saved remount.');
+        console.log('Passed: baseline pixels, default caps, compact repeat override, lower-edge preservation, glow gap, live/style toggles, stable GPU resources, Settings and saved remount.');
     }finally{await browser.close();}
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});
