@@ -4644,7 +4644,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { notationStyle: 'current', style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration };
+    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -4653,6 +4653,7 @@
     // would be unable to switch back. BG_STYLES still has a 'venue' renderer entry.
     const BG_STYLE_IDS = ['off', 'particles', 'silhouettes', 'lights', 'geometric', 'butterchurn', 'image', 'video'];
     const NOTATION_STYLE_IDS = ['current', 'rsplus'];
+    const CHORD_BOX_TOP_IDS = ['short-caps', 'full'];
     // Scene color themes — TWO INDEPENDENT AXES sharing one palette family.
     // The combined `BG_THEMES` table below is the single source of truth; each
     // entry carries the colors for BOTH axes, but the two axes are selected and
@@ -5086,6 +5087,7 @@
         if (_BG_BOOL_KEYS.has(key)) return _bgCoerceBool(val, BG_DEFAULTS[key]);
         if (key === 'style') return BG_STYLE_IDS.includes(val) ? val : BG_DEFAULTS.style;
         if (key === 'notationStyle') return NOTATION_STYLE_IDS.includes(val) ? val : BG_DEFAULTS.notationStyle;
+        if (key === 'chordBoxTop') return CHORD_BOX_TOP_IDS.includes(val) ? val : BG_DEFAULTS.chordBoxTop;
         if (key === 'palette') return (PALETTE_IDS.includes(val) || val === 'custom') ? val : BG_DEFAULTS.palette;
         if (key === 'bgTheme') return BG_THEME_IDS.includes(val) ? val : BG_DEFAULTS.bgTheme;
         // Highway axis shares the same id-set as the background axis.
@@ -5160,6 +5162,7 @@
     // localStorage edits today, runtime UI in a follow-up.
     window.h3dBgSetStyle = (v) => _bgWriteGlobal('style', v);
     window.h3dBgSetNotationStyle = (v) => _bgWriteGlobal('notationStyle', _bgCoerce('notationStyle', v));
+    window.h3dBgSetChordBoxTop = (v) => _bgWriteGlobal('chordBoxTop', _bgCoerce('chordBoxTop', v));
     window.h3dBgSetNoteStemsVisible = (v) => _bgWriteGlobal('noteStemsVisible', _bgCoerce('noteStemsVisible', String(v)));
     window.h3dBgSetOpenStringStemsVisible = (v) => _bgWriteGlobal('openStringStemsVisible', _bgCoerce('openStringStemsVisible', String(v)));
     window.h3dBgSetIntensity = (v) => _bgWriteGlobal('intensity', v);
@@ -7378,6 +7381,7 @@
         // linear blend every frame.
         let rsPlusNotation      = false;
         let noteStemsVisible = BG_DEFAULTS.noteStemsVisible;
+        let chordBoxTop = BG_DEFAULTS.chordBoxTop;
         let openStringStemsVisible = BG_DEFAULTS.openStringStemsVisible;
         // Local, bounded halos replace luminance-threshold bloom in this style.
         function notationSoftGlow() { return rsPlusNotation && _bloom ? glowMul : 0; }
@@ -10800,6 +10804,7 @@
                     uSize: { value: new T.Vector2(1, 1) },
                     uRim: { value: 0.01 }, uRadius: { value: 0.03 },
                     uPad: { value: 0 }, uOpenTop: { value: 0 }, uBracketCap: { value: 0 },
+                    uTopCap: { value: 0 },
                     uHalo: { value: 0 }, uOpacity: { value: 1 },
                     uColor: { value: new T.Color(CHORD_BOX_TEAL_HEX) },
                 },
@@ -10812,7 +10817,7 @@
                 fragmentShader: `
                     varying vec2 vUv;
                     uniform vec2 uSize;
-                    uniform float uRim, uRadius, uPad, uOpenTop, uBracketCap, uHalo, uOpacity;
+                    uniform float uRim, uRadius, uPad, uOpenTop, uBracketCap, uTopCap, uHalo, uOpacity;
                     uniform vec3 uColor;
                     void main() {
                         vec2 p = (vUv - 0.5) * (uSize + 2.0 * uPad);
@@ -10834,6 +10839,12 @@
                         if (uBracketCap > 0.0) {
                             coverage *= smoothstep(uSize.x * 0.5 - uBracketCap - aa,
                                 uSize.x * 0.5 - uBracketCap + aa, abs(p.x));
+                        }
+                        // Short chord caps open only the upper stroke. Apply
+                        // the same cut to its halo so glow cannot bridge the gap.
+                        if (uTopCap > 0.0 && p.y > 0.0) {
+                            coverage *= smoothstep(uSize.x * 0.5 - uTopCap - aa,
+                                uSize.x * 0.5 - uTopCap + aa, abs(p.x));
                         }
                         if (coverage * uOpacity < 0.001) discard;
                         gl_FragColor = vec4(uColor, coverage * uOpacity);
@@ -11423,6 +11434,7 @@
                     changedKey === 'toneHudSize' ||
                     changedKey === 'projectionVisible' ||
                     changedKey === 'noteStemsVisible' || changedKey === 'openStringStemsVisible' ||
+                    changedKey === 'chordBoxTop' ||
                     changedKey === 'slideArrowApproachVisible' ||
                     changedKey === 'slideArrowNeckVisible' ||
                     changedKey === 'slideArrowChainPreviewVisible' ||
@@ -11661,6 +11673,7 @@
             const previousNotationStyle = rsPlusNotation;
             rsPlusNotation = _bgReadSetting(panelKey, 'notationStyle') === 'rsplus';
             noteStemsVisible = _bgReadSetting(panelKey, 'noteStemsVisible');
+            chordBoxTop = _bgReadSetting(panelKey, 'chordBoxTop');
             openStringStemsVisible = _bgReadSetting(panelKey, 'openStringStemsVisible');
             bgStyleId = _bgReadSetting(panelKey, 'style');
             bgIntensity = _bgReadSetting(panelKey, 'intensity');
@@ -16531,8 +16544,8 @@
                         const sideCy = ySideLo + sideH * 0.5;
 
                         if (rsPlusNotation) {
-                            // Modern repeats are closed half-height panels;
-                            // explicit arpeggios keep only short-capped sides.
+                            // Repeats keep half-height panels and share the
+                            // selected chord top. Arpeggio brackets stay separate.
                             drawRsPlusChordFrame(cx, cY, z, width, height, ftSide,
                                 false, rimHex, edgeOp, isArpeggioFrame ? width * 0.12 : 0);
                         } else {
@@ -20978,6 +20991,9 @@
                 u.uPad.value = pad;
                 u.uOpenTop.value = openTop ? 1 : 0;
                 u.uBracketCap.value = bracketCap;
+                // Reset this uniform on every pool reuse, including arpeggios.
+                u.uTopCap.value = !openTop && !perNoteBracket && bracketCap === 0
+                    && chordBoxTop === 'short-caps' ? width * 0.06 : 0;
                 u.uHalo.value = halo ? 1 : 0;
                 u.uOpacity.value = opacity * (halo ? softGlow * 0.3 : 1);
                 u.uColor.value.setHex(color);
@@ -22899,6 +22915,9 @@
         },
         { key: 'noteStemsVisible', label: 'Note-gem stems', type: 'toggle', default: BG_DEFAULTS.noteStemsVisible },
         { key: 'openStringStemsVisible', label: 'Open-string stems', type: 'toggle', default: BG_DEFAULTS.openStringStemsVisible },
+        { key: 'chordBoxTop', label: 'Chord box top (RS+)', type: 'select',
+            options: [{ id: 'short-caps', label: 'Short caps' }, { id: 'full', label: 'Full border' }],
+            default: BG_DEFAULTS.chordBoxTop },
         { key: 'glow', label: 'Highway glow', type: 'range', min: 0, max: 1, step: 0.05, default: BG_DEFAULTS.glow },
         { key: 'bloom', label: 'Soft glow / bloom', type: 'toggle', default: BG_DEFAULTS.bloom },
         {
