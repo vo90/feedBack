@@ -102,7 +102,7 @@ function hydrate(saved, useSetter = true, brokenStorage = false, arrows = {}) {
     const elements = new Map(['h3d-notation-style', 'h3d-vibrancy-description', 'h3d-glow-description',
         'h3d-bloom-title', 'h3d-bloom-description', 'h3d-slide-arrow-approach-visible',
         'h3d-slide-arrow-neck-visible', 'h3d-slide-arrow-chain-preview-visible',
-        'h3d-note-stems-visible', 'h3d-open-string-stems-visible'].map(id => [id, {
+        'h3d-note-stems-visible', 'h3d-open-string-stems-visible', 'h3d-chord-box-top'].map(id => [id, {
         innerHTML: 'Current description: ' + id, listeners: {},
         addEventListener(name, fn) { this.listeners[name] = fn; },
     }]));
@@ -229,6 +229,59 @@ test('stem setters retain in-session choices and notify renderers when storage r
     assert.equal(h.api.read('main','noteStemsVisible'),false);
     assert.equal(h.api.read('main','openStringStemsVisible'),false);
     assert.deepEqual(events,['noteStemsVisible','openStringStemsVisible']);
+});
+
+test('chord tops default to short caps, persist full borders and isolate panel choices', () => {
+    const h = load();
+    assert.equal(h.api.read('main', 'chordBoxTop'), 'short-caps');
+    for (const invalid of [null, '', 'caps', 'FULL', false, 1]) {
+        assert.equal(h.api.coerce('chordBoxTop', invalid), 'short-caps');
+    }
+    h.window.h3dBgSetChordBoxTop('full');
+    assert.equal(h.storage.getItem('h3d_bg_chordBoxTop'), 'full');
+    assert.equal(load(h.storage).api.read('main', 'chordBoxTop'), 'full');
+    h.storage.setItem('h3d_bg_panel0_chordBoxTop', 'short-caps');
+    assert.equal(h.api.read('panel0', 'chordBoxTop'), 'short-caps');
+    assert.equal(h.api.read('panel1', 'chordBoxTop'), 'full');
+    h.window.h3dBgSetNotationStyle('current');
+    h.window.h3dBgSetNotationStyle('rsplus');
+    assert.equal(h.api.read('panel1', 'chordBoxTop'), 'full');
+    assert.equal(h.api.read('panel1', 'noteStemsVisible'), true);
+    h.window.h3dBgSetChordBoxTop('corrupt');
+    assert.equal(h.api.read('panel1', 'chordBoxTop'), 'short-caps');
+});
+
+test('chord tops remain live and notify each change if persistence fails', () => {
+    const h = load(store({}, true)), events = [];
+    h.api.subscribe(key => events.push([key, h.api.read('main', key)]));
+    h.window.h3dBgSetChordBoxTop('full');
+    h.window.h3dBgSetChordBoxTop('short-caps');
+    assert.deepEqual(events, [['chordBoxTop', 'full'], ['chordBoxTop', 'short-caps']]);
+});
+
+test('chord top dropdown hydrates without writing and retains choices while Current disables it', () => {
+    for (const useSetter of [false, true]) {
+        const h = hydrate('rsplus', useSetter, false, { h3d_bg_chordBoxTop: 'full' });
+        const top = h.elements.get('h3d-chord-box-top'), calls = [];
+        if (useSetter) h.window.h3dBgSetChordBoxTop = value => calls.push(value);
+        assert.equal(top.value, 'full');
+        assert.equal(top.disabled, false);
+        assert.deepEqual(h.calls, []);
+        top.value = 'short-caps'; top.listeners.change();
+        if (useSetter) assert.deepEqual(calls, ['short-caps']);
+        else assert.equal(h.storage.getItem('h3d_bg_chordBoxTop'), 'short-caps');
+        h.select.value = 'current'; h.select.listeners.change();
+        assert.equal(top.disabled, true);
+        assert.equal(top.value, 'short-caps');
+        h.select.value = 'rsplus'; h.select.listeners.change();
+        assert.equal(top.disabled, false);
+        assert.equal(top.value, 'short-caps');
+    }
+    for (const saved of ['', 'broken']) {
+        assert.equal(hydrate('rsplus', false, false, {h3d_bg_chordBoxTop: saved})
+            .elements.get('h3d-chord-box-top').value, 'short-caps');
+    }
+    assert.equal(hydrate('current', false, true).elements.get('h3d-chord-box-top').value, 'short-caps');
 });
 
 test('stem checkboxes hydrate, save and retain choices across notation changes', () => {
