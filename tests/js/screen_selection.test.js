@@ -21,6 +21,7 @@ function fixture({ collapsed = true, owner = 'settings', editable = false, input
         anchorNode: elementAnchor ? element : { nodeType: 3, parentElement: element },
         removeAllRanges() { clears++; this.anchorNode = null; },
     };
+    selection.focusNode = selection.anchorNode;
     const document = { getSelection: () => selection };
     const context = vm.createContext({ document });
     vm.runInContext(source.replace('export function', 'function'), context);
@@ -36,8 +37,16 @@ test('discard an empty caret in the Settings screen being hidden', () => {
     }
 });
 
+test('clear text ranges wholly inside the outgoing screen', () => {
+    for (const elementAnchor of [false, true]) {
+        const f = fixture({ collapsed: false, elementAnchor });
+        assert.equal(f.clear(f.screens.player), true);
+        assert.equal(f.clears(), 1);
+    }
+});
+
 test('preserve selected text for copying and carets in the destination screen', () => {
-    for (const options of [{ collapsed: false }, { owner: 'player' }]) {
+    for (const options of [{ owner: 'player', collapsed: false }, { owner: 'player' }]) {
         const f = fixture(options);
         assert.equal(f.clear(f.screens.player), false);
         assert.equal(f.clears(), 0);
@@ -46,22 +55,40 @@ test('preserve selected text for copying and carets in the destination screen', 
 });
 
 test('preserve editing and form-control carets', () => {
-    for (const options of [{ editable: true }, { input: true }]) {
+    for (const options of [{ editable: true }, { input: true }, { editable: true, collapsed: false }, { input: true, collapsed: false }]) {
         const f = fixture(options);
         assert.equal(f.clear(f.screens.player), false);
         assert.equal(f.clears(), 0);
     }
 });
 
-test('preserve focused editing controls when the document caret belongs to a screen', () => {
-    for (const control of ['input', 'textarea', 'select', '[role="textbox"]', 'contenteditable']) {
-        const f = fixture();
-        f.document.activeElement = {
-            isContentEditable: control === 'contenteditable',
-            matches: selector => selector.split(', ').includes(control),
-        };
-        assert.equal(f.clear(f.screens.player), false, control);
+test('preserve ranges crossing screen boundaries or ending in an editor', () => {
+    for (const owner of ['player', 'outside']) {
+        const f = fixture({ collapsed: false });
+        f.selection.focusNode = fixture({ owner }).selection.anchorNode;
+        assert.equal(f.clear(f.screens.player), false);
         assert.equal(f.clears(), 0);
+    }
+    for (const editable of [true, false]) {
+        const f = fixture({ collapsed: false });
+        f.selection.focusNode = { nodeType: 1, isContentEditable: editable,
+            closest: selector => selector === '.screen' ? f.screens.settings : (!editable ? {} : null) };
+        assert.equal(f.clear(f.screens.player), false);
+        assert.equal(f.clears(), 0);
+    }
+});
+
+test('preserve focused editing controls when the document caret belongs to a screen', () => {
+    for (const collapsed of [true, false]) {
+        for (const control of ['input', 'textarea', 'select', '[role="textbox"]', 'contenteditable']) {
+            const f = fixture({ collapsed });
+            f.document.activeElement = {
+                isContentEditable: control === 'contenteditable',
+                matches: selector => selector.split(', ').includes(control),
+            };
+            assert.equal(f.clear(f.screens.player), false, control);
+            assert.equal(f.clears(), 0);
+        }
     }
 });
 
@@ -86,8 +113,9 @@ test('ignore missing selections, outside-screen anchors and missing destinations
     assert.equal(outside.clears(), 0);
 });
 
-test('real showScreen clears the outgoing caret before hiding screens and announcing entry', async () => {
-    const f = fixture();
+for (const collapsed of [true, false]) {
+test(`real showScreen clears the outgoing selection before hiding screens (collapsed ${collapsed})`, async () => {
+    const f = fixture({ collapsed });
     const events = [];
     for (const screen of Object.values(f.screens)) {
         screen.classList = {
@@ -112,3 +140,4 @@ test('real showScreen clears the outgoing caret before hiding screens and announ
     assert.deepEqual(events, ['screen:changing', 'active:player', 'screen:changed']);
     assert.equal(f.clears(), 1);
 });
+}
