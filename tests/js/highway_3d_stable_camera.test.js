@@ -20,7 +20,7 @@ function extractFunction(name) {
 }
 
 function harness() {
-    const constants = ['STABLE_CAMERA_FOV', 'STABLE_CAMERA_PITCH', 'STABLE_CAMERA_YAW', 'STABLE_CAMERA_SHIFT']
+    const constants = ['STABLE_CAMERA_FOV', 'STABLE_CAMERA_PITCH', 'STABLE_CAMERA_YAW', 'STABLE_CAMERA_SHIFT', 'STABLE_CAMERA_VIEWS']
         .map(name => source.match(new RegExp(`const ${name} = [^;]+;`))[0]).join('\n');
     const stateStart = source.indexOf('const _stableCam = {');
     const stateEnd = source.indexOf('function stableAddPoint(', stateStart);
@@ -37,7 +37,12 @@ function harness() {
             pRsChordFrame = null, pArpBracket = null, pSusRail = null, pTechPlane = null;
         const _incomingFloorLabelCount = 0, _incomingFloorLabels = [];
         let _incomingFixedFretLabels = {};
-        const cam = { aspect: 16 / 9 };
+        let ctl = null, tgtX = 0, curDist = 0, tgtDist = 0, _fretRowFitBoost = 1;
+        const highwayCanvas = {}, _freeCamFor = () => ctl;
+        const cam = { aspect: 16 / 9, fov: STABLE_CAMERA_FOV,
+            projectionMatrix: {elements: Object.assign([], {9: STABLE_CAMERA_SHIFT})},
+            position: {set(...values) { this.values = values; }}, up: {set() {}},
+            lookAt(...values) { this.target = values; }, updateMatrixWorld() {} };
         const T = { Vector3: class {} }; // sprite collection uses matrix scalars only
         const performance = { now: () => wall * 1000 };
         const sY = string => (3 + (nStr - 1 - string) * 4) * K;
@@ -86,6 +91,7 @@ function harness() {
             return mockRegionAnchors;
         }
         function stableApplyPose() { curX = _stableCam.x; }
+        ${extractFunction('stableApplyPose').replace('function stableApplyPose(', 'function applyRealPose(')}
         const bundle = { currentTime: 0, isPlaying: true, notes: [], chords: [], anchors: [] };
         return {
             setPoints(points) { fixturePoints = points; },
@@ -123,6 +129,14 @@ function harness() {
             },
             interval(distance, prediction = 0, margin = .90, fixed = null) {
                 stableCollectGeometry(); return { ...stableIntervalAt(distance, prediction, margin, fixed) };
+            },
+            renderedPose(bridge = null) {
+                ctl = bridge; applyRealPose();
+                return {position: cam.position.values, target: cam.target, fov: cam.fov};
+            },
+            viewFits(point, state) {
+                const p = Float64Array.from(point);
+                return stableIntervalAt(state.distance, 0, .96, state.x, p, 3, _stableViewBasis).valid;
             },
             collectRegion(region, labels = []) {
                 _incomingFixedFretLabels = {};
@@ -162,7 +176,7 @@ function harness() {
                 return _stableBins.filter(b => Number.isFinite(b.minX)).map(b => ({...b}));
             },
             projected(point, x, distance, prediction = 0) {
-                const b = _stableBasis, dx = point[0] - x, y = point[1] - b.y;
+                const b = _stableBasis, dx = point[0] - x - b.x, y = point[1] - b.y;
                 const z = Math.max(point[2], Math.min(0, point[2] + prediction * TS));
                 const depth = distance - b.bx * dx - b.by * y - b.bz * z;
                 const tangent = Math.tan(STABLE_CAMERA_FOV * Math.PI / 360);
@@ -185,6 +199,59 @@ function assertFits(h, points, fit, prediction = 0, margin = .90) {
         assert.ok(Math.abs(p.y) <= Math.max(.90, margin) + 1e-6, JSON.stringify(p));
     }
 }
+
+test('built-in viewpoints reproduce the saved standard views without Camera Director', () => {
+    // Archived preset values, independent of the production preset table.
+    for (const [preset, zoom, pitch, panX, panY] of [
+        ['straight', .87, 9, 0, 10], ['angled', .9, -1, -4, 3],
+    ]) for (const lefty of [false, true]) {
+        const h = harness(); h.settings({preset, lefty});
+        const state = h.frame(0, 0);
+        const pose = h.renderedPose();
+        const sign = lefty ? -1 : 1;
+        const angle = 25 * Math.PI / 180 - Math.atan(pitch / 100);
+        const yaw = preset === 'angled' ? sign * 14 * Math.PI / 180 : 0;
+        const radius = state.distance * zoom;
+        assert.deepEqual(pose.target, [state.x + panX * sign, 13 + panY, 0]);
+        const expected = [pose.target[0] + radius * Math.cos(angle) * Math.sin(yaw),
+            pose.target[1] + radius * Math.sin(angle), radius * Math.cos(angle) * Math.cos(yaw)];
+        expected.forEach((v, i) => assert.ok(Math.abs(pose.position[i] - v) < 1e-10));
+        assert.equal(pose.fov, 60);
+        assert.deepEqual(h.renderedPose({enabled:false,distMul:2,pitch:50}), pose);
+        const neutral = h.renderedPose({enabled:true,distMul:1,heightMul:1});
+        neutral.position.forEach((v,i) => assert.ok(Math.abs(v-pose.position[i]) < 1e-10,
+            'neutral Free camera must not apply the built-in preset twice'));
+        assert.deepEqual(neutral.target,pose.target);
+        const bridge = {enabled:true,distMul:1.2,heightMul:1,pitch:4,panX:5,panY:-2};
+        const before = {...bridge}, adjusted = h.renderedPose(bridge);
+        assert.deepEqual(bridge, before, 'saved Free camera state remains untouched');
+        assert.deepEqual(adjusted.target, [pose.target[0]+5,pose.target[1]-2,0]);
+        const delta = adjusted.position.map((v,i) => v-adjusted.target[i]);
+        assert.ok(Math.abs(Math.hypot(...delta) - radius*1.2) < 1e-10);
+        assert.ok(Math.abs(Math.atan2(delta[1], Math.hypot(delta[0],delta[2]))
+            - (angle-Math.atan(.04))) < 1e-10);
+    }
+});
+
+test('the closer calibrated views protect visible geometry on reset, resize and playback', () => {
+    for (const preset of ['straight','angled']) for (const lefty of [false,true]) {
+        const h = harness(); h.settings({preset,lefty}); h.setRegion(0,40);
+        const points = [[-80,-5,0],[150,35,0],[0,15,-100]];
+        h.setPoints(points);
+        const opening = h.frame(0,0);
+        for (const p of points) assert.ok(h.viewFits(p,opening));
+        h.settings({aspect:.5}); const resized = h.frame(0,.016,false);
+        assert.equal(resized.x,opening.x);
+        for (const p of points) assert.ok(h.viewFits(p,resized));
+        const played = h.frame(.05,.05);
+        for (const p of points) assert.ok(h.viewFits(p,played));
+        h.settings({follow:false});
+        const held = h.frame(20,.016), pose = h.renderedPose();
+        h.setPoints([[-600,-30,0],[600,70,0]]);
+        assert.deepEqual(h.frame(21,.016).distance,held.distance);
+        assert.deepEqual(h.renderedPose(),pose,'Follow off keeps the calibrated pose');
+    }
+});
 
 test('the fit solver frames both signs, both presets and narrow panes with finite results', () => {
     for (const preset of ['straight', 'angled']) for (const lefty of [false, true]) {
@@ -225,7 +292,8 @@ test('nearby large label corners remain in the collector and fit at their true p
         for (const centerY of [.5, 1]) {
             const points = h.spritePoints({ x: lefty ? -160 : 160, y: -2.6, z: .5, size, centerY });
             assert.ok(points.length > 0);
-            const bottom = -2.6 - centerY * size * Math.cos(25 * Math.PI / 180);
+            const pitch = 25 * Math.PI / 180 - Math.atan2(preset === 'straight' ? 9 : -1, 100);
+            const bottom = -2.6 - centerY * size * Math.cos(pitch);
             assert.ok(Math.abs(Math.min(...points.map(p => p[1])) - bottom) < 1e-8,
                 'camera-facing bottom corners must not disappear past the play line');
             assert.ok(Math.max(...points.map(p => p[2])) > 2,
