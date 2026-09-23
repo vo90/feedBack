@@ -259,7 +259,7 @@ def note_to_wire(n: Note) -> dict:
         "t": round(n.time, 3), "s": n.string, "f": n.fret,
         "sus": round(n.sustain, 3),
         "sl": n.slide_to, "slu": n.slide_unpitch_to,
-        "bn": round(n.bend, 1) if n.bend else 0,
+        "bn": round(n.bend, 6) if n.bend else 0,
         "ho": n.hammer_on, "po": n.pull_off,
         "hm": n.harmonic, "hp": n.harmonic_pinch,
         "pm": n.palm_mute, "mt": n.mute,
@@ -289,7 +289,9 @@ def note_to_wire(n: Note) -> dict:
         out["bt"] = int(n.bend_intent)
     if n.bend_values:
         out["bnv"] = [
-            {"t": round(p["t"], 3), "v": round(p["v"], 1)}
+            # Retain authored curve detail, including close control points.
+            # A tenth of a semitone is too coarse for precise imported bends.
+            {"t": round(p["t"], 6), "v": round(p["v"], 6)}
             for p in n.bend_values
         ]
     # Teaching marks (§6.2.2) — default-omitted, mirroring rh/pkd above.
