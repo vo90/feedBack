@@ -2338,6 +2338,12 @@
     const STABLE_CAMERA_PITCH = 25 * Math.PI / 180;
     const STABLE_CAMERA_YAW = 14 * Math.PI / 180;
     const STABLE_CAMERA_SHIFT = 0.48;
+    // Built-in framing from the saved Standard straight / Standard angled
+    // Camera Director views. Pitch uses the bridge's target-height units.
+    const STABLE_CAMERA_VIEWS = Object.freeze({
+        straight: Object.freeze({ distMul: 0.87, pitch: 9, panX: 0, panY: 10 }),
+        angled: Object.freeze({ distMul: 0.90, pitch: -1, panX: -4, panY: 3 }),
+    });
     let _stableCameraResetSerial = 0;
     const CAM_LOOKAHEAD_SEC = 3.0;       // fallback when no beats/measures are available
     const CAM_LOOKAHEAD_MEASURES = 9;    // lookahead window = N measures ahead
@@ -21275,7 +21281,8 @@
         const _stableRegionPoints = new Float64Array(16 * 3);
         const _stableRibbonPrevious = new Float64Array(4 * 3);
         const _stableBoxPoints = new Float64Array(8 * 3);
-        const _stableBasis = { bx: 0, by: 0, bz: 1, rx: 1, rz: 0, ux: 0, uy: 1, uz: 0, y: 0 };
+        const _stableBasis = { bx: 0, by: 0, bz: 1, rx: 1, rz: 0, ux: 0, uy: 1, uz: 0, x: 0, y: 0, distanceMul: 1 };
+        const _stableViewBasis = { ..._stableBasis };
         const _stableInterval = { min: 0, max: 0, valid: true };
         const _stableFit = { x: 0, distance: 0 };
         let _stableVector = null;
@@ -21327,7 +21334,7 @@
                 const e = object.matrixWorld.elements;
                 const sx = Math.hypot(e[0], e[1], e[2]);
                 const sy = Math.hypot(e[4], e[5], e[6]);
-                const b = _stableBasis;
+                const b = _stableViewBasis;
                 for (let i = 0; i < 4; i++) {
                     const dx = ((i & 1 ? 1 : 0) - object.center.x) * sx;
                     const dy = ((i & 2 ? 1 : 0) - object.center.y) * sy;
@@ -21436,8 +21443,9 @@
             else _stableInterval.min = Math.max(_stableInterval.min, b / a);
         }
 
-        function stableIntervalAt(distance, prediction, margin, fixedX = null, points = _stablePoints, count = _stableCam.pointCount) {
-            const out = _stableInterval, b = _stableBasis;
+        function stableIntervalAt(distance, prediction, margin, fixedX = null, points = _stablePoints, count = _stableCam.pointCount, basis = _stableBasis) {
+            const out = _stableInterval, b = basis;
+            distance *= b.distanceMul;
             out.min = fixedX === null ? -Infinity : fixedX;
             out.max = fixedX === null ? Infinity : fixedX;
             out.valid = true;
@@ -21447,7 +21455,7 @@
             const top = tan * (vertical + STABLE_CAMERA_SHIFT);
             const bottom = tan * (vertical - STABLE_CAMERA_SHIFT);
             for (let i = 0; i < count; i += 3) {
-                const x = points[i], y = points[i + 1] - b.y;
+                const x = points[i] - b.x, y = points[i + 1] - b.y;
                 const z = Math.max(points[i + 2], Math.min(0, points[i + 2] + prediction * TS));
                 const depth = distance - (b.bx * x + b.by * y + b.bz * z);
                 const right = b.rx * x + b.rz * z;
@@ -21462,23 +21470,23 @@
             return out;
         }
 
-        function stableSolve(preferredX, baseDistance, prediction, margin, fixedCentre = false, points = _stablePoints, count = _stableCam.pointCount) {
+        function stableSolve(preferredX, baseDistance, prediction, margin, fixedCentre = false, points = _stablePoints, count = _stableCam.pointCount, basis = _stableBasis) {
             let low = baseDistance, high = low;
             const fixed = fixedCentre ? preferredX : null;
-            let interval = stableIntervalAt(high, prediction, margin, fixed, points, count);
+            let interval = stableIntervalAt(high, prediction, margin, fixed, points, count, basis);
             if (!interval.valid) {
                 // Exponential bracket + bounded bisection: no per-frame chart
                 // scans and no dependency on the previous frame's fit result.
                 for (let i = 0; i < 10 && !interval.valid; i++) {
                     high *= 1.5;
-                    interval = stableIntervalAt(high, prediction, margin, fixed, points, count);
+                    interval = stableIntervalAt(high, prediction, margin, fixed, points, count, basis);
                 }
                 for (let i = 0; i < 16; i++) {
                     const mid = (low + high) / 2;
-                    if (stableIntervalAt(mid, prediction, margin, fixed, points, count).valid) high = mid;
+                    if (stableIntervalAt(mid, prediction, margin, fixed, points, count, basis).valid) high = mid;
                     else low = mid;
                 }
-                interval = stableIntervalAt(high, prediction, margin, fixed, points, count);
+                interval = stableIntervalAt(high, prediction, margin, fixed, points, count, basis);
             }
             _stableFit.x = Math.max(interval.min, Math.min(interval.max, preferredX));
             _stableFit.distance = high;
@@ -21486,9 +21494,10 @@
         }
 
         function stableApplyPose() {
-            const s = _stableCam, b = _stableBasis;
-            let tx = s.x, ty = b.y, vx = b.bx * s.distance;
-            let vy = b.by * s.distance, vz = b.bz * s.distance;
+            const s = _stableCam, b = _stableViewBasis;
+            const distance = s.distance * b.distanceMul;
+            let tx = s.x + b.x, ty = b.y, vx = b.bx * distance;
+            let vy = b.by * distance, vz = b.bz * distance;
             const ctl = _freeCamFor(highwayCanvas);
             if (ctl?.enabled) {
                 const finite = (value, fallback) => Number.isFinite(value) ? value : fallback;
@@ -21706,6 +21715,17 @@
             b.rx = Math.cos(yaw); b.rz = -Math.sin(yaw);
             b.ux = -Math.sin(yaw) * sp; b.uy = cp; b.uz = -Math.cos(yaw) * sp;
             b.y = (sY(0) + sY(nStr - 1)) / 2;
+            // Preserve the established playing-area plan. The calibrated view
+            // has its own basis for rendering and the final visibility fit, so
+            // promoting a manual preset does not introduce new lateral pans.
+            const view = STABLE_CAMERA_VIEWS[stableCameraPreset], v = _stableViewBasis;
+            const pitch = STABLE_CAMERA_PITCH - Math.atan2(view.pitch, 100);
+            const vcp = Math.cos(pitch), vsp = Math.sin(pitch);
+            v.bx = Math.sin(yaw) * vcp; v.by = vsp; v.bz = Math.cos(yaw) * vcp;
+            v.rx = b.rx; v.rz = b.rz;
+            v.ux = -Math.sin(yaw) * vsp; v.uy = vcp; v.uz = -Math.cos(yaw) * vsp;
+            v.x = view.panX * K * (_leftyCached ? -1 : 1); v.y = b.y + view.panY * K;
+            v.distanceMul = view.distMul;
             // update() has already interpolated the display clock. Resolve
             // the same position as this frame's lane and gold labels, while
             // raw audio time remains the source for seek/rate detection.
@@ -21806,10 +21826,11 @@
             s.planRevision = plan.revision;
             s.planX = plan.x; s.planVelocity = plan.velocity || 0;
             s.following = stableCameraFollow && bundle.isPlaying !== false && (snap || !resize);
-            if (!snap && !resize && stableCameraFollow && bundle.isPlaying !== false && s.pointCount > 0) {
-                // Last-resort actual-geometry guard also covers upcoming notes
-                // during a rest. It may widen, but never redirects the centre.
-                const safe = stableSolve(s.x, s.distance, 0, 0.96, true);
+            if ((snap || resize || (stableCameraFollow && bundle.isPlaying !== false)) && s.pointCount > 0) {
+                // Protect the actual built-in viewpoint, including its closer
+                // zoom and pan. Widen only as needed; keep the planned centre.
+                // Explicit Camera Director offsets remain outside auto fitting.
+                const safe = stableSolve(s.x, s.distance, 0, 0.96, true, _stablePoints, s.pointCount, v);
                 s.correction = safe.distance > s.distance + 1e-7;
                 s.distance = safe.distance;
             }
