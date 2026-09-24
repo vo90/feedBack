@@ -85,6 +85,26 @@ test('anchorless bounds do not treat unpitched mute sentinels as fret 127', () =
         [{ t: 10, id: 0 }], [{ frets: [-1, 0, 127] }], 10, 4), 9);
 });
 
+test('2D note rendering sends one compound contact cue to the crisp layer without duplicate canvas captions', () => {
+    const labels=[],gems=[];
+    const ctx=new Proxy({}, {get:(o,k)=>o[k]||(()=>{}),set:(o,k,v)=>(o[k]=v,true)});
+    const draw=new Function('bendToneLabel','noteFretLabel','bnvNormalizedPoints','roundRect','_paintGemGlow','fillTextReadable',
+        extract(drawSource,'harmonicContactLabel')+extract(drawSource,'drawNote')+'; return drawNote;')(
+        bendToneLabel,load(geometry,'noteFretLabel'),load(geometry,'bnvNormalizedPoints'),()=>{},()=>{},(_s,text)=>labels.push(String(text)));
+    const state={ctx,canvas:{clientHeight:900},STRING_COLORS:['#f00'],STRING_DIM:['#500'],STRING_BRIGHT:['#f88'],
+        _harmonicContactOverlay:{addGem:g=>gems.push(g)}};
+    for(const [fret,kind,text] of [[17,'artificial','AH 31.7'],[0,'tapped','TH 12']]) {
+        labels.length=0;gems.length=0;
+        const target=Object.freeze({kind,node:fret?14.7:12});
+        const opts=Object.freeze({pm:true,harmonic_target:target});
+        draw(state,250,225,125,125,.45,0,fret,opts,null);
+        assert.ok(labels.includes(String(fret)));
+        assert.ok(!labels.includes(text)&&!labels.includes('PM'));
+        assert.equal(gems.length,1);assert.equal(gems[0].label,text);assert.equal(gems[0].pm,true);
+        assert.equal(opts.harmonic_target,target);
+    }
+});
+
 test('actual anchorless viewport follows active transforms and expands immediately', () => {
     const hwState = {
         _xfAnchors: null, _filteredAnchors: null, anchors: [],

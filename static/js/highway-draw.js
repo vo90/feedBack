@@ -209,6 +209,14 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     const contactFontSize = Math.max(9 * contactPixelRatio, sz * .28);
     const contactGap = 3 * contactPixelRatio;
     const contactMuteOffset = palmMute && sz >= 14 ? Math.max(8, sz * .25) + 3 : 0;
+    const overlayContact = showContact && !!hwState._harmonicContactOverlay;
+    const openBar = (fret === 0 || fret === 127 && opts?.mt) && !isChord;
+    hwState._harmonicContactOverlay?.addGem({
+        x:openBar ? W/2 : x, y,
+        rx:openBar ? W*.26*scale+2 : half*1.15+4,
+        ry:openBar ? Math.max(6,sz*.45)/2+2 : half*1.15+4,
+        label:showContact ? contactLabel : '', fontSize:80*scale*(H/900)*.28, pm:palmMute,
+    });
     // When lit, bump the body one step brighter and the backing-glow
     // one step up from STRING_DIM, so even shapes that don't get the
     // _paintGemGlow halo (the open-string bar) read as "lit".
@@ -253,7 +261,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
         // centered bar doesn't visually convey. Matches the sz<14 gate
         // the fretted path uses so labels don't render on tiny bars.
         // Fixes #21.
-        if (showContact) {
+        if (showContact && !overlayContact) {
             hwState.ctx.fillStyle = '#fff';
             hwState.ctx.font = `bold ${contactFontSize}px sans-serif`;
             hwState.ctx.textAlign = 'center';
@@ -271,7 +279,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
                 fillTextReadable(hwState, label, W/2, y - barH/2 - 4);
             }
             // PM below
-            if (palmMute) {
+            if (palmMute && !overlayContact) {
                 hwState.ctx.fillStyle = '#aaa';
                 hwState.ctx.font = `bold ${Math.max(8, sz * 0.25) | 0}px sans-serif`;
                 hwState.ctx.textAlign = 'center';
@@ -360,7 +368,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     hwState.ctx.textAlign = 'center';
     hwState.ctx.textBaseline = 'middle';
     fillTextReadable(hwState, noteFretLabel(fret, opts), x, y);
-    if (showContact) {
+    if (showContact && !overlayContact) {
         hwState.ctx.fillStyle = '#fff';
         hwState.ctx.font = `bold ${contactFontSize}px sans-serif`;
         hwState.ctx.textBaseline = 'top';
@@ -507,7 +515,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     }
 
     // Palm mute (PM below note)
-    if (palmMute) {
+    if (palmMute && !overlayContact) {
         hwState.ctx.fillStyle = '#aaa';
         hwState.ctx.font = `bold ${Math.max(8, sz * 0.25) | 0}px sans-serif`;
         hwState.ctx.textAlign = 'center';
