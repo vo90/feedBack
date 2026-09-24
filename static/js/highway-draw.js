@@ -41,6 +41,12 @@ function playingFret2D(n) {
         && Number.isInteger(n.hps) && n.hps > 0 && n.hps <= 48 ? n.hn : n.f;
 }
 
+export function harmonicContactLabel(n) {
+    const h = n?.harmonic_target;
+    if (!h || !['artificial','tapped'].includes(h.kind) || !Number.isFinite(h.node) || !Number.isFinite(n.f)) return '';
+    return (h.kind === 'artificial' ? 'AH ' : 'TH ') + Number((n.f + h.node).toFixed(3));
+}
+
 export function _measureLyricText(hwState, c, fontSize, text) {
     let inner = hwState._lyricMeasureCache.get(fontSize);
     if (inner === undefined) {
@@ -181,6 +187,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     const lit = !!(ns && ns.state !== 'miss');
     const isHarmonic = opts?.hm || opts?.hp || false;
     const isPinchHarmonic = opts?.hp || false;
+    const contactLabel = harmonicContactLabel({...opts,f:fret});
     const isChord = opts?.chord || false;
     const bend = opts?.bn || 0;
     const slide = opts?.sl ?? -1;  // pitched slide-to fret (-1 = none; 0 = slide to open)
@@ -238,6 +245,14 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
         // the fretted path uses so labels don't render on tiny bars.
         // Fixes #21.
         if (sz >= 14) {
+            if (contactLabel) {
+                hwState.ctx.fillStyle = '#fff';
+                hwState.ctx.font = `bold ${Math.max(9, sz * 0.28) | 0}px sans-serif`;
+                hwState.ctx.textAlign = 'center';
+                hwState.ctx.textBaseline = 'top';
+                fillTextReadable(hwState, contactLabel, W/2, y + barH/2 + 3
+                    + (palmMute ? Math.max(8, sz * .25) + 3 : 0));
+            }
             // H / P / T above
             if (hammerOn || pullOff || tap) {
                 const label = tap ? 'T' : (hammerOn ? 'H' : 'P');
@@ -337,6 +352,13 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     hwState.ctx.textAlign = 'center';
     hwState.ctx.textBaseline = 'middle';
     fillTextReadable(hwState, noteFretLabel(fret, opts), x, y);
+    if (contactLabel && sz >= 14) {
+        hwState.ctx.fillStyle = '#fff';
+        hwState.ctx.font = `bold ${Math.max(9, sz * 0.28) | 0}px sans-serif`;
+        hwState.ctx.textBaseline = 'top';
+        fillTextReadable(hwState, contactLabel, x, y + half + 3
+            + (palmMute ? Math.max(8, sz * .25) + 3 : 0));
+    }
 
     // Bend notation
     if (bend && bend > 0 && sz >= 12) {
@@ -1303,6 +1325,7 @@ export function bsearchChords(arr, time) {
 // bypass drawNote and so must fall back to the full path whenever a
 // technique flag is present, otherwise authored cues vanish silently.
 export function _noteHasTechniqueFlags(n) {
+    if (harmonicContactLabel(n)) return true;
     if (n.ghost === true) return true;
     if (n.bn || n.ho || n.po || n.tp || n.pm || n.vb || n.tr || n.ac || n.hm || n.hp || n.mt || n.fhm) return true;
     if (typeof n.sl === 'number' && n.sl >= 0) return true;

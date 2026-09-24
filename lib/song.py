@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import xml.etree.ElementTree as ET
+from lib.harmonic_target import validate_target, validate_alias
 
 log = logging.getLogger("feedBack.lib.song")
 
@@ -81,6 +82,10 @@ class Note:
     # above the (tuned, capo-adjusted) open string. Both must be present.
     harmonic_node: float | None = None
     harmonic_pitch: int | None = None
+    # Explicit pitch above the held fret, source kind and agreed scoring rule.
+    # This is one note; its contact cue is not another fret/attack.
+    harmonic_target: dict | None = None
+    harmonic_alias: str | None = None
 
 
 @dataclass
@@ -276,6 +281,10 @@ def note_to_wire(n: Note) -> dict:
         out["ln"] = True
     if n.harmonic and _valid_natural_target(n.harmonic_node, n.harmonic_pitch):
         out.update(hn=n.harmonic_node, hps=n.harmonic_pitch)
+    if n.harmonic_target is not None:
+        out["harmonic_target"] = dict(n.harmonic_target)
+    if n.harmonic_alias is not None:
+        out["harmonic_alias"] = n.harmonic_alias
     if n.ghost is True:
         out["ghost"] = True
     if n.fret_hand_mute:
@@ -325,6 +334,8 @@ def note_to_wire(n: Note) -> dict:
         out["pick_scrape_marks"] = _validate_pick_scrapes(n.pick_scrape_marks, n.sustain, n.mute)
     if n.slide_in_marks is not None:
         out["slide_in_marks"] = _sanitize_slide_in_marks(n.slide_in_marks, n.sustain)
+    validate_target(out)
+    validate_alias(out)
     return out
 
 
@@ -637,6 +648,7 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
     precise = d.get("hm") is True and _valid_natural_target(d.get("hn"), d.get("hps"))
     if ("hn" in d or "hps" in d) and not precise:
         raise ValueError("Invalid precise natural harmonic node/pitch pair")
+    target, alias = validate_target(d), validate_alias(d)
     return Note(
         time=float(d.get("t", time if time is not None else 0.0)),
         string=int(d.get("s", 0)),
@@ -654,6 +666,8 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         harmonic_pinch=bool(d.get("hp", False)),
         harmonic_node=d["hn"] if precise else None,
         harmonic_pitch=d["hps"] if precise else None,
+        harmonic_target=target,
+        harmonic_alias=alias,
         palm_mute=bool(d.get("pm", False)),
         mute=bool(d.get("mt", False)),
         vibrato=bool(d.get("vb", d.get("vibrato", False))),

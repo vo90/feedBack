@@ -3640,6 +3640,11 @@
         const node = naturalNode(n);
         return node === null ? n.f : String(Number(node.toFixed(3)));
     }
+    function harmonicContactLabel(n) {
+        const h = n?.harmonic_target;
+        if (!h || !['artificial','tapped'].includes(h.kind) || !Number.isFinite(h.node) || !Number.isFinite(n.f)) return '';
+        return (h.kind === 'artificial' ? 'AH ' : 'TH ') + Number((n.f + h.node).toFixed(3));
+    }
     /** World-space width of fret column (wires f−1 .. f); used to scale row markers past ~12. */
     function fretColumnWorldW(f) {
         const fi = Math.round(Number(f));
@@ -16224,6 +16229,8 @@
                             _scrChordNote.hm  = !!cn.hm;
                             _scrChordNote.hn = cn.hn;
                             _scrChordNote.hps = cn.hps;
+                            _scrChordNote.harmonic_target = cn.harmonic_target;
+                            _scrChordNote.harmonic_alias = cn.harmonic_alias;
                             _scrChordNote.hp  = !!cn.hp;
                             _scrChordNote.pm  = !!cn.pm;
                             _scrChordNote.mt  = !!cn.mt;
@@ -17903,6 +17910,7 @@
             // Compact repeat frames have their own palm/fret-hand mute marks,
             // but these cues live on individual gems and must approach with them.
             return !!(n.ghost === true || n.hm || n.hp || n.ho || n.po || n.tp || n.ac || n.slp || n.plk
+                || ['artificial','tapped'].includes(n.harmonic_target?.kind)
                 || (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) || noteHasSlideOutCue(n)
                 || slideInMarks(n).length > 0
                 || (Number(n.bn) || 0) > 0
@@ -20769,6 +20777,21 @@
                     harmMark.rotation.z = approachRot;
                     harmMark.renderOrder = techniqueMarkerRenderOrder;
                     _registerIncomingLabelOccluder(harmMark, noteZ);
+                }
+
+                // Contact/tap guidance belongs to the held note. It never
+                // changes fret geometry, creates another gem, or enters the
+                // fret-row/camera targets (contacts may be above fret 24).
+                const contactCue = harmonicContactLabel(n);
+                if (contactCue) {
+                    const label = pTechPlane.get();
+                    label.material = _spriteMat2MeshMat(label, txtMat(contactCue, '#ffffff', true, 'technique'));
+                    label.material.opacity = dt >= 0 ? Math.min(1, (AHEAD - dt) / .35) : 0;
+                    label.scale.set(NW * 2.4, NH * .65, 1);
+                    label.position.set(x, y + techniqueYNow - NH * .92, noteZ + K);
+                    label.rotation.z = approachRot;
+                    label.renderOrder = techniqueMarkerRenderOrder;
+                    _registerIncomingLabelOccluder(label, noteZ);
                 }
 
                 // ── Per-note fret connector label ─────────────────────────

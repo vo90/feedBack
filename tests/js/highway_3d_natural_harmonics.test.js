@@ -19,3 +19,15 @@ test('chord scratch resets both fields and source identity stays separate',()=>{
     assert.match(source,/_scrChordNote.hps = cn.hps/);
     assert.match(source,/const xNote = n => \(_leftyCached \? -1 : 1\) \* notePositionX\(n\)/);
 });
+test('fretted harmonic contact is guidance, not another fret position',()=>{
+    const h=new Function(`const fretX=f=>10*f; const fretMid=f=>10*f-5; ${helpers}
+        return {harmonicContactLabel,notePositionX,harmonicLabel};`)();
+    for(const [kind,label] of [['artificial','AH'],['tapped','TH']]) {
+        const n=Object.freeze({f:17,harmonic_target:{kind,node:14.7,interval:34,policy:'harmonic'}});
+        assert.equal(h.harmonicContactLabel(n),label+' 31.7');
+        assert.equal(h.notePositionX(n),165);
+        assert.equal(h.harmonicLabel(n),17);
+    }
+    for(const kind of ['pinch','semi','feedback'])
+        assert.equal(h.harmonicContactLabel({f:7,harmonic_target:{kind,node:12}}),'');
+});
