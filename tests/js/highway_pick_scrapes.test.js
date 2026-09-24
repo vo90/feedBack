@@ -54,3 +54,20 @@ test('fractional clock cancellation cannot pull the faded endpoint back to the c
     const n=make('up');n.t=241.354;n.sus=.21875;n.pick_scrape_marks[0].end=n.sus;
     assert.ok(Math.abs(renderer().sustainTrailCenterXAt(n,0,n.t+n.sus,null,2)-8)<1e-7);
 });
+
+test('2D scrape strings follow inversion and instrument size, with lefty applied only by the parent canvas',()=>{
+    const draw=fs.readFileSync(path.join(__dirname,'../../static/js/highway-draw.js'),'utf8');
+    const block=draw.slice(draw.indexOf('export function drawPickScrape2D('),draw.indexOf('export function drawSustains(')).replace('export ','');
+    const render=new Function(`${geometry};const VISIBLE_SECONDS=5,project=()=>({y:.5,scale:1});
+        const fillTextReadable=(hw,text,x,y)=>hw.labels.push({text,x,y});${block};return drawPickScrape2D;`)();
+    function labels(inverted=false,lefty=false,stringCount=4) {
+        const noop=()=>{}, hw={currentTime:9,stringCount,_inverted:inverted,_lefty:lefty,labels:[],STRING_COLORS:[],
+            ctx:{save:noop,restore:noop,beginPath:noop,moveTo:noop,lineTo:noop,stroke:noop}};
+        render(hw,1000,600,make()); return hw.labels;
+    }
+    const normal=labels(),inverted=labels(true);
+    assert.equal(normal[0].text,'X'); assert.equal(normal[1].text,'PICK SCRAPE');
+    assert.equal(normal[0].y,283.5); assert.equal(inverted[0].y,316.5);
+    assert.equal(labels(false,false,7)[0].y,267);
+    assert.deepEqual(labels(false,true),normal,'parent transform handles mirroring exactly once');
+});

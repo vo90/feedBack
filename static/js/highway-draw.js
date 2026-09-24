@@ -518,13 +518,15 @@ export function drawPickScrape2D(hwState, W, H, n, onset = n.t) {
     const now = hwState.currentTime;
     if (onset > now + VISIBLE_SECONDS || onset + n.sus < now) return;
     const ctx = hwState.ctx;
-    const mirror = hwState._lefty ? -1 : 1;
+    // The parent canvas transform already mirrors the entire highway for lefty.
+    const stringCount = hwState._xfStringCount ?? hwState.stringCount ?? 6;
+    const stringIndex = hwState._inverted ? stringCount - 1 - n.s : n.s;
     const point = (mark, time) => {
         const p = project(Math.max(0, time - now));
         if (!p) return null;
         const fraction = scrapeProgress(mark, time - onset);
-        return { x: W / 2 + mirror * scrapePosition(mark, fraction) * W * .045 * p.scale,
-            y: p.y * H + (n.s - 2.5) * 11 * p.scale, scale: p.scale,
+        return { x: W / 2 + scrapePosition(mark, fraction) * W * .045 * p.scale,
+            y: p.y * H + (stringIndex - (stringCount - 1) / 2) * 11 * p.scale, scale: p.scale,
             alpha: scrapeFade(n, mark, fraction) };
     };
     ctx.save();
