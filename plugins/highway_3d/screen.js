@@ -20785,12 +20785,16 @@
                 const contactCue = harmonicContactLabel(n);
                 if (contactCue) {
                     const label = pTechPlane.get();
-                    label.material = _spriteMat2MeshMat(label, txtMat(contactCue, '#ffffff', true, 'technique'));
-                    label.material.opacity = dt >= 0 ? Math.min(1, (AHEAD - dt) / .35) : 0;
-                    label.scale.set(NW * 2.4, NH * .65, 1);
-                    label.position.set(x, y + techniqueYNow - NH * .92, noteZ + K);
-                    label.rotation.z = approachRot;
-                    label.renderOrder = techniqueMarkerRenderOrder;
+                    const text = txtMat(contactCue, '#ffffff', true, 'technique');
+                    label.material = _spriteMat2MeshMat(label, text);
+                    const cueScale = (1 + Math.max(0, Math.min(1, dt / AHEAD)) * 1.5) * _textSizeMul;
+                    const size = NH * 1.75 * cueScale;
+                    label.material.opacity = dt >= 0 ? Math.min(1, (AHEAD - dt) / .35) : sustained ? .85 : 0;
+                    label.scale.set(size * text.map.image.width / text.map.image.height, size, 1);
+                    label.position.set(x, y + techniqueYNow + bendVisualDirY(s) * NH * 1.7 * cueScale, noteZ + K);
+                    // Text stays upright; only the gem/face symbols rotate.
+                    label.rotation.set(0, 0, 0);
+                    label.renderOrder = renderOrderForLayerAtZ(noteZ, 'NOTE_FRET_LABEL');
                     _registerIncomingLabelOccluder(label, noteZ);
                 }
 
