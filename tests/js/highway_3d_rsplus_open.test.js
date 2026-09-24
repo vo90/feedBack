@@ -51,6 +51,7 @@ function harness() {
         const gNote = {name:'box'}, gRsNote = {name:'rounded'}, gRsNoteHalo = {name:'halo'};
         const gNoteGrad = activePalette.map(() => ({name:'current-gradient'}));
         const gRsNoteGrad = activePalette.map(() => ({name:'rs-gradient'}));
+        ${fn('naturalNode')}
         ${fn('pool')}
         const groups = {};
         function trackedPool(name) {

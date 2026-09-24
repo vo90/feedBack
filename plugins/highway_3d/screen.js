@@ -3129,7 +3129,7 @@
             if (usesUnfrettedPosition(note) || !(member.end > member.time) || !slide || !isPlayableFret(slide.endFret)
                 || slide.endFret === note.f) continue;
             const sign = Math.sign(slide.endFret - note.f);
-            const startX = fretMid(note.f), spanX = fretMid(slide.endFret) - startX;
+            const startX = notePositionX(note), spanX = fretMid(slide.endFret) - startX;
             // Invert the renderer's easing at each crossed fret centre. This
             // follows the actual slide now, not its destination at the attack.
             // At most NFRETS checkpoints, independent of sustain duration/FPS.
@@ -3610,6 +3610,20 @@
     };
 
     const fretMid = f => (f <= 0 ? -2 * K : (fretX(f - 1) + fretX(f)) / 2);
+    // Natural harmonics sit on the authored touch position, measured from
+    // fret wires, rather than at the centre of a fretted-note cell.
+    function naturalNode(n) {
+        return n?.hm === true && Number.isFinite(n.hn) && n.hn > 0 && n.hn <= 24
+            && Number.isInteger(n.hps) && n.hps > 0 && n.hps <= 48 ? n.hn : null;
+    }
+    function notePositionX(n) {
+        const node = naturalNode(n);
+        return node === null ? fretMid(n.f) : fretX(node);
+    }
+    function harmonicLabel(n) {
+        const node = naturalNode(n);
+        return node === null ? n.f : String(Number(node.toFixed(3)));
+    }
     /** World-space width of fret column (wires f−1 .. f); used to scale row markers past ~12. */
     function fretColumnWorldW(f) {
         const fi = Math.round(Number(f));
@@ -3657,7 +3671,7 @@
         if (!st || n.f <= 0 || !(n.sus > 0)) return 0;
         const denom = Math.max(n.sus, 1e-6);
         const p = Math.max(0, Math.min(1, (chartTime - n.t) / denom));
-        const startX = fretMid(n.f);
+        const startX = notePositionX(n);
         const endX = fretMid(st.endFret);
         const w = st.unpitched
             ? 1 - Math.sin((1 - p) * Math.PI / 2)
@@ -7966,6 +7980,7 @@
         let _leftyCached = false;
         const xFret = f => (_leftyCached ? -fretX(f) : fretX(f));
         const xFretMid = f => (_leftyCached ? -fretMid(f) : fretMid(f));
+        const xNote = n => (_leftyCached ? -1 : 1) * notePositionX(n);
         const OPEN_NOTE_PAD_X = NW * 0.4;
         // Open-string note width: same outer span as the chord frame (anchor
         // plus horizontal padding, or the default four-fret window). Kept at
@@ -8181,7 +8196,7 @@
 
             let w = wide ? h * 4 : h;
 
-            if (!wide && sName === 'noteFret') {
+            if (!wide && (sName === 'noteFret' || sName === 'ghostFret')) {
                 // Wide labels (D#2, Bb3) need a canvas wider than srcH; cap so
                 // glyphs stay centred at (w/2, h/2) without edge clipping.
                 const probe = document.createElement('canvas').getContext('2d');
@@ -15428,7 +15443,7 @@
                             && n.t + (n.sus || 0) >= bootstrapNow;
                         if (nInWin || nSusNow) {
                             const w = Math.exp(-Math.abs(n.t - bootstrapNow) / camTau);
-                            preWX += xFretMid(n.f) * w;
+                            preWX += xNote(n) * w;
                             preWSum += w;
                             if (n.f < preDistMin) preDistMin = n.f;
                             if (n.f > preDistMax) preDistMax = n.f;
@@ -15452,7 +15467,7 @@
                             const cnOk = chOnsetInWin
                                 || (chSusNow && ch.t + (cn.sus || 0) >= bootstrapNow);
                             if (isPlayableFret(cn.f) && cn.f > 0 && cnOk) {
-                                preWX += xFretMid(cn.f) * chW;
+                                preWX += xNote(cn) * chW;
                                 preWSum += chW;
                                 if (cn.f < preDistMin) preDistMin = cn.f;
                                 if (cn.f > preDistMax) preDistMax = cn.f;
@@ -15579,7 +15594,7 @@
                                     ? (_arpBrktAncB
                                         ? (xFret(_arpBrktAncB.dMin) + xFret(_arpBrktAncB.dMax)) / 2
                                         : (singleOpenX !== undefined ? singleOpenX : curX))
-                                    : xFretMid(n.f);
+                                    : xNote(n);
                                 const _openHalfW = (() => {
                                     if (!usesUnfrettedPosition(n)) return null;
                                     if (_arpBrktAncB) {
@@ -15628,7 +15643,7 @@
                         // (consistent with "average a wider window").
                         // Weight is still 1 at onset.
                         const w = Math.exp(-Math.abs(n.t - now) / camTau);
-                        camWX   += xFretMid(n.f) * w;
+                        camWX   += xNote(n) * w;
                         camWSum += w;
                         if (n.f < camDistMin) camDistMin = n.f;
                         if (n.f > camDistMax) camDistMax = n.f;
@@ -15798,7 +15813,7 @@
                         let cxL = Infinity, cxR = -Infinity, fretted = 0;
                         for (const cn of chordNotes) {
                             if (isPlayableFret(cn.f) && cn.f > 0) {
-                                const fx = xFretMid(cn.f);
+                                const fx = xNote(cn);
                                 if (fx < cxL) cxL = fx;
                                 if (fx > cxR) cxR = fx;
                                 fretted++;
@@ -16144,6 +16159,8 @@
                             _scrChordNote.ho  = !!cn.ho;
                             _scrChordNote.po  = !!cn.po;
                             _scrChordNote.hm  = !!cn.hm;
+                            _scrChordNote.hn = cn.hn;
+                            _scrChordNote.hps = cn.hps;
                             _scrChordNote.hp  = !!cn.hp;
                             _scrChordNote.pm  = !!cn.pm;
                             _scrChordNote.mt  = !!cn.mt;
@@ -16222,7 +16239,7 @@
                             if (!(cameraMode === 'lookahead')) {
                             const cnSustainOk = chOnsetInWin || (chSusActive && ch.t + (cn.sus || 0) >= now);
                             if (isPlayableFret(cn.f) && cn.f > 0 && cnSustainOk) {
-                                camWX += xFretMid(cn.f) * chW;
+                                camWX += xNote(cn) * chW;
                                 camWSum += chW;
                                 if (cn.f < camDistMin) camDistMin = cn.f;
                                 if (cn.f > camDistMax) camDistMax = cn.f;
@@ -16278,7 +16295,7 @@
                                 if (_nsBrackets && _nsBrackets.has(cn.s)) continue;
                                 const _bx = usesUnfrettedPosition(cn)
                                     ? _arpChBrktOpenX
-                                    : xFretMid(cn.f);
+                                    : xNote(cn);
                                 const _openHalfW = (usesUnfrettedPosition(cn) && _arpChBrktOpenW != null)
                                     ? Math.max(0.22, _arpChBrktOpenW * 0.96 / (40 * K)) * 20 * K
                                     : null;
@@ -18244,7 +18261,7 @@
                 + (event.trailStart < event.t ? 1e-6 : 0.01)) return 0;
             const ctx = _trailYieldMatchContext;
             if (event.f > 0) {
-                _trailCrossingTargetBases[0] = xFretMid(event.f);
+                _trailCrossingTargetBases[0] = xNote(event);
                 _trailCrossingTargetBaseCount = 1;
                 ctx.crossingTargetW = (NW * 0.85 + 0.4 * K)
                     * (rsPlusNotation ? RSPLUS_SUSTAIN_STROKE_SCALE : 1);
@@ -18287,7 +18304,7 @@
             const member = trailVisibilitySourceMemberAt(chartTime);
             const n = member?.view || ctx.note;
             if (member && member.slideSt === undefined) member.slideSt = slideTrailEnd(n);
-            let base = member && n.f > 0 ? xFretMid(n.f) : ctx.strandBaseX;
+            let base = member && n.f > 0 ? xNote(n) : ctx.strandBaseX;
             if (ctx.path && n.f === 0) {
                 trailOpenLayoutAt(n.t, _linkedTrailOpenOrigins.get(member.note),
                     _drawAnchors, _trailOpenLayoutScratch);
@@ -18407,7 +18424,7 @@
                 targetX = (_trailYieldTargetXBounds[0] + _trailYieldTargetXBounds[1]) * 0.5;
                 targetW = _trailYieldTargetXBounds[1] - _trailYieldTargetXBounds[0];
             } else {
-                targetX = xFretMid(event.f);
+                targetX = xNote(event);
                 targetW = NW * 1.1
                     * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1)
                     * (event.ghost === true ? 1.48 : 1);
@@ -19392,7 +19409,7 @@
             const ghostOuterL = Math.max(NW * 1.1, NH * 1.1);
             const ghostLblS = 0.7 * ghostOuterL * _textSizeMul * fretLabelScaleForFret(fretForScale);
             const ghostLblScaled = ghostLblS * growScale;
-            lb.scale.set(ghostLblScaled, ghostLblScaled, 1);
+            lb.scale.set(ghostLblScaled * (sprMat.map.image.width / sprMat.map.image.height), ghostLblScaled, 1);
             // Z=0 matches the projection frame plane exactly — avoids parallax
             // horizontal drift that appears when the camera is offset from the
             // fret centre (camera sits at curX+20*K and looks toward curX, so
@@ -19534,7 +19551,7 @@
             // first, get overdrawn by close geometry), close notes get a high
             // value (render last, appear on top). RENDER_ORDER_LAYER_STACK decides
             // the local stack for outline, core, technique symbols, and fret labels.
-            const xBase = n.f === 0 ? (openX !== undefined ? openX : curX) : xFretMid(n.f);
+            const xBase = n.f === 0 ? (openX !== undefined ? openX : curX) : xNote(n);
             // Slide-in-progress: glide the gem (and everything anchored to it —
             // outline, core, halo, technique markers) from its starting fret
             // toward the slide's end fret over the sustain, the same way
@@ -20039,8 +20056,20 @@
                 trailOrderRegisterUpcomingGem(
                     n, dt, trailYieldGemEvent, outline, core,
                 );
+                if (naturalNode(n) !== null) {
+                    const label = pTeachMarkLbl.get();
+                    const mat = txtMat(harmonicLabel(n), FRET_LABEL_GOLD_HEX, false, 'noteFret');
+                    _setLabelMap(label, mat);
+                    label.center.set(0.5, 0);
+                    const size = 7 * K * 0.8 * _textSizeMul * fretLabelScaleForFret(n.hn);
+                    const aspect = mat.map.image.width / mat.map.image.height;
+                    label.scale.set(size * aspect, size, 1);
+                    label.position.set(x, y + techniqueYNow + NH * 2.5, noteZ + K);
+                    label.renderOrder = renderOrderForLayerAtZ(noteZ, 'NOTE_FRET_LABEL');
+                    label.material.opacity = Math.min(1, Math.max(0, (AHEAD - dt) / .35));
+                }
                 // Fret digits on fretted (n.f > 0) flying notes deliberately
-                // omitted: the showFretOnNote setting and its UI helper text
+                // omitted except for the precise harmonic playing cue: the showFretOnNote setting and its UI helper text
                 // promise digits on the fretboard ghost only, never on the
                 // gems coming down the highway. The ghost path is at
                 // pGhostFretLbl below.
@@ -20683,7 +20712,7 @@
                     if (_showNum) {
                         _frameLabeledKeys.add(_flFrameKey);
                         const fretLabel  = pNoteFretLabel.get();
-                        const cachedMat  = txtMat(n.f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
+                        const cachedMat  = txtMat(harmonicLabel(n), FRET_LABEL_GOLD_HEX, false, 'noteFret');
                         _setIncomingFloorLabelMap(fretLabel, cachedMat, n.f, n.t);
                         fretLabel.position.set(x, labelY, noteZ);
                         fretLabel.renderOrder = renderOrderForLayerAtZ(noteZ,
@@ -20694,7 +20723,7 @@
                         // Same scale ramp as fret column markers: 2× base at max lookahead,
                         // converging to 1× at hit line.  Final size matches row labels.
                         const flS = 7.0 * K * (1 + 0.4 * Math.max(0, dt) / AHEAD) * _textSizeMul * fretLabelScaleForFret(n.f);
-                        fretLabel.scale.set(flS, flS, 1);
+                        fretLabel.scale.set(flS * (naturalNode(n) === null ? 1 : cachedMat.map.image.width / cachedMat.map.image.height), flS, 1);
                         fretLabel.material.opacity = alpha;
                     }
 
@@ -20742,7 +20771,7 @@
                     const _alpha2   = Math.min(1.0, (AHEAD - dt) / 0.35);
                     const _isArp2   = arpBounds !== null;
                     const fl2 = pNoteFretLabel.get();
-                    const cm2 = txtMat(n.f, FRET_LABEL_GOLD_HEX, false, 'noteFret');
+                    const cm2 = txtMat(harmonicLabel(n), FRET_LABEL_GOLD_HEX, false, 'noteFret');
                     _setIncomingFloorLabelMap(fl2, cm2, n.f, n.t);
                     fl2.position.set(x, _labelY2, noteZ);
                     fl2.renderOrder = renderOrderForLayerAtZ(noteZ,
@@ -20751,7 +20780,7 @@
                             : 'NOTE_FRET_LABEL'
                     );
                     const _flS2 = 7.0 * K * (1 + 0.4 * dt / AHEAD) * _textSizeMul * fretLabelScaleForFret(n.f);
-                    fl2.scale.set(_flS2, _flS2, 1);
+                    fl2.scale.set(_flS2 * (naturalNode(n) === null ? 1 : cm2.map.image.width / cm2.map.image.height), _flS2, 1);
                     fl2.material.opacity = _alpha2;
                 }
             }
@@ -20876,7 +20905,7 @@
                     // chord-hand style → show finger number (1–4) from the chord
                     // template; fall back to fret number when no finger data exists
                     // (GP imports, open strings, non-chord notes).
-                    const ghostFretDisplay = fromChord && fretNumberGhostScope === 'chords'
+                    const ghostFretDisplay = naturalNode(n) !== null ? harmonicLabel(n) : fromChord && fretNumberGhostScope === 'chords'
                         ? (_templateFingerForChordGhost(chordId, n.s) ?? _templateFretForChordGhost(chordId, n.s, n.f))
                         : fromChord
                             ? _templateFretForChordGhost(chordId, n.s, n.f)
@@ -20935,7 +20964,7 @@
                     proj.visible = true;
 
                     if (showFretOnNote && fretNumberGhostScope === 'all' && pGhostFretLbl) {
-                        drawGhostFretLabel(x, y, projRim, n.f, upcomingProgress, growScale, n.f);
+                        drawGhostFretLabel(x, y, projRim, harmonicLabel(n), upcomingProgress, growScale, n.f);
                     }
                 }
             }

@@ -39,7 +39,8 @@ function loadSlideOffsetHelpers() {
     assert.notEqual(start, -1);
     assert.notEqual(end, -1);
     return vm.runInNewContext(
-        'const fretMid = f => f * 10;\n'
+        'const fretMid = f => f * 10; const fretX = fretMid;\n'
+        + src.slice(src.indexOf('    function naturalNode('), src.indexOf('    /** World-space width'))
         + src.slice(start, end)
         + '\n({ slideTrailEnd, slideOffsetWorldX })',
     );

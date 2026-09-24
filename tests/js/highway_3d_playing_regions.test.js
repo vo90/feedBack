@@ -19,11 +19,12 @@ function extract(name) {
     return source.slice(start, end);
 }
 const helpers = ['isPlayableFret', 'isUnpitchedMute', 'isRenderableNote', 'usesUnfrettedPosition',
-    'slideTrailEnd', 'getChartAnchorAt', 'hwyBuildPlayingRegions'].map(extract).join('\n');
+    'naturalNode', 'notePositionX', 'slideTrailEnd', 'getChartAnchorAt', 'hwyBuildPlayingRegions'].map(extract).join('\n');
 function harness(logarithmic = false) {
     return new Function(`
         const NFRETS = 24, CHORD_ANCHOR_TIME_EPS = 0.000501;
         const fretWire = f => ${logarithmic ? '100 * (1 - Math.pow(2, -f / 12))' : 'f * 10'};
+        const fretX = fretWire;
         const fretMid = f => f > 0 ? (fretWire(f - 1) + fretWire(f)) / 2 : -2;
         ${helpers}
         return { build: hwyBuildPlayingRegions, at: getChartAnchorAt, fretMid };
