@@ -20507,21 +20507,22 @@
             if (scrape) {
                 const at = Math.max(n.t, Math.min(now, susEnd));
                 const sx = xBase + (_leftyCached ? -1 : 1) * pickScrapeOffset(n, at);
+                const cueScale = (1 + Math.max(0, Math.min(1, dt / AHEAD)) * 1.5) * _textSizeMul;
                 const mark = pTechPlane.get();
                 mark.material = _spriteMat2MeshMat(mark, txtMat('X', '#ffffff', false, 'technique'));
-                mark.scale.set(NH * 1.2, NH * 1.2, 1);
+                mark.scale.set(NH * 1.4 * cueScale, NH * 1.4 * cueScale, 1);
                 mark.position.set(sx, y, noteZ + K);
                 mark.rotation.set(0, 0, 0);
                 mark.renderOrder = renderOrderForLayerAtZ(noteZ, 'TECHNIQUE_MARKER');
                 mark.material.opacity = .95;
                 const label = pTechPlane.get();
-                const text = txtMat('PICK SCRAPE', '#ffffff', false, 'technique');
+                const text = txtMat('PICK SCRAPE', '#ffffff', true, 'technique');
                 label.material = _spriteMat2MeshMat(label, text);
-                const size = NH * .60 * _textSizeMul;
+                const size = NH * .95 * cueScale;
                 label.scale.set(size * text.map.image.width / text.map.image.height, size, 1);
-                label.position.set(sx, y + NH * 1.05, noteZ + K);
+                label.position.set(sx, y + bendVisualDirY(s) * NH * 2.0 * cueScale, noteZ + K);
                 label.rotation.set(0, 0, 0);
-                label.renderOrder = mark.renderOrder;
+                label.renderOrder = renderOrderForLayerAtZ(noteZ, 'NOTE_FRET_LABEL');
                 label.material.opacity = .9;
                 _registerIncomingLabelOccluder(mark, noteZ);
                 _registerIncomingLabelOccluder(label, noteZ);
