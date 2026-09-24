@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../../static/js/highway-draw.js'), 'utf8');
+const whammy = fs.readFileSync(path.join(__dirname, '../../static/js/whammy.js'), 'utf8').replace(/export /g,'');
 
 function fn(name) {
     const start = source.indexOf('function ' + name + '(');
@@ -17,6 +18,7 @@ function fn(name) {
 }
 
 const helpers = new Function(`
+    ${whammy}
     const isPickScrape = n => n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0;
     const VISIBLE_SECONDS = 3;
     const project = dt => dt < -.05000001 || dt > VISIBLE_SECONDS ? null : { y: dt, scale: 1 };

@@ -57,7 +57,7 @@ test('fractional clock cancellation cannot pull the faded endpoint back to the c
 
 test('2D scrape strings follow inversion and instrument size, with lefty applied only by the parent canvas',()=>{
     const draw=fs.readFileSync(path.join(__dirname,'../../static/js/highway-draw.js'),'utf8');
-    const block=draw.slice(draw.indexOf('export function drawPickScrape2D('),draw.indexOf('export function drawSustains(')).replace('export ','');
+    const block=draw.slice(draw.indexOf('export function drawPickScrape2D('),draw.indexOf('export function drawSustains(')).replace(/export /g,'');
     const render=new Function(`${geometry};const VISIBLE_SECONDS=5,project=()=>({y:.5,scale:1});
         const fillTextReadable=(hw,text,x,y)=>hw.labels.push({text,x,y});${block};return drawPickScrape2D;`)();
     function labels(inverted=false,lefty=false,stringCount=4) {

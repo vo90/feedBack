@@ -3642,8 +3642,9 @@
     }
     function harmonicContactLabel(n) {
         const h = n?.harmonic_target;
-        if (!h || !['artificial','tapped'].includes(h.kind) || !Number.isFinite(h.node) || !Number.isFinite(n.f)) return '';
-        return (h.kind === 'artificial' ? 'AH ' : 'TH ') + Number((n.f + h.node).toFixed(3));
+        const contact = h && ['artificial','tapped'].includes(h.kind) && Number.isFinite(h.node) && Number.isFinite(n.f)
+            ? (h.kind === 'artificial' ? 'AH ' : 'TH ') + Number((n.f + h.node).toFixed(3)) : '';
+        return [contact,n?.whammy?.version === 1 ? 'BAR' : ''].filter(Boolean).join(' · ');
     }
     /** World-space width of fret column (wires f−1 .. f); used to scale row markers past ~12. */
     function fretColumnWorldW(f) {
@@ -3908,6 +3909,21 @@
             if (cueEnd + 2e-7 > start && cueEnd + 2e-7 < end) out.push(cueEnd + 2e-7);
         }
     }
+    function appendBarContourTimes(n, start, end, out) {
+        if (n?.whammy?.version !== 1) return;
+        for (const segment of n.whammy.segments) {
+            const points=[segment.start,segment.end,...segment.curve.map(p=>p.t)];
+            for (const value of points) for (const delta of [-1e-7,0,1e-7]) {
+                const t=n.t+value+delta;
+                if(t>=start && t<=end)out.push(t);
+            }
+            if(segment.vibrato) {
+                const a=Math.max(start,n.t+segment.start),b=Math.min(end,n.t+segment.end);
+                const steps=Math.min(512,Math.ceil((b-a)*40));
+                for(let i=0;i<=steps;i++) if(steps>0)out.push(a+(b-a)*i/steps);
+            }
+        }
+    }
     function slideRibbonSampleTimes(n, start, duration, out) {
         out.length = 0;
         const end = start + duration;
@@ -3915,6 +3931,7 @@
         appendSlideOutContourTimes(n, start, end, out);
         appendSlideInContourTimes(n, start, end, out);
         appendPickScrapeContourTimes(n, start, end, out);
+        appendBarContourTimes(n, start, end, out);
         if (out.length > SLIDE_RIBBON_SAMPLES + 1) out.sort((a, b) => a - b);
         return out;
     }
@@ -3927,6 +3944,8 @@
         appendSlideInContourTimes(target, start, end, out);
         appendPickScrapeContourTimes(source, start, end, out);
         appendPickScrapeContourTimes(target, start, end, out);
+        appendBarContourTimes(source, start, end, out);
+        appendBarContourTimes(target, start, end, out);
         out.sort((a, b) => a - b);
         return out;
     }
@@ -16231,6 +16250,7 @@
                             _scrChordNote.hps = cn.hps;
                             _scrChordNote.harmonic_target = cn.harmonic_target;
                             _scrChordNote.harmonic_alias = cn.harmonic_alias;
+                            _scrChordNote.whammy = cn.whammy;
                             _scrChordNote.hp  = !!cn.hp;
                             _scrChordNote.pm  = !!cn.pm;
                             _scrChordNote.mt  = !!cn.mt;
@@ -17899,6 +17919,7 @@
                 Number(n.bn) > 0
                 || (Array.isArray(n.bnv) && n.bnv.length > 0)
                 || noteHasVibrato(n)
+                || n.whammy?.version === 1
                 || n.tr
                 || slideOutMarks(n).length > 0
                 || slideInMarks(n).length > 0
@@ -17911,6 +17932,7 @@
             // but these cues live on individual gems and must approach with them.
             return !!(n.ghost === true || n.hm || n.hp || n.ho || n.po || n.tp || n.ac || n.slp || n.plk
                 || ['artificial','tapped'].includes(n.harmonic_target?.kind)
+                || n.whammy?.version === 1
                 || (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) || noteHasSlideOutCue(n)
                 || slideInMarks(n).length > 0
                 || (Number(n.bn) || 0) > 0
@@ -18174,6 +18196,7 @@
         }
 
         function prebendOffsetWorld(n) {
+            if (n?.whammy?.version === 1) return techniqueYOffsetWorld(n,n.t);
             if (!(n?.sus > 0) || !Array.isArray(n.bnv)) return 0;
             // Head, attached markers and ribbon sample the same resolved start.
             return bendVisualDirY(n.s) * BEND_HALFSTEP_WORLD_Y * bendSemisAtTime(n, n.t);
@@ -18183,8 +18206,15 @@
             if (!(n?.sus > 0)) return 0;
             const bendSemi = bendSemisAtTime(n, chartTime);
             const vibratoSemi = vibratoSemisAtTime(n, chartTime);
-            if (bendSemi === 0 && vibratoSemi === 0) return 0;
-            return bendVisualDirY(n.s) * BEND_HALFSTEP_WORLD_Y * (bendSemi + vibratoSemi);
+            const barSemi = n.whammy?.version === 1 ? (window.feedBackWhammy?.visual(n,chartTime-n.t) || 0) : 0;
+            // The source performer writes bar and finger-bend pitch events
+            // separately, not additively. Show the bar contour while it is
+            // active; retain the existing bend cue without inventing a sum.
+            if (n.whammy?.version === 1 && window.feedBackWhammy?.segment(n,chartTime-n.t)?.curve?.length) {
+                return BEND_HALFSTEP_WORLD_Y * barSemi;
+            }
+            if (bendSemi === 0 && vibratoSemi === 0 && barSemi === 0) return 0;
+            return BEND_HALFSTEP_WORLD_Y * (bendVisualDirY(n.s) * (bendSemi + vibratoSemi) + barSemi);
         }
 
         function sustainMotionWidth(trailW) {

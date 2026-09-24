@@ -8,6 +8,7 @@ import logging
 import math
 import xml.etree.ElementTree as ET
 from lib.harmonic_target import validate_target, validate_alias
+from lib.whammy import validate_whammy
 
 log = logging.getLogger("feedBack.lib.song")
 
@@ -86,6 +87,7 @@ class Note:
     # This is one note; its contact cue is not another fret/attack.
     harmonic_target: dict | None = None
     harmonic_alias: str | None = None
+    whammy: dict | None = None
 
 
 @dataclass
@@ -285,6 +287,11 @@ def note_to_wire(n: Note) -> dict:
         out["harmonic_target"] = dict(n.harmonic_target)
     if n.harmonic_alias is not None:
         out["harmonic_alias"] = n.harmonic_alias
+    if n.whammy is not None:
+        # Its owning duration must use the same precision as the expression.
+        out['t'] = round(n.time, 6)
+        out['sus'] = round(n.sustain, 6)
+        out['whammy'] = validate_whammy({'whammy': n.whammy, 'sus': n.sustain})
     if n.ghost is True:
         out["ghost"] = True
     if n.fret_hand_mute:
@@ -668,6 +675,7 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         harmonic_pitch=d["hps"] if precise else None,
         harmonic_target=target,
         harmonic_alias=alias,
+        whammy=validate_whammy(d),
         palm_mute=bool(d.get("pm", False)),
         mute=bool(d.get("mt", False)),
         vibrato=bool(d.get("vb", d.get("vibrato", False))),

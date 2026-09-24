@@ -2,6 +2,8 @@
  * Canvas-based note highway renderer.
  * Receives note data via WebSocket, renders on requestAnimationFrame.
  */
+import { whammyApi } from './js/whammy.js';
+window.feedBackWhammy = whammyApi;
 import {
     BG,
     CHAIN_GAP_THRESHOLD,

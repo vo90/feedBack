@@ -24,6 +24,7 @@ import {
     _paintGemGlow, _noteState, fillTextReadable, fretX,
 } from './highway-state-primitives.js';
 import { isPickScrape, scrapeProgress, scrapePosition, scrapeFade } from './pick-scrapes.js';
+import { hasBar, barVisual, barBoundaries } from './whammy.js';
 import {
     _shimmerNoise, bendToneLabel, bnvNormalizedPoints, chordHarmonyLabels, project, roundRect,
     teachingDegreeLabel, teachingFingerLabel,
@@ -43,8 +44,9 @@ function playingFret2D(n) {
 
 export function harmonicContactLabel(n) {
     const h = n?.harmonic_target;
-    if (!h || !['artificial','tapped'].includes(h.kind) || !Number.isFinite(h.node) || !Number.isFinite(n.f)) return '';
-    return (h.kind === 'artificial' ? 'AH ' : 'TH ') + Number((n.f + h.node).toFixed(3));
+    const contact = h && ['artificial','tapped'].includes(h.kind) && Number.isFinite(h.node) && Number.isFinite(n.f)
+        ? (h.kind === 'artificial' ? 'AH ' : 'TH ') + Number((n.f + h.node).toFixed(3)) : '';
+    return [contact, n?.whammy?.version === 1 ? 'BAR' : ''].filter(Boolean).join(' · ');
 }
 
 export function _measureLyricText(hwState, c, fontSize, text) {
@@ -603,6 +605,34 @@ export function drawPickScrape2D(hwState, W, H, n, onset = n.t, sharedLabels = n
     ctx.restore();
 }
 
+export function drawBarSustain2D(hwState, W, H, n, onset = n.t) {
+    const now=hwState.currentTime, start=Math.max(onset,now), end=Math.min(onset+n.sus,now+VISIBLE_SECONDS);
+    if (!(end>start)) return;
+    const times=[start,end,...barBoundaries(n).map(t=>onset+t).filter(t=>t>start&&t<end)];
+    const count=Math.min(192,Math.max(8,Math.ceil((end-start)*40)));
+    for(let i=1;i<count;i++) times.push(start+(end-start)*i/count);
+    times.sort((a,b)=>a-b);
+    const ctx=hwState.ctx;
+    ctx.save(); ctx.strokeStyle=hwState.STRING_COLORS[n.s] || '#bbb'; ctx.lineJoin='round'; ctx.lineCap='round';
+    let previous=null;
+    for(const time of times) {
+        const projected=project(time-now);
+        if(!projected) continue;
+        const baseX=n.f===0||n.f===127 ? W/2 : fretX(hwState,playingFret2D(n),projected.scale,W);
+        // Sway around the fixed-fret centreline. A displacement along the
+        // time axis alone is invisible on open-string/vertical trails.
+        const x=baseX+barVisual(n,time-onset)*9*projected.scale*(H/900);
+        const y=projected.y*H;
+        if(previous) {
+            ctx.globalAlpha=.65;
+            ctx.lineWidth=Math.max(2,6*projected.scale);
+            ctx.beginPath();ctx.moveTo(previous.x,previous.y);ctx.lineTo(x,y);ctx.stroke();
+        }
+        previous={x,y};
+    }
+    ctx.restore();
+}
+
 export function drawSustains(hwState, W, H) {
     const scrapeLabels = new Map();
     // Same master-difficulty fallback as drawNotes/drawChords —
@@ -615,6 +645,11 @@ export function drawSustains(hwState, W, H) {
         if (isPickScrape(n)) { drawPickScrape2D(hwState, W, H, n, n.t, scrapeLabels); continue; }
         // Incoming cues precede the attack and also exist without sustain.
         drawSlideInRibbon2D(hwState, W, H, n);
+        if (hasBar(n)) {
+            drawBarSustain2D(hwState,W,H,n);
+            drawSlideOutRibbon2D(hwState,W,H,n);
+            continue;
+        }
         if (n.sus <= 0.01) continue;
         const end = n.t + n.sus;
         if (end < hwState.currentTime || n.t > hwState.currentTime + VISIBLE_SECONDS) continue;
@@ -713,6 +748,7 @@ export function drawSustains(hwState, W, H) {
     for (const chord of chords || []) for (const n of chord.notes || []) {
         if (isPickScrape(n)) { drawPickScrape2D(hwState, W, H, n, chord.t, scrapeLabels); continue; }
         drawSlideInRibbon2D(hwState, W, H, n, chord.t);
+        if (hasBar(n)) drawBarSustain2D(hwState,W,H,n,chord.t);
         drawSlideOutRibbon2D(hwState, W, H, n, chord.t);
     }
     const ctx = hwState.ctx;
