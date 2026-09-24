@@ -200,6 +200,15 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     const accent = opts?.ac || false;
     const sz = Math.max(12, 80 * scale * (H / 900));
     const half = sz / 2;
+    // Contact instructions must not disappear when adaptive quality reduces
+    // the backing store. Gate them by displayed size; keep their font/gaps in
+    // backing pixels. Read layout only for notes carrying a contact instruction.
+    const contactPixelRatio = contactLabel && hwState.canvas?.clientHeight > 0
+        ? H / hwState.canvas.clientHeight : 1;
+    const showContact = contactLabel && 80 * scale * (H / 900) / contactPixelRatio >= 14;
+    const contactFontSize = Math.max(9 * contactPixelRatio, sz * .28);
+    const contactGap = 3 * contactPixelRatio;
+    const contactMuteOffset = palmMute && sz >= 14 ? Math.max(8, sz * .25) + 3 : 0;
     // When lit, bump the body one step brighter and the backing-glow
     // one step up from STRING_DIM, so even shapes that don't get the
     // _paintGemGlow halo (the open-string bar) read as "lit".
@@ -244,15 +253,14 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
         // centered bar doesn't visually convey. Matches the sz<14 gate
         // the fretted path uses so labels don't render on tiny bars.
         // Fixes #21.
+        if (showContact) {
+            hwState.ctx.fillStyle = '#fff';
+            hwState.ctx.font = `bold ${contactFontSize}px sans-serif`;
+            hwState.ctx.textAlign = 'center';
+            hwState.ctx.textBaseline = 'top';
+            fillTextReadable(hwState, contactLabel, W/2, y + barH/2 + contactGap + contactMuteOffset);
+        }
         if (sz >= 14) {
-            if (contactLabel) {
-                hwState.ctx.fillStyle = '#fff';
-                hwState.ctx.font = `bold ${Math.max(9, sz * 0.28) | 0}px sans-serif`;
-                hwState.ctx.textAlign = 'center';
-                hwState.ctx.textBaseline = 'top';
-                fillTextReadable(hwState, contactLabel, W/2, y + barH/2 + 3
-                    + (palmMute ? Math.max(8, sz * .25) + 3 : 0));
-            }
             // H / P / T above
             if (hammerOn || pullOff || tap) {
                 const label = tap ? 'T' : (hammerOn ? 'H' : 'P');
@@ -352,12 +360,11 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     hwState.ctx.textAlign = 'center';
     hwState.ctx.textBaseline = 'middle';
     fillTextReadable(hwState, noteFretLabel(fret, opts), x, y);
-    if (contactLabel && sz >= 14) {
+    if (showContact) {
         hwState.ctx.fillStyle = '#fff';
-        hwState.ctx.font = `bold ${Math.max(9, sz * 0.28) | 0}px sans-serif`;
+        hwState.ctx.font = `bold ${contactFontSize}px sans-serif`;
         hwState.ctx.textBaseline = 'top';
-        fillTextReadable(hwState, contactLabel, x, y + half + 3
-            + (palmMute ? Math.max(8, sz * .25) + 3 : 0));
+        fillTextReadable(hwState, contactLabel, x, y + half + contactGap + contactMuteOffset);
     }
 
     // Bend notation

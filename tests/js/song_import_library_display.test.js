@@ -53,6 +53,33 @@ test('anchorless bounds include visible and held notes, chord targets and templa
     assert.equal(maxNoteFretInWindow([{ t: 0, f: 24 }], [], [], 10, 4), 0);
 });
 
+test('2D contact instructions survive reduced resolution without becoming full-size text', () => {
+    const labels = [];
+    const ctx = new Proxy({}, { get: (o, key) => o[key] || (() => {}), set: (o, k, v) => (o[k] = v, true) });
+    const draw = new Function('bendToneLabel', 'noteFretLabel', 'bnvNormalizedPoints', 'roundRect', '_paintGemGlow', 'fillTextReadable',
+        extract(drawSource, 'harmonicContactLabel') + extract(drawSource, 'drawNote') + '; return drawNote;')(
+        bendToneLabel, load(geometry, 'noteFretLabel'), load(geometry, 'bnvNormalizedPoints'), () => {}, () => {},
+        (_state, text, x, y) => labels.push({ text, font: ctx.font, x, y }));
+    const state = { ctx, canvas: { clientHeight: 900 }, STRING_COLORS: ['#f00'], STRING_DIM: ['#500'], STRING_BRIGHT: ['#f88'] };
+    for (const ratio of [1, .5, .25]) {
+        for (const [fret, chord, kind, expected] of [[7, false, 'artificial', 'AH 19'], [0, false, 'tapped', 'TH 12'], [17, true, 'artificial', 'AH 31.7']]) {
+            labels.length = 0;
+            draw(state, 1000 * ratio, 900 * ratio, 500 * ratio, 500 * ratio, .45, 0, fret,
+                { chord, pm: true, harmonic_target: { kind, node: fret === 17 ? 14.7 : 12 } }, null);
+            const cue = labels.find(l => l.text === expected);
+            assert.ok(cue, `${expected} at ${ratio}`);
+            const pixels = Number(/([\d.]+)px/.exec(cue.font)[1]);
+            assert.ok(pixels / ratio >= 9 && pixels / ratio < 15, 'secondary text stays compact');
+            const pm = labels.find(l => l.text === 'PM');
+            if (pm) assert.ok(cue.y > pm.y + Number(/([\d.]+)px/.exec(pm.font)[1]));
+        }
+        labels.length = 0;
+        draw(state, 1000 * ratio, 900 * ratio, 500 * ratio, 500 * ratio, .1, 0, 7,
+            { harmonic_target: { kind: 'artificial', node: 12 } }, null);
+        assert.ok(!labels.some(l => l.text === 'AH 19'), 'genuinely distant instructions remain culled');
+    }
+});
+
 test('anchorless bounds do not treat unpitched mute sentinels as fret 127', () => {
     assert.equal(maxNoteFretInWindow([{ t: 10, f: 127, mt: true }, { t: 11, f: 9 }],
         [{ t: 10, id: 0 }], [{ frets: [-1, 0, 127] }], 10, 4), 9);
