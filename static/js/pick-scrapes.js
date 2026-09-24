@@ -5,7 +5,7 @@ export function isPickScrape(n) {
 }
 
 export function scrapeAt(n, relativeTime) {
-    return n.pick_scrape_marks.find(m => relativeTime >= m.start && relativeTime <= m.end);
+    return n.pick_scrape_marks.find(m => relativeTime >= m.start - 1e-9 && relativeTime <= m.end + 1e-9);
 }
 
 export function scrapeProgress(mark, relativeTime) {

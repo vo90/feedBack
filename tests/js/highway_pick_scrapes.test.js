@@ -49,3 +49,8 @@ test('a tied reversal is continuous, does not invent an attack and remains deter
     r.sustainTrailCenterXAt(n,0,11.8,null,2);
     assert.equal(r.sustainTrailCenterXAt(n,0,10.7,null,2),before);
 });
+
+test('fractional clock cancellation cannot pull the faded endpoint back to the centre',()=>{
+    const n=make('up');n.t=241.354;n.sus=.21875;n.pick_scrape_marks[0].end=n.sus;
+    assert.ok(Math.abs(renderer().sustainTrailCenterXAt(n,0,n.t+n.sus,null,2)-8)<1e-7);
+});
