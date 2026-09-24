@@ -56,6 +56,7 @@ export function bendToneLabel(semitones) {
 export function maxNoteFretInWindow(notes, chords, templates, time, ahead) {
     let max = 0;
     const collect = (note, onset) => {
+        if (note?.mt === true && Array.isArray(note.pick_scrape_marks) && note.pick_scrape_marks.length > 0) return;
         if (onset + (Number(note.sus) || 0) < time - 2) return;
         for (const fret of [note.f, note.sl, note.slu]) {
             // 127 is an imported unpitched mute sentinel, not a fret to frame.

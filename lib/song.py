@@ -71,6 +71,7 @@ class Note:
     # []) is authoritative over the older direction-only scalar.
     slide_out: str | None = None
     slide_out_marks: list | None = None
+    pick_scrape_marks: list | None = None
     # A slide-in knows only its destination onset, relative to this attack.
     # Tied segments may add later endpoints without adding another attack.
     # A present array (including []) is authoritative; no start is inferred.
@@ -316,6 +317,12 @@ def note_to_wire(n: Note) -> dict:
         out["slide_out"] = n.slide_out
     if n.slide_out_marks is not None:
         out["slide_out_marks"] = _sanitize_slide_out_marks(n.slide_out_marks, n.sustain)
+    if n.pick_scrape_marks is not None:
+        # Interval endpoints use microsecond precision. Retain the containing
+        # duration too, so the wire's ordinary millisecond rounding cannot
+        # make a valid endpoint fall outside its own event on reload.
+        out["sus"] = round(n.sustain, 6)
+        out["pick_scrape_marks"] = _validate_pick_scrapes(n.pick_scrape_marks, n.sustain, n.mute)
     if n.slide_in_marks is not None:
         out["slide_in_marks"] = _sanitize_slide_in_marks(n.slide_in_marks, n.sustain)
     return out
@@ -607,6 +614,25 @@ def _valid_natural_target(node, pitch):
             and type(pitch) is int and 1 <= pitch <= 48)
 
 
+def _validate_pick_scrapes(raw, sustain, muted):
+    """A typed unpitched gesture, never a generic scoring opt-out."""
+    if muted is not True or not isinstance(raw, list) or not raw or not math.isfinite(sustain) or sustain <= 0:
+        raise ValueError("Pick scrapes require a muted note and nonempty intervals")
+    previous = 0.0
+    clean = []
+    for mark in raw:
+        if (not isinstance(mark, dict) or set(mark) != {"direction", "start", "end"}
+                or mark["direction"] not in ("up", "down")
+                or any(type(mark[k]) not in (int, float) or not math.isfinite(mark[k]) for k in ("start", "end"))):
+            raise ValueError("Invalid pick-scrape interval")
+        start, end = mark["start"], mark["end"]
+        if start < previous or end <= start or end > sustain + .0000011:
+            raise ValueError("Pick-scrape intervals must be ordered within the sustain")
+        clean.append(dict(mark))
+        previous = end
+    return clean
+
+
 def note_from_wire(d: dict, time: float | None = None) -> Note:
     precise = d.get("hm") is True and _valid_natural_target(d.get("hn"), d.get("hps"))
     if ("hn" in d or "hps" in d) and not precise:
@@ -654,6 +680,8 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         slide_out=d.get("slide_out") if d.get("slide_out") in ("up", "down") else None,
         slide_out_marks=(_sanitize_slide_out_marks(d["slide_out_marks"], float(d.get("sus", 0)))
                          if "slide_out_marks" in d else None),
+        pick_scrape_marks=(_validate_pick_scrapes(d["pick_scrape_marks"], float(d.get("sus", 0)), d.get("mt"))
+                           if "pick_scrape_marks" in d else None),
         slide_in_marks=(_sanitize_slide_in_marks(d["slide_in_marks"], float(d.get("sus", 0)))
                         if "slide_in_marks" in d else None),
     )

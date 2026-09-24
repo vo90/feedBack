@@ -17,6 +17,7 @@ function fn(name) {
 }
 
 const helpers = new Function(`
+    const isPickScrape = n => n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0;
     const VISIBLE_SECONDS = 3;
     const project = dt => dt < -.05000001 || dt > VISIBLE_SECONDS ? null : { y: dt, scale: 1 };
     const fretX = (state, f) => f * 10;

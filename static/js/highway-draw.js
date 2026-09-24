@@ -23,6 +23,7 @@
 import {
     _paintGemGlow, _noteState, fillTextReadable, fretX,
 } from './highway-state-primitives.js';
+import { isPickScrape, scrapeProgress, scrapePosition, scrapeFade } from './pick-scrapes.js';
 import {
     _shimmerNoise, bendToneLabel, bnvNormalizedPoints, chordHarmonyLabels, project, roundRect,
     teachingDegreeLabel, teachingFingerLabel,
@@ -513,6 +514,48 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     }
 }
 
+export function drawPickScrape2D(hwState, W, H, n, onset = n.t) {
+    const now = hwState.currentTime;
+    if (onset > now + VISIBLE_SECONDS || onset + n.sus < now) return;
+    const ctx = hwState.ctx;
+    const mirror = hwState._lefty ? -1 : 1;
+    const point = (mark, time) => {
+        const p = project(Math.max(0, time - now));
+        if (!p) return null;
+        const fraction = scrapeProgress(mark, time - onset);
+        return { x: W / 2 + mirror * scrapePosition(mark, fraction) * W * .045 * p.scale,
+            y: p.y * H + (n.s - 2.5) * 11 * p.scale, scale: p.scale,
+            alpha: scrapeFade(n, mark, fraction) };
+    };
+    ctx.save();
+    ctx.strokeStyle = hwState.STRING_COLORS[n.s] || '#ccc';
+    ctx.lineJoin = 'bevel';
+    for (const mark of n.pick_scrape_marks) {
+        const a = Math.max(onset + mark.start, now), b = Math.min(onset + mark.end, now + VISIBLE_SECONDS);
+        if (b <= a) continue;
+        let previous = point(mark, a);
+        for (let i = 1; i <= 72; i++) {
+            const next = point(mark, a + (b - a) * i / 72);
+            if (previous && next) {
+                ctx.globalAlpha = next.alpha;
+                ctx.lineWidth = Math.max(1, 5 * next.scale * (.35 + .65 * next.alpha));
+                ctx.beginPath(); ctx.moveTo(previous.x, previous.y); ctx.lineTo(next.x, next.y); ctx.stroke();
+            }
+            previous = next;
+        }
+    }
+    const mark = n.pick_scrape_marks.find(m => onset + m.end >= now);
+    const head = mark && point(mark, Math.max(onset + mark.start, now));
+    if (head) {
+        ctx.globalAlpha = .95; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
+        ctx.font = `bold ${Math.max(10, 22 * head.scale)}px sans-serif`;
+        fillTextReadable(hwState, 'X', head.x, head.y);
+        ctx.font = `bold ${Math.max(8, 11 * head.scale)}px sans-serif`;
+        fillTextReadable(hwState, 'PICK SCRAPE', head.x, head.y - Math.max(14, 22 * head.scale));
+    }
+    ctx.restore();
+}
+
 export function drawSustains(hwState, W, H) {
     // Same master-difficulty fallback as drawNotes/drawChords —
     // without this, sustain bars for filtered-out notes would
@@ -521,6 +564,7 @@ export function drawSustains(hwState, W, H) {
     const src = hwState._xfNotes !== null ? hwState._xfNotes
         : hwState._filteredNotes !== null ? hwState._filteredNotes : hwState.notes;
     for (const n of src) {
+        if (isPickScrape(n)) { drawPickScrape2D(hwState, W, H, n); continue; }
         // Incoming cues precede the attack and also exist without sustain.
         drawSlideInRibbon2D(hwState, W, H, n);
         if (n.sus <= 0.01) continue;
@@ -619,6 +663,7 @@ export function drawSustains(hwState, W, H) {
     const chords = hwState._xfChords !== null ? hwState._xfChords
         : hwState._filteredChords !== null ? hwState._filteredChords : hwState.chords;
     for (const chord of chords || []) for (const n of chord.notes || []) {
+        if (isPickScrape(n)) { drawPickScrape2D(hwState, W, H, n, chord.t); continue; }
         drawSlideInRibbon2D(hwState, W, H, n, chord.t);
         drawSlideOutRibbon2D(hwState, W, H, n, chord.t);
     }
@@ -646,6 +691,7 @@ export function drawNotes(hwState, W, H) {
 
     for (let i = hi - 1; i >= lo; i--) {
         const n = src[i];
+        if (isPickScrape(n)) continue;
         let tOff = n.t - hwState.currentTime;
 
         // Hold sustained notes at now line
@@ -798,6 +844,7 @@ export function drawChords(hwState, W, H) {
 
         const info = hwState._chordRenderInfo.get(ch);
         const { isFull, baseFret, sortedNotes: sorted, nonZeroNotes, nonZeroFrets, allMuted, hasMultipleNotes } = info;
+        if (!sorted.length) continue;
 
         const sz = Math.max(10, 28 * p.scale * (H / 900));
         const spread = sz * 0.85;
@@ -1336,7 +1383,7 @@ export function _ensureChordRenderCache(hwState, src) {
         const ch = src[i];
         const info = hwState._chordRenderInfo.get(ch);
         const { isOpen } = getChordTemplateInfo(ch.id, effTemplates);
-        const sortedNotes = [...ch.notes].sort((a, b) => hwState._inverted ? b.s - a.s : a.s - b.s);
+        const sortedNotes = ch.notes.filter(cn => !isPickScrape(cn)).sort((a, b) => hwState._inverted ? b.s - a.s : a.s - b.s);
         const nonZero = sortedNotes.filter(cn => !isOpen(cn) && !(cn.f === 127 && cn.mt));
         const nonZeroFrets = nonZero.map(cn => cn.f);
         if (nonZero.length >= 1) {
@@ -1396,7 +1443,7 @@ export function _updateFretLinePreview(hwState, src, lo, hi) {
             bestChordTime = ch.t;
             activeChord = ch;
             const { isOpen } = getChordTemplateInfo(ch.id, _effChordTemplates(hwState));
-            const nonZero = ch.notes.filter(cn => !isOpen(cn) && !(cn.f === 127 && cn.mt));
+            const nonZero = ch.notes.filter(cn => !isPickScrape(cn) && !isOpen(cn) && !(cn.f === 127 && cn.mt));
             activeNotesOnFret = nonZero.length >= 1 ? nonZero.map(cn => ({ s: cn.s, f: cn.f })) : [];
         }
     }
@@ -1408,7 +1455,7 @@ export function _updateFretLinePreview(hwState, src, lo, hi) {
             if (!p) continue;
             activeChord = ch;
             const { isOpen } = getChordTemplateInfo(ch.id, _effChordTemplates(hwState));
-            const nonZero = ch.notes.filter(cn => !isOpen(cn) && !(cn.f === 127 && cn.mt));
+            const nonZero = ch.notes.filter(cn => !isPickScrape(cn) && !isOpen(cn) && !(cn.f === 127 && cn.mt));
             activeNotesOnFret = nonZero.length >= 1 ? nonZero.map(cn => ({ s: cn.s, f: cn.f })) : [];
             break;
         }

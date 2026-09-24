@@ -1486,6 +1486,7 @@
         const add = (
             t, s, f, sustain, accent = false, chordMeta = null, pathNote = null, sourceChord = null,
         ) => {
+            if (pathNote?.mt === true && pathNote.pick_scrape_marks?.length) f = 0;
             if (!Number.isFinite(t) || !Number.isInteger(s) || s < 0 || s >= stringCount) return;
             if (!Number.isInteger(f) || f < 0 || f > NFRETS) return;
             const duration = Number.isFinite(sustain) ? Math.max(0, sustain) : 0;
@@ -1511,6 +1512,8 @@
                 slu: Number.isFinite(pathNote?.slu) ? pathNote.slu : -1,
                 slide_out_marks: pathNote?.slide_out_marks,
                 slide_in_marks: pathNote?.slide_in_marks,
+                pick_scrape_marks: pathNote?.pick_scrape_marks,
+                mt: pathNote?.mt === true,
                 tr: !!pathNote?.tr,
                 sus: duration,
             });
@@ -1532,7 +1535,7 @@
                     if (!Number.isInteger(n?.s) || n.s < 0 || n.s >= stringCount
                         || !Number.isInteger(n?.f) || n.f < 0 || n.f > NFRETS) continue;
                     strings.add(n.s);
-                    if (n.f > 0) {
+                    if (n.f > 0 && !n.pick_scrape_marks?.length) {
                         minF = Math.min(minF, n.f);
                         maxF = Math.max(maxF, n.f);
                     }
@@ -2530,7 +2533,7 @@
                 if (!Number.isInteger(note?.s) || note.s < 0 || note.s >= stringCount
                     || !Number.isInteger(note?.f) || note.f < 0 || note.f > NFRETS) continue;
                 strings.add(note.s);
-                if (note.f > 0) { minF = Math.min(minF, note.f); maxF = Math.max(maxF, note.f); }
+                if (note.f > 0 && !note.pick_scrape_marks?.length) { minF = Math.min(minF, note.f); maxF = Math.max(maxF, note.f); }
             }
             const meta = { size: strings.size, minF, maxF };
             for (const note of chord.notes || []) add(note, meta);
@@ -2812,7 +2815,7 @@
     // sentinel. Keep the strike, using the open/muted slab in its anchor lane;
     // never interpret the sentinel as a fret or clamp it to a playable pitch.
     function isUnpitchedMute(n) {
-        return n.f === 127 && !!n.mt;
+        return (n.f === 127 || (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0)) && !!n.mt;
     }
 
     function isRenderableNote(n) {
@@ -2850,7 +2853,7 @@
         let first = Infinity;
 
         const validFretted = n => n
-            && isPlayableFret(n.f) && n.f > 0
+            && isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0)
             && Number.isInteger(n.s)
             && n.s >= 0
             && n.s < nStrings;
@@ -3281,7 +3284,7 @@
         const positionAnchors = (anchors || []).filter(a => a && Number.isFinite(a.time))
             .slice().sort((a, b) => a.time - b.time);
         const boundsAt = (members, t) => {
-            const fretted = members.filter(n => n.f > 0);
+            const fretted = members.filter(n => n.f > 0 && !isUnpitchedMute(n));
             const anchor = getChartAnchorAt(positionAnchors, t + eps);
             const anchored = laneBoundsFromAnchor(anchor);
             if (!fretted.length) return anchored || chordFallbackLaneBounds(1, 4);
@@ -3698,6 +3701,33 @@
     const SLIDE_OUT_CUE_SECONDS = 0.22;
     const SLIDE_OUT_TIP_SCALE = 0.72;
     const SLIDE_OUT_EMPTY_MARKS = Object.freeze([]);
+    function isPickScrape(n) {
+        return n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0;
+    }
+    function pickScrapeOffset(n, chartTime) {
+        const mark = scrapeGeometry.scrapeAt(n, chartTime - n.t);
+        return mark ? NW * 1.6 * scrapeGeometry.scrapePosition(mark,
+            scrapeGeometry.scrapeProgress(mark, chartTime - n.t)) : 0;
+    }
+    function pickScrapeAlpha(n, chartTime) {
+        const mark = scrapeGeometry.scrapeAt(n, chartTime - n.t);
+        return mark ? scrapeGeometry.scrapeFade(n, mark,
+            scrapeGeometry.scrapeProgress(mark, chartTime - n.t)) : 0;
+    }
+    function appendPickScrapeContourTimes(n, start, end, out) {
+        if (!(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0)) return;
+        for (const mark of n.pick_scrape_marks) {
+            // Stable samples follow chart time, not frame time, so the rough
+            // edge moves with the music rather than flickering each frame.
+            for (let i = 0; i <= 72; i++) {
+                const time = n.t + mark.start + (mark.end - mark.start) * i / 72;
+                if (time > start && time < end) out.push(time);
+            }
+            for (const time of [n.t + mark.start - 1e-7, n.t + mark.end + 1e-7]) {
+                if (time > start && time < end) out.push(time);
+            }
+        }
+    }
     const _slideOutMarkCache = new WeakMap();
     // A destination onset is authored; the short preceding flourish is only
     // a display convention. No start fret, played duration or attack is added.
@@ -3879,6 +3909,7 @@
         for (let i = 0; i <= SLIDE_RIBBON_SAMPLES; i++) out.push(start + duration * i / SLIDE_RIBBON_SAMPLES);
         appendSlideOutContourTimes(n, start, end, out);
         appendSlideInContourTimes(n, start, end, out);
+        appendPickScrapeContourTimes(n, start, end, out);
         if (out.length > SLIDE_RIBBON_SAMPLES + 1) out.sort((a, b) => a - b);
         return out;
     }
@@ -3889,6 +3920,8 @@
         appendSlideOutContourTimes(target, start, end, out);
         appendSlideInContourTimes(source, start, end, out);
         appendSlideInContourTimes(target, start, end, out);
+        appendPickScrapeContourTimes(source, start, end, out);
+        appendPickScrapeContourTimes(target, start, end, out);
         out.sort((a, b) => a - b);
         return out;
     }
@@ -3946,17 +3979,18 @@
 
     let T = null;
     let threeLoadPromise = null;
+    let scrapeGeometry = null;
     function loadThree() {
         if (!threeLoadPromise) {
-            threeLoadPromise = import(THREE_URL)
+            threeLoadPromise = Promise.all([import('/static/js/pick-scrapes.js').then(m => { scrapeGeometry = m; }),
+                import(THREE_URL).catch(() => import(THREE_CDN))])
+                .then(([, three]) => three)
                 .then(mod => { T = mod; return mod; })
-                .catch(() => import(THREE_CDN)
-                    .then(mod => { T = mod; return mod; })
-                    .catch(e => {
-                        console.error('[3D-Hwy] Three.js load failed:', e);
-                        threeLoadPromise = null;
-                        throw e;
-                    }));
+                .catch(e => {
+                    console.error('[3D-Hwy] Renderer dependencies failed:', e);
+                    threeLoadPromise = null;
+                    throw e;
+                });
         }
         return threeLoadPromise;
     }
@@ -12958,7 +12992,7 @@
                 for (; i < notes.length; i++) {
                     const n = notes[i];
                     if (n.t > tEnd) break;
-                    if (!validString(n.s) || !isRenderableNote(n)) continue;
+                    if (!validString(n.s) || !isRenderableNote(n) || isUnpitchedMute(n)) continue;
                     consider(n.f);
                 }
             }
@@ -12970,7 +13004,7 @@
                     if (!ch.notes) continue;
                     for (const cn of ch.notes) {
                         if (!validString(cn.s) || !isRenderableNote(cn)) continue;
-                        consider(cn.f);
+                        if (!isUnpitchedMute(cn)) consider(cn.f);
                     }
                 }
             }
@@ -13483,7 +13517,7 @@
             for (let i = 0; i < members.length; i++) {
                 const cn = members[i];
                 if (!validString(cn.s)) continue;
-                if (!isRenderableNote(cn)) shape.delete(cn.s);
+                if (!isRenderableNote(cn) || cn.pick_scrape_marks?.length) shape.delete(cn.s);
                 else shape.set(cn.s, usesUnfrettedPosition(cn) ? 0 : cn.f);
             }
             _chordShapeCache.set(ch, shape);
@@ -13801,7 +13835,7 @@
                                     if (_cn.t < tw.tLo) continue;
                                     if (!validString(_cn.s)) continue;
                                     if (shape.get(_cn.s) !== _cn.f) continue;
-                                    if (isPlayableFret(_cn.f) && _cn.f > 0 && !_fSeen.has(_cn.s)) {
+                                    if (isPlayableFret(_cn.f) && _cn.f > 0 && !(_cn?.mt === true && Array.isArray(_cn.pick_scrape_marks) && _cn.pick_scrape_marks.length > 0) && !_fSeen.has(_cn.s)) {
                                         _frettedCount++;
                                         _fSeen.add(_cn.s);
                                         if (_onsetNote === null) _onsetNote = _cn;
@@ -14107,7 +14141,7 @@
             if (notesArr) {
                 for (let _i = 0; _i < notesArr.length; _i++) {
                     const _n = notesArr[_i];
-                    if (isPlayableFret(_n.f) && _n.f > 0) events.push({ t: _n.t, f: _n.f });
+                    if (isPlayableFret(_n.f) && _n.f > 0 && !(_n?.mt === true && Array.isArray(_n.pick_scrape_marks) && _n.pick_scrape_marks.length > 0)) events.push({ t: _n.t, f: _n.f });
                 }
             }
             // Chord events intentionally excluded: regular chord notes don't show
@@ -15005,7 +15039,7 @@
                     const susEnd = n.t + (n.sus || 0);
                     if (dt > 0 && dt < 0.6)
                         noteState.stringAnticipation[n.s] = Math.max(noteState.stringAnticipation[n.s], 1 - dt / 0.6);
-                    if (isPlayableFret(n.f) && n.f > 0) {
+                    if (isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0)) {
                         if (now >= n.t && now <= susEnd) noteState.fretHeat[n.f] = 1;
                         else if (n.t > now) noteState.fretHeat[n.f] = Math.max(noteState.fretHeat[n.f], Math.max(0, 1 - dt / 2));
                     }
@@ -15034,7 +15068,7 @@
                     for (const cn of chordNotes) {
                         if (dt > 0 && dt < 0.6)
                             noteState.stringAnticipation[cn.s] = Math.max(noteState.stringAnticipation[cn.s], 1 - dt / 0.6);
-                        if (isPlayableFret(cn.f) && cn.f > 0) {
+                        if (isPlayableFret(cn.f) && cn.f > 0 && !(cn?.mt === true && Array.isArray(cn.pick_scrape_marks) && cn.pick_scrape_marks.length > 0)) {
                             if (now >= ch.t && now <= susEnd) { noteState.fretHeat[cn.f] = 1; continue; }
                             if (ch.t > now) noteState.fretHeat[cn.f] = Math.max(noteState.fretHeat[cn.f], Math.max(0, 1 - dt / 2));
                         }
@@ -15066,7 +15100,7 @@
                     if (n.t > now + 2) break;
                     if (!validString(n.s) || !isRenderableNote(n)) continue;
                     if (!nextNoteByString[n.s] || n.t < nextNoteByString[n.s].t) nextNoteByString[n.s] = n;
-                    if (isPlayableFret(n.f) && n.f > 0) fretLastActiveTime[n.f] = now;
+                    if (isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0)) fretLastActiveTime[n.f] = now;
                 }
             }
             if (chords) {
@@ -15086,7 +15120,7 @@
                             _sd.t = ch.t;
                             nextNoteByString[cn.s] = _sd;
                         }
-                        if (isPlayableFret(cn.f) && cn.f > 0) fretLastActiveTime[cn.f] = now;
+                        if (isPlayableFret(cn.f) && cn.f > 0 && !(cn?.mt === true && Array.isArray(cn.pick_scrape_marks) && cn.pick_scrape_marks.length > 0)) fretLastActiveTime[cn.f] = now;
                     }
                 }
             }
@@ -15468,8 +15502,8 @@
                         if (n.t + (n.sus || 0) < bootstrapT0) continue;
                         if (n.t > bootstrapT1) break;
                         if (!validString(n.s) || !isRenderableNote(n)) continue;
-                        const nInWin = isPlayableFret(n.f) && n.f > 0 && n.t >= bootstrapT0;
-                        const nSusNow = isPlayableFret(n.f) && n.f > 0 && n.t < bootstrapT0
+                        const nInWin = isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) && n.t >= bootstrapT0;
+                        const nSusNow = isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) && n.t < bootstrapT0
                             && n.t + (n.sus || 0) >= bootstrapNow;
                         if (nInWin || nSusNow) {
                             const w = Math.exp(-Math.abs(n.t - bootstrapNow) / camTau);
@@ -15496,7 +15530,7 @@
                         for (const cn of chNotes) {
                             const cnOk = chOnsetInWin
                                 || (chSusNow && ch.t + (cn.sus || 0) >= bootstrapNow);
-                            if (isPlayableFret(cn.f) && cn.f > 0 && cnOk) {
+                            if (isPlayableFret(cn.f) && cn.f > 0 && !(cn?.mt === true && Array.isArray(cn.pick_scrape_marks) && cn.pick_scrape_marks.length > 0) && cnOk) {
                                 preWX += xNote(cn) * chW;
                                 preWSum += chW;
                                 if (cn.f < preDistMin) preDistMin = cn.f;
@@ -15556,7 +15590,7 @@
                         continue;
                     }
                     if (_coincidentRepeatNoteSet.has(n)) continue;
-                    if (isPlayableFret(n.f) && n.f > 0 && n.t > now && n.t < now + 2) activeFrets.add(n.f);
+                    if (isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) && n.t > now && n.t < now + 2) activeFrets.add(n.f);
                     if (n.t > now) {
                         const dt = n.t - now;
                         if (dt < AHEAD) highwayIntensity = Math.max(highwayIntensity, 1 - dt / AHEAD);
@@ -15654,7 +15688,7 @@
                     if (!(cameraMode === 'lookahead')) {
                     const nInWin = n.t >= camT0 && n.t <= camT1;
                     const nSusActive = n.t < camT0 && n.t + (n.sus || 0) >= now;
-                    if (isPlayableFret(n.f) && n.f > 0 && (nInWin || nSusActive)) {
+                    if (isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) && (nInWin || nSusActive)) {
                         // Symmetric decay around now: previously this
                         // clamped n.t - now at 0, giving every past-
                         // onset note weight 1. That was a tolerable
@@ -15779,7 +15813,7 @@
                         if (dt < AHEAD) highwayIntensity = Math.max(highwayIntensity, 1 - dt / AHEAD);
                     }
                     if (ch.t > now && ch.t < now + 2)
-                        for (const cn of chordNotes) { if (isPlayableFret(cn.f) && cn.f > 0) activeFrets.add(cn.f); }
+                        for (const cn of chordNotes) { if (isPlayableFret(cn.f) && cn.f > 0 && !(cn?.mt === true && Array.isArray(cn.pick_scrape_marks) && cn.pick_scrape_marks.length > 0)) activeFrets.add(cn.f); }
 
                     // Computed once when the chart-static cull index is built;
                     // avoid rescanning every member of every visible chord per frame.
@@ -15842,7 +15876,7 @@
                     else {
                         let cxL = Infinity, cxR = -Infinity, fretted = 0;
                         for (const cn of chordNotes) {
-                            if (isPlayableFret(cn.f) && cn.f > 0) {
+                            if (isPlayableFret(cn.f) && cn.f > 0 && !(cn?.mt === true && Array.isArray(cn.pick_scrape_marks) && cn.pick_scrape_marks.length > 0)) {
                                 const fx = xNote(cn);
                                 if (fx < cxL) cxL = fx;
                                 if (fx > cxR) cxR = fx;
@@ -16226,6 +16260,7 @@
                             _scrChordNote.slide_out = cn.slide_out;
                             _scrChordNote.slide_out_marks = cn.slide_out_marks;
                             _scrChordNote.slide_in_marks = cn.slide_in_marks;
+                            _scrChordNote.pick_scrape_marks = cn.pick_scrape_marks;
                             _linkedVibratoRuns.set(_scrChordNote, _linkedVibratoRuns.get(cn));
                             const linkedTrail = _linkedTrailPaths.byNote.get(cn);
                             if (linkedTrail) _linkedTrailPaths.byNote.set(_scrChordNote, linkedTrail);
@@ -16267,7 +16302,7 @@
                             // over-pullback for mixed-sustain chords).
                             if (!(cameraMode === 'lookahead')) {
                             const cnSustainOk = chOnsetInWin || (chSusActive && ch.t + (cn.sus || 0) >= now);
-                            if (isPlayableFret(cn.f) && cn.f > 0 && cnSustainOk) {
+                            if (isPlayableFret(cn.f) && cn.f > 0 && !(cn?.mt === true && Array.isArray(cn.pick_scrape_marks) && cn.pick_scrape_marks.length > 0) && cnSustainOk) {
                                 camWX += xNote(cn) * chW;
                                 camWSum += chW;
                                 if (cn.f < camDistMin) camDistMin = cn.f;
@@ -17804,10 +17839,12 @@
                     : 0;
                 // Artistic taper and user-selected visibility narrowing compose
                 // by the smaller envelope, never multiply into a thin sliver.
-                const yieldScale = Math.min(hasSlideCue ? slideCueWidthScaleAt(n, Tk) : 1,
+                const scrapeAlpha = (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) ? pickScrapeAlpha(n, Tk) : 1;
+                const artisticScale = (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) ? .35 + .65 * scrapeAlpha : hasSlideCue ? slideCueWidthScaleAt(n, Tk) : 1;
+                const yieldScale = Math.min(artisticScale,
                     1 - (1 - yieldSettings.minScale) * yieldAmount);
                 if (outlineColors && bodyColors) {
-                    const alpha = hasSlideCue ? slideCueAlphaAt(n, Tk) : 1;
+                    const alpha = (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) ? scrapeAlpha : hasSlideCue ? slideCueAlphaAt(n, Tk) : 1;
                     for (let j = 0; j < 4; j++) {
                         outlineColors[k * 16 + j * 4 + 3] = alpha;
                         bodyColors[k * 16 + j * 4 + 3] = alpha;
@@ -17858,6 +17895,7 @@
                 || n.tr
                 || slideOutMarks(n).length > 0
                 || slideInMarks(n).length > 0
+                || (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0)
             ));
         }
 
@@ -17865,7 +17903,7 @@
             // Compact repeat frames have their own palm/fret-hand mute marks,
             // but these cues live on individual gems and must approach with them.
             return !!(n.ghost === true || n.hm || n.hp || n.ho || n.po || n.tp || n.ac || n.slp || n.plk
-                || noteHasSlideOutCue(n)
+                || (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) || noteHasSlideOutCue(n)
                 || slideInMarks(n).length > 0
                 || (Number(n.bn) || 0) > 0
                 || (Array.isArray(n.bnv) && n.bnv.some(p => (Number(p.v) || 0) > 0)));
@@ -18161,7 +18199,8 @@
                 + (_leftyCached ? -1 : 1) * (slideSt ? slideOffsetWorldX(n, chartTime, slideSt) : 0)
                 + (_leftyCached ? -1 : 1) * (n.slide_out_marks?.length ? slideOutOffsetWorldX(n, chartTime) : 0)
                 + (_leftyCached ? -1 : 1) * (n.slide_in_marks?.length ? slideInOffsetWorldX(n, chartTime) : 0)
-                + (n.tr ? tremoloOffsetWorldX(n, chartTime, trailW) : 0);
+                + (n.tr ? tremoloOffsetWorldX(n, chartTime, trailW) : 0)
+                + ((n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) ? (_leftyCached ? -1 : 1) * pickScrapeOffset(n, chartTime) : 0);
         }
 
         // Shared, allocation-free footprint matcher. Candidate discovery has
@@ -18230,6 +18269,11 @@
         function trailYieldOpenTargetXBounds(event, bounds) {
             bounds[0] = Infinity;
             bounds[1] = -Infinity;
+            if (event.pick_scrape_marks?.length) {
+                const x = curX + (_leftyCached ? -1 : 1) * pickScrapeOffset(event, event.t);
+                trailYieldAddTargetXBounds(x, NH * 1.2, bounds);
+                return true;
+            }
             const anchorDef = getChartAnchorAt(_drawAnchors, event.t);
             const anchor = laneBoundsFromAnchor(anchorDef);
             const anchorPlayed = anchorPlayedFretInclusiveSpan(anchorDef);
@@ -18290,6 +18334,13 @@
             if (!event || event.end <= (event.trailStart ?? event.t)
                 + (event.trailStart < event.t ? 1e-6 : 0.01)) return 0;
             const ctx = _trailYieldMatchContext;
+            if (event.pick_scrape_marks?.length) {
+                _trailCrossingTargetBases[0] = curX;
+                _trailCrossingTargetWidths[0] = (NW * .38 + .4 * K)
+                    * (rsPlusNotation ? RSPLUS_SUSTAIN_STROKE_SCALE : 1);
+                _trailCrossingTargetBaseCount = 1;
+                return 1;
+            }
             if (event.f > 0) {
                 _trailCrossingTargetBases[0] = xNote(event);
                 _trailCrossingTargetBaseCount = 1;
@@ -18382,10 +18433,10 @@
                 const x1 = trailVisibilitySourceCenterXAt(b, width);
                 const slideOut = note.slide_out_marks?.length > 0 && !(member ? member.slideSt : ctx.slideSt);
                 const incoming = slideInMarks(note).length > 0;
-                const reach = (note.tr ? sustainMotionWidth(width) * 0.375 : 0) + (slideOut || incoming ? slideOutReach(note) : 0);
+                const reach = (note.tr ? sustainMotionWidth(width) * 0.375 : 0) + (slideOut || incoming ? slideOutReach(note) : 0) + ((note?.mt === true && Array.isArray(note.pick_scrape_marks) && note.pick_scrape_marks.length > 0) ? NW * 1.72 : 0);
                 bounds[0] = Math.min(bounds[0], x0 - reach - width * 0.5, x1 - reach - width * 0.5);
                 bounds[1] = Math.max(bounds[1], x0 + reach + width * 0.5, x1 + reach + width * 0.5);
-                moves ||= !!(note.tr || slideOut || incoming || x0 !== x1 || (previousX !== null && previousX !== x0));
+                moves ||= !!(note.tr || slideOut || incoming || (note?.mt === true && Array.isArray(note.pick_scrape_marks) && note.pick_scrape_marks.length > 0) || x0 !== x1 || (previousX !== null && previousX !== x0));
                 previousX = x1;
                 if (b >= end) break;
             }
@@ -19200,7 +19251,7 @@
                 const targetSlideOut = (slideOutMarks(target).length > 0 && !ctx.crossingTargetSlideSt)
                     || slideInMarks(target).length > 0;
                 const sourceMovesX = trailVisibilitySourceSweep(overlapStart, overlapEnd);
-                const targetMovesX = !!(ctx.crossingTargetSlideSt || target.tr || targetSlideOut);
+                const targetMovesX = !!(ctx.crossingTargetSlideSt || target.tr || targetSlideOut || target.pick_scrape_marks?.length);
                 const ribbonStep = span / SLIDE_RIBBON_SAMPLES;
                 const hasTremolo = !!(ctx.path?.hasTremolo || n.tr || target.tr);
                 const sampleStep = hasTremolo
@@ -19322,7 +19373,7 @@
             const sweepWidth = Math.abs(slideEndX - strandBaseX)
                 + ctx.trailW + tremoloReach * 2
                 + ((slideOutMarks(n).length > 0 && !ctx.slideSt) || slideInMarks(n).length > 0
-                    ? slideOutReach(n) * 2 : 0);
+                    ? slideOutReach(n) * 2 : 0) + (n.pick_scrape_marks?.length ? NW * 3.44 : 0);
             let count = 0;
             if (priorityTimes) priorityTimes[priorityIndex] = -Infinity;
             // Fret zero is always considered because an open gem spans the
@@ -19479,6 +19530,8 @@
             // Preserve source fret/identity for note-detect matching. Only this
             // local drawing view treats an unpitched muted strike as a slab.
             const sourceNote = n;
+            const scrape = (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0);
+            if (scrape && now > n.t + n.sus) return;
             if (isUnpitchedMute(n)) {
                 n = { ...n, f: 0 };
                 _linkedBendStarts.set(n, _linkedBendStarts.get(sourceNote) || 0);
@@ -19568,7 +19621,7 @@
             // Legacy skipBody applies only to the pre-hit approach. An explicit
             // linkNext target is not re-struck, so its attack remains hidden at
             // and after onset; its sustain and any outgoing slide still render.
-            const effSkipBody = hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, dt);
+            const effSkipBody = scrape || hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, dt);
             const hasTechniqueVibrato = noteHasVibrato(n);
             // A short sustain can leave its gem visible until the linger
             // deadline. Hold the final bend/vibrato pose for that remainder,
@@ -19582,7 +19635,7 @@
             // first, get overdrawn by close geometry), close notes get a high
             // value (render last, appear on top). RENDER_ORDER_LAYER_STACK decides
             // the local stack for outline, core, technique symbols, and fret labels.
-            const xBase = n.f === 0 ? (openX !== undefined ? openX : curX) : xNote(n);
+            const xBase = scrape ? curX : n.f === 0 ? (openX !== undefined ? openX : curX) : xNote(n);
             // Slide-in-progress: glide the gem (and everything anchored to it —
             // outline, core, halo, technique markers) from its starting fret
             // toward the slide's end fret over the sustain, the same way
@@ -19634,7 +19687,7 @@
             let _ndCs = null;       // raw provider response — truthy when provider returned a verdict
             let _ndCsIsObj = false; // typeof _ndCs === 'object'
             let _ndFaceMat = null;  // [mat×4, transparent×2] array for lateral face fill, or null
-            if (_ndGetNoteState) {
+            if (!scrape && _ndGetNoteState) {
                 // Reuse the smart-cull probe result if we already called
                 // _ndGetNoteState for this gem above; otherwise probe now.
                 let _raw = null;
@@ -19675,7 +19728,7 @@
             // re-inject it so hit/miss color persists for the full hold.
             // Works with both the modern provider path and the legacy event
             // path — vibrato and other long-sustain notes benefit equally.
-            if (hasSus) {
+            if (hasSus && !scrape) {
                 const _sk = Math.round(n.t * 1e4) * 10 + n.s;
                 // Resolve current verdict: provider takes priority, then
                 // fall back to scanning the legacy mark arrays so a hit or
@@ -20118,6 +20171,7 @@
                     if (sliceDur > (hasLeadIn ? 1e-6 : 0.01)) {
                         let tw = NW * 0.85 * (n.f === 0 ? openWScale : 1);
                         let th = NH * 0.12 * (n.f === 0 ? openWScale : 1) * openSlabThickMul;
+                        if (n.pick_scrape_marks?.length) { tw = NW * .38; th = NH * .12; }
                         // Keep one cross-section through linked segments, including
                         // when an arpeggio member continues as a standalone note.
                         if (susTrailMatchArpFrame && !_linkedTrailPaths.byNote.has(n)) {
@@ -20158,10 +20212,10 @@
                         // No degenerate-small-offset fallback needed.
                         let offsets = SINGLE_SUS_OFFSETS;
                         if (n.f === 0) {
-                            const openTrailOffset = NW * 3 * openWScale;
+                            const openTrailOffset = scrape ? 0 : NW * 3 * openWScale;
                             _trailYieldOpenOffsetsScratch[0] = -openTrailOffset;
                             _trailYieldOpenOffsetsScratch[1] = openTrailOffset;
-                            offsets = _trailYieldOpenOffsetsScratch;
+                            offsets = scrape ? SINGLE_SUS_OFFSETS : _trailYieldOpenOffsetsScratch;
                         }
                         let yieldCount = 0;
                         let matchedEventCount = 0;
@@ -20260,7 +20314,7 @@
                         const mode3PriorityWorldZ = hasMode3Priority
                             ? Math.min(0, -(mode3PriorityTime - now) * TS)
                             : null;
-                        const ribbonSusTrail = yieldCount > 0 || !!(
+                        const ribbonSusTrail = yieldCount > 0 || !!(scrape ||
                             (slideSt && n.f > 0 && (n.sus || 0) > 1e-4)
                             || (Number(n.bn) > 0)
                             || (Array.isArray(n.bnv) && n.bnv.length > 0)
@@ -20409,7 +20463,7 @@
                                 body.rotation.set(0, 0, 0);
                                 body.position.set(0, 0, 0);
                                 body.material = rsPlusNotation ? (_ndGood ? mRsSusHit[s] : mRsSus[s]) : (_ndState ? mGlow[s] : mSus[s]);
-                                if ((slideOutMarks(n).length > 0 && !slideSt) || slideInMarks(n).length > 0) {
+                                if (scrape || (slideOutMarks(n).length > 0 && !slideSt) || slideInMarks(n).length > 0) {
                                     olMesh.material = slideRibbonFadeMaterial(_susOlMat);
                                     body.material = slideRibbonFadeMaterial(body.material);
                                 }
@@ -20446,6 +20500,32 @@
                             }
                         }
                     }
+            }
+
+            // A scrape has no fret, grading verdict, endpoint gem, or board
+            // projection. Its small X and label are the complete attack cue.
+            if (scrape) {
+                const at = Math.max(n.t, Math.min(now, susEnd));
+                const sx = xBase + (_leftyCached ? -1 : 1) * pickScrapeOffset(n, at);
+                const mark = pTechPlane.get();
+                mark.material = _spriteMat2MeshMat(mark, txtMat('X', '#ffffff', false, 'technique'));
+                mark.scale.set(NH * 1.2, NH * 1.2, 1);
+                mark.position.set(sx, y, noteZ + K);
+                mark.rotation.set(0, 0, 0);
+                mark.renderOrder = renderOrderForLayerAtZ(noteZ, 'TECHNIQUE_MARKER');
+                mark.material.opacity = .95;
+                const label = pTechPlane.get();
+                const text = txtMat('PICK SCRAPE', '#ffffff', false, 'technique');
+                label.material = _spriteMat2MeshMat(label, text);
+                const size = NH * .60 * _textSizeMul;
+                label.scale.set(size * text.map.image.width / text.map.image.height, size, 1);
+                label.position.set(sx, y + NH * 1.05, noteZ + K);
+                label.rotation.set(0, 0, 0);
+                label.renderOrder = mark.renderOrder;
+                label.material.opacity = .9;
+                _registerIncomingLabelOccluder(mark, noteZ);
+                _registerIncomingLabelOccluder(label, noteZ);
+                return;
             }
 
             // Shared by both slide-arrow blocks so the neck-preview arrow
