@@ -71,3 +71,20 @@ test('2D scrape strings follow inversion and instrument size, with lefty applied
     assert.equal(labels(false,false,7)[0].y,267);
     assert.deepEqual(labels(false,true),normal,'parent transform handles mirroring exactly once');
 });
+
+test('2D simultaneous scrape strings retain both trails and Xs with one readable caption',()=>{
+    const draw=fs.readFileSync(path.join(__dirname,'../../static/js/highway-draw.js'),'utf8');
+    const block=draw.slice(draw.indexOf('export function drawPickScrape2D('),draw.indexOf('export function drawNotes(')).replace(/export /g,'');
+    const render=new Function(`${geometry};const VISIBLE_SECONDS=5,project=()=>({y:.5,scale:.4});
+        const fillTextReadable=(hw,text,x,y)=>hw.labels.push({text,x,y});${block};return drawSustains;`)();
+    for(const inverted of [false,true])for(const asChord of [false,true]) {
+        const noop=()=>{}, notes=[make(),{...make(),s:1}], hw={currentTime:9,stringCount:6,_inverted:inverted,
+            labels:[],STRING_COLORS:[],_xfNotes:null,_filteredNotes:null,_xfChords:null,_filteredChords:null,
+            notes:asChord?[]:notes,chords:asChord?[{t:10,notes}]:[],strokes:0,
+            ctx:{save:noop,restore:noop,beginPath:noop,moveTo:noop,lineTo:noop,stroke:()=>hw.strokes++}};
+        render(hw,1000,600);
+        const xs=hw.labels.filter(l=>l.text==='X'),labels=hw.labels.filter(l=>l.text==='PICK SCRAPE');
+        assert.equal(xs.length,2); assert.equal(labels.length,1); assert.equal(hw.strokes,144);
+        assert.ok(labels[0].y < Math.min(...xs.map(x=>x.y))-10);
+    }
+});

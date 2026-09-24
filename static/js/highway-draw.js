@@ -514,7 +514,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
     }
 }
 
-export function drawPickScrape2D(hwState, W, H, n, onset = n.t) {
+export function drawPickScrape2D(hwState, W, H, n, onset = n.t, sharedLabels = null) {
     const now = hwState.currentTime;
     if (onset > now + VISIBLE_SECONDS || onset + n.sus < now) return;
     const ctx = hwState.ctx;
@@ -552,13 +552,22 @@ export function drawPickScrape2D(hwState, W, H, n, onset = n.t) {
         ctx.globalAlpha = .95; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
         ctx.font = `bold ${Math.max(10, 22 * head.scale)}px sans-serif`;
         fillTextReadable(hwState, 'X', head.x, head.y);
-        ctx.font = `bold ${Math.max(8, 11 * head.scale)}px sans-serif`;
-        fillTextReadable(hwState, 'PICK SCRAPE', head.x, head.y - Math.max(14, 22 * head.scale));
+        if (sharedLabels) {
+            // One caption for simultaneous strings, above the uppermost X.
+            // Retain every string's X and trail, including mixed chords.
+            const key = `${onset}:${mark.start}:${mark.direction}`;
+            const previous = sharedLabels.get(key);
+            if (!previous || head.y < previous.y) sharedLabels.set(key, head);
+        } else {
+            ctx.font = `bold ${Math.max(8, 11 * head.scale)}px sans-serif`;
+            fillTextReadable(hwState, 'PICK SCRAPE', head.x, head.y - Math.max(14, 22 * head.scale));
+        }
     }
     ctx.restore();
 }
 
 export function drawSustains(hwState, W, H) {
+    const scrapeLabels = new Map();
     // Same master-difficulty fallback as drawNotes/drawChords —
     // without this, sustain bars for filtered-out notes would
     // still render, leaving orphan rectangles where no note head
@@ -566,7 +575,7 @@ export function drawSustains(hwState, W, H) {
     const src = hwState._xfNotes !== null ? hwState._xfNotes
         : hwState._filteredNotes !== null ? hwState._filteredNotes : hwState.notes;
     for (const n of src) {
-        if (isPickScrape(n)) { drawPickScrape2D(hwState, W, H, n); continue; }
+        if (isPickScrape(n)) { drawPickScrape2D(hwState, W, H, n, n.t, scrapeLabels); continue; }
         // Incoming cues precede the attack and also exist without sustain.
         drawSlideInRibbon2D(hwState, W, H, n);
         if (n.sus <= 0.01) continue;
@@ -665,10 +674,18 @@ export function drawSustains(hwState, W, H) {
     const chords = hwState._xfChords !== null ? hwState._xfChords
         : hwState._filteredChords !== null ? hwState._filteredChords : hwState.chords;
     for (const chord of chords || []) for (const n of chord.notes || []) {
-        if (isPickScrape(n)) { drawPickScrape2D(hwState, W, H, n, chord.t); continue; }
+        if (isPickScrape(n)) { drawPickScrape2D(hwState, W, H, n, chord.t, scrapeLabels); continue; }
         drawSlideInRibbon2D(hwState, W, H, n, chord.t);
         drawSlideOutRibbon2D(hwState, W, H, n, chord.t);
     }
+    const ctx = hwState.ctx;
+    ctx.save();
+    ctx.globalAlpha = .95; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
+    for (const head of scrapeLabels.values()) {
+        ctx.font = `bold ${Math.max(8, 11 * head.scale)}px sans-serif`;
+        fillTextReadable(hwState, 'PICK SCRAPE', head.x, head.y - Math.max(14, 22 * head.scale));
+    }
+    ctx.restore();
 }
 
 export function drawNotes(hwState, W, H) {
