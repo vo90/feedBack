@@ -20,7 +20,7 @@ const helpers = new Function(`
     const VISIBLE_SECONDS = 3;
     const project = dt => dt < -.05000001 || dt > VISIBLE_SECONDS ? null : { y: dt, scale: 1 };
     const fretX = (state, f) => f * 10;
-    ${['slideInMarks2D', 'slideOutMarks2D', 'drawSlideInRibbon2D', 'drawSlideOutRibbon2D',
+    ${['playingFret2D', 'slideInMarks2D', 'slideOutMarks2D', 'drawSlideInRibbon2D', 'drawSlideOutRibbon2D',
         'drawSustains', '_noteHasTechniqueFlags', '_chordHasTechniqueFlags'].map(fn).join('\n')}
     return {slideInMarks2D, drawSlideInRibbon2D, drawSustains, _chordHasTechniqueFlags};
 `)();

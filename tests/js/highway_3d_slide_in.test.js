@@ -45,6 +45,8 @@ function helpers(lefty = false) {
         const _trailYieldFrameId=1;
         let _trailCrossingTargetBaseCount=0;
         ${visibility}${motion}
+        ${fn('naturalNode')}${fn('notePositionX')}
+        const xNote = n => (_leftyCached ? -1 : 1) * notePositionX(n);
         ${fn('sustainMotionWidth')}${fn('sustainTrailCenterXAt')}${fn('ensureSlideRibbonCapacity')}${fn('slideRibbonUpdatePair')}
         ${fn('noteHasVibrato')}${fn('noteHasVisibleMotionSustain')}${fn('noteHasRepeatTechniqueCue')}
         ${fn('chordMuteKind')}${fn('repeatChordMaySuppressGems')}

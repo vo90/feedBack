@@ -58,6 +58,8 @@ function harness() {
         ${fn('bendSemisAtTime')}
         ${fn('vibratoSemisAtTime')}
         ${fn('techniqueYOffsetWorld')}
+        ${fn('naturalNode')}${fn('notePositionX')}
+        const xNote = n => (_leftyCached ? -1 : 1) * notePositionX(n);
         ${fn('sustainMotionWidth')}
         ${fn('tremoloOffsetWorldX')}
         ${fn('sustainTrailCenterXAt')}

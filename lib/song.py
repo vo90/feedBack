@@ -75,6 +75,11 @@ class Note:
     # Tied segments may add later endpoints without adding another attack.
     # A present array (including []) is authoritative; no start is inferred.
     slide_in_marks: list | None = None
+    # Precise natural harmonic extension: fret remains source tablature;
+    # node is the touch position relative to fret wires; pitch is semitones
+    # above the (tuned, capo-adjusted) open string. Both must be present.
+    harmonic_node: float | None = None
+    harmonic_pitch: int | None = None
 
 
 @dataclass
@@ -259,7 +264,7 @@ def note_to_wire(n: Note) -> dict:
         "t": round(n.time, 3), "s": n.string, "f": n.fret,
         "sus": round(n.sustain, 3),
         "sl": n.slide_to, "slu": n.slide_unpitch_to,
-        "bn": round(n.bend, 1) if n.bend else 0,
+        "bn": round(n.bend, 6) if n.bend else 0,
         "ho": n.hammer_on, "po": n.pull_off,
         "hm": n.harmonic, "hp": n.harmonic_pinch,
         "pm": n.palm_mute, "mt": n.mute,
@@ -268,6 +273,8 @@ def note_to_wire(n: Note) -> dict:
     }
     if n.link_next:
         out["ln"] = True
+    if n.harmonic and _valid_natural_target(n.harmonic_node, n.harmonic_pitch):
+        out.update(hn=n.harmonic_node, hps=n.harmonic_pitch)
     if n.ghost is True:
         out["ghost"] = True
     if n.fret_hand_mute:
@@ -289,7 +296,9 @@ def note_to_wire(n: Note) -> dict:
         out["bt"] = int(n.bend_intent)
     if n.bend_values:
         out["bnv"] = [
-            {"t": round(p["t"], 3), "v": round(p["v"], 1)}
+            # Retain authored curve detail, including close control points.
+            # A tenth of a semitone is too coarse for precise imported bends.
+            {"t": round(p["t"], 6), "v": round(p["v"], 6)}
             for p in n.bend_values
         ]
     # Teaching marks (§6.2.2) — default-omitted, mirroring rh/pkd above.
@@ -593,7 +602,15 @@ def _sanitize_slide_in_marks(raw, sustain: float) -> list:
     return out
 
 
+def _valid_natural_target(node, pitch):
+    return (type(node) in (int, float) and math.isfinite(node) and 0 < node <= 24
+            and type(pitch) is int and 1 <= pitch <= 48)
+
+
 def note_from_wire(d: dict, time: float | None = None) -> Note:
+    precise = d.get("hm") is True and _valid_natural_target(d.get("hn"), d.get("hps"))
+    if ("hn" in d or "hps" in d) and not precise:
+        raise ValueError("Invalid precise natural harmonic node/pitch pair")
     return Note(
         time=float(d.get("t", time if time is not None else 0.0)),
         string=int(d.get("s", 0)),
@@ -609,6 +626,8 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         pull_off=bool(d.get("po", False)),
         harmonic=bool(d.get("hm", False)),
         harmonic_pinch=bool(d.get("hp", False)),
+        harmonic_node=d["hn"] if precise else None,
+        harmonic_pitch=d["hps"] if precise else None,
         palm_mute=bool(d.get("pm", False)),
         mute=bool(d.get("mt", False)),
         vibrato=bool(d.get("vb", d.get("vibrato", False))),

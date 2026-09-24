@@ -35,6 +35,11 @@ import {
     _LYRIC_MEASURE_INNER_MAX, _LYRIC_MEASURE_OUTER_MAX,
 } from './highway-constants.js';
 
+function playingFret2D(n) {
+    return n?.hm === true && Number.isFinite(n.hn) && n.hn > 0 && n.hn <= 24
+        && Number.isInteger(n.hps) && n.hps > 0 && n.hps <= 48 ? n.hn : n.f;
+}
+
 export function _measureLyricText(hwState, c, fontSize, text) {
     let inner = hwState._lyricMeasureCache.get(fontSize);
     if (inner === undefined) {
@@ -96,7 +101,7 @@ export function slideInMarks2D(n) {
 }
 
 function drawSlideInRibbon2D(hwState, W, H, n, onset = n.t) {
-    if (!Array.isArray(n.slide_in_marks) || !(n.f > 0) || !Number.isFinite(onset)) return;
+    if (!Array.isArray(n.slide_in_marks) || !(n.f > 0) || n.f === 127 && n.mt || !Number.isFinite(onset)) return;
     const c = hwState.ctx;
     let previousEnd = onset;
     for (const mark of slideInMarks2D(n)) {
@@ -118,8 +123,8 @@ function drawSlideInRibbon2D(hwState, W, H, n, onset = n.t) {
             if (!p) { previous = null; continue; }
             const u = (t - start) / (end - start);
             const ease = u * u * (3 - 2 * u);
-            const localWidth = Math.abs(fretX(hwState, n.f, p.scale, W) - fretX(hwState, n.f - 1, p.scale, W));
-            const x = fretX(hwState, n.f, p.scale, W)
+            const localWidth = Math.abs(fretX(hwState, playingFret2D(n), p.scale, W) - fretX(hwState, playingFret2D(n) - 1, p.scale, W));
+            const x = fretX(hwState, playingFret2D(n), p.scale, W)
                 - (mark.direction === 'up' ? 1 : -1) * localWidth * 0.8 * (1 - ease);
             const y = p.y * H;
             if (previous) {
@@ -134,7 +139,7 @@ function drawSlideInRibbon2D(hwState, W, H, n, onset = n.t) {
 }
 
 function drawSlideOutRibbon2D(hwState, W, H, n, onset = n.t) {
-    if (!Array.isArray(n.slide_out_marks) || !(n.f > 0) || n.sl >= 0 || n.slu >= 0
+    if (!Array.isArray(n.slide_out_marks) || !(n.f > 0) || n.f === 127 && n.mt || n.sl >= 0 || n.slu >= 0
         || onset + n.sus < hwState.currentTime || onset > hwState.currentTime + VISIBLE_SECONDS) return;
     const c = hwState.ctx;
     for (const mark of slideOutMarks2D(n)) {
@@ -152,8 +157,8 @@ function drawSlideOutRibbon2D(hwState, W, H, n, onset = n.t) {
             const p = project(Math.max(0, dt));
             if (!p || dt > VISIBLE_SECONDS) { previous = null; continue; }
             const ease = u * u * (3 - 2 * u);
-            const localWidth = Math.abs(fretX(hwState, n.f, p.scale, W) - fretX(hwState, n.f - 1, p.scale, W));
-            const x = fretX(hwState, n.f, p.scale, W)
+            const localWidth = Math.abs(fretX(hwState, playingFret2D(n), p.scale, W) - fretX(hwState, playingFret2D(n) - 1, p.scale, W));
+            const x = fretX(hwState, playingFret2D(n), p.scale, W)
                 + (mark.direction === 'up' ? 1 : -1) * localWidth * 0.8 * ease;
             const y = p.y * H;
             if (previous && dt >= 0) {
@@ -201,8 +206,9 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
         return;
     }
 
-    // Open string: wide bar spanning the highway (only for standalone notes)
-    if (fret === 0 && !isChord) {
+    // Existing unfretted lane also carries the exact muted-fret sentinel.
+    // Keep its X label and source value; 127 is never a physical fret.
+    if ((fret === 0 || fret === 127 && opts?.mt) && !isChord) {
         const hw = W * 0.26 * scale;
         const barH = Math.max(6, sz * 0.45);
         // Shadow
@@ -222,7 +228,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
         hwState.ctx.font = `bold ${fontSize}px sans-serif`;
         hwState.ctx.textAlign = 'center';
         hwState.ctx.textBaseline = 'middle';
-        fillTextReadable(hwState, noteFretLabel(0, opts), W/2, y);
+        fillTextReadable(hwState, noteFretLabel(fret === 127 && opts?.mt ? 'X' : 0, opts), W/2, y);
 
         // Technique labels on open strings — PM, H/P/T, tremolo, and
         // accent markers are all meaningful on fret 0. Bend and slide
@@ -528,8 +534,9 @@ export function drawSustains(hwState, W, H) {
         const p0 = project(t0), p1 = project(t1);
         if (!p0 || !p1) continue;
 
-        const x0 = fretX(hwState, n.f, p0.scale, W);
-        const x1 = fretX(hwState, n.f, p1.scale, W);
+        const unpitched = n.f === 127 && n.mt;
+        const x0 = unpitched ? W / 2 : fretX(hwState, playingFret2D(n), p0.scale, W);
+        const x1 = unpitched ? W / 2 : fretX(hwState, playingFret2D(n), p1.scale, W);
         const sw0 = Math.max(2, 6 * p0.scale);
         const sw1 = Math.max(2, 6 * p1.scale);
 
@@ -650,7 +657,7 @@ export function drawNotes(hwState, W, H) {
         }
         if (!p) continue;
 
-        const x = fretX(hwState, n.f, p.scale, W);
+        const x = n.f === 127 && n.mt ? W / 2 : fretX(hwState, playingFret2D(n), p.scale, W);
         drawNote(hwState, W, H, x, p.y * H, p.scale, n.s, n.f, n, hwState._noteStateProvider ? _noteState(hwState, n, n.t) : null);
         drawnNotes.push({
             t: n.t, s: n.s, f: n.f, bn: n.bn || 0, x, y: p.y * H, scale: p.scale,
@@ -871,7 +878,9 @@ export function drawChords(hwState, W, H) {
         // Bracket bar above the notes.
         if (hasNonZero || sorted.length >= 2) {
             const positions = (hasNonZero ? nonZeroNotes : sorted).map((cn, j) => ({
-                x: fretX(hwState, cn.f, p.scale, W),
+                x: cn.f === 127 && cn.mt
+                    ? (fretX(hwState, frameLeftFret, p.scale, W) + fretX(hwState, frameRightFret, p.scale, W)) / 2
+                    : fretX(hwState, playingFret2D(cn), p.scale, W),
                 y: p.y * H - actualTotalH / 2 + j * actualSpread,
             }));
             const barY = positions[0].y - sz * 0.7;
@@ -896,7 +905,7 @@ export function drawChords(hwState, W, H) {
                 ? (xMin + xMax) / 2
                 : (sorted.length >= 2
                     ? (fretX(hwState, frameLeftFret, p.scale, W) + fretX(hwState, frameRightFret, p.scale, W)) / 2
-                    : fretX(hwState, sorted[0].f, p.scale, W));
+                    : (sorted[0].f === 127 && sorted[0].mt ? W / 2 : fretX(hwState, sorted[0].f, p.scale, W)));
             hwState.ctx.fillStyle = '#fff';
             hwState.ctx.font = `bold ${Math.max(14, sz * 0.45) | 0}px sans-serif`;
             hwState.ctx.textAlign = 'center';
@@ -917,7 +926,7 @@ export function drawChords(hwState, W, H) {
                     ? (xMin + xMax) / 2
                     : (sorted.length >= 2
                         ? (fretX(hwState, frameLeftFret, p.scale, W) + fretX(hwState, frameRightFret, p.scale, W)) / 2
-                        : fretX(hwState, sorted[0].f, p.scale, W));
+                        : (sorted[0].f === 127 && sorted[0].mt ? W / 2 : fretX(hwState, sorted[0].f, p.scale, W)));
                 // Baseline = just above where the chord name sits.
                 const nameY = hasNonZero
                     ? (p.y * H - actualTotalH / 2 - sz * 0.7 - sz * 0.4)
@@ -957,7 +966,10 @@ export function drawChords(hwState, W, H) {
 
         for (let j = 0; j < sorted.length; j++) {
             const cn = sorted[j];
-            const x = fretX(hwState, cn.f, p.scale, W);
+            const unpitched = cn.f === 127 && cn.mt;
+            const x = unpitched
+                ? (fretX(hwState, frameLeftFret, p.scale, W) + fretX(hwState, frameRightFret, p.scale, W)) / 2
+                : fretX(hwState, playingFret2D(cn), p.scale, W);
             const ny = p.y * H - actualTotalH / 2 + j * actualSpread;
             // feedBack#254 — per-string judgment, keyed by the
             // chord's chart time (matches how note_detect stores it).
@@ -967,7 +979,7 @@ export function drawChords(hwState, W, H) {
             // technique flags. Otherwise fall back to drawNote so PM /
             // H / P / T / tremolo / accent labels still render (drawNote
             // is the only path that emits those labels).
-            if (getTemplateFret(cn) === 0 && hasMultipleNotes && !_noteHasTechniqueFlags(cn)) {
+            if (unpitched || getTemplateFret(cn) === 0 && hasMultipleNotes && !_noteHasTechniqueFlags(cn)) {
                 const litBar = !!(cnNs && cnNs.state !== 'miss');
                 const color = litBar ? (cnNs.color || hwState.STRING_BRIGHT[cn.s] || hwState.STRING_COLORS[cn.s] || '#888') : (hwState.STRING_COLORS[cn.s] || '#888');
                 const dark = litBar ? (hwState.STRING_COLORS[cn.s] || '#666') : (hwState.STRING_DIM[cn.s] || '#222');
@@ -986,7 +998,7 @@ export function drawChords(hwState, W, H) {
                 hwState.ctx.font = `bold ${fontSize}px sans-serif`;
                 hwState.ctx.textAlign = 'center';
                 hwState.ctx.textBaseline = 'middle';
-                fillTextReadable(hwState, '0', (barLeft + barRight) / 2, ny);
+                fillTextReadable(hwState, unpitched ? noteFretLabel('X', cn) : '0', (barLeft + barRight) / 2, ny);
             } else {
                 drawNote(hwState, W, H, x, ny, p.scale, cn.s, cn.f, { ...cn, chord: true }, cnNs);
             }
@@ -1000,8 +1012,8 @@ export function drawChords(hwState, W, H) {
             // as unbent.
             const cnBn = cn.bn ?? 0;
             const entry = { s: cn.s, f: cn.f, bn: cnBn, x, y: ny, scale: p.scale };
-            if (cnBn > 0) bent.push(entry);
-            else if (cnBn === 0) unbent.push(entry);
+            if (!unpitched && cnBn > 0) bent.push(entry);
+            else if (!unpitched && cnBn === 0) unbent.push(entry);
         }
 
         // Unison bend within chord — bent / unbent classified inline above.
@@ -1325,7 +1337,7 @@ export function _ensureChordRenderCache(hwState, src) {
         const info = hwState._chordRenderInfo.get(ch);
         const { isOpen } = getChordTemplateInfo(ch.id, effTemplates);
         const sortedNotes = [...ch.notes].sort((a, b) => hwState._inverted ? b.s - a.s : a.s - b.s);
-        const nonZero = sortedNotes.filter(cn => !isOpen(cn));
+        const nonZero = sortedNotes.filter(cn => !isOpen(cn) && !(cn.f === 127 && cn.mt));
         const nonZeroFrets = nonZero.map(cn => cn.f);
         if (nonZero.length >= 1) {
             let minF = nonZeroFrets[0];
@@ -1384,7 +1396,7 @@ export function _updateFretLinePreview(hwState, src, lo, hi) {
             bestChordTime = ch.t;
             activeChord = ch;
             const { isOpen } = getChordTemplateInfo(ch.id, _effChordTemplates(hwState));
-            const nonZero = ch.notes.filter(cn => !isOpen(cn));
+            const nonZero = ch.notes.filter(cn => !isOpen(cn) && !(cn.f === 127 && cn.mt));
             activeNotesOnFret = nonZero.length >= 1 ? nonZero.map(cn => ({ s: cn.s, f: cn.f })) : [];
         }
     }
@@ -1396,7 +1408,7 @@ export function _updateFretLinePreview(hwState, src, lo, hi) {
             if (!p) continue;
             activeChord = ch;
             const { isOpen } = getChordTemplateInfo(ch.id, _effChordTemplates(hwState));
-            const nonZero = ch.notes.filter(cn => !isOpen(cn));
+            const nonZero = ch.notes.filter(cn => !isOpen(cn) && !(cn.f === 127 && cn.mt));
             activeNotesOnFret = nonZero.length >= 1 ? nonZero.map(cn => ({ s: cn.s, f: cn.f })) : [];
             break;
         }
@@ -1427,7 +1439,7 @@ export function _drawFretLineChordPreview(hwState, W, H) {
     for (const cn of hwState._chordFretLineNotes) {
         const yi = hwState._inverted ? 5 - cn.s : cn.s;
         const syl = strTop + (yi / 5) * (strBot - strTop);
-        const fretXPos = fretX(hwState, cn.f, 1, W);
+        const fretXPos = fretX(hwState, playingFret2D(cn), 1, W);
         hwState.ctx.fillStyle = hwState.STRING_COLORS[cn.s] || '#888';
         hwState.ctx.beginPath();
         hwState.ctx.arc(fretXPos, syl, noteSize / 2, 0, Math.PI * 2);

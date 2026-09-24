@@ -85,6 +85,9 @@ export function teachingFingerLabel(fg) {
 // A ghost is still a pitched attack unless the source separately marks it dead.
 // Ties, fret labels and truthy non-boolean metadata never imply a ghost.
 export function noteFretLabel(fret, note) {
+    if (note?.hm === true && Number.isFinite(note.hn) && note.hn > 0 && note.hn <= 24
+            && Number.isInteger(note.hps) && note.hps > 0 && note.hps <= 48)
+        fret = Number(note.hn.toFixed(3));
     if (note?.ghost !== true) return String(fret);
     return '(' + (note.mt || note.fhm ? 'X' : String(fret)) + ')';
 }
