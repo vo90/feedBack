@@ -67,6 +67,20 @@ test('long-frame recovery waits for a fresh source then catches up once', () => 
     assert.equal(caughtUp, 10.61);
     assert.ok(sample(c, 620, 10.60) > caughtUp, 'ordinary correction after recovery cannot rewind');
 });
+test('repeated complete observation outages recover without accumulating lag', () => {
+    const c = make(); let previous = sample(c, 0, 10);
+    for (let cycle = 0; cycle < 20; cycle++) {
+        const start = cycle * 1000;
+        for (let offset = 10; offset < 1000; offset += 10) {
+            const now = start + offset, observed = offset < 750 ? start : now;
+            const time = sample(c, now, 10 + observed / 1000, {sampledAt: observed, freshAt: observed});
+            assert.ok(time >= previous, 'a gap must never rewind');
+            if (offset >= 750) assert.ok(Math.abs(time - (10 + now / 1000)) < .001,
+                `fresh data must immediately end lost-observation lag at ${now}ms`);
+            previous = time;
+        }
+    }
+});
 for (const hz of [30, 40, 60, 100, 144]) for (const rate of [0.25, 0.5, 1, 1.5, 2]) {
     test(`timestamped coarse samples stay continuous and aligned at ${hz}Hz/${rate}x`, () => {
         const c = make(); let previous;
