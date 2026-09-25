@@ -20354,6 +20354,7 @@
                             : null;
                         const ribbonSusTrail = yieldCount > 0 || !!(scrape ||
                             (slideSt && n.f > 0 && (n.sus || 0) > 1e-4)
+                            || n.whammy?.version === 1
                             || (Number(n.bn) > 0)
                             || (Array.isArray(n.bnv) && n.bnv.length > 0)
                             || n.tr
