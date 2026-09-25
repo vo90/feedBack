@@ -5,6 +5,12 @@ assert.ok(start>0);let depth=0,end=open;
 for(;end<source.length;end++){if(source[end]==='{')depth++;else if(source[end]==='}'&&--depth===0)break;}
 const body=source.slice(start,end+1);
 
+test('the renderer capability exposes the shared crisp overlay factory',async()=>{
+    const {harmonicContactsApi}=await import('../../static/js/harmonic-contacts.js');
+    const {createHarmonicContactOverlay}=await import('../../static/js/harmonic-contact-overlay.js');
+    assert.equal(harmonicContactsApi.createOverlay,createHarmonicContactOverlay);
+});
+
 test('3D contact projection keeps 14px text at reduced quality and clears after the event',()=>{
     for(const scale of [1,.5,.25]) for(const lefty of [false,true]) {
         let frame,gems=[],flushed=false;
