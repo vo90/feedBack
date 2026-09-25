@@ -4,6 +4,8 @@
  */
 import { whammyApi } from './js/whammy.js';
 window.feedBackWhammy = whammyApi;
+import { harmonicContactsApi } from './js/harmonic-contacts.js';
+window.feedBackHarmonicContacts = harmonicContactsApi;
 import {
     BG,
     CHAIN_GAP_THRESHOLD,

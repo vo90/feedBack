@@ -25,6 +25,7 @@ import {
 } from './highway-state-primitives.js';
 import { isPickScrape, scrapeProgress, scrapePosition, scrapeFade } from './pick-scrapes.js';
 import { hasBar, barVisual, barBoundaries } from './whammy.js';
+import { harmonicContacts, harmonicContactLabel as timedContactLabel } from './harmonic-contacts.js';
 import {
     _shimmerNoise, bendToneLabel, bnvNormalizedPoints, chordHarmonyLabels, project, roundRect,
     teachingDegreeLabel, teachingFingerLabel,
@@ -633,6 +634,42 @@ export function drawBarSustain2D(hwState, W, H, n, onset = n.t) {
     ctx.restore();
 }
 
+export function drawHarmonicContact2D(hwState, W, H, n, onset=n.t) {
+    const event=harmonicContacts(n)[0];
+    if(!event)return;
+    const now=hwState.currentTime,ctx=hwState.ctx;
+    const point=t=>{
+        const p=project(t-now);if(!p)return null;
+        const x=hasBar(n) && n.f===0 ? W/2 : fretX(hwState,n.f,p.scale,W);
+        return {x:x+(hasBar(n)?barVisual(n,t-onset)*9*p.scale*(H/900):0),y:p.y*H,scale:p.scale};
+    };
+    const start=Math.max(now,onset+event.start),end=Math.min(now+VISIBLE_SECONDS,onset+event.end);
+    if(end<=start)return;
+    ctx.save();ctx.strokeStyle='#dce8ef';ctx.lineWidth=1;ctx.globalAlpha=.55;
+    const count=hasBar(n)?Math.min(192,Math.max(8,Math.ceil((end-start)*40))):1;
+    for(const side of [-1,1]) {
+        ctx.beginPath();
+        for(let i=0;i<=count;i++) {
+            const p=point(start+(end-start)*i/count);if(!p)continue;
+            const x=p.x+side*Math.max(2,6*p.scale);
+            if(i===0)ctx.moveTo(x,p.y);else ctx.lineTo(x,p.y);
+        }
+        ctx.stroke();
+    }
+    const p=point(onset+event.start);
+    if(p && onset+event.start>=now) {
+        const width=Math.max(6,15*p.scale),height=Math.max(3,5*p.scale);
+        ctx.globalAlpha=.95;ctx.lineWidth=Math.max(1,1.5*p.scale);
+        ctx.strokeRect(p.x-width/2,p.y-height/2,width,height);
+        const label=timedContactLabel(n,event),fontSize=Math.max(11,15*p.scale);
+        if(hwState._harmonicContactOverlay)hwState._harmonicContactOverlay.addGem({
+            x:p.x,y:p.y,rx:width/2,ry:height/2,fontSize,label});
+        else {ctx.font=`bold ${fontSize}px sans-serif`;ctx.fillStyle='#fff';
+            ctx.textAlign='center';fillTextReadable(hwState,label,p.x,p.y-height-5);}
+    }
+    ctx.restore();
+}
+
 export function drawSustains(hwState, W, H) {
     const scrapeLabels = new Map();
     // Same master-difficulty fallback as drawNotes/drawChords —
@@ -647,6 +684,7 @@ export function drawSustains(hwState, W, H) {
         drawSlideInRibbon2D(hwState, W, H, n);
         if (hasBar(n)) {
             drawBarSustain2D(hwState,W,H,n);
+            if(n.harmonic_changes)drawHarmonicContact2D(hwState,W,H,n);
             drawSlideOutRibbon2D(hwState,W,H,n);
             continue;
         }
@@ -742,6 +780,7 @@ export function drawSustains(hwState, W, H) {
             hwState.ctx.fill();
         }
         drawSlideOutRibbon2D(hwState, W, H, n);
+        if(n.harmonic_changes)drawHarmonicContact2D(hwState,W,H,n);
     }
     const chords = hwState._xfChords !== null ? hwState._xfChords
         : hwState._filteredChords !== null ? hwState._filteredChords : hwState.chords;
@@ -749,6 +788,7 @@ export function drawSustains(hwState, W, H) {
         if (isPickScrape(n)) { drawPickScrape2D(hwState, W, H, n, chord.t, scrapeLabels); continue; }
         drawSlideInRibbon2D(hwState, W, H, n, chord.t);
         if (hasBar(n)) drawBarSustain2D(hwState,W,H,n,chord.t);
+        if(n.harmonic_changes)drawHarmonicContact2D(hwState,W,H,n,chord.t);
         drawSlideOutRibbon2D(hwState, W, H, n, chord.t);
     }
     const ctx = hwState.ctx;

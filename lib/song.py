@@ -9,6 +9,7 @@ import math
 import xml.etree.ElementTree as ET
 from lib.harmonic_target import validate_target, validate_alias
 from lib.whammy import validate_whammy
+from lib.harmonic_changes import validate_changes
 
 log = logging.getLogger("feedBack.lib.song")
 
@@ -88,6 +89,7 @@ class Note:
     harmonic_target: dict | None = None
     harmonic_alias: str | None = None
     whammy: dict | None = None
+    harmonic_changes: dict | None = None
 
 
 @dataclass
@@ -285,6 +287,10 @@ def note_to_wire(n: Note) -> dict:
         out.update(hn=n.harmonic_node, hps=n.harmonic_pitch)
     if n.harmonic_target is not None:
         out["harmonic_target"] = dict(n.harmonic_target)
+    if n.harmonic_changes is not None:
+        out['t'] = round(n.time, 6)
+        out['sus'] = round(n.sustain, 6)
+        out['harmonic_changes'] = validate_changes({**out, 'harmonic_changes':n.harmonic_changes})
     if n.harmonic_alias is not None:
         out["harmonic_alias"] = n.harmonic_alias
     if n.whammy is not None:
@@ -342,6 +348,7 @@ def note_to_wire(n: Note) -> dict:
     if n.slide_in_marks is not None:
         out["slide_in_marks"] = _sanitize_slide_in_marks(n.slide_in_marks, n.sustain)
     validate_target(out)
+    validate_changes(out)
     validate_alias(out)
     return out
 
@@ -676,6 +683,7 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         harmonic_target=target,
         harmonic_alias=alias,
         whammy=validate_whammy(d),
+        harmonic_changes=validate_changes(d),
         palm_mute=bool(d.get("pm", False)),
         mute=bool(d.get("mt", False)),
         vibrato=bool(d.get("vb", d.get("vibrato", False))),

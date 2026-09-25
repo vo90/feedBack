@@ -3365,7 +3365,7 @@
         const candidates = [];
         const candidateVoicings = new Map();
         let shapeCursor = 0;
-        const hasIndividualCue = n => flag(n.mt) || flag(n.fhm) || flag(n.pm) || flag(n.ln)
+        const hasIndividualCue = n => !!n.harmonic_changes || flag(n.mt) || flag(n.fhm) || flag(n.pm) || flag(n.ln)
             || Number(n.bn) > 0 || (Array.isArray(n.bnv) && n.bnv.length > 0)
             || flag(n.vb) || flag(n.vibrato) || flag(n.v) || flag(n.tr)
             || ['sl', 'slu', 'su'].some(k => n[k] != null && Number.isFinite(Number(n[k])) && Number(n[k]) >= 0)
@@ -16249,6 +16249,7 @@
                             _scrChordNote.hn = cn.hn;
                             _scrChordNote.hps = cn.hps;
                             _scrChordNote.harmonic_target = cn.harmonic_target;
+                            _scrChordNote.harmonic_changes = cn.harmonic_changes;
                             _scrChordNote.harmonic_alias = cn.harmonic_alias;
                             _scrChordNote.whammy = cn.whammy;
                             _scrChordNote.hp  = !!cn.hp;
@@ -17830,6 +17831,12 @@
             trailEnd = Infinity, yieldSettings = TRAIL_YIELD_DEFAULTS,
         ) {
             const times = slideRibbonSampleTimes(n, susStart, sliceDur, _slideRibbonTimesScratch);
+            const contact=n.harmonic_changes ? window.feedBackHarmonicContacts?.events(n)[0] : null;
+            if(contact)for(const delta of [-1e-7,0]) {
+                const t=n.t+contact.start+delta;
+                if(t>susStart && t<susStart+sliceDur)times.push(t);
+            }
+            if(contact)times.sort((a,b)=>a-b);
             if (yieldCount > 0) {
                 hwyAppendTrailYieldContourTimes(susStart, susStart + sliceDur,
                     yieldStarts, yieldEnds, yieldCount, trailEnd, yieldSettings, times);
@@ -17879,8 +17886,11 @@
                 }
                 const outlineHalfW = outlineTw * yieldScale * 0.5;
                 const outlineHalfH = outlineTh * yieldScale * 0.5;
-                const bodyHalfW = bodyTw * yieldScale * 0.5;
-                const bodyHalfH = bodyTh * yieldScale * 0.5;
+                // Keep the same outer footprint and visibility envelope. A
+                // slightly inset body gives the contacted portion a quiet rim.
+                const contactInset=contact && Tk>=n.t+contact.start ? .72 : 1;
+                const bodyHalfW = bodyTw * yieldScale * 0.5 * contactInset;
+                const bodyHalfH = bodyTh * yieldScale * 0.5 * contactInset;
                 outlinePositions[v] = outlineX - outlineHalfW;
                 bodyPositions[v++] = bodyX - bodyHalfW;
                 outlinePositions[v] = yc - outlineHalfH;
@@ -17919,7 +17929,7 @@
                 Number(n.bn) > 0
                 || (Array.isArray(n.bnv) && n.bnv.length > 0)
                 || noteHasVibrato(n)
-                || n.whammy?.version === 1
+                || n.whammy?.version === 1 || n.harmonic_changes?.version === 1
                 || n.tr
                 || slideOutMarks(n).length > 0
                 || slideInMarks(n).length > 0
@@ -17932,7 +17942,7 @@
             // but these cues live on individual gems and must approach with them.
             return !!(n.ghost === true || n.hm || n.hp || n.ho || n.po || n.tp || n.ac || n.slp || n.plk
                 || ['artificial','tapped'].includes(n.harmonic_target?.kind)
-                || n.whammy?.version === 1
+                || n.whammy?.version === 1 || n.harmonic_changes?.version === 1
                 || (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) || noteHasSlideOutCue(n)
                 || slideInMarks(n).length > 0
                 || (Number(n.bn) || 0) > 0
@@ -20354,7 +20364,7 @@
                             : null;
                         const ribbonSusTrail = yieldCount > 0 || !!(scrape ||
                             (slideSt && n.f > 0 && (n.sus || 0) > 1e-4)
-                            || n.whammy?.version === 1
+                            || n.whammy?.version === 1 || n.harmonic_changes?.version === 1
                             || (Number(n.bn) > 0)
                             || (Array.isArray(n.bnv) && n.bnv.length > 0)
                             || n.tr
@@ -20521,6 +20531,43 @@
                                     olMesh, body, trailYieldTargetEvent, s,
                                     0, 0, 0, 0, olMesh.geometry,
                                 );
+                                const contact=n.harmonic_changes ? window.feedBackHarmonicContacts?.events(n)[0] : null;
+                                const contactTime=contact ? n.t+contact.start : -Infinity;
+                                if(contact && contactTime>=now && contactTime<=now+AHEAD) {
+                                    const amount=strandYieldCount ? hwyTrailYieldAmountAt(contactTime,
+                                        strandYieldStarts,strandYieldEnds,strandYieldCount,visibilityEnd,trailYieldSettings) : 0;
+                                    const envelope=1-(1-trailYieldSettings.minScale)*amount;
+                                    const cx=sustainTrailCenterXAt(n,strandX,contactTime,slideSt,tw);
+                                    const cy=y+techniqueYOffsetWorld(n,contactTime),cz=dZ(contactTime-now);
+                                    const width=(tw+trailEdgePad)*envelope;
+                                    const height=Math.max(th+trailEdgePad,NH*.27)*envelope;
+                                    const edge=Math.min(width,height)*.22;
+                                    // Four thin edges, never a filled gem. These use the
+                                    // owning ribbon's depth order and visibility narrowing.
+                                    const bars=[];
+                                    for(const [dx,dy,w,h] of [[0,-height/2,width,edge],[0,height/2,width,edge],
+                                        [-width/2,0,edge,height],[width/2,0,edge,height]]) {
+                                        const band=pSusOutline.get();band.material=mWhiteOutline;
+                                        band.position.set(cx+dx,cy+dy,cz);band.scale.set(w,h,K*.3);
+                                        band.rotation.set(0,0,0);band.renderOrder=ribbonRenderOrder+.001;
+                                        bars.push(band);
+                                    }
+                                    trailYieldRegisterTargetTrail(trailYieldTargetEvent,bars[0],bars[1]);
+                                    trailYieldRegisterTargetTrail(trailYieldTargetEvent,bars[2],bars[3]);
+                                    if(si===0) {
+                                        const label=pTechPlane.get();
+                                        const text=txtMat(window.feedBackHarmonicContacts.label(n,contact),'#ffffff',true,'technique');
+                                        label.material=_spriteMat2MeshMat(label,text);
+                                        const scale=(1+Math.max(0,Math.min(1,(contactTime-now)/AHEAD))*1.5)*_textSizeMul;
+                                        const size=NH*1.4*scale;
+                                        label.scale.set(size*text.map.image.width/text.map.image.height,size,1);
+                                        label.position.set(cx,cy+bendVisualDirY(s)*NH*1.9*scale,cz+K);
+                                        label.rotation.set(0,0,0);
+                                        label.material.opacity=Math.min(1,Math.max(0,(AHEAD-(contactTime-now))/.35));
+                                        label.renderOrder=renderOrderForLayerAtZ(cz,'NOTE_FRET_LABEL');
+                                        _registerIncomingLabelOccluder(label,cz);
+                                    }
+                                }
                                 trailOcclusionRegisterRelationships(
                                     trailYieldTargetEvent,
                                     _trailOcclusionEventsScratch,
