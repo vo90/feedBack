@@ -6949,6 +6949,8 @@
         let _laneTargetColor = null;
         let _renderScale = 1;
         let lyricsCanvas = null, lyricsCtx = null;
+        let contactOverlay = null;
+        const timedContactLabels = [];
         // FPS counter overlay. EMA-smoothed over ~30 frames so the readout doesn't
         // jitter every rAF tick. Controlled by the 'fpsVisible' setting (BG_DEFAULTS).
         // Legacy 'h3d_showFps' localStorage key and window.h3dShowFps are no longer
@@ -10207,6 +10209,7 @@
             _probe = new T.Vector3();
             ren.setClearColor(0x101820, _bcActive() ? 0 : 1);
             wrap.appendChild(ren.domElement);
+            contactOverlay = window.feedBackHarmonicContacts?.createOverlay?.(ren.domElement) || null;
 
             // WebGL context-loss recovery (see the _ctxLost declaration). Bound
             // on Three's own canvas — the context that actually resets on a GPU
@@ -14670,6 +14673,7 @@
             pFretColMarker.reset(); pSusRail.reset(); pTechPlane.reset();
             // Clear per-frame queues in-place (avoid reallocating the array object).
             _ndLabels.length = 0;
+            timedContactLabels.length = 0;
 
             // Prune expired notedetect marks once per frame instead of
             // once per drawNote call (issue #9 perf nit). drawNote then
@@ -20554,7 +20558,10 @@
                                     }
                                     trailYieldRegisterTargetTrail(trailYieldTargetEvent,bars[0],bars[1]);
                                     trailYieldRegisterTargetTrail(trailYieldTargetEvent,bars[2],bars[3]);
-                                    if(si===0) {
+                                    if(si===0 && contactOverlay) {
+                                        timedContactLabels.push({x:cx,y:cy,z:cz,width,height,
+                                            label:window.feedBackHarmonicContacts.label(n,contact)});
+                                    } else if(si===0) {
                                         const label=pTechPlane.get();
                                         const text=txtMat(window.feedBackHarmonicContacts.label(n,contact),'#ffffff',true,'technique');
                                         label.material=_spriteMat2MeshMat(label,text);
@@ -21304,6 +21311,31 @@
                 bar(x + xOff - capLen * 0.5, y + bracketH * 0.5, capLen,   barThick);
                 bar(x + xOff - capLen * 0.5, y - bracketH * 0.5, capLen,   barThick);
             }
+        }
+
+        function drawTimedContactLabels() {
+            if (!contactOverlay || !ren || !cam) return;
+            const canvas=ren.domElement, W=canvas.width, H=canvas.height;
+            contactOverlay.beginFrame(W,H,false); // projection already includes handedness
+            if (!timedContactLabels.length) return;
+            const rect=_newLabelRect();
+            for(let i=0;i<_incomingLabelOccluderCount;i++) {
+                const mesh=_incomingLabelOccluders[i].mesh;
+                if (!mesh.visible || mesh.material.opacity<=0 || !_incomingLabelScreenRect(mesh,rect)) continue;
+                contactOverlay.addGem({x:(1+(rect.minX+rect.maxX)/2)*W/2,
+                    y:(1-(rect.minY+rect.maxY)/2)*H/2,
+                    rx:(rect.maxX-rect.minX)*W/4,ry:(rect.maxY-rect.minY)*H/4});
+            }
+            const fontSize=14*H/Math.max(1,canvas.clientHeight);
+            for(const item of timedContactLabels) {
+                _probe.set(item.x,item.y,item.z).project(cam);
+                if (_probe.z < -1 || _probe.z > 1 || Math.abs(_probe.x)>1 || Math.abs(_probe.y)>1) continue;
+                const x=(_probe.x*.5+.5)*W,y=(-_probe.y*.5+.5)*H;
+                _probe.set(item.x+item.width/2,item.y+item.height/2,item.z).project(cam);
+                contactOverlay.addGem({x,y,rx:Math.max(1,Math.abs((_probe.x*.5+.5)*W-x)),
+                    ry:Math.max(1,Math.abs((-_probe.y*.5+.5)*H-y)),label:item.label,fontSize});
+            }
+            contactOverlay.flush();
         }
 
         function drawNotedetectLabels(ctx, W, H) {
@@ -22515,6 +22547,7 @@
             mBarre?.dispose?.(); mBarre = null;
             _paletteColorTmp = null;
             lyricsCanvas = lyricsCtx = null;
+            contactOverlay?.destroy();contactOverlay=null;timedContactLabels.length=0;
             projMeshArr = null;
             _probe = null;
             _incomingLabelProbe = null;
@@ -22943,6 +22976,7 @@
                         pbBeg(6); ren.render(scene, cam); pbEnd(6);
                     }
                 }
+                drawTimedContactLabels();
                 if (lyricsCtx && lyricsCanvas) {
                     lyricsCtx.clearRect(0, 0, lyricsCanvas.width, lyricsCanvas.height);
                     // Capture the actual lyrics-banner bottom so overlay cards

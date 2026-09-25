@@ -1,4 +1,5 @@
 // Additive one-contact contract. Fret position and initial attack never move.
+export { createHarmonicContactOverlay as createOverlay } from './harmonic-contact-overlay.js';
 const pitches = new Map([[12,12],[7,19],[19,19],[5,24],[24,24],[4,28],[9,28],[16,28],
     [3.2,31],[2.7,34],[5.8,34],[9.6,34],[14.7,34],[21.7,34],[2.4,36],[8.2,36],[17,36]]);
 const keys = (x,k) => x && typeof x==='object' && !Array.isArray(x)
