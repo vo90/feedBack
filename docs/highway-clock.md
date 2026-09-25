@@ -17,15 +17,27 @@ Desktop may expose `audio.getBackingSnapshot()`, returning null for an older
 addon, or version 1 with `valid`, `position` (seconds), `ageMs`, `sequence`,
 `generation`, `rate`, `playing` and `ended`. The native publisher uses its existing
 transport lock and atomic payload fields; reading never waits for audio. Age is
-computed entirely in the native monotonic clock domain. Core maps age to the
-renderer request midpoint, with uncertainty of up to half the IPC round trip.
-Replies taking more than 100 ms, invalid observations and out-of-order samples
-are ignored. Poll ownership invalidates replies before seek, pause, restart,
-rate change and song replacement.
+computed entirely in the native monotonic clock domain. New Desktop builds add
+`clockId`, `readAtMs` and `readUncertaintyMs` in the main process's monotonic domain.
+Core calibrates that domain using intersected request/response offset bounds,
+allowing 100 ppm relative drift. Once calibrated, asymmetric IPC delay does not
+move the sample to an assumed request midpoint. Mapping uncertainty must be at
+most 50 ms. Older timestamp-less snapshots retain the conservative 100 ms RTT
+limit. Invalid and out-of-order observations are ignored.
+
+During playback, `subscribeBackingSnapshots(callback)` supplies observations
+every 50 ms, independently of pending requests. Polls continue for calibration
+and compatibility, with one request in flight and a 100 ms cadence measured from
+request start. A stream and its polls share sample ordering. Even a superseded
+poll can refresh calibration. Stream calibration expires after 30 seconds or if
+its uncertainty exceeds 50 ms. Poll ownership and idempotent stream cleanup
+invalidate queued callbacks before seek, pause, restart, rate or song changes.
 
 Source progress permits at most 250 ms of extrapolation, after which presentation
 holds. New replies carrying the same position do not renew this budget. Recovery
-corrects phase without a backward step. Native end state also handles stretched
+corrects phase without a backward step. After a frame gap over 250 ms, the clock
+recovers forward on the first fresh observation, including when that observation
+arrives a few frames after the gap. Native end state also handles stretched
 playback whose latency-compensated final position can fall short of duration.
 
 Older Desktop builds fall back to `getBackingPosition()`. That path gains poll
@@ -41,5 +53,5 @@ no per-frame console messages. Renderer teardown resets the clock, and destructi
 releases the ring.
 
 Regression coverage lives in `highway_presentation_clock.test.js`,
-`transport_poll_ownership.test.js`, the stable-camera tests and the browser
+`transport_poll_ownership.test.js`, `transport_clock_delivery.test.js`, the stable-camera tests and the browser
 `clock-continuity` case. Recorded correction fixtures contain timing only.
