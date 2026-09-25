@@ -95,7 +95,58 @@ export const jucePlayer = {
     _sampleSequence: -1,
     _nativeGeneration: -1,
     _snapshotSupported: undefined,
+    _clockMapping: null,
+    _streamStop: null,
     _clockSnapshot: {},
+    _validSnapshot(s) {
+        return s && s.version === 1 && s.valid
+            && Number.isFinite(s.position) && s.position >= 0
+            && Number.isFinite(s.ageMs) && s.ageMs >= 0
+            && Number.isFinite(s.rate) && Math.abs(s.rate - this._speed) <= 0.001
+            && Number.isSafeInteger(s.sequence) && s.sequence >= 0
+            && Number.isSafeInteger(s.generation) && s.generation >= 0
+            && typeof s.playing === 'boolean';
+    },
+    _acceptSnapshot(snapshot, sampledAt) {
+        if (snapshot.sequence <= this._sampleSequence || snapshot.generation < this._nativeGeneration) return;
+        this._pos = snapshot.position;
+        this._pollAt = sampledAt;
+        if (snapshot.position !== this._sourcePosition) this._sourceAt = sampledAt;
+        this._sourcePosition = snapshot.position;
+        this._sourcePlaying = snapshot.playing;
+        this._sourceEnded = snapshot.ended === true;
+        this._sampleSequence = snapshot.sequence;
+        this._nativeGeneration = snapshot.generation;
+    },
+    _mapSnapshotTime(snapshot, sentAt, receivedAt) {
+        const rtt = receivedAt - sentAt;
+        if (snapshot.readAtMs === undefined) {
+            // Older Desktop builds have no main-clock envelope. Their native
+            // read is only known to lie somewhere inside this request bracket.
+            return rtt <= 100 ? sentAt + rtt / 2 - snapshot.ageMs : null;
+        }
+        const {readAtMs, readUncertaintyMs, clockId} = snapshot;
+        if (!Number.isFinite(readAtMs) || readAtMs < 0 || readAtMs > Number.MAX_SAFE_INTEGER
+            || !Number.isFinite(readUncertaintyMs) || readUncertaintyMs < 0
+            || readUncertaintyMs > 50 || !Number.isFinite(clockId)) return null;
+        // Calibrate the offset between two monotonic clocks, rather than
+        // assuming that the native read happened halfway through every IPC.
+        // Either direction may be delayed. Every request supplies an interval
+        // containing the offset; intersect observations to reduce uncertainty.
+        let low = sentAt - readAtMs - readUncertaintyMs - 0.2;
+        let high = receivedAt - readAtMs + readUncertaintyMs + 0.2;
+        const prior = this._clockMapping;
+        if (prior && prior.id === clockId && readAtMs >= prior.readAt) {
+            // Allow 100 ppm relative clock drift plus timestamp quantization.
+            const drift = Math.max(0, receivedAt - prior.at) * 0.0001;
+            const lo = Math.max(low, prior.low - drift);
+            const hi = Math.min(high, prior.high + drift);
+            if (lo <= hi) { low = lo; high = hi; }
+        }
+        this._clockMapping = {id: clockId, low, high, at: receivedAt, readAt: readAtMs};
+        if (high - low > 100) return null; // No sufficiently precise mapping yet.
+        return readAtMs + (low + high) / 2 - snapshot.ageMs;
+    },
     getClockSnapshot() {
         const s = this._clockSnapshot;
         s.position = this._pos; s.sampledAt = this._pollAt;
@@ -193,12 +244,39 @@ export const jucePlayer = {
         const self = this;
         const owner = this._pollGeneration;
         const owned = () => self._polling && owner === self._pollGeneration;
+        const api = window.feedBackDesktop.audio;
+        if (typeof api.subscribeBackingSnapshots === 'function') {
+            try {
+                self._streamStop = api.subscribeBackingSnapshots(snapshot => {
+                    if (!owned() || !self._validSnapshot(snapshot)) return;
+                    const map = self._clockMapping;
+                    if (!map || map.id !== snapshot.clockId) return;
+                    const age = Math.max(0, performance.now() - map.at);
+                    const uncertainty = (map.high - map.low) / 2 + age * 0.0001;
+                    if (age > 30000 || uncertainty > 50
+                        || !Number.isFinite(snapshot.readAtMs) || snapshot.readAtMs < 0
+                        || snapshot.readAtMs > Number.MAX_SAFE_INTEGER
+                        || !Number.isFinite(snapshot.readUncertaintyMs) || snapshot.readUncertaintyMs < 0
+                        || uncertainty + snapshot.readUncertaintyMs > 50) return;
+                    const sampledAt = snapshot.readAtMs + (map.low + map.high) / 2 - snapshot.ageMs;
+                    // A queued stream packet can arrive after a newer poll or
+                    // packet. Shared ordering and generation checks reject it.
+                    self._acceptSnapshot(snapshot, sampledAt);
+                });
+            } catch (err) {
+                console.warn('[jucePlayer] clock stream unavailable:', err);
+            }
+        }
+        let nextDue = performance.now() + 100;
         function scheduleNext() {
             self._timer = setTimeout(async () => {
                 if (!owned()) return;
                 self._timer = null;
+                // One request in flight, at most one start per 100ms. Time
+                // spent awaiting IPC counts toward that cadence; an overdue
+                // reply permits one immediate request, never a catch-up burst.
+                nextDue = performance.now() + 100;
                 try {
-                    const api = window.feedBackDesktop.audio;
                     let sentAt = performance.now(), snapshot = null;
                     if (self._snapshotSupported !== false && typeof api.getBackingSnapshot === 'function') {
                         snapshot = await api.getBackingSnapshot();
@@ -207,26 +285,16 @@ export const jucePlayer = {
                         self._snapshotSupported = snapshot != null;
                     }
                     if (snapshot != null) {
-                        const receivedAt = performance.now(), rtt = receivedAt - sentAt;
-                        if (snapshot.version !== 1 || !snapshot.valid
-                            || !Number.isFinite(snapshot.position) || snapshot.position < 0
-                            || !Number.isFinite(snapshot.ageMs) || snapshot.ageMs < 0
-                            || !Number.isFinite(snapshot.rate) || Math.abs(snapshot.rate - self._speed) > 0.001
-                            || !Number.isSafeInteger(snapshot.sequence) || snapshot.sequence <= self._sampleSequence
-                            || !Number.isSafeInteger(snapshot.generation) || snapshot.generation < self._nativeGeneration
-                            || typeof snapshot.playing !== 'boolean' || rtt > 100) return;
-                        // Native age uses one native clock. The IPC read is bracketed
-                        // by sentAt/receivedAt; midpoint uncertainty is at most RTT/2.
-                        const sampledAt = sentAt + rtt / 2 - snapshot.ageMs;
-                        self._pos = snapshot.position;
-                        self._pollAt = sampledAt;
-                        if (snapshot.position !== self._sourcePosition) self._sourceAt = sampledAt;
-                        self._sourcePosition = snapshot.position;
-                        self._sourcePlaying = snapshot.playing;
-                        self._sourceEnded = snapshot.ended === true;
-                        self._sampleSequence = snapshot.sequence;
-                        self._nativeGeneration = snapshot.generation;
+                        const receivedAt = performance.now();
+                        if (!self._validSnapshot(snapshot)) return;
+                        // Even a sample superseded by the stream still gives a
+                        // fresh clock-calibration bracket for this IPC read.
+                        const sampledAt = self._mapSnapshotTime(snapshot, sentAt, receivedAt);
+                        if (sampledAt === null) return;
+                        self._acceptSnapshot(snapshot, sampledAt);
                     } else {
+                        if (typeof self._streamStop === 'function') self._streamStop();
+                        self._streamStop = null;
                         sentAt = performance.now();
                         const pos = await api.getBackingPosition();
                         if (!owned()) return;
@@ -244,7 +312,7 @@ export const jucePlayer = {
                 } finally {
                     if (owned()) scheduleNext();
                 }
-            }, 100);
+            }, Math.max(0, nextDue - performance.now()));
         }
         scheduleNext();
     },
@@ -253,6 +321,11 @@ export const jucePlayer = {
         this._seekSerial++;
         this._resumeAfterSeek = false;
         this._polling = false;
+        const stop = this._streamStop;
+        this._streamStop = null;
+        if (typeof stop === 'function') {
+            try { stop(); } catch (err) { console.warn('[jucePlayer] clock stream cleanup failed:', err); }
+        }
         if (this._timer) { clearTimeout(this._timer); this._timer = null; }
     },
     setRate(rate) {

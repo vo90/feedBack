@@ -57,6 +57,16 @@ test('long frames and tab return do not rewind the timeline', () => {
     assert.ok(sample(c, 310, 9.99) >= prior);
     assert.equal(sample(c, 1000, 11), 11);
 });
+
+test('long-frame recovery waits for a fresh source then catches up once', () => {
+    const c = make(); sample(c, 0, 10);
+    sample(c, 100, 10.1);
+    const held = sample(c, 600, 10.1, {sampledAt: 100, freshAt: 100});
+    assert.ok(held <= 10.35 + 1e-8);
+    const caughtUp = sample(c, 610, 10.61);
+    assert.equal(caughtUp, 10.61);
+    assert.ok(sample(c, 620, 10.60) > caughtUp, 'ordinary correction after recovery cannot rewind');
+});
 for (const hz of [30, 40, 60, 100, 144]) for (const rate of [0.25, 0.5, 1, 1.5, 2]) {
     test(`timestamped coarse samples stay continuous and aligned at ${hz}Hz/${rate}x`, () => {
         const c = make(); let previous;

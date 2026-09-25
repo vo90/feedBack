@@ -13,12 +13,13 @@
     // measurement corrections. This clock is visual only; scoring reads audio.
     function createPresentationClock() {
         let time = NaN, lastPerf = NaN, epoch = null;
+        let gapRecovery = false;
         let trace = null, traceCount = 0;
         const fields = ['wallMs', 'time', 'target', 'raw', 'epoch', 'reason',
             'sampleAgeMs', 'sequence', 'generation', 'rate', 'deltaMs'];
         const reasons = ['advance', 'epoch', 'hold', 'stale', 'rewind', 'frame-gap', 'end'];
         return {
-            reset() { time = lastPerf = NaN; epoch = null; traceCount = 0; },
+            reset() { time = lastPerf = NaN; epoch = null; gapRecovery = false; traceCount = 0; },
             trace(enabled) { trace = enabled ? new Float64Array(4096 * fields.length) : null; traceCount = 0; },
             diagnostics() {
                 if (!trace) return null;
@@ -43,20 +44,24 @@
                 const previous = time;
                 let reason = 0;
                 if (!Number.isFinite(time) || epoch !== t.epoch) {
-                    time = Math.min(end, playing ? target : raw); reason = 1;
+                    time = Math.min(end, playing ? target : raw); reason = 1; gapRecovery = false;
                 } else if (t.state === 'rewind' || t.state === 'count-in') {
                     time = raw; reason = 4;
                 } else if (!playing) {
                     // Pause freezes the last displayed frame, even if it is
                     // slightly ahead of the most recent audio measurement.
-                    reason = 2;
+                    reason = 2; gapRecovery = false;
                 } else {
                     const dt = Math.max(0, now - lastPerf) / 1000;
+                    // A long frame can resume before its queued audio update.
+                    // Remember that gap until a fresh observation arrives, so
+                    // clipping a stale frame cannot leave seconds of phase lag.
+                    if (dt > 0.25) gapRecovery = true;
                     // Permit finite extrapolation only while the SOURCE is
                     // fresh, not because its extrapolated getter keeps changing.
                     const usable = Math.max(0, Math.min(now, freshAt + 250) - lastPerf) / 1000;
                     if (age > 250) { time += usable * rate; reason = 3; }
-                    else if (dt > 0.25) { time = Math.max(time, target); reason = 5; }
+                    else if (gapRecovery) { time = Math.max(time, target); reason = 5; gapRecovery = false; }
                     else {
                         const advance = dt * rate;
                         const predicted = time + advance;
