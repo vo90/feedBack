@@ -53,6 +53,11 @@ function buildClockSandbox(perfNowImpl) {
         _chartAnchorPerfNow: NaN,
         _chartLastAdvanceAt: 0,
         _chartObservedRate: 1,
+        _presentationEpoch: 0,
+        _playbackState: null,
+        _nativeClock: null,
+        _transportBundle: {},
+        songInfo: {duration: 300},
     };
     const sandbox = {
         hwState,
@@ -68,13 +73,63 @@ function buildClockSandbox(perfNowImpl) {
     // Strip trailing comma if present (object-literal method declarations).
     const cleanup = (s) => s.replace(/,?\s*$/, '');
     vm.runInContext(`
+        globalThis.api = { ${extractBlock(src, 'resetPresentation(reason) {')} };
         globalThis.setTime = function ${cleanup(setTimeBody)};
         globalThis.setPlaybackRate = function ${cleanup(setRateBody)};
         globalThis.freezeTime = function ${cleanup(freezeTimeBody)};
         globalThis.getTime = function ${cleanup(getTimeBody)};
+        globalThis.setPlaybackState = function ${extractBlock(src, 'setPlaybackState(state) {')};
+        globalThis.setPlaybackSample = function ${extractBlock(src, 'setPlaybackSample(clock, playing) {')};
+        globalThis.setAvOffset = function ${extractBlock(src, 'setAvOffset(ms) {')};
+        globalThis.timingBundle = function() {
+            const b = {};
+            ${src.slice(src.indexOf('        b.transport = null;'), src.indexOf('        // Chart content (filter-aware'))}
+            return b;
+        };
     `, sandbox);
     return sandbox;
 }
+
+test('native presentation adds song and AV offsets once without changing judgement time', () => {
+    let now = 1000;
+    const sb = buildClockSandbox(() => now);
+    sb.hwState.songOffset = .2;
+    sb.setAvOffset(30); sb.setTime(10.1);
+    const clock = {position: 10, sampledAt: 900, freshAt: 900, rate: 1,
+        duration: 300, sequence: 7, generation: 2, playing: true};
+    sb.setPlaybackSample(clock, true);
+    const bundle = sb.timingBundle();
+    assert.ok(Math.abs(bundle.transport.position - 10.23) < 1e-10);
+    assert.equal(bundle.transport.endTime, 300.23);
+    assert.ok(Math.abs(sb.getTime() - 10.3) < 1e-10);
+    assert.equal(clock.position, 10, 'host must not modify the shared transport sample');
+    clock.position = 50;
+    assert.ok(Math.abs(sb.timingBundle().transport.position - 10.23) < 1e-10);
+});
+
+test('tick updates cannot release an in-flight seek or deliberate rewind', () => {
+    const sb = buildClockSandbox(() => 1000);
+    for (const state of ['seeking', 'rewind']) {
+        sb.setPlaybackState(state); sb.setPlaybackSample(null, true);
+        assert.equal(sb.timingBundle().transport.state, state);
+    }
+    sb.api.resetPresentation('seek'); sb.setTime(2); sb.setPlaybackState('paused');
+    assert.equal(sb.timingBundle().transport.epoch, 1);
+    assert.equal(sb.timingBundle().transport.position, 2);
+    assert.equal(sb.timingBundle().isPlaying, false);
+});
+
+test('browser/stems anchors carry explicit state and calibration resets the epoch', () => {
+    const sb = buildClockSandbox(() => 1000);
+    sb.setTime(10); sb.setPlaybackRate(.5); sb.setPlaybackSample(null, true);
+    assert.equal(sb.timingBundle().transport.sampledAt, 1000);
+    assert.equal(sb.timingBundle().transport.rate, .5);
+    sb.setPlaybackState('paused');
+    assert.equal(sb.timingBundle().isPlaying, false);
+    sb.setAvOffset(-50);
+    assert.equal(sb.timingBundle().transport.epoch, 1);
+    assert.equal(sb.timingBundle().transport.position, 9.95);
+});
 
 
 // R3c: highway.js is being carved into modules, so its source is no longer ONE file. Read the

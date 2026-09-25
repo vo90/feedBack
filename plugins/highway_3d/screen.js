@@ -9,6 +9,77 @@
 (function () {
     'use strict';
 
+    // Explicit transport epochs separate genuine repositioning from clock
+    // measurement corrections. This clock is visual only; scoring reads audio.
+    function createPresentationClock() {
+        let time = NaN, lastPerf = NaN, epoch = null;
+        let trace = null, traceCount = 0;
+        const fields = ['wallMs', 'time', 'target', 'raw', 'epoch', 'reason',
+            'sampleAgeMs', 'sequence', 'generation', 'rate', 'deltaMs'];
+        const reasons = ['advance', 'epoch', 'hold', 'stale', 'rewind', 'frame-gap', 'end'];
+        return {
+            reset() { time = lastPerf = NaN; epoch = null; traceCount = 0; },
+            trace(enabled) { trace = enabled ? new Float64Array(4096 * fields.length) : null; traceCount = 0; },
+            diagnostics() {
+                if (!trace) return null;
+                const count = Math.min(traceCount, 4096), rows = [];
+                for (let i = traceCount - count; i < traceCount; i++) {
+                    const at = (i % 4096) * fields.length;
+                    rows.push(Array.from(trace.subarray(at, at + fields.length)));
+                }
+                return {fields, reasons, count: traceCount, rows};
+            },
+            sample(raw, now, transport) {
+                const t = transport;
+                const rate = Number.isFinite(t.rate) && t.rate > 0 ? t.rate : 1;
+                const position = Number.isFinite(t.position) ? t.position : raw;
+                const sampledAt = Number.isFinite(t.sampledAt) ? t.sampledAt : now;
+                const freshAt = Number.isFinite(t.freshAt) ? t.freshAt : sampledAt;
+                const age = Math.max(0, now - freshAt);
+                const end = Number.isFinite(t.endTime) ? t.endTime : Infinity;
+                const playing = t.state === 'playing';
+                const target = Math.min(end, position + (playing
+                    ? Math.max(0, Math.min(now, freshAt + 250) - sampledAt) * rate / 1000 : 0));
+                const previous = time;
+                let reason = 0;
+                if (!Number.isFinite(time) || epoch !== t.epoch) {
+                    time = Math.min(end, playing ? target : raw); reason = 1;
+                } else if (t.state === 'rewind' || t.state === 'count-in') {
+                    time = raw; reason = 4;
+                } else if (!playing) {
+                    // Pause freezes the last displayed frame, even if it is
+                    // slightly ahead of the most recent audio measurement.
+                    reason = 2;
+                } else {
+                    const dt = Math.max(0, now - lastPerf) / 1000;
+                    // Permit finite extrapolation only while the SOURCE is
+                    // fresh, not because its extrapolated getter keeps changing.
+                    const usable = Math.max(0, Math.min(now, freshAt + 250) - lastPerf) / 1000;
+                    if (age > 250) { time += usable * rate; reason = 3; }
+                    else if (dt > 0.25) { time = Math.max(time, target); reason = 5; }
+                    else {
+                        const advance = dt * rate;
+                        const predicted = time + advance;
+                        const correction = (target - predicted) * Math.min(1, dt / 0.12);
+                        time = predicted + Math.max(-advance * 0.2, Math.min(advance * 0.2, correction));
+                    }
+                    if (time >= end) { time = end; reason = 6; }
+                }
+                epoch = t.epoch; lastPerf = now;
+                if (trace) {
+                    const at = (traceCount++ % 4096) * fields.length;
+                    trace[at] = now; trace[at + 1] = time; trace[at + 2] = target;
+                    trace[at + 3] = raw; trace[at + 4] = epoch; trace[at + 5] = reason;
+                    trace[at + 6] = age; trace[at + 7] = t.sequence;
+                    trace[at + 8] = t.generation; trace[at + 9] = rate;
+                    trace[at + 10] = Number.isFinite(previous) ? (time - previous) * 1000 : 0;
+                }
+                return time;
+            },
+        };
+    }
+    // End presentation clock.
+
     /* ======================================================================
      *  Constants
      * ====================================================================== */
@@ -8080,6 +8151,7 @@
         let _clkPerf = NaN;     // performance.now() when that sample arrived
         let _clkRate = 1;       // observed chart-seconds per real-second
         let _clkFramePerf = NaN;
+        const _presentationClock = createPresentationClock();
         let _clkRateAudioT = NaN, _clkRatePerf = NaN;
         let _frameNow = 0;      // smoothed time for THIS frame (update → camUpdate)
 
@@ -14127,6 +14199,9 @@
         // top of update(); camUpdate() reads the stored _frameNow afterward so
         // notes and camera share one clock. See the _clk* state block above.
         function smoothNow(bundle) {
+            if (bundle.transport) {
+                return (_frameNow = _presentationClock.sample(bundle.currentTime, performance.now(), bundle.transport));
+            }
             const raw = bundle.currentTime;
             const p = performance.now();
             const declaredRate = bundle.playbackRate ?? bundle.speed;
@@ -21688,10 +21763,12 @@
             const wall = performance.now() / 1000;
             const elapsed = Number.isFinite(s.lastWall) ? Math.max(0, wall - s.lastWall) : 0;
             const dt = Math.min(0.25, elapsed);
-            const now = Number(bundle.currentTime) || 0;
+            const now = bundle.transport ? frameTime : Number(bundle.currentTime) || 0;
             const advance = now - s.lastTime;
-            const seek = Number.isFinite(s.lastTime) && ((bundle.isPlaying === false && Math.abs(advance) > 0.0001) || advance < -0.04
-                || Math.abs(advance - elapsed * s.rate) > Math.max(0.4, elapsed * 2));
+            const seek = bundle.transport ? s.epoch !== bundle.transport.epoch
+                : Number.isFinite(s.lastTime) && ((bundle.isPlaying === false && Math.abs(advance) > 0.0001) || advance < -0.04
+                    || Math.abs(advance - elapsed * s.rate) > Math.max(0.4, elapsed * 2));
+            s.epoch = bundle.transport?.epoch;
             // Audio time often arrives in 20–23ms steps. Estimate speed across
             // a quarter-second sample, never from one render frame (which
             // would alternate between zero and an inflated playback rate).
@@ -21751,6 +21828,7 @@
             const prediction = Math.min(AHEAD, 0.15 * s.rate);
             const closeDistance = plan.closeDistance;
             const snap = reset || !s.initialized || (seek && stableCameraFollow);
+            s.clockReset = seek;
             s.correction = false;
             if (snap) {
                 const centre = plan.valid ? plan.x : focus.valid ? focus.x
@@ -21849,7 +21927,7 @@
                 _stableCam.active = false;
                 cam.updateProjectionMatrix(); // clear the experimental lens shift
             }
-            const bpm = computeBPM(bundle.beats, bundle.currentTime);
+            const bpm = computeBPM(bundle.beats, _frameNow);
             const lerp = CAM_LERP_BASE * Math.max(bpm, 60) / 120;
 
             // ── Horizontal-FOV-hold + optional wide-pane pose nudges ──
@@ -22341,6 +22419,7 @@
             _lookaheadHiNeckLatch = false;
             _measureStarts = []; _measureStartsRef = null;
             _clkAudioT = NaN; _clkPerf = NaN; _clkRate = 1; _frameNow = 0;
+            _presentationClock.reset();
             _clkFramePerf = NaN; _clkRateAudioT = NaN; _clkRatePerf = NaN;
             _coincidentRepeatNoteSet = null;
             _coincidentRepeatNotesRef = null;
@@ -22663,7 +22742,7 @@
                 }
                 if (bcCtrl) {
                     const cfg = _bcLoadSettings();
-                    const _ct = bundle.currentTime || 0;
+                    const _ct = _frameNow || 0;
                     if (cfg.chartAccents) {
                         if (_ct < _chartPrevT - 0.08 || _ct - _chartPrevT > 1.0) {
                             _bcBeatIdx = _bcFfIdx(bundle.beats, _ct, 'time');
@@ -22734,7 +22813,7 @@
                     // step down past every wrapped row, not just a 2-row estimate.
                     let lyricsBottom = 0;
                     if (bundle.lyricsVisible && bundle.lyrics?.length) {
-                        lyricsBottom = drawLyrics(bundle.lyrics, bundle.currentTime, lyricsCtx, lyricsCanvas.width, lyricsCanvas.height) || 0;
+                        lyricsBottom = drawLyrics(bundle.lyrics, _frameNow, lyricsCtx, lyricsCanvas.width, lyricsCanvas.height) || 0;
                     }
                     drawNotedetectLabels(lyricsCtx, lyricsCanvas.width, lyricsCanvas.height);
                     drawScoreFx(lyricsCtx, lyricsCanvas.width, lyricsCanvas.height);
@@ -22803,7 +22882,7 @@
                     if (sectionHudVisible && bundle.sections && bundle.sections.length) {
                         const secH = drawSectionHud(lyricsCtx, {
                             sections: bundle.sections,
-                            currentTime: bundle.currentTime,
+                            currentTime: _frameNow,
                             canvasW: lyricsCanvas.width, canvasH: lyricsCanvas.height,
                             position: sectionHudPosition,
                             sizeSlider: sectionHudSize,
@@ -22818,7 +22897,7 @@
                         const toneH = drawToneHud(lyricsCtx, {
                             toneChanges: bundle.toneChanges,
                             toneBase: bundle.toneBase,
-                            currentTime: bundle.currentTime,
+                            currentTime: _frameNow,
                             canvasW: lyricsCanvas.width, canvasH: lyricsCanvas.height,
                             position: toneHudPosition,
                             sizeSlider: toneHudSize,
@@ -22839,7 +22918,7 @@
                             name: _diagPrev.name, frets: _diagPrev.frets,
                             opacity: _diagPrevOpacity,
                             entranceT: (_diagPrev.t !== undefined)
-                                ? Math.min(1.0, Math.max(0, (bundle.currentTime - _diagPrev.t) / DIAG_ENTRANCE_S))
+                                ? Math.min(1.0, Math.max(0, (_frameNow - _diagPrev.t) / DIAG_ENTRANCE_S))
                                 : 1.0,
                             canvasW: lyricsCanvas.width, canvasH: lyricsCanvas.height,
                             inverted: _invertedCached,
@@ -22853,7 +22932,7 @@
                     if (chordDiagramVisible && _diagChord) {
                         const diagH = _drawDiagramCached(lyricsCtx, {
                             name: _diagChord.name, frets: _diagChord.frets,
-                            opacity: Math.max(0, 1 + (_diagChord.t - bundle.currentTime) / DIAG_LINGER_S),
+                            opacity: Math.max(0, 1 + (_diagChord.t - _frameNow) / DIAG_LINGER_S),
                             entranceT: _diagEntranceT,
                             canvasW: lyricsCanvas.width, canvasH: lyricsCanvas.height,
                             inverted: _invertedCached,
@@ -22880,6 +22959,8 @@
                 }
             },
 
+            setClockDiagnostics(enabled) { _presentationClock.trace(enabled); },
+            getClockDiagnostics() { return _presentationClock.diagnostics(); },
             resize(w, h) {
                 if (!_isReady) return;
                 const s = canvasSize(highwayCanvas);
@@ -22887,6 +22968,8 @@
             },
 
             destroy() {
+                _presentationClock.trace(false);
+                _presentationClock.reset();
                 _destroyed = true; _isReady = false; _diagChord = null; _diagPrev = null; _diagLastKey = null; _diagRenderCache.clear();
                 _lastHwW = 0; _lastHwH = 0;
                 _appliedW = 0; _appliedH = 0;
@@ -22971,6 +23054,7 @@
     //                        picking us on machines without WebGL2.
     window.feedBackViz_highway_3d.contextType = 'webgl2';
     window.feedBackViz_highway_3d.__test = {
+        createPresentationClock,
         getAnalyserForBridgeTest: _bgGetAnalyser,
         readBandsForBridgeTest: _bgReadBands,
         resetAnalyserBridgeForTest() { _bgBridgeKeys.clear(); _bgAudio = null; _bgAudioCore = null; _bgAudioFailedAt = 0; },
