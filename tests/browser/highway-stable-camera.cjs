@@ -409,6 +409,44 @@ async function main() {
       });
       console.log(name + ': ' + samples.length + ' samples');
     }
+    if (chosen('clock-continuity')) {
+      await init({...low(), transport: {epoch: 1, state: 'playing', position: 9,
+        sampledAt: 1000, freshAt: 1000, rate: 1, endTime: 40, sequence: 0, generation: 1}});
+      const audit = await page.evaluate(() => {
+        r.setClockDiagnostics(true);
+        let cameraResets = 0;
+        const noteDepths = [];
+        for (let i = 1; i <= 300; i++) {
+          const raw = 9 + i / 100 - (i % 10 === 0 ? .035 : 0);
+          Object.assign(bundle.transport, {position: raw, sampledAt: __cameraWall + 10,
+            freshAt: __cameraWall + 10, sequence: i});
+          const shot = cameraStep(raw, 10, true);
+          if (shot.state.clockReset) cameraResets++;
+          const n = __stableProbe.find(n => n.kind === 'gem' && n.t === 10 && n.s === 3 && n.f === 3);
+          if (n && n.mesh.visible) noteDepths.push(n.mesh.matrixWorld.elements[14]);
+        }
+        const run = r.getClockDiagnostics();
+        const beforePause = run.rows.at(-1)[1];
+        bundle.transport.state = 'paused';
+        cameraStep(bundle.currentTime - .05, 10, false);
+        cameraStep(bundle.currentTime, 1000, false);
+        const afterPause = r.getClockDiagnostics().rows.at(-1)[1];
+        const target = beforePause - .001;
+        Object.assign(bundle.transport, {epoch: 2, state: 'playing', position: target,
+          sampledAt: __cameraWall + 10, freshAt: __cameraWall + 10});
+        const seek = cameraStep(target, 10, true);
+        const afterSeek = r.getClockDiagnostics().rows.at(-1)[1];
+        return {run, cameraResets, noteDepths, beforePause, afterPause, target, afterSeek, seekReset: seek.state.clockReset};
+      });
+      check(audit.run.rows.every(row => row[10] >= -1e-8), 'clock: presentation rewound on a correction');
+      check(audit.cameraResets === 0, 'clock: raw correction reset the camera');
+      check(audit.noteDepths.length > 10, 'clock: expected visible reference-note samples');
+      check(audit.noteDepths.every((z, i, zs) => !i || z >= zs[i - 1] - 1e-8), 'clock: note geometry reversed');
+      check(audit.afterPause === audit.beforePause, 'clock: pause drifted or snapped');
+      check(Math.abs(audit.afterSeek - audit.target) < 1e-8 && audit.seekReset, 'clock: tiny explicit seek was lost');
+      results.push({name: 'clock-continuity', audit});
+      console.log('clock-continuity: ' + audit.run.rows.length + ' rendered frames');
+    }
     for (const preset of ['straight', 'angled']) if (chosen('preset-' + preset)) {
       const p = await init(low(), preset);
       await record('preset-' + preset, [p], true);

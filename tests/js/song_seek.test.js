@@ -232,6 +232,19 @@ test('queued seek bails when generation bumps DURING the JUCE seek', async () =>
     assert.equal(result.completed, false, 'mid-seek cancel must resolve to {completed: false}');
 });
 
+test('cancelled seek releases its presentation hold without reporting success', async () => {
+    const sandbox = buildSandbox({juceMode: true, currentTime: 5});
+    let permitted = true, state, resets = 0;
+    sandbox.window.highway = {
+        setPlaybackState(v) { state = v; }, setTime() {}, resetPresentation() { resets++; },
+    };
+    sandbox.jucePlayer.seek = async s => { sandbox.jucePlayer.currentTime = s; permitted = false; };
+    loadFunctions(sandbox, fs.readFileSync(APP_JS, 'utf8'));
+    const result = await sandbox.__audioSeek(6, 'cancel', {guard: () => permitted});
+    assert.equal(result.completed, false); assert.equal(state, 'paused'); assert.equal(resets, 1);
+    assert.equal(sandbox.__emitCalls.filter(x => x.event === 'song:seek').length, 0);
+});
+
 test('_audioSeek resolves to {completed, from, to} on a successful run', async () => {
     const src = fs.readFileSync(APP_JS, 'utf8');
     const sandbox = buildSandbox({ juceMode: false, currentTime: 5 });

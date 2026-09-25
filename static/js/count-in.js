@@ -347,6 +347,7 @@ export async function startCountIn(opts = {}) {
     }
 
     const rewindStart = performance.now();
+    window.highway.setPlaybackState?.('rewind');
     const rewindStep = now => {
         if (!_currentCountIn(owner)) return;
         const t = Math.min((now - rewindStart) / 400, 1);

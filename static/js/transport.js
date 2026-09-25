@@ -85,11 +85,35 @@ export const jucePlayer = {
     _pollAt: 0,    // performance.now() when _pos was last set
     _polling: false,
     _speed: 1,
+    _pollGeneration: 0,
+    _seekSerial: 0,
+    _resumeAfterSeek: false,
+    _sourceAt: 0,
+    _sourcePosition: NaN,
+    _sourcePlaying: true,
+    _sourceEnded: false,
+    _sampleSequence: -1,
+    _nativeGeneration: -1,
+    _snapshotSupported: undefined,
+    _clockSnapshot: {},
+    getClockSnapshot() {
+        const s = this._clockSnapshot;
+        s.position = this._pos; s.sampledAt = this._pollAt;
+        s.freshAt = this._sourceAt; s.rate = this._speed;
+        s.duration = this._dur; s.sequence = this._sampleSequence;
+        s.generation = this._nativeGeneration;
+        s.playing = this._polling && this._sourcePlaying;
+        return s;
+    },
     get currentTime() {
-        if (!this._polling) return this._pos;
+        if (!this._polling || !this._sourcePlaying) return this._pos;
         // Interpolate between IPC polls so highway motion is smooth at 60fps
         // Scale by _speed so at 0.7x the interpolated clock advances 0.7s/s
-        const elapsed = (performance.now() - this._pollAt) / 1000;
+        const now = performance.now();
+        // Timestamped sources can establish when audio stopped advancing.
+        // Do not let judgement time run indefinitely beyond a stalled source.
+        const until = this._snapshotSupported ? Math.min(now, this._sourceAt + 250) : now;
+        const elapsed = Math.max(0, until - this._pollAt) / 1000;
         return Math.min(this._pos + elapsed * this._speed, this._dur > 0 ? this._dur : Infinity);
     },
     get duration() { return this._dur; },
@@ -133,39 +157,101 @@ export const jucePlayer = {
         });
     },
     async seek(s) {
-        const prev = this._pos;
+        if (!Number.isFinite(s)) throw new TypeError('Seek position must be finite');
+        s = Math.max(0, Math.min(s, this._dur > 0 ? this._dur : Infinity));
+        const prev = this.currentTime;
+        const resume = this._polling || this._resumeAfterSeek;
+        this._stopPolling();
+        this._resumeAfterSeek = resume;
+        const owner = this._seekSerial;
         this._pos = s;
         this._pollAt = performance.now();
+        this._sourceAt = this._pollAt;
         try {
             await window.feedBackDesktop.audio.seekBacking(s);
         } catch (err) {
             console.warn('[jucePlayer] seekBacking failed:', err);
-            this._pos = prev;
-            this._pollAt = performance.now();
+            if (owner === this._seekSerial) {
+                this._pos = prev;
+                this._pollAt = performance.now();
+            }
+            throw err;
+        } finally {
+            if (owner === this._seekSerial && this._resumeAfterSeek) this._startPolling();
         }
     },
     _startPolling() {
         this._stopPolling();
         this._polling = true;
         this._pollAt = performance.now();
+        this._sourceAt = this._pollAt;
+        this._sourcePosition = NaN;
+        this._sourcePlaying = true;
+        this._sourceEnded = false;
+        this._sampleSequence = -1;
+        this._nativeGeneration = -1;
         const self = this;
+        const owner = this._pollGeneration;
+        const owned = () => self._polling && owner === self._pollGeneration;
         function scheduleNext() {
             self._timer = setTimeout(async () => {
-                if (!self._polling) return;
+                if (!owned()) return;
+                self._timer = null;
                 try {
-                    self._pos = await window.feedBackDesktop.audio.getBackingPosition();
-                    self._pollAt = performance.now();
+                    const api = window.feedBackDesktop.audio;
+                    let sentAt = performance.now(), snapshot = null;
+                    if (self._snapshotSupported !== false && typeof api.getBackingSnapshot === 'function') {
+                        snapshot = await api.getBackingSnapshot();
+                        if (!owned()) return;
+                        // A new preload can be paired with an older native addon.
+                        self._snapshotSupported = snapshot != null;
+                    }
+                    if (snapshot != null) {
+                        const receivedAt = performance.now(), rtt = receivedAt - sentAt;
+                        if (snapshot.version !== 1 || !snapshot.valid
+                            || !Number.isFinite(snapshot.position) || snapshot.position < 0
+                            || !Number.isFinite(snapshot.ageMs) || snapshot.ageMs < 0
+                            || !Number.isFinite(snapshot.rate) || Math.abs(snapshot.rate - self._speed) > 0.001
+                            || !Number.isSafeInteger(snapshot.sequence) || snapshot.sequence <= self._sampleSequence
+                            || !Number.isSafeInteger(snapshot.generation) || snapshot.generation < self._nativeGeneration
+                            || typeof snapshot.playing !== 'boolean' || rtt > 100) return;
+                        // Native age uses one native clock. The IPC read is bracketed
+                        // by sentAt/receivedAt; midpoint uncertainty is at most RTT/2.
+                        const sampledAt = sentAt + rtt / 2 - snapshot.ageMs;
+                        self._pos = snapshot.position;
+                        self._pollAt = sampledAt;
+                        if (snapshot.position !== self._sourcePosition) self._sourceAt = sampledAt;
+                        self._sourcePosition = snapshot.position;
+                        self._sourcePlaying = snapshot.playing;
+                        self._sourceEnded = snapshot.ended === true;
+                        self._sampleSequence = snapshot.sequence;
+                        self._nativeGeneration = snapshot.generation;
+                    } else {
+                        sentAt = performance.now();
+                        const pos = await api.getBackingPosition();
+                        if (!owned()) return;
+                        if (!Number.isFinite(pos) || pos < 0) return;
+                        self._pos = pos;
+                        self._pollAt = performance.now();
+                        // Legacy addons cannot report sample age. Equal replies do
+                        // not renew freshness, even though currentTime extrapolates.
+                        if (pos !== self._sourcePosition) self._sourceAt = self._pollAt;
+                        self._sourcePosition = pos;
+                    }
                     _emitSongPositionChanged(self.currentTime, self.duration || null);
                 } catch (err) {
                     console.warn('[jucePlayer] position poll failed:', err);
                 } finally {
-                    if (self._polling) scheduleNext();
+                    if (owned()) scheduleNext();
                 }
             }, 100);
         }
         scheduleNext();
     },
     _stopPolling() {
+        this._pollGeneration++;
+        this._seekSerial++;
+        this._resumeAfterSeek = false;
         this._polling = false;
         if (this._timer) { clearTimeout(this._timer); this._timer = null; }
     },
@@ -173,6 +259,7 @@ export const jucePlayer = {
         this._pos = this.currentTime;
         this._pollAt = performance.now();
         this._speed = rate;
+        if (this._polling) this._startPolling();
     },
     async stop() {
         await this.pause();
@@ -205,6 +292,7 @@ export function _songEventPayload() {
 export function _markPlaybackPaused() {
     const changed = S.isPlaying || window.feedBack?.isPlaying;
     S.isPlaying = false;
+    window.highway?.setPlaybackState?.('paused');
     setPlayButtonState(false);
     if (window.feedBack) {
         window.feedBack.isPlaying = false;
@@ -215,6 +303,7 @@ export function _markPlaybackPaused() {
 export function _markPlaybackResumed() {
     const changed = !window.feedBack?.isPlaying;
     S.isPlaying = true;
+    window.highway?.setPlaybackState?.('playing');
     setPlayButtonState(true);
     if (window.feedBack) {
         window.feedBack.isPlaying = true;
@@ -312,6 +401,9 @@ export function _resetAudioSeekState() {
     // quickly because each subsequent old-gen step bails on the first
     // guard the moment its predecessor resolves.
     _audioSeekGen++;
+    if (typeof jucePlayer !== 'undefined') jucePlayer._stopPolling?.();
+    window.highway?.resetPresentation?.('song-change');
+    window.highway?.setPlaybackState?.('paused');
     _playAttemptGen++;
     _resumeRequestGen++;
     _resumeInFlight = null;
@@ -390,9 +482,18 @@ export async function _audioSeek(s, reason, options = {}) {
             }
         }
         const from = _audioTime();
+        window.highway?.setPlaybackState?.('seeking');
         if (window._juceMode) await _juceSeekWithTimeout(target);
         else audio.currentTime = target;
         if (gen !== _audioSeekGen || !permitted()) {
+            if (gen === _audioSeekGen) {
+                // A command can complete physically after its caller cancels.
+                // Release the presentation hold without emitting a successful
+                // seek to the cancelled caller or touching a replacement song.
+                window.highway?.setTime?.(_audioTime());
+                window.highway?.resetPresentation?.('cancelled-seek');
+                window.highway?.setPlaybackState?.(S.isPlaying ? 'playing' : 'paused');
+            }
             return { completed: false, from, to: NaN };
         }
         // Read the verified post-seek position rather than the requested `s`
@@ -409,12 +510,15 @@ export async function _audioSeek(s, reason, options = {}) {
         // Without this, chartT lags by one 60Hz tick after a seek.
         if (window.highway && typeof window.highway.setTime === 'function') {
             window.highway.setTime(to);
+            window.highway.resetPresentation?.(reason || 'seek');
+            window.highway.setPlaybackState?.(S.isPlaying ? 'playing' : 'paused');
         }
         window.feedBack.emit('song:seek', { from, to, reason: reason || null });
         return { completed: true, from, to };
     }).catch((err) => {
         // Don't let one failed seek poison subsequent ones.
         console.warn('[_audioSeek]', err);
+        if (gen === _audioSeekGen) window.highway?.setPlaybackState?.(S.isPlaying ? 'playing' : 'paused');
         return { completed: false, from: NaN, to: NaN };
     });
     return _audioSeekChain;

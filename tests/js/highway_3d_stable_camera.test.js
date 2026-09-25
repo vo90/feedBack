@@ -113,6 +113,7 @@ function harness() {
                 if ('strings' in values) nStr = values.strings;
                 if ('pan' in values) cameraSmoothing = values.pan;
                 if ('rate' in values) bundle.playbackRate = values.rate;
+                if ('epoch' in values) bundle.transport = {epoch: values.epoch};
             },
             frame(time, elapsed = 1 / 60, playing = true, frameTime) {
                 wall += elapsed; bundle.currentTime = time; bundle.isPlaying = playing;
@@ -175,6 +176,18 @@ function harness() {
         };
     `)();
 }
+
+test('explicit transport epoch prevents raw correction from snapping the stable camera', () => {
+    const h = harness();
+    h.setPoints([[30, 3, 0], [60, 23, 0]]);
+    h.settings({epoch: 1});
+    h.frame(10, 1 / 60, true, 10);
+    const corrected = h.frame(9.9, 1 / 60, true, 10.016);
+    assert.equal(corrected.clockReset, false);
+    assert.equal(h.regionLookupTime(), 10.016);
+    h.settings({epoch: 2});
+    assert.equal(h.frame(10.015, 1 / 60, true, 10.015).clockReset, true);
+});
 
 function assertFits(h, points, fit, prediction = 0, margin = .90) {
     assert.ok(Number.isFinite(fit.x) && Number.isFinite(fit.distance));
