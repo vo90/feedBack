@@ -37,7 +37,10 @@ Source progress permits at most 250 ms of extrapolation, after which presentatio
 holds. New replies carrying the same position do not renew this budget. Recovery
 corrects phase without a backward step. After a frame gap over 250 ms, the clock
 recovers forward on the first fresh observation, including when that observation
-arrives a few frames after the gap. Native end state also handles stretched
+arrives a few frames after the gap. Exhausting the source freshness budget also
+arms forward recovery, even if frames kept arriving normally. Complete loss of
+observations may require a hold and forward resynchronization, but cannot leave
+accumulating phase debt after fresh audio returns. Native end state also handles stretched
 playback whose latency-compensated final position can fall short of duration.
 
 Older Desktop builds fall back to `getBackingPosition()`. That path gains poll
