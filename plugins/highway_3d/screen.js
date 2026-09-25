@@ -3139,21 +3139,37 @@
     // would turn the return into an endless asymptote. Rising requirements
     // cancel it immediately, including the anticipated next playing area.
     function hwyCameraZoom(state, required, dt, smoothing = 0.5) {
-        if (required > (state.zoomRequired ?? required) + Math.max(1e-8, required * 0.005)) {
+        if (required > (state.zoomRequired ?? required) + Math.max(1e-8, required * 0.00001)) {
             state.quietZoomTime = 0;
         }
         state.zoomRequired = required;
         if (required >= state.distance - 1e-8) {
             state.quietZoomTime = 0;
             state.zoomReturnFrom = state.distance;
-            state.distance += (required - state.distance) * (1 - Math.exp(-dt / 0.16));
+            const motion = hwyCameraRejoin(state.distance - required, state.zoomVelocity || 0, dt, 10);
+            state.distance = required + motion.offset;
+            state.zoomVelocity = motion.velocity;
         } else {
             if (!state.quietZoomTime) state.zoomReturnFrom = state.distance;
             state.quietZoomTime += dt;
             const calm = Math.max(0, Math.min(1, smoothing));
-            const u = Math.max(0, Math.min(1, (state.quietZoomTime - (0.4 + calm * 0.2)) / (0.6 + calm * 0.4)));
+            const wait = 0.4 + calm * 0.2;
+            // An outward visibility correction must come to rest smoothly
+            // when its geometry disappears, rather than stop in one frame.
+            const velocity = state.zoomVelocity || 0;
+            if (state.quietZoomTime <= wait && Math.abs(velocity) > 1e-10) {
+                const decay = Math.exp(-dt / .12);
+                const distance = state.distance + velocity * .12 * (1 - decay);
+                state.distance = Math.max(required, distance);
+                state.zoomVelocity = distance > required ? velocity * decay : 0;
+                state.zoomReturnFrom = state.distance;
+                return;
+            }
+            const duration = 0.6 + calm * 0.4;
+            const u = Math.max(0, Math.min(1, (state.quietZoomTime - wait) / duration));
             const eased = u * u * u * (10 + u * (-15 + 6 * u));
             state.distance = state.zoomReturnFrom + (required - state.zoomReturnFrom) * eased;
+            state.zoomVelocity = (required - state.zoomReturnFrom) * 30 * u * u * (1 - u) * (1 - u) / duration;
         }
         if (Math.abs(state.distance - required) < 1e-8) state.distance = required;
     }
@@ -21348,14 +21364,14 @@
         // Visible geometry is a safety envelope, not a composition target.
         // The playing-position resolver below supplies that separately, so a
         // distant note or label cannot pull the view away from the player.
-        // 32 depth bins bound the solver cost independently of chart length.
+        // Frustum support points bound solver cost independently of chart length.
         const _stableCam = {
             active: false, initialized: false, x: 0, distance: 100 * K,
             lastTime: NaN, lastWall: NaN, rate: 1, rateTime: NaN, rateWall: NaN, preset: '', lefty: false, strings: 0,
             reset: -1, song: null, notes: null, chords: null, anchors: null, anchorCount: -1, aspect: 0,
             quietZoomTime: 0, quietPanTime: 0, centreCandidateX: NaN,
-            zoomReturnFrom: 0, zoomRequired: 0, collectCentre: 0,
-            pointCount: 0, minX: 0, maxX: 0,
+            zoomReturnFrom: 0, zoomRequired: 0, zoomVelocity: 0, collectCentre: 0,
+            pointCount: 0, viewPointCount: 0, minX: 0, maxX: 0,
             targetX: 0, targetDistance: 0, correction: false,
             focusValid: false, focusX: 0, focusMinX: 0, focusMaxX: 0,
             regionTime: NaN, regionSource: '', regionMinX: NaN, regionMaxX: NaN,
@@ -21364,12 +21380,22 @@
             rejoinOffset: 0, rejoinVelocity: 0,
             safetyOffset: 0, safetyVelocity: 0,
         };
+        // Preserve nominal composition bounds; the calibrated visibility fit
+        // must use real support points. Depth bins invent corners as objects
+        // cross their edges, which must not trigger a last-moment correction.
         const _stableBins = Array.from({ length: 32 }, () => ({
             minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity,
             minZ: Infinity, maxZ: -Infinity,
         }));
+        const _stableSupport = Array.from({ length: 2 }, () => ({
+            maxima: new Float64Array(5), prediction: 0, horizontal: 0, top: 0, bottom: 0,
+        }));
         const _stablePoints = new Float64Array(32 * 8 * 3);
+        const _stableViewPoints = new Float64Array(2 * 5 * 3);
+        let _stablePointSamples = 0;
         const _stableRegionPoints = new Float64Array(16 * 3);
+        const _stableViewRegionPoints = new Float64Array(24 * 3);
+        const _stableViewFuturePlan = {};
         const _stableRibbonPrevious = new Float64Array(4 * 3);
         const _stableBoxPoints = new Float64Array(8 * 3);
         const _stableBasis = { bx: 0, by: 0, bz: 1, rx: 1, rz: 0, ux: 0, uy: 1, uz: 0, x: 0, y: 0, distanceMul: 1 };
@@ -21377,6 +21403,49 @@
         const _stableInterval = { min: 0, max: 0, valid: true };
         const _stableFit = { x: 0, distance: 0 };
         let _stableVector = null;
+
+        function stableSupportReset() {
+            _stablePointSamples = 0;
+            _stableCam.minX = Infinity; _stableCam.maxX = -Infinity;
+            for (const bin of _stableBins) {
+                bin.minX = bin.minY = bin.minZ = Infinity;
+                bin.maxX = bin.maxY = bin.maxZ = -Infinity;
+            }
+            const tan = Math.tan(STABLE_CAMERA_FOV * Math.PI / 360);
+            for (let i = 0; i < _stableSupport.length; i++) {
+                const q = _stableSupport[i];
+                const margin = .96;
+                const horizontal = tan * cam.aspect * margin;
+                const top = tan * (Math.max(.90, margin) + STABLE_CAMERA_SHIFT);
+                const bottom = tan * (Math.max(.90, margin) - STABLE_CAMERA_SHIFT);
+                q.horizontal = horizontal; q.top = top; q.bottom = bottom;
+                q.prediction = i ? 0 : Math.min(AHEAD, .15 * _stableCam.rate) * TS;
+                q.maxima.fill(-Infinity);
+            }
+        }
+
+        function stableSupportPoint(index, x, y, z, depth, right, up) {
+            const q = _stableSupport[index], m = q.maxima, p = _stableViewPoints;
+            let slot = index * 15, value = right + q.horizontal * depth;
+            if (value > m[0]) { m[0] = value; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+            slot += 3; value = -right + q.horizontal * depth;
+            if (value > m[1]) { m[1] = value; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+            slot += 3; value = up + q.top * depth;
+            if (value > m[2]) { m[2] = value; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+            slot += 3; value = -up + q.bottom * depth;
+            if (value > m[3]) { m[3] = value; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+            slot += 3;
+            if (depth > m[4]) { m[4] = depth; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+        }
+
+        function stableCollectViewPoint(x, y, z) {
+            const b = _stableViewBasis;
+            const dz = Math.max(z, Math.min(0, z + _stableSupport[0].prediction)) - z;
+            const depth = b.bx * x + b.by * y + b.bz * z;
+            const right = b.rx * x + b.rz * z, up = b.ux * x + b.uy * y + b.uz * z;
+            stableSupportPoint(0, x, y, z, depth + b.bz * dz, right + b.rz * dz, up + b.uz * dz);
+            stableSupportPoint(1, x, y, z, depth, right, up);
+        }
 
         function stableAddPoint(x, y, z) {
             const horizon = Math.min(AHEAD, 0.9 * _stableCam.rate);
@@ -21388,15 +21457,18 @@
             const weight = u * u * (3 - 2 * u);
             x = _stableCam.collectCentre + (x - _stableCam.collectCentre) * weight;
             y = _stableBasis.y + (y - _stableBasis.y) * weight;
+            _stablePointSamples++;
+            _stableCam.minX = Math.min(_stableCam.minX, x); _stableCam.maxX = Math.max(_stableCam.maxX, x);
             const bin = _stableBins[Math.max(0, Math.min(31, Math.floor(-z / (TS * AHEAD) * 32)))];
             bin.minX = Math.min(bin.minX, x); bin.maxX = Math.max(bin.maxX, x);
             bin.minY = Math.min(bin.minY, y); bin.maxY = Math.max(bin.maxY, y);
             bin.minZ = Math.min(bin.minZ, z); bin.maxZ = Math.max(bin.maxZ, z);
+            stableCollectViewPoint(x, y, z);
         }
 
         // A long hold can cross the near window with both endpoints outside.
         // Clip edges so its relevant portion still participates in the fit.
-        function stableAddSegment(ax, ay, az, bx, by, bz) {
+        function stableAddSegment(ax, ay, az, bx, by, bz, endpointsAdded = false) {
             const near = 8 * K, far = dZ(Math.min(AHEAD, 0.9 * _stableCam.rate));
             let lo = 0, hi = 1;
             const dz = bz - az;
@@ -21409,9 +21481,18 @@
             }
             const fullZ = dZ(Math.max(0, Math.min(AHEAD, 0.9 * _stableCam.rate) - 0.3 * _stableCam.rate));
             const full = Math.abs(dz) > 1e-10 ? (fullZ - az) / dz : lo;
-            for (let i = 0; i < 3; i++) {
-                const t = i === 0 ? lo : i === 1 ? Math.max(lo, Math.min(hi, full)) : hi;
-                stableAddPoint(ax + (bx - ax) * t, ay + (by - ay) * t, az + dz * t);
+            if (!endpointsAdded || az < fullZ || bz < fullZ || lo > 0 || hi < 1) {
+                for (let i = 0; i < 3; i++) {
+                    const t = i === 0 ? lo : i === 1 ? Math.max(lo, Math.min(hi, full)) : hi;
+                    stableAddPoint(ax + (bx - ax) * t, ay + (by - ay) * t, az + dz * t);
+                }
+            }
+            // Within full strength, affine planes attain extrema at corners.
+            // Predicted depth has two kinks, so retain their intersections too.
+            if (Math.abs(dz) > 1e-10) for (let i = 0; i < 2; i++) {
+                const plane = i ? 0 : dZ(Math.min(AHEAD, .15 * _stableCam.rate));
+                const t = (plane - az) / dz;
+                if (t > lo && t < hi) stableAddPoint(ax + (bx - ax) * t, ay + (by - ay) * t, plane);
             }
         }
 
@@ -21469,15 +21550,12 @@
             for (let i = 0; i < 8; i++) for (let bit = 1; bit <= 4; bit *= 2) {
                 if (i & bit) continue;
                 const a = i * 3, b = (i | bit) * 3, p = _stableBoxPoints;
-                stableAddSegment(p[a], p[a + 1], p[a + 2], p[b], p[b + 1], p[b + 2]);
+                stableAddSegment(p[a], p[a + 1], p[a + 2], p[b], p[b + 1], p[b + 2], true);
             }
         }
 
         function stableCollectGeometry(region) {
-            for (const bin of _stableBins) {
-                bin.minX = bin.minY = bin.minZ = Infinity;
-                bin.maxX = bin.maxY = bin.maxZ = -Infinity;
-            }
+            stableSupportReset();
             pNote?.forEachActive(stableCollectObject);
             pSus?.forEachActive(stableCollectObject);
             pSusRibbon?.forEachActive(stableCollectObject);
@@ -21510,11 +21588,8 @@
                 }
             }
             let count = 0;
-            _stableCam.minX = Infinity; _stableCam.maxX = -Infinity;
             for (const bin of _stableBins) {
                 if (!Number.isFinite(bin.minX)) continue;
-                _stableCam.minX = Math.min(_stableCam.minX, bin.minX);
-                _stableCam.maxX = Math.max(_stableCam.maxX, bin.maxX);
                 for (let i = 0; i < 8; i++) {
                     _stablePoints[count++] = i & 1 ? bin.maxX : bin.minX;
                     _stablePoints[count++] = i & 2 ? bin.maxY : bin.minY;
@@ -21522,6 +21597,7 @@
                 }
             }
             _stableCam.pointCount = count;
+            _stableCam.viewPointCount = _stablePointSamples ? _stableViewPoints.length : 0;
         }
 
         // Intersect a*x <= b with the feasible camera-centre interval. With a
@@ -21704,6 +21780,36 @@
             return stableSolve(preferred, baseDistance, 0, margin, fixed, _stableRegionPoints, 48);
         }
 
+        function stableRegionViewDistance(row, baseDistance, centre = row.x) {
+            stableRegionFootprint(row);
+            const points = _stableViewRegionPoints, b = _stableViewBasis;
+            points.set(_stableRegionPoints);
+            const bottom = Math.min(sY(0), sY(nStr - 1));
+            for (let end = 0; end < 2; end++) {
+                const fret = end ? row.lastFret : row.firstFret;
+                const x = xFretMid(fret), scale = _textSizeMul * fretLabelScaleForFret(fret);
+                const fixedSize = 5.95 * K * scale;
+                // Reserve approaching, top-anchored digits through their
+                // arrival handoff. They are taller/lower than the fixed row.
+                const incomingSize = 7 * K * scale;
+                for (let i = 0; i < 4; i++) {
+                    const dx = (i & 1 ? .5 : -.5) * fixedSize;
+                    const dy = (i & 2 ? .5 : -.5) * fixedSize;
+                    let j = (8 + end * 4 + i) * 3;
+                    points[j] = x + b.rx * dx + b.ux * dy;
+                    points[j + 1] = bottom - S_GAP * 1.4 + b.uy * dy;
+                    points[j + 2] = .5 * K + b.rz * dx + b.uz * dy;
+                    const ix = (i & 1 ? .5 : -.5) * incomingSize;
+                    const iy = (i & 2 ? 0 : -1) * incomingSize;
+                    j = (16 + end * 4 + i) * 3;
+                    points[j] = x + b.rx * ix + b.ux * iy;
+                    points[j + 1] = bottom - S_GAP * .8 + b.uy * iy;
+                    points[j + 2] = b.rz * ix + b.uz * iy;
+                }
+            }
+            return stableSolve(centre, baseDistance, 0, .96, true, points, points.length, b).distance;
+        }
+
         function stableCameraPlan(bundle, now, baseDistance) {
             const cache = _stablePlan, rows = stableRegionAnchors(bundle);
             // Honour explicit speed exactly. Estimates need a small dead band:
@@ -21724,6 +21830,7 @@
                     const region = { time: row.time, minX: Math.min(a, b), maxX: Math.max(a, b), preferred, closeDistance, firstFret: row.fret, lastFret: row.fret + row.width - 1 };
                     const fit = stableRegionFraming(region, preferred, closeDistance);
                     region.x = fit.x; region.distance = fit.distance;
+                    region.viewDistance = stableRegionViewDistance(region, region.distance);
                     return region;
                 });
                 cache.stops = hwyBuildCameraStops(regions, rate, (row, centre) =>
@@ -21751,7 +21858,8 @@
                 if (cache.regions[mid].time <= now) lo = mid + 1; else hi = mid;
             }
             const current = cache.regions[Math.max(0, lo - 1)];
-            cache.result.distance = current?.distance || baseDistance;
+            cache.result.regionIndex = Math.max(0, lo - 1);
+            cache.result.distance = current?.viewDistance || baseDistance;
             cache.result.closeDistance = current?.closeDistance || baseDistance;
             cache.result.returnFloor = baseDistance;
             for (let i = lo; i < Math.min(cache.regions.length, lo + 32); i++) {
@@ -21759,11 +21867,11 @@
                 if (until > 1.3) break;
                 // Do not start closing only to reopen during the 800ms return.
                 // This holds an existing wider view, never widens early.
-                cache.result.returnFloor = Math.max(cache.result.returnFloor, row.distance);
+                cache.result.returnFloor = Math.max(cache.result.returnFloor, row.viewDistance);
                 const u = Math.max(0, Math.min(1, 1 - until / 0.6));
                 const eased = u * u * u * (10 + u * (-15 + 6 * u));
                 cache.result.distance = Math.max(cache.result.distance,
-                    baseDistance + (row.distance - baseDistance) * eased);
+                    baseDistance + (row.viewDistance - baseDistance) * eased);
             }
             cache.result.revision = cache.revision;
             return cache.result;
@@ -21771,6 +21879,7 @@
 
         function stableCamUpdate(bundle, frameTime = Number(bundle.currentTime) || 0) {
             const s = _stableCam, b = _stableBasis;
+            const previousDistance = s.distance;
             const wall = performance.now() / 1000;
             const elapsed = Number.isFinite(s.lastWall) ? Math.max(0, wall - s.lastWall) : 0;
             const dt = Math.min(0.25, elapsed);
@@ -21856,6 +21965,7 @@
                 s.quietPanTime = 0;
                 s.quietZoomTime = 0; s.initialized = true;
                 s.zoomReturnFrom = s.zoomRequired = s.distance;
+                s.zoomVelocity = 0;
                 s.rejoinOffset = s.rejoinVelocity = 0;
                 s.safetyOffset = s.x - centre; s.safetyVelocity = 0;
             } else if (resize) {
@@ -21863,6 +21973,7 @@
                 // viewing angle, even with following switched off.
                 const fit = stableSolve(s.x, baseDistance, 0, 0.90, true);
                 s.distance = fit.distance; s.quietZoomTime = 0;
+                s.zoomVelocity = 0;
                 s.quietPanTime = 0; s.panPending = false;
             } else if (stableCameraFollow && bundle.isPlaying !== false && focus.valid && !seek) {
                 const plannedX = plan.valid ? plan.x : focus.x;
@@ -21891,7 +22002,26 @@
                 s.safetyOffset = safetyTarget + safety.offset; s.safetyVelocity = safety.velocity;
                 s.x += s.safetyOffset;
                 const fit = stableSolve(s.x, closeDistance, prediction, comfortable ? 0.96 : 0.82, true);
-                const neutralDistance = Math.max(fit.distance, plan.distance, Math.min(s.distance, plan.returnFloor));
+                // Feed the actual preset's visibility requirement into the
+                // zoom controller, including the short anticipation window.
+                // A fit applied only after smoothing bypasses the controller
+                // and leaves its return state unaware of the widened view.
+                const viewDistance = stableSolve(s.x, fit.distance, prediction, 0.96, true,
+                    _stableViewPoints, s.viewPointCount, v).distance;
+                // Geometry approaches while the scheduled camera also pans.
+                // Predict both; predicting note Z alone reacts late when a
+                // playing-area change moves the viewpoint sideways.
+                const future = hwyCameraPlanAt(_stablePlan.stops, frameTime + .25 * s.rate,
+                    s.rate, cameraSmoothing, _stableViewFuturePlan);
+                const futureX = future.valid ? s.x + future.x - plan.x : s.x;
+                const panDistance = stableSolve(futureX, viewDistance, prediction, .96, true,
+                    _stableViewPoints, s.viewPointCount, v).distance;
+                // While panning, the current area's reserved arrival envelope
+                // must fit from the moving centre as well as at its own stop.
+                const region = _stablePlan.regions[plan.regionIndex];
+                const regionDistance = region ? stableRegionViewDistance(region, closeDistance, s.x) : closeDistance;
+                const neutralDistance = Math.max(panDistance, regionDistance, plan.distance,
+                    Math.min(s.distance, plan.returnFloor));
                 s.centreCandidateX = plannedX;
                 s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
                 s.targetDistance = neutralDistance;
@@ -21924,10 +22054,17 @@
                 // Protect the actual built-in viewpoint, including its closer
                 // zoom and pan. Widen only as needed; keep the planned centre.
                 // Explicit Camera Director offsets remain outside auto fitting.
-                const safe = stableSolve(s.x, s.distance, 0, 0.96, true, _stablePoints, s.pointCount, v);
+                const safe = stableSolve(s.x, s.distance, 0, 0.96, true, _stableViewPoints, s.viewPointCount, v);
                 s.correction = safe.distance > s.distance + 1e-7;
                 s.distance = safe.distance;
+                if (s.correction) {
+                    s.quietZoomTime = 0;
+                    s.zoomReturnFrom = s.zoomRequired = s.distance;
+                    s.zoomVelocity = !snap && !resize && dt > 0
+                        ? Math.max(0, (s.distance - previousDistance) / dt) : 0;
+                }
             }
+            if (!stableCameraFollow || bundle.isPlaying === false) s.zoomVelocity = 0;
             stableApplyPose();
         }
 

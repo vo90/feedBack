@@ -179,6 +179,34 @@ test('necessary zoom waits 500ms and returns fully over 800ms at every frame rat
     }
 });
 
+test('outward motion decelerates through a disappearing constraint before returning', () => {
+    for(const fps of [30,60,100]){
+        const state={distance:1,quietZoomTime:0,zoomVelocity:.3,zoomRequired:1};
+        let previous=state.distance,previousStep=.3/fps;
+        for(let i=1;i<=Math.round(.4*fps);i++){
+            zoom(state,.9,1/fps);
+            const step=state.distance-previous;
+            assert.ok(step>0&&step<=previousStep+1e-10);
+            assert.ok(step/previousStep>.7,'outward movement stopped abruptly');
+            previous=state.distance;previousStep=step;
+        }
+        for(let i=0;i<2*fps;i++)zoom(state,.9,1/fps);
+        assert.equal(state.distance,.9);
+        assert.equal(state.zoomVelocity,0);
+    }
+});
+
+test('a slowly rising requirement cancels narrowing without dropping its velocity', () => {
+    const state={distance:2,quietZoomTime:0};
+    for(let i=0;i<85;i++)zoom(state,1,.01);
+    const before=state.distance,velocity=state.zoomVelocity;
+    assert.ok(velocity<0);
+    zoom(state,1.001,.01);
+    assert.ok(state.distance<before&&state.distance>1.001);
+    assert.ok(state.zoomVelocity<0&&state.zoomVelocity>velocity);
+    assert.ok(state.quietZoomTime<.02,'rising requirements must cancel the old return');
+});
+
 test('renewed wide requirements cancel a narrowing return', () => {
     const state = {distance: 2, quietZoomTime: 0};
     for (let i = 0; i < 9; i++) zoom(state, 1, .1);
