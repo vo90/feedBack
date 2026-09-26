@@ -18,6 +18,9 @@ function marker(string, inverted, stringCount = 6) {
     const fn = new Function('s', '_invertedCached', 'nStr', 'mesh', `
         const validString = s => Number.isInteger(s) && s >= 0 && s < nStr;
         ${extract('bendVisualDirY')}
+        // The extracted drawNote block attaches technique ink to its gem record.
+        ${extract('trailYieldRegisterAttachment')}
+        const trailYieldGemRecord={_trailYieldAttachmentCount:0,_trailYieldAttachmentOrder:Infinity};
         const rsPlusNotation=false;
         const _bendPeak=2, NH=1, K=.1, x=5, y=10, techniqueYNow=.5, noteZ=-1, approachRot=.2;
         const activePalette=Array(nStr).fill(0xffffff), pTechPlane={get:()=>mesh};
@@ -26,7 +29,8 @@ function marker(string, inverted, stringCount = 6) {
         const _registerIncomingLabelOccluder=(registeredMesh,z)=>registrations.push({mesh:registeredMesh,z});
         let yo=11;
         ${src.slice(start,end)}
-        return {dir:bendVisualDirY(s), y:mesh.position.y, rotation:mesh.rotation.z, yo, mesh, registrations};
+        return {dir:bendVisualDirY(s), y:mesh.position.y, rotation:mesh.rotation.z, yo, mesh, registrations,
+            attachments:trailYieldGemRecord._trailYieldAttachments};
     `);
     return fn(string, inverted, stringCount, mesh);
 }
@@ -41,6 +45,9 @@ for (const count of [4, 6, 7, 8]) {
                 assert.equal(m.registrations.length,1,'the rendered bend mark participates in label clearance');
                 assert.equal(m.registrations[0].mesh,m.mesh,'registration uses the actual pooled bend mesh');
                 assert.equal(m.registrations[0].z,-1,'clearance compares the mark at its note event depth');
+                assert.equal(m.attachments.length,1,'the bend mark stays attached to its gem');
+                assert.equal(m.attachments[0],m.mesh,'attachment uses the actual pooled bend mesh');
+                assert.equal(m.mesh.renderOrder,20,'an unconstrained attachment keeps its technique layer');
                 if(m.dir<0) assert.equal(m.yo,11,'downward chevron does not reserve upper label space');
             }
         });
