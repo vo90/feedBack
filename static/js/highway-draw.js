@@ -149,7 +149,7 @@ function drawSlideInRibbon2D(hwState, W, H, n, onset = n.t) {
 }
 
 function drawSlideOutRibbon2D(hwState, W, H, n, onset = n.t) {
-    if (!Array.isArray(n.slide_out_marks) || !(n.f > 0) || n.f === 127 && n.mt || n.sl >= 0 || n.slu >= 0
+    if (!Array.isArray(n.slide_out_marks) || !(n.f > 0) || n.sl >= 0 || n.slu >= 0
         || onset + n.sus < hwState.currentTime || onset > hwState.currentTime + VISIBLE_SECONDS) return;
     const c = hwState.ctx;
     for (const mark of slideOutMarks2D(n)) {
@@ -167,8 +167,12 @@ function drawSlideOutRibbon2D(hwState, W, H, n, onset = n.t) {
             const p = project(Math.max(0, dt));
             if (!p || dt > VISIBLE_SECONDS) { previous = null; continue; }
             const ease = u * u * (3 - 2 * u);
-            const localWidth = Math.abs(fretX(hwState, playingFret2D(n), p.scale, W) - fretX(hwState, playingFret2D(n) - 1, p.scale, W));
-            const x = fretX(hwState, playingFret2D(n), p.scale, W)
+            // A neutral lane anchor is visual only. Never send the mute's 127
+            // sentinel through fret geometry or infer a physical starting fret.
+            const unpitched = n.f === 127 && n.mt;
+            const visualFret = unpitched ? 2 : playingFret2D(n);
+            const localWidth = Math.abs(fretX(hwState, visualFret, p.scale, W) - fretX(hwState, visualFret - 1, p.scale, W));
+            const x = (unpitched ? W / 2 : fretX(hwState, visualFret, p.scale, W))
                 + (mark.direction === 'up' ? 1 : -1) * localWidth * 0.8 * ease;
             const y = p.y * H;
             if (previous && dt >= 0) {

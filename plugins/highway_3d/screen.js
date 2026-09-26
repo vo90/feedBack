@@ -3948,10 +3948,14 @@
         _slideOutMarkCache.set(raw, { sus: n.sus, marks });
         return marks;
     }
+    function isMutedSlideVisual(n) {
+        return n?.mt === true && (n.f === 127 || n._unpitchedSlide === true)
+            && slideOutMarks(n).length > 0;
+    }
     function slideOutCueAt(n, chartTime) {
         if (!Array.isArray(n?.slide_out_marks) || n.slide_out_marks.length === 0) return 0;
         // Known-target slides retain their established geometry.
-        if (slideTrailEnd(n) || !(n.f > 0)) return 0;
+        if (slideTrailEnd(n) || !(n.f > 0) && !isMutedSlideVisual(n)) return 0;
         const elapsed = chartTime - n.t;
         for (const mark of slideOutMarks(n)) {
             const start = Math.max(mark.start, mark.end - SLIDE_OUT_CUE_SECONDS);
@@ -3980,6 +3984,7 @@
     function slideOutReach(n) {
         // A local visual span only: deliberately never convert this to a fret
         // or reuse it for pitch/grading/camera target calculations.
+        if (isMutedSlideVisual(n)) return Math.abs(fretX(2) - fretX(1)) * 0.8;
         return n?.f > 0 ? Math.abs(fretX(n.f) - fretX(n.f - 1)) * 0.8 : 0;
     }
     function slideOutOffsetWorldX(n, chartTime) {
@@ -3997,7 +4002,7 @@
         return !slideTrailEnd(n) && (slideOutLegacyDirection(n) !== 0 || slideOutMarks(n).length > 0);
     }
     function appendSlideOutContourTimes(n, start, end, out) {
-        if (slideTrailEnd(n) || !(n.f > 0)) return;
+        if (slideTrailEnd(n) || !(n.f > 0) && !isMutedSlideVisual(n)) return;
         for (const mark of slideOutMarks(n)) {
             const cueEnd = n.t + mark.end;
             const cueStart = n.t + Math.max(mark.start, mark.end - SLIDE_OUT_CUE_SECONDS);
@@ -19729,7 +19734,7 @@
             const scrape = (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0);
             if (scrape && now > n.t + n.sus) return;
             if (isUnpitchedMute(n)) {
-                n = { ...n, f: 0 };
+                n = { ...n, f: 0, _unpitchedSlide: true };
                 _linkedBendStarts.set(n, _linkedBendStarts.get(sourceNote) || 0);
                 _linkedBendEnds.set(n, _linkedBendEnds.get(sourceNote));
                 _linkedVibratoRuns.set(n, _linkedVibratoRuns.get(sourceNote));
