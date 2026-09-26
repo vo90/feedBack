@@ -34,6 +34,8 @@ function rsGeometry(T) {
         const gNoteGhost=hwyGhostNoteOutlineGeometry(T,NW,NH,ND);
         _initRsNotation();
         return {body:gRsNote,ghost:gRsNoteGhost,bodyGrad:gRsNoteGrad[0],ghostGrad:gRsNoteGhostGrad[0],current:gNoteGhost,
+            rim:mRsRim[0],accent:mRsAccentRim[0],hit:mRsHitRim[0],stem:mRsOpenStem,
+            trail:mRsSus[0],hitTrail:mRsSusHit[0],edge:mRsSusEdge[0],
             recolor(hex) {activePalette[0]=hex;_applyRsNotationPalette();},
             dispose() {
                 for(const g of [gRsNote,gRsNoteGhost,...gRsNoteGrad,...gRsNoteGhostGrad,gRsNoteHalo,gNoteGhost])g.dispose();
@@ -80,6 +82,35 @@ test('pooled open ghost geometry switches styles without stale topology or cache
         assert.ok(Math.abs(mesh.geometry.boundingBox.max.y * mesh.scale.y - 4.64) < 1e-5);
     }
     owned[0].dispose(); mesh.material.dispose(); h.dispose();
+});
+
+test('RS+ flat rims retain separation while palette changes preserve trails and accent cues', async () => {
+    const T = await three(), h = rsGeometry(T);
+    const rim = h.rim, trail = h.trail, edge = h.edge;
+    const luminance = c => c.r * .2126 + c.g * .7152 + c.b * .0722;
+    for (const hex of [0, 0x080a0c, 0xffffff, 0xff0000, 0xffcc00,
+        0x22aaff, 0xff8800, 0x44cc44, 0xaa44dd, 0x080a0c, 0xffffff]) {
+        h.recolor(hex);
+        const a = luminance(trail.color), b = luminance(rim.color);
+        assert.ok((Math.max(a,b)+.05)/(Math.min(a,b)+.05) > 1.8,
+            'single note rim must separate from a matching trail: ' + hex.toString(16));
+        assert.equal(h.rim, rim);
+        assert.equal(h.trail, trail);
+        assert.equal(h.edge, edge);
+        assert.equal(trail.opacity, .62, 'original translucent trails remain intact');
+        assert.equal(h.hitTrail.opacity, .82);
+        assert.equal(edge.opacity, .72);
+        assert.ok(edge.color.equals(trail.color.clone().lerp(new T.Color(0xffffff), .35)));
+        assert.equal(h.stem.color.getHex(), 0xfff8e9, 'open stems are independent of normal rims');
+        const highlight = new T.Color(hex === 0xff0000 ? 0xffdf72 : 0xffffff);
+        // Test the neutral palettes separately from the warm red accent rule.
+        if ([0, 0x080a0c, 0xffffff, 0xff0000].includes(hex)) {
+            assert.ok(h.accent.color.equals(trail.color.clone().lerp(highlight, .58)),
+                'accents retain their brighter rim');
+        }
+        assert.ok(h.hit.color.equals(trail.color.clone().lerp(new T.Color(0xffffff), .90)));
+    }
+    h.dispose();
 });
 
 test('slide-out fade variants support both RS+ Basic and Current Standard materials', async () => {

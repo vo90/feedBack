@@ -8538,11 +8538,11 @@
                 const palm = kind === 'palmMute';
                 // Inset the wider PM's endpoints by its extra stroke radius
                 // so compensated compound marks keep their antialiasing room.
-                const left = palm ? 0.10 + 0.07 * (strokeScale - 1) : 0.26, right = 1 - left;
+                const left = palm ? 0.12 + 0.08 * (strokeScale - 1) : 0.26, right = 1 - left;
                 g.moveTo(left, 0.25); g.lineTo(right, 0.75);
                 g.moveTo(right, 0.25); g.lineTo(left, 0.75);
                 g.lineCap = 'round';
-                if (!palm) keyline(0.168 * strokeScale);
+                keyline(0.168 * strokeScale);
                 g.strokeStyle = white;
                 g.lineWidth = 0.14 * strokeScale; g.stroke();
                 if (palm) {
@@ -8572,13 +8572,14 @@
                     g.lineTo(x(0.26), 0.63); g.lineTo(x(0.45), 0.50); g.lineTo(x(0.26), 0.37);
                 }
                 g.closePath();
-                if (kind === 'bend') {
-                    // A narrow light edge separates the arrow from a matching
-                    // gem/trail; its dark contour remains readable on pale ones.
-                    // Bake both into the same mask, without glow or extra meshes.
-                    keyline(0.070);
-                    g.strokeStyle = white; g.lineWidth = 0.032; g.stroke();
-                }
+                // One flat contour separates the arrow from a matching trail.
+                // Near-black custom fills use one muted light contour instead.
+                const darkFill = Math.max((stringHex >> 16) & 255,
+                    (stringHex >> 8) & 255, stringHex & 255) < 45;
+                if (darkFill) {
+                    g.strokeStyle = '#9cabb5'; g.lineWidth = 0.055;
+                    g.lineJoin = g.lineCap = 'round'; g.stroke();
+                } else keyline(0.055);
                 fill(rsPlusTechniqueColor(stringHex), false);
             }
         }
@@ -12120,12 +12121,13 @@
                     }
                 }
                 gc.needsUpdate = true;
-                // The reference's red gems have a warm gold edge; other strings
-                // keep a pale version of their own hue. The accent strengthens
-                // the edge without turning the entire border paper-white.
+                // Ordinary notes have one flat separating rim. Near-black
+                // custom fills need a muted light rim instead. Accents keep
+                // their brighter hue (warm gold on red), and verdicts keep
+                // their existing feedback colors.
                 const rimHighlight = new T.Color(col.r > col.g * 2 && col.r > col.b * 2
                     ? 0xffdf72 : 0xffffff);
-                mRsRim[s].color.copy(col).lerp(rimHighlight, 0.30 + 0.08 * glowMul);
+                mRsRim[s].color.setHex(grey < 0.018 ? 0x9cabb5 : 0x18222c);
                 mRsAccentRim[s].color.copy(col).lerp(rimHighlight, 0.58 + 0.08 * glowMul);
                 mRsHitRim[s].color.copy(col).lerp(new T.Color(0xffffff), 0.90);
                 mRsSus[s].color.copy(col);
@@ -20082,7 +20084,10 @@
                 outline.renderOrder = renderOrderForLayerAtZ(noteZ, noteOutlineLayer);
                 outline.position.set(x, y + techniqueYNow, noteZ);
                 outline.rotation.z = approachRot;
-                const ndRim = rsPlusNotation ? (n.ac ? 1.15 : 1.075) : 1.1;
+                // Only ordinary rims become finer; accent and verdict widths
+                // remain their existing gameplay cues.
+                const ndRim = rsPlusNotation
+                    ? (n.ac ? 1.15 : (rsHit || rsMiss ? 1.075 : 1.06)) : 1.1;
                 if (rsPlusNotation && n.f === 0) {
                     // Open strings are bars, not stretched fretted-note rims.
                     // Reuse the outline mesh for the reference's pale vertical

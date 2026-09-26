@@ -135,7 +135,7 @@ test('every supported 2–5 symbol combination stays square with separate unclip
                     });
                     for (const a of ink) {
                         assert.ok(a.minX > 0.005 && a.minY > 0.005 && a.maxX < 0.995 && a.maxY < 0.995,
-                            'painted ink needs antialiasing room at the texture edges');
+                            `painted ink needs antialiasing room: flags=${flags}, bounds=${JSON.stringify(a)}`);
                         for (const b of ink) if (a !== b) {
                             assert.ok(a.maxX < b.minX || b.maxX < a.minX || a.maxY < b.minY || b.maxY < a.minY,
                                 'painted techniques must remain separate');
@@ -173,9 +173,10 @@ test('reduced face cells strengthen fine strokes without losing mute contrast or
                 assert.ok(stroke.width <= standalone[j].width * 1.5, 'bounded weight avoids flooding small cells');
             });
             if (kind === 'palmMute') {
-                assert.equal(strokes[0].stroke, '#fff8f6');
-                assert.equal(strokes[1].stroke, '#614e00');
-                assert.ok(strokes[0].width > strokes[1].width * 1.8, 'PM keeps a clear pale edge and dark core');
+                assert.equal(strokes[0].stroke, '#18222c');
+                assert.equal(strokes[1].stroke, '#fff8f6');
+                assert.equal(strokes[2].stroke, '#614e00');
+                assert.ok(strokes[1].width > strokes[2].width * 1.8, 'PM keeps a clear pale edge and dark core');
             }
             if (kind === 'naturalHarmonic' || kind === 'pinchHarmonic') {
                 assert.equal(calls.some(c => c.method === 'fill'), false);
@@ -225,7 +226,7 @@ test('triangles are opposite solid pale string tints and tap keeps its own strin
 test('mute masks distinguish an outlined string-dark PM from a solid pale FH, with hollow harmonics', () => {
     const f = factory();
     const strokes = kind => f.mat(kind, 0xff0000).map.image.context.calls.filter(c => c.method === 'stroke');
-    assert.deepEqual(strokes('palmMute').map(c => c.stroke), ['#fff8f6', '#610000']);
+    assert.deepEqual(strokes('palmMute').map(c => c.stroke), ['#18222c', '#fff8f6', '#610000']);
     assert.deepEqual(strokes('fretHandMute').map(c => c.stroke), ['#18222c', '#fff8f6']);
     const pm = f.mat('palmMute').map.image.context.calls.find(c => c.method === 'moveTo');
     const fh = f.mat('fretHandMute').map.image.context.calls.find(c => c.method === 'moveTo');
@@ -286,8 +287,9 @@ test('pale face marks keep their ink over a narrow dark contour across bright an
         }
     }
     for (const kind of ['slideRight', 'slideLeft']) {
-        assert.equal(f.mat(kind, 0xffffff).map.image.context.calls.some(c => c.method === 'stroke'), false,
-            'slide direction cues retain solid string color');
+        const ink = f.mat(kind, 0xffffff).map.image.context.calls.filter(c => c.method === 'stroke' || c.method === 'fill');
+        assert.deepEqual(ink.map(c => c[c.method]), ['#18222c', '#ffffff'],
+            'slide direction cues retain string color inside a single flat outline');
     }
 });
 
@@ -317,7 +319,7 @@ test('numeric technique-cache teardown disposes face and bend-stack bases, textu
     assert.doesNotThrow(() => cleanup(f.cache), 'a repeated empty cleanup is safe');
 });
 
-test('bend stacks preserve their six-point arrows, string fill and pale edge for every palette', () => {
+test('bend stacks preserve their six-point arrows, string fill and one contrasting edge', () => {
     const f = factory();
     const silhouette = [[.12,.53],[.50,.22],[.88,.53],[.88,.78],[.50,.49],[.12,.78]];
     for (const color of [0x22aaff, 0xdd1144, 0xffffff, 0]) for (const steps of [1, 2, 3, 4]) {
@@ -325,15 +327,14 @@ test('bend stacks preserve their six-point arrows, string fill and pale edge for
         assert.equal(image.width, 512);
         assert.equal(image.height, Math.round(512 * (1 + .4 * (steps - 1))));
         const painted = calls.filter(c => c.method === 'stroke' || c.method === 'fill');
-        assert.equal(painted.length, steps * 3);
+        assert.equal(painted.length, steps * 2);
         const points = calls.filter(c => c.method === 'moveTo' || c.method === 'lineTo');
         for (let i = 0; i < steps; i++) {
             assert.deepEqual(points.slice(i * 6, i * 6 + 6).map(c => c.args), silhouette,
                 'stacking must not change the existing six-point arrow silhouette');
-            assert.deepEqual(painted.slice(i * 3, i * 3 + 3).map(c => [c.method, c[c.method]]),
-                [['stroke', '#18222c'], ['stroke', '#fff8f6'], ['fill', '#' + color.toString(16).padStart(6, '0')]]);
-            assert.equal(painted[i * 3].width, .07, 'dark outer contour stays visible behind the pale edge');
-            assert.equal(painted[i * 3 + 1].width, .032);
+            assert.deepEqual(painted.slice(i * 2, i * 2 + 2).map(c => [c.method, c[c.method]]),
+                [['stroke', color === 0 ? '#9cabb5' : '#18222c'], ['fill', '#' + color.toString(16).padStart(6, '0')]]);
+            assert.equal(painted[i * 2].width, .055, 'one fine edge avoids a raised double border');
         }
         assert.deepEqual(calls.filter(c => c.method === 'translate').map(c => c.args),
             Array.from({length: steps}, (_, i) => [0, i * .4]));
@@ -377,9 +378,21 @@ test('slide arrows retain the original solid directional silhouettes and square 
         assert.equal(mat.map.image.height, 512);
         assert.deepEqual(calls.filter(c => c.method === 'moveTo' || c.method === 'lineTo').map(c => c.args),
             points.map(([x,y]) => [kind === 'slideLeft' ? 1 - x : x, y]));
-        assert.equal(calls.some(c => c.method === 'stroke'), false);
+        assert.deepEqual(calls.filter(c => c.method === 'stroke').map(c => c.stroke), ['#18222c']);
         assert.equal(calls.filter(c => c.method === 'fill').length, 1);
         assert.equal(calls.find(c => c.method === 'fill').fill, '#22aaff');
+    }
+});
+
+test('direction glyphs switch one outline with dark custom palettes without altering their fills', () => {
+    const f = factory();
+    for (const kind of ['bend','slideLeft','slideRight']) {
+        for (const [color,edge] of [[0x080a0c,'#9cabb5'],[0xffffff,'#18222c'],[0xaa44dd,'#18222c']]) {
+            const mat=f.mat(kind,color),calls=mat.map.image.context.calls;
+            assert.deepEqual(calls.filter(c=>c.method==='stroke').map(c=>c.stroke),[edge]);
+            assert.equal(calls.find(c=>c.method==='fill').fill,'#'+color.toString(16).padStart(6,'0'));
+            assert.equal(f.mat(kind,color),mat,'revisiting a palette reuses its cached mask');
+        }
     }
 });
 
