@@ -85,11 +85,86 @@ export const jucePlayer = {
     _pollAt: 0,    // performance.now() when _pos was last set
     _polling: false,
     _speed: 1,
+    _pollGeneration: 0,
+    _seekSerial: 0,
+    _resumeAfterSeek: false,
+    _sourceAt: 0,
+    _sourcePosition: NaN,
+    _sourcePlaying: true,
+    _sourceEnded: false,
+    _sampleSequence: -1,
+    _nativeGeneration: -1,
+    _snapshotSupported: undefined,
+    _clockMapping: null,
+    _streamStop: null,
+    _clockSnapshot: {},
+    _validSnapshot(s) {
+        return s && s.version === 1 && s.valid
+            && Number.isFinite(s.position) && s.position >= 0
+            && Number.isFinite(s.ageMs) && s.ageMs >= 0
+            && Number.isFinite(s.rate) && Math.abs(s.rate - this._speed) <= 0.001
+            && Number.isSafeInteger(s.sequence) && s.sequence >= 0
+            && Number.isSafeInteger(s.generation) && s.generation >= 0
+            && typeof s.playing === 'boolean';
+    },
+    _acceptSnapshot(snapshot, sampledAt) {
+        if (snapshot.sequence <= this._sampleSequence || snapshot.generation < this._nativeGeneration) return;
+        this._pos = snapshot.position;
+        this._pollAt = sampledAt;
+        if (snapshot.position !== this._sourcePosition) this._sourceAt = sampledAt;
+        this._sourcePosition = snapshot.position;
+        this._sourcePlaying = snapshot.playing;
+        this._sourceEnded = snapshot.ended === true;
+        this._sampleSequence = snapshot.sequence;
+        this._nativeGeneration = snapshot.generation;
+    },
+    _mapSnapshotTime(snapshot, sentAt, receivedAt) {
+        const rtt = receivedAt - sentAt;
+        if (snapshot.readAtMs === undefined) {
+            // Older Desktop builds have no main-clock envelope. Their native
+            // read is only known to lie somewhere inside this request bracket.
+            return rtt <= 100 ? sentAt + rtt / 2 - snapshot.ageMs : null;
+        }
+        const {readAtMs, readUncertaintyMs, clockId} = snapshot;
+        if (!Number.isFinite(readAtMs) || readAtMs < 0 || readAtMs > Number.MAX_SAFE_INTEGER
+            || !Number.isFinite(readUncertaintyMs) || readUncertaintyMs < 0
+            || readUncertaintyMs > 50 || !Number.isFinite(clockId)) return null;
+        // Calibrate the offset between two monotonic clocks, rather than
+        // assuming that the native read happened halfway through every IPC.
+        // Either direction may be delayed. Every request supplies an interval
+        // containing the offset; intersect observations to reduce uncertainty.
+        let low = sentAt - readAtMs - readUncertaintyMs - 0.2;
+        let high = receivedAt - readAtMs + readUncertaintyMs + 0.2;
+        const prior = this._clockMapping;
+        if (prior && prior.id === clockId && readAtMs >= prior.readAt) {
+            // Allow 100 ppm relative clock drift plus timestamp quantization.
+            const drift = Math.max(0, receivedAt - prior.at) * 0.0001;
+            const lo = Math.max(low, prior.low - drift);
+            const hi = Math.min(high, prior.high + drift);
+            if (lo <= hi) { low = lo; high = hi; }
+        }
+        this._clockMapping = {id: clockId, low, high, at: receivedAt, readAt: readAtMs};
+        if (high - low > 100) return null; // No sufficiently precise mapping yet.
+        return readAtMs + (low + high) / 2 - snapshot.ageMs;
+    },
+    getClockSnapshot() {
+        const s = this._clockSnapshot;
+        s.position = this._pos; s.sampledAt = this._pollAt;
+        s.freshAt = this._sourceAt; s.rate = this._speed;
+        s.duration = this._dur; s.sequence = this._sampleSequence;
+        s.generation = this._nativeGeneration;
+        s.playing = this._polling && this._sourcePlaying;
+        return s;
+    },
     get currentTime() {
-        if (!this._polling) return this._pos;
+        if (!this._polling || !this._sourcePlaying) return this._pos;
         // Interpolate between IPC polls so highway motion is smooth at 60fps
         // Scale by _speed so at 0.7x the interpolated clock advances 0.7s/s
-        const elapsed = (performance.now() - this._pollAt) / 1000;
+        const now = performance.now();
+        // Timestamped sources can establish when audio stopped advancing.
+        // Do not let judgement time run indefinitely beyond a stalled source.
+        const until = this._snapshotSupported ? Math.min(now, this._sourceAt + 250) : now;
+        const elapsed = Math.max(0, until - this._pollAt) / 1000;
         return Math.min(this._pos + elapsed * this._speed, this._dur > 0 ? this._dur : Infinity);
     },
     get duration() { return this._dur; },
@@ -133,46 +208,131 @@ export const jucePlayer = {
         });
     },
     async seek(s) {
-        const prev = this._pos;
+        if (!Number.isFinite(s)) throw new TypeError('Seek position must be finite');
+        s = Math.max(0, Math.min(s, this._dur > 0 ? this._dur : Infinity));
+        const prev = this.currentTime;
+        const resume = this._polling || this._resumeAfterSeek;
+        this._stopPolling();
+        this._resumeAfterSeek = resume;
+        const owner = this._seekSerial;
         this._pos = s;
         this._pollAt = performance.now();
+        this._sourceAt = this._pollAt;
         try {
             await window.feedBackDesktop.audio.seekBacking(s);
         } catch (err) {
             console.warn('[jucePlayer] seekBacking failed:', err);
-            this._pos = prev;
-            this._pollAt = performance.now();
+            if (owner === this._seekSerial) {
+                this._pos = prev;
+                this._pollAt = performance.now();
+            }
+            throw err;
+        } finally {
+            if (owner === this._seekSerial && this._resumeAfterSeek) this._startPolling();
         }
     },
     _startPolling() {
         this._stopPolling();
         this._polling = true;
         this._pollAt = performance.now();
+        this._sourceAt = this._pollAt;
+        this._sourcePosition = NaN;
+        this._sourcePlaying = true;
+        this._sourceEnded = false;
+        this._sampleSequence = -1;
+        this._nativeGeneration = -1;
         const self = this;
+        const owner = this._pollGeneration;
+        const owned = () => self._polling && owner === self._pollGeneration;
+        const api = window.feedBackDesktop.audio;
+        if (typeof api.subscribeBackingSnapshots === 'function') {
+            try {
+                self._streamStop = api.subscribeBackingSnapshots(snapshot => {
+                    if (!owned() || !self._validSnapshot(snapshot)) return;
+                    const map = self._clockMapping;
+                    if (!map || map.id !== snapshot.clockId) return;
+                    const age = Math.max(0, performance.now() - map.at);
+                    const uncertainty = (map.high - map.low) / 2 + age * 0.0001;
+                    if (age > 30000 || uncertainty > 50
+                        || !Number.isFinite(snapshot.readAtMs) || snapshot.readAtMs < 0
+                        || snapshot.readAtMs > Number.MAX_SAFE_INTEGER
+                        || !Number.isFinite(snapshot.readUncertaintyMs) || snapshot.readUncertaintyMs < 0
+                        || uncertainty + snapshot.readUncertaintyMs > 50) return;
+                    const sampledAt = snapshot.readAtMs + (map.low + map.high) / 2 - snapshot.ageMs;
+                    // A queued stream packet can arrive after a newer poll or
+                    // packet. Shared ordering and generation checks reject it.
+                    self._acceptSnapshot(snapshot, sampledAt);
+                });
+            } catch (err) {
+                console.warn('[jucePlayer] clock stream unavailable:', err);
+            }
+        }
+        let nextDue = performance.now() + 100;
         function scheduleNext() {
             self._timer = setTimeout(async () => {
-                if (!self._polling) return;
+                if (!owned()) return;
+                self._timer = null;
+                // One request in flight, at most one start per 100ms. Time
+                // spent awaiting IPC counts toward that cadence; an overdue
+                // reply permits one immediate request, never a catch-up burst.
+                nextDue = performance.now() + 100;
                 try {
-                    self._pos = await window.feedBackDesktop.audio.getBackingPosition();
-                    self._pollAt = performance.now();
+                    let sentAt = performance.now(), snapshot = null;
+                    if (self._snapshotSupported !== false && typeof api.getBackingSnapshot === 'function') {
+                        snapshot = await api.getBackingSnapshot();
+                        if (!owned()) return;
+                        // A new preload can be paired with an older native addon.
+                        self._snapshotSupported = snapshot != null;
+                    }
+                    if (snapshot != null) {
+                        const receivedAt = performance.now();
+                        if (!self._validSnapshot(snapshot)) return;
+                        // Even a sample superseded by the stream still gives a
+                        // fresh clock-calibration bracket for this IPC read.
+                        const sampledAt = self._mapSnapshotTime(snapshot, sentAt, receivedAt);
+                        if (sampledAt === null) return;
+                        self._acceptSnapshot(snapshot, sampledAt);
+                    } else {
+                        if (typeof self._streamStop === 'function') self._streamStop();
+                        self._streamStop = null;
+                        sentAt = performance.now();
+                        const pos = await api.getBackingPosition();
+                        if (!owned()) return;
+                        if (!Number.isFinite(pos) || pos < 0) return;
+                        self._pos = pos;
+                        self._pollAt = performance.now();
+                        // Legacy addons cannot report sample age. Equal replies do
+                        // not renew freshness, even though currentTime extrapolates.
+                        if (pos !== self._sourcePosition) self._sourceAt = self._pollAt;
+                        self._sourcePosition = pos;
+                    }
                     _emitSongPositionChanged(self.currentTime, self.duration || null);
                 } catch (err) {
                     console.warn('[jucePlayer] position poll failed:', err);
                 } finally {
-                    if (self._polling) scheduleNext();
+                    if (owned()) scheduleNext();
                 }
-            }, 100);
+            }, Math.max(0, nextDue - performance.now()));
         }
         scheduleNext();
     },
     _stopPolling() {
+        this._pollGeneration++;
+        this._seekSerial++;
+        this._resumeAfterSeek = false;
         this._polling = false;
+        const stop = this._streamStop;
+        this._streamStop = null;
+        if (typeof stop === 'function') {
+            try { stop(); } catch (err) { console.warn('[jucePlayer] clock stream cleanup failed:', err); }
+        }
         if (this._timer) { clearTimeout(this._timer); this._timer = null; }
     },
     setRate(rate) {
         this._pos = this.currentTime;
         this._pollAt = performance.now();
         this._speed = rate;
+        if (this._polling) this._startPolling();
     },
     async stop() {
         await this.pause();
@@ -217,6 +377,7 @@ export function _songEventPayload() {
 export function _markPlaybackPaused() {
     const changed = S.isPlaying || window.feedBack?.isPlaying;
     S.isPlaying = false;
+    window.highway?.setPlaybackState?.('paused');
     setPlayButtonState(false);
     if (window.feedBack) {
         window.feedBack.isPlaying = false;
@@ -227,6 +388,7 @@ export function _markPlaybackPaused() {
 export function _markPlaybackResumed() {
     const changed = !window.feedBack?.isPlaying;
     S.isPlaying = true;
+    window.highway?.setPlaybackState?.('playing');
     setPlayButtonState(true);
     if (window.feedBack) {
         window.feedBack.isPlaying = true;
@@ -324,6 +486,9 @@ export function _resetAudioSeekState() {
     // quickly because each subsequent old-gen step bails on the first
     // guard the moment its predecessor resolves.
     _audioSeekGen++;
+    if (typeof jucePlayer !== 'undefined') jucePlayer._stopPolling?.();
+    window.highway?.resetPresentation?.('song-change');
+    window.highway?.setPlaybackState?.('paused');
     _playAttemptGen++;
     _resumeRequestGen++;
     _resumeInFlight = null;
@@ -402,9 +567,18 @@ export async function _audioSeek(s, reason, options = {}) {
             }
         }
         const from = _audioTime();
+        window.highway?.setPlaybackState?.('seeking');
         if (window._juceMode) await _juceSeekWithTimeout(target);
         else audio.currentTime = target;
         if (gen !== _audioSeekGen || !permitted()) {
+            if (gen === _audioSeekGen) {
+                // A command can complete physically after its caller cancels.
+                // Release the presentation hold without emitting a successful
+                // seek to the cancelled caller or touching a replacement song.
+                window.highway?.setTime?.(_audioTime());
+                window.highway?.resetPresentation?.('cancelled-seek');
+                window.highway?.setPlaybackState?.(S.isPlaying ? 'playing' : 'paused');
+            }
             return { completed: false, from, to: NaN };
         }
         // Read the verified post-seek position rather than the requested `s`
@@ -421,12 +595,15 @@ export async function _audioSeek(s, reason, options = {}) {
         // Without this, chartT lags by one 60Hz tick after a seek.
         if (window.highway && typeof window.highway.setTime === 'function') {
             window.highway.setTime(to);
+            window.highway.resetPresentation?.(reason || 'seek');
+            window.highway.setPlaybackState?.(S.isPlaying ? 'playing' : 'paused');
         }
         window.feedBack.emit('song:seek', { from, to, reason: reason || null });
         return { completed: true, from, to };
     }).catch((err) => {
         // Don't let one failed seek poison subsequent ones.
         console.warn('[_audioSeek]', err);
+        if (gen === _audioSeekGen) window.highway?.setPlaybackState?.(S.isPlaying ? 'playing' : 'paused');
         return { completed: false, from: NaN, to: NaN };
     });
     return _audioSeekChain;

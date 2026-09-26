@@ -115,6 +115,18 @@ function harness() {
     `)(mesh);
 }
 
+test('only ordinary RS+ fretted rims become finer while accent and verdict widths remain intact', () => {
+    const draw=harness();
+    for (const verdict of [null,'hit','miss']) for (const accent of [false,true]) {
+        const r=draw({fret:5,verdict,accent});
+        close(r.outline.scale.x,accent?1.15:verdict?1.075:1.06);
+        close(r.core.scale.x,1);
+        if(verdict)assert.equal(r.outline.material,verdict==='miss'?r.materials.miss:r.materials.hit);
+        const current=draw({style:'current',fret:5,verdict,accent});
+        close(current.outline.scale.x,1.1*(accent?1.09:1));
+    }
+});
+
 test('RS+ open bars keep opaque bodies and thin stems inside the playable width in either handedness', () => {
     const draw = harness();
     for (const width of [.22, 1, 2]) for (const lefty of [false,true]) {

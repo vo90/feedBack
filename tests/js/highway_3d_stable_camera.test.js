@@ -27,8 +27,9 @@ function harness() {
     assert.ok(stateStart >= 0 && stateEnd > stateStart);
     return new Function(`
         const K = 1, TS = 230, AHEAD = 3, CAM_LOCK_CENTER_FRET = 6;
+        const rawPoints = [];
         ${constants}
-        ${source.slice(stateStart, stateEnd)}
+        ${source.slice(stateStart, stateEnd).replace('function stableSupportReset() {', 'function stableSupportReset() { rawPoints.length = 0;')}
         let _stableCameraResetSerial = 0, stableCameraPreset = 'straight', stableCameraFollow = true;
         let _leftyCached = false, _songKey = 'song', nStr = 6, cameraSmoothing = .5, zoomSmoothing = .5;
         let wall = 0, fixturePoints = [], regionFixture = null, regionRows = null, lastRegionTime = NaN, curX = 60;
@@ -51,19 +52,22 @@ function harness() {
         const _stablePlan = {rows:null,key:'',stops:[],revision:0,result:{}};
         let mockRegionKey='', mockRegionAnchors=[];
         const dZ = time => -time * TS;
-        ${extractFunction('stableAddPoint')}
+        ${extractFunction('stableAddPoint').replace('_stablePointSamples++;', 'rawPoints.push([x,y,z]); _stablePointSamples++;')}
         ${extractFunction('stableAddSegment')}
         ${extractFunction('stableCollectObject')}
         ${extractFunction('stableConstrain')}
         ${extractFunction('stableIntervalAt')}
         ${extractFunction('stableSolve')}
-        ${['hwyBuildCameraStops','hwyCameraPlanAt','hwyCameraRejoin','hwyCameraZoom','stableRegionFitDistance','stableRegionFootprint','stableRegionFraming','stableCameraPlan','stableCamUpdate'].map(extractFunction).join('\n')}
+        ${['hwyBuildCameraStops','hwyCameraPlanAt','hwyCameraRejoin','hwyCameraZoom','stableRegionFitDistance','stableRegionFootprint','stableRegionFraming','stableRegionViewDistance','stableCameraPlan','stableCamUpdate'].map(extractFunction).join('\n')}
         ${extractFunction('stableCollectGeometry').replace('function stableCollectGeometry(', 'function collectRealRegionGeometry(')}
         function stableCollectGeometry() {
+            stableSupportReset();
             _stableCam.pointCount = fixturePoints.length * 3;
+            _stableCam.viewPointCount = fixturePoints.length ? _stableViewPoints.length : 0;
             _stableCam.minX = Infinity; _stableCam.maxX = -Infinity;
             fixturePoints.forEach((point, index) => {
                 _stablePoints.set(point, index * 3);
+                stableCollectViewPoint(...point);
                 _stableCam.minX = Math.min(_stableCam.minX, point[0]);
                 _stableCam.maxX = Math.max(_stableCam.maxX, point[0]);
             });
@@ -119,6 +123,7 @@ function harness() {
                 if ('strings' in values) nStr = values.strings;
                 if ('pan' in values) cameraSmoothing = values.pan;
                 if ('rate' in values) bundle.playbackRate = values.rate;
+                if ('epoch' in values) bundle.transport = {epoch: values.epoch};
             },
             frame(time, elapsed = 1 / 60, playing = true, frameTime) {
                 wall += elapsed; bundle.currentTime = time; bundle.isPlaying = playing;
@@ -138,6 +143,19 @@ function harness() {
                 const p = Float64Array.from(point);
                 return stableIntervalAt(state.distance, 0, .96, state.x, p, 3, _stableViewBasis).valid;
             },
+            compareSupportedGeometry(points) {
+                stableSupportReset();
+                for(const point of points)stableAddPoint(...point);
+                const all=Float64Array.from(rawPoints.flat());
+                const selected=_stableViewPoints.slice();
+                const prediction=Math.min(AHEAD,.15*_stableCam.rate);
+                return [[prediction,.96,_stableViewBasis],[0,.96,_stableViewBasis]]
+                    .flatMap(([prediction,margin,basis])=>[false,true].map(fixed=>({
+                        exact:{...stableSolve(35,100,prediction,margin,fixed,all,all.length,basis)},
+                        reduced:{...stableSolve(35,100,prediction,margin,fixed,selected,selected.length,basis)},
+                        selectedCount:selected.length/3,inputCount:all.length/3,
+                    })));
+            },
             collectRegion(region, labels = []) {
                 _incomingFixedFretLabels = {};
                 for (const {fret, x, y, z, size} of labels) {
@@ -146,34 +164,19 @@ function harness() {
                         matrixWorld: {elements: [size,0,0,0,0,size,0,0,0,0,1,0,x,y,z,1]} };
                 }
                 collectRealRegionGeometry(region);
-                const points = [];
-                for (let i = 0; i < _stableCam.pointCount; i += 3) {
-                    points.push(Array.from(_stablePoints.slice(i, i + 3)));
-                }
-                return points;
+                return rawPoints.map(p=>p.slice());
             },
             spritePoints({ x, y, z, size, centerY }) {
-                for (const bin of _stableBins) {
-                    bin.minX = bin.minY = bin.minZ = Infinity;
-                    bin.maxX = bin.maxY = bin.maxZ = -Infinity;
-                }
+                stableSupportReset();
                 stableCollectObject({ visible: true, isSprite: true, userData: {}, material: { opacity: 1 },
                     center: { x: .5, y: centerY }, updateWorldMatrix() {},
                     matrixWorld: { elements: [size, 0, 0, 0, 0, size, 0, 0, 0, 0, 1, 0, x, y, z, 1] } });
-                const points = [];
-                for (const bin of _stableBins) if (Number.isFinite(bin.minX)) {
-                    for (let i = 0; i < 8; i++) points.push([i & 1 ? bin.maxX : bin.minX,
-                        i & 2 ? bin.maxY : bin.minY, i & 4 ? bin.maxZ : bin.minZ]);
-                }
-                return points;
+                return rawPoints.map(p=>p.slice());
             },
             segmentPoints(a, b) {
-                for (const bin of _stableBins) {
-                    bin.minX = bin.minY = bin.minZ = Infinity;
-                    bin.maxX = bin.maxY = bin.maxZ = -Infinity;
-                }
+                stableSupportReset();
                 stableAddSegment(...a, ...b);
-                return _stableBins.filter(b => Number.isFinite(b.minX)).map(b => ({...b}));
+                return rawPoints.map(([x,y,z])=>({minX:x,maxX:x,minY:y,maxY:y,minZ:z,maxZ:z}));
             },
             projected(point, x, distance, prediction = 0) {
                 const b = _stableBasis, dx = point[0] - x - b.x, y = point[1] - b.y;
@@ -189,6 +192,18 @@ function harness() {
         };
     `)();
 }
+
+test('explicit transport epoch prevents raw correction from snapping the stable camera', () => {
+    const h = harness();
+    h.setPoints([[30, 3, 0], [60, 23, 0]]);
+    h.settings({epoch: 1});
+    h.frame(10, 1 / 60, true, 10);
+    const corrected = h.frame(9.9, 1 / 60, true, 10.016);
+    assert.equal(corrected.clockReset, false);
+    assert.equal(h.regionLookupTime(), 10.016);
+    h.settings({epoch: 2});
+    assert.equal(h.frame(10.015, 1 / 60, true, 10.015).clockReset, true);
+});
 
 function assertFits(h, points, fit, prediction = 0, margin = .90) {
     assert.ok(Number.isFinite(fit.x) && Number.isFinite(fit.distance));
@@ -514,6 +529,8 @@ test('a distant note that fits does not change the primary playing composition',
 });
 
 test('changing distant extrema cannot block return to the current group', () => {
+    const reference = harness(); reference.setFocus(20); reference.setPoints([[20, 13, 0]]);
+    const expected = reference.frame(0, 0);
     const h = harness(); h.setFocus(70); h.setPoints([[70, 13, 0]]); h.frame(0, 0);
     h.setFocus(20);
     for (let i = 1; i <= 240; i++) {
@@ -523,7 +540,7 @@ test('changing distant extrema cannot block return to the current group', () => 
     }
     const settled = h.frame(4, 0);
     assert.ok(Math.abs(settled.x - 20) < .1, JSON.stringify(settled));
-    assert.equal(settled.distance, 100);
+    assert.equal(settled.distance, expected.distance);
 });
 
 test('necessary secondary widening uses the closest feasible framing before sacrificing size', () => {
@@ -819,28 +836,66 @@ test('the stable camera update entry point forwards the shared floor render cloc
     assert.equal(call.frameTime, 108.735);
 });
 
-test('five and seven fret passages keep the same four-fret base at normal zoom', () => {
+test('five and seven fret passages preserve the centre and smoothly return to calibrated close framing', () => {
     for (const preset of ['straight', 'angled']) {
         const h = harness(); h.settings({preset});
         h.setRegionTimeline([{time:0,minX:90,maxX:130},{time:2,minX:90,maxX:140},
             {time:5,minX:90,maxX:160},{time:10,minX:90,maxX:130}]);
         const first = h.frame(0, 0);
         assert.equal(first.x, 110);
-        for (let i = 1; i <= 660; i++) {
+        let previous = first;
+        for (let i = 1; i <= 840; i++) {
             const s = h.frame(i / 60, 1 / 60);
             assert.equal(s.x, 110, `${preset}: width alone moved the centre at ${i / 60}`);
-            assert.equal(s.distance, first.distance, `${preset}: avoidable zoom at ${i / 60}`);
+            assert.ok(Math.abs(s.distance - previous.distance) / previous.distance < .01,
+                `${preset}: abrupt zoom at ${i / 60}`);
+            previous = s;
         }
+        assert.equal(previous.distance, first.distance, `${preset}: did not return to close framing`);
     }
 });
 
 test('a lateral adjustment that fits at close distance does not zoom out', () => {
+    const reference = harness(); reference.setRegion(0, 40);
+    const close = reference.frame(0, 0);
     const h = harness(); h.setRegion(0, 40);
     h.setPoints([[-10, 13, 0], [130, 13, 0]]);
     const state = h.frame(0, 0);
-    assert.equal(state.distance, 100);
+    assert.equal(state.distance, close.distance);
     assert.ok(state.x > 20 && state.x < 65, 'take only the necessary step from the preferred centre');
     assertFits(h, [[-10, 13, 0], [130, 13, 0]], state, 0, .82);
+});
+
+test('calibrated framing reserves incoming fret digits before the first attack', () => {
+    for (const preset of ['straight', 'angled']) {
+        const h = harness(); h.settings({preset, aspect:3440/1323});
+        h.setRegion(130, 170);
+        const opening = h.frame(0, 0);
+        const points = h.spritePoints({x:135, y:3-4*.8, z:0, size:7, centerY:1});
+        for (const point of points) assert.ok(h.viewFits(point, opening),
+            `${preset}: the first incoming digit would force an emergency zoom`);
+        h.setPoints(points);
+        for (let i=1;i<=120;i++) {
+            const s=h.frame(i/60,1/60);
+            assert.ok(Math.abs(s.distance-opening.distance)<1e-6,
+                `${preset}: a normal arrival changed the reserved distance`);
+        }
+    }
+});
+
+test('bounded frustum support gives the same fit as every real collected point', () => {
+    let seed=83173;
+    const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};
+    const points=Array.from({length:600},()=>[random()*600-300,random()*140-40,random()*-420+8]);
+    for(const preset of ['straight','angled'])for(const aspect of [.72,1.78,2.6])for(const rate of [.5,1,2]){
+        const h=harness();h.settings({preset,aspect,rate});h.setRegion(20,60);h.frame(0,0);
+        for(const result of h.compareSupportedGeometry(points)){
+            assert.equal(result.selectedCount,10);
+            assert.ok(result.inputCount>30);
+            assert.ok(Math.abs(result.exact.x-result.reduced.x)<1e-8,`${preset}/${aspect}/${rate}: centre`);
+            assert.ok(Math.abs(result.exact.distance-result.reduced.distance)<1e-8,`${preset}/${aspect}/${rate}: distance`);
+        }
+    }
 });
 
 test('genuinely wide playing areas remain stable across alternating notes', () => {

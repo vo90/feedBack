@@ -204,6 +204,10 @@ function createHighway() {
     // to 1 until we have two anchors to compare.
     hwState._chartObservedRate = 1;
     hwState._playbackRate = undefined;
+    hwState._presentationEpoch = 0;
+    hwState._playbackState = null;
+    hwState._nativeClock = null;
+    hwState._transportBundle = {};
     // Visibility-aware rAF (feedBack#246): when the canvas is hidden
     // (display:none on itself or any ancestor — e.g. splitscreen's
     // workaround), pause renderer.draw and emit highway:visibility on
@@ -574,6 +578,25 @@ function createHighway() {
         // keep their own staleness-based fallback.
         b.isPlaying = !Number.isNaN(hwState._chartAnchorPerfNow)
             && (performance.now() - hwState._chartLastAdvanceAt) <= _CHART_MAX_INTERP_MS;
+        // Presentation metadata is independent of getTime()/judgement timing.
+        // Keep the legacy currentTime and one-argument setTime contracts intact.
+        b.transport = null;
+        if (hwState._playbackState) {
+            const t = hwState._transportBundle, n = hwState._nativeClock;
+            const offset = hwState.songOffset + hwState.avOffsetSec;
+            t.epoch = hwState._presentationEpoch;
+            t.state = hwState._playbackState;
+            t.position = n ? n.position + offset : hwState.currentTime;
+            t.sampledAt = n ? n.sampledAt : hwState._chartAnchorPerfNow;
+            t.freshAt = n ? n.freshAt : hwState._chartLastAdvanceAt;
+            t.rate = n ? n.rate : hwState._playbackRate;
+            const duration = n ? n.duration : Number(hwState.songInfo.duration);
+            t.endTime = duration > 0 ? duration + offset : Infinity;
+            t.sequence = n ? n.sequence : 0;
+            t.generation = n ? n.generation : 0;
+            b.transport = t;
+            b.isPlaying = t.state === 'playing';
+        }
 
         // Chart content (filter-aware — difficulty-filtered arrays
         // preferred; raw arrays are the fallback when no ladder data).
@@ -1975,6 +1998,7 @@ function createHighway() {
                             console.log('Loading:', msg.stage);
                             break;
                         case 'song_info':
+                            api.resetPresentation('song-info');
                             // Normalise to camelCase so matchesArrangement predicates
                             // can use songInfo.hasNotation without knowing the wire
                             // field name. Keep has_notation intact for consumers that
@@ -2508,6 +2532,22 @@ function createHighway() {
             hwState._playbackRate = Number.isFinite(playbackRate) && playbackRate > 0
                 ? playbackRate : undefined;
         },
+        // These separate methods survive legacy plugins that wrap setTime(t).
+        setPlaybackState(state) {
+            hwState._playbackState = state;
+        },
+        setPlaybackSample(clock, playing) {
+            if (hwState._playbackState === 'seeking' || hwState._playbackState === 'rewind') return;
+            hwState._nativeClock = clock ? Object.assign(hwState._nativeClock || {}, clock) : null;
+            hwState._playbackState = playing ? (clock && !clock.playing ? 'ended' : 'playing') : 'paused';
+        },
+        resetPresentation(reason) {
+            hwState._presentationEpoch++;
+            hwState._nativeClock = null;
+            hwState._presentationReason = reason;
+        },
+        setClockDiagnostics(enabled) { hwState._renderer?.setClockDiagnostics?.(enabled); },
+        getClockDiagnostics() { return hwState._renderer?.getClockDiagnostics?.() || null; },
         setTime(t) {
             // chartTime is what getTime() exposes to plugins — bake the
             // per-song offset in here so plugins (scoring, note detect,
@@ -2560,6 +2600,8 @@ function createHighway() {
         // isPlaying=false immediately. The first genuinely advancing audio
         // sample re-anchors through setTime() and resumes smooth motion.
         freezeTime(t) {
+            api.resetPresentation('count-in');
+            hwState._playbackState = 'count-in';
             hwState.chartTime = t + hwState.songOffset;
             hwState.currentTime = hwState.chartTime + hwState.avOffsetSec;
             hwState._chartAnchorAudioT = t;
@@ -2567,7 +2609,12 @@ function createHighway() {
             hwState._chartLastAdvanceAt = 0;
             hwState._chartObservedRate = 1;
         },
-        setAvOffset(ms) { hwState.avOffsetSec = (Number(ms) || 0) / 1000; hwState.currentTime = hwState.chartTime + hwState.avOffsetSec; },
+        setAvOffset(ms) {
+            const offset = (Number(ms) || 0) / 1000;
+            if (offset !== hwState.avOffsetSec) api.resetPresentation('av-offset');
+            hwState.avOffsetSec = offset;
+            hwState.currentTime = hwState.chartTime + hwState.avOffsetSec;
+        },
         getAvOffset() { return hwState.avOffsetSec * 1000; },
 
         getBPM(t) {
@@ -2961,6 +3008,8 @@ function createHighway() {
             _destroyCurrentIfInited();
             hwState.ready = false;
             hwState.songInfo = {};
+            api.resetPresentation('clear');
+            hwState._playbackState = null;
         },
 
         /**

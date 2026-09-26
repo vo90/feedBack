@@ -9,6 +9,88 @@
 (function () {
     'use strict';
 
+    // Explicit transport epochs separate genuine repositioning from clock
+    // measurement corrections. This clock is visual only; scoring reads audio.
+    function createPresentationClock() {
+        let time = NaN, lastPerf = NaN, epoch = null;
+        let gapRecovery = false;
+        let trace = null, traceCount = 0;
+        const fields = ['wallMs', 'time', 'target', 'raw', 'epoch', 'reason',
+            'sampleAgeMs', 'sequence', 'generation', 'rate', 'deltaMs'];
+        const reasons = ['advance', 'epoch', 'hold', 'stale', 'rewind', 'frame-gap', 'end', 'source-recovery'];
+        return {
+            reset() { time = lastPerf = NaN; epoch = null; gapRecovery = false; traceCount = 0; },
+            trace(enabled) { trace = enabled ? new Float64Array(4096 * fields.length) : null; traceCount = 0; },
+            diagnostics() {
+                if (!trace) return null;
+                const count = Math.min(traceCount, 4096), rows = [];
+                for (let i = traceCount - count; i < traceCount; i++) {
+                    const at = (i % 4096) * fields.length;
+                    rows.push(Array.from(trace.subarray(at, at + fields.length)));
+                }
+                return {fields, reasons, count: traceCount, rows};
+            },
+            sample(raw, now, transport) {
+                const t = transport;
+                const rate = Number.isFinite(t.rate) && t.rate > 0 ? t.rate : 1;
+                const position = Number.isFinite(t.position) ? t.position : raw;
+                const sampledAt = Number.isFinite(t.sampledAt) ? t.sampledAt : now;
+                const freshAt = Number.isFinite(t.freshAt) ? t.freshAt : sampledAt;
+                const age = Math.max(0, now - freshAt);
+                const end = Number.isFinite(t.endTime) ? t.endTime : Infinity;
+                const playing = t.state === 'playing';
+                const target = Math.min(end, position + (playing
+                    ? Math.max(0, Math.min(now, freshAt + 250) - sampledAt) * rate / 1000 : 0));
+                const previous = time;
+                let reason = 0;
+                if (!Number.isFinite(time) || epoch !== t.epoch) {
+                    time = Math.min(end, playing ? target : raw); reason = 1; gapRecovery = false;
+                } else if (t.state === 'rewind' || t.state === 'count-in') {
+                    time = raw; reason = 4; gapRecovery = false;
+                } else if (!playing) {
+                    // Pause freezes the last displayed frame, even if it is
+                    // slightly ahead of the most recent audio measurement.
+                    reason = 2; gapRecovery = false;
+                } else {
+                    const dt = Math.max(0, now - lastPerf) / 1000;
+                    // A long frame can resume before its queued audio update.
+                    // Remember that gap until a fresh observation arrives, so
+                    // clipping a stale frame cannot leave seconds of phase lag.
+                    if (dt > 0.25) gapRecovery = 5;
+                    // Permit finite extrapolation only while the SOURCE is
+                    // fresh, not because its extrapolated getter keeps changing.
+                    const usable = Math.max(0, Math.min(now, freshAt + 250) - lastPerf) / 1000;
+                    if (age > 250) {
+                        time += usable * rate; reason = 3;
+                        // Complete observation loss can happen with regular
+                        // frames too. Resume from fresh audio once available;
+                        // never spend many seconds repaying accumulated lag.
+                        if (!gapRecovery) gapRecovery = 7;
+                    }
+                    else if (gapRecovery) { time = Math.max(time, target); reason = gapRecovery; gapRecovery = false; }
+                    else {
+                        const advance = dt * rate;
+                        const predicted = time + advance;
+                        const correction = (target - predicted) * Math.min(1, dt / 0.12);
+                        time = predicted + Math.max(-advance * 0.2, Math.min(advance * 0.2, correction));
+                    }
+                    if (time >= end) { time = end; reason = 6; }
+                }
+                epoch = t.epoch; lastPerf = now;
+                if (trace) {
+                    const at = (traceCount++ % 4096) * fields.length;
+                    trace[at] = now; trace[at + 1] = time; trace[at + 2] = target;
+                    trace[at + 3] = raw; trace[at + 4] = epoch; trace[at + 5] = reason;
+                    trace[at + 6] = age; trace[at + 7] = t.sequence;
+                    trace[at + 8] = t.generation; trace[at + 9] = rate;
+                    trace[at + 10] = Number.isFinite(previous) ? (time - previous) * 1000 : 0;
+                }
+                return time;
+            },
+        };
+    }
+    // End presentation clock.
+
     /* ======================================================================
      *  Constants
      * ====================================================================== */
@@ -1488,13 +1570,17 @@
         ) => {
             if (pathNote?.mt === true && pathNote.pick_scrape_marks?.length) f = 0;
             if (!Number.isFinite(t) || !Number.isInteger(s) || s < 0 || s >= stringCount) return;
+            // Match drawNote's local open-bar view, retaining the authored
+            // identity for lookup/dedup and all scoring/linked-path consumers.
+            const sourceFret = f;
+            if (f === 127 && pathNote && isUnpitchedMute(pathNote)) f = 0;
             if (!Number.isInteger(f) || f < 0 || f > NFRETS) return;
             const duration = Number.isFinite(sustain) ? Math.max(0, sustain) : 0;
             const trailStart = options?.visualStartForNote ? options.visualStartForNote(pathNote, t) : t;
             const trailVisible = (duration > 0.01 || trailStart < t) && (options?.trailVisible
                 ? options.trailVisible(pathNote, chordMeta, sourceChord) : (f > 0 || chordMeta === null));
             (byFret[f] || (byFret[f] = [])).push({
-                t, s, f, end: t + duration,
+                t, s, f, sourceFret, end: t + duration,
                 gemVisible: !options?.suppressedAttacks?.has(pathNote),
                 trailVisible,
                 standaloneTrailVisible: trailVisible && chordMeta === null,
@@ -1532,12 +1618,13 @@
                 let minF = Infinity, maxF = -Infinity;
                 for (let ni = 0; ni < ch.notes.length; ni++) {
                     const n = ch.notes[ni];
+                    const fret = n?.f === 127 && isUnpitchedMute(n) ? 0 : n?.f;
                     if (!Number.isInteger(n?.s) || n.s < 0 || n.s >= stringCount
-                        || !Number.isInteger(n?.f) || n.f < 0 || n.f > NFRETS) continue;
+                        || !Number.isInteger(fret) || fret < 0 || fret > NFRETS) continue;
                     strings.add(n.s);
-                    if (n.f > 0 && !n.pick_scrape_marks?.length) {
-                        minF = Math.min(minF, n.f);
-                        maxF = Math.max(maxF, n.f);
+                    if (fret > 0 && !n.pick_scrape_marks?.length) {
+                        minF = Math.min(minF, fret);
+                        maxF = Math.max(maxF, fret);
                     }
                 }
                 const chordMeta = {
@@ -1554,7 +1641,7 @@
         for (let f = 0; f < byFret.length; f++) {
             const events = byFret[f];
             if (!events || events.length < 2) continue;
-            events.sort((a, b) => a.t - b.t || a.s - b.s);
+            events.sort((a, b) => a.t - b.t || a.s - b.s || a.sourceFret - b.sourceFret);
             // Standalone arpeggio notes can duplicate chord members. Collapse
             // exact onset/string/fret duplicates so dense charts stay cheap to
             // scan, retaining enough origin metadata to resolve open-gem bounds.
@@ -1562,7 +1649,7 @@
             for (let read = 1; read < events.length; read++) {
                 const prev = events[write - 1], cur = events[read];
                 if (Math.abs(cur.t - prev.t) < 1e-6
-                    && cur.s === prev.s) {
+                    && cur.s === prev.s && cur.sourceFret === prev.sourceFret) {
                     prev.end = Math.max(prev.end, cur.end);
                     prev.accent = prev.accent || cur.accent;
                     prev.ghost = prev.ghost || cur.ghost;
@@ -3060,21 +3147,37 @@
     // would turn the return into an endless asymptote. Rising requirements
     // cancel it immediately, including the anticipated next playing area.
     function hwyCameraZoom(state, required, dt, smoothing = 0.5) {
-        if (required > (state.zoomRequired ?? required) + Math.max(1e-8, required * 0.005)) {
+        if (required > (state.zoomRequired ?? required) + Math.max(1e-8, required * 0.00001)) {
             state.quietZoomTime = 0;
         }
         state.zoomRequired = required;
         if (required >= state.distance - 1e-8) {
             state.quietZoomTime = 0;
             state.zoomReturnFrom = state.distance;
-            state.distance += (required - state.distance) * (1 - Math.exp(-dt / 0.16));
+            const motion = hwyCameraRejoin(state.distance - required, state.zoomVelocity || 0, dt, 10);
+            state.distance = required + motion.offset;
+            state.zoomVelocity = motion.velocity;
         } else {
             if (!state.quietZoomTime) state.zoomReturnFrom = state.distance;
             state.quietZoomTime += dt;
             const calm = Math.max(0, Math.min(1, smoothing));
-            const u = Math.max(0, Math.min(1, (state.quietZoomTime - (0.4 + calm * 0.2)) / (0.6 + calm * 0.4)));
+            const wait = 0.4 + calm * 0.2;
+            // An outward visibility correction must come to rest smoothly
+            // when its geometry disappears, rather than stop in one frame.
+            const velocity = state.zoomVelocity || 0;
+            if (state.quietZoomTime <= wait && Math.abs(velocity) > 1e-10) {
+                const decay = Math.exp(-dt / .12);
+                const distance = state.distance + velocity * .12 * (1 - decay);
+                state.distance = Math.max(required, distance);
+                state.zoomVelocity = distance > required ? velocity * decay : 0;
+                state.zoomReturnFrom = state.distance;
+                return;
+            }
+            const duration = 0.6 + calm * 0.4;
+            const u = Math.max(0, Math.min(1, (state.quietZoomTime - wait) / duration));
             const eased = u * u * u * (10 + u * (-15 + 6 * u));
             state.distance = state.zoomReturnFrom + (required - state.zoomReturnFrom) * eased;
+            state.zoomVelocity = (required - state.zoomReturnFrom) * 30 * u * u * (1 - u) * (1 - u) / duration;
         }
         if (Math.abs(state.distance - required) < 1e-8) state.distance = required;
     }
@@ -8155,6 +8258,7 @@
         let _clkPerf = NaN;     // performance.now() when that sample arrived
         let _clkRate = 1;       // observed chart-seconds per real-second
         let _clkFramePerf = NaN;
+        const _presentationClock = createPresentationClock();
         let _clkRateAudioT = NaN, _clkRatePerf = NaN;
         let _frameNow = 0;      // smoothed time for THIS frame (update → camUpdate)
 
@@ -8514,11 +8618,11 @@
                 const palm = kind === 'palmMute';
                 // Inset the wider PM's endpoints by its extra stroke radius
                 // so compensated compound marks keep their antialiasing room.
-                const left = palm ? 0.10 + 0.07 * (strokeScale - 1) : 0.26, right = 1 - left;
+                const left = palm ? 0.12 + 0.08 * (strokeScale - 1) : 0.26, right = 1 - left;
                 g.moveTo(left, 0.25); g.lineTo(right, 0.75);
                 g.moveTo(right, 0.25); g.lineTo(left, 0.75);
                 g.lineCap = 'round';
-                if (!palm) keyline(0.168 * strokeScale);
+                keyline(0.168 * strokeScale);
                 g.strokeStyle = white;
                 g.lineWidth = 0.14 * strokeScale; g.stroke();
                 if (palm) {
@@ -8548,13 +8652,14 @@
                     g.lineTo(x(0.26), 0.63); g.lineTo(x(0.45), 0.50); g.lineTo(x(0.26), 0.37);
                 }
                 g.closePath();
-                if (kind === 'bend') {
-                    // A narrow light edge separates the arrow from a matching
-                    // gem/trail; its dark contour remains readable on pale ones.
-                    // Bake both into the same mask, without glow or extra meshes.
-                    keyline(0.070);
-                    g.strokeStyle = white; g.lineWidth = 0.032; g.stroke();
-                }
+                // One flat contour separates the arrow from a matching trail.
+                // Near-black custom fills use one muted light contour instead.
+                const darkFill = Math.max((stringHex >> 16) & 255,
+                    (stringHex >> 8) & 255, stringHex & 255) < 45;
+                if (darkFill) {
+                    g.strokeStyle = '#9cabb5'; g.lineWidth = 0.055;
+                    g.lineJoin = g.lineCap = 'round'; g.stroke();
+                } else keyline(0.055);
                 fill(rsPlusTechniqueColor(stringHex), false);
             }
         }
@@ -12097,12 +12202,13 @@
                     }
                 }
                 gc.needsUpdate = true;
-                // The reference's red gems have a warm gold edge; other strings
-                // keep a pale version of their own hue. The accent strengthens
-                // the edge without turning the entire border paper-white.
+                // Ordinary notes have one flat separating rim. Near-black
+                // custom fills need a muted light rim instead. Accents keep
+                // their brighter hue (warm gold on red), and verdicts keep
+                // their existing feedback colors.
                 const rimHighlight = new T.Color(col.r > col.g * 2 && col.r > col.b * 2
                     ? 0xffdf72 : 0xffffff);
-                mRsRim[s].color.copy(col).lerp(rimHighlight, 0.30 + 0.08 * glowMul);
+                mRsRim[s].color.setHex(grey < 0.018 ? 0x9cabb5 : 0x18222c);
                 mRsAccentRim[s].color.copy(col).lerp(rimHighlight, 0.58 + 0.08 * glowMul);
                 mRsHitRim[s].color.copy(col).lerp(new T.Color(0xffffff), 0.90);
                 mRsSus[s].color.copy(col);
@@ -14203,6 +14309,9 @@
         // top of update(); camUpdate() reads the stored _frameNow afterward so
         // notes and camera share one clock. See the _clk* state block above.
         function smoothNow(bundle) {
+            if (bundle.transport) {
+                return (_frameNow = _presentationClock.sample(bundle.currentTime, performance.now(), bundle.transport));
+            }
             const raw = bundle.currentTime;
             const p = performance.now();
             const declaredRate = bundle.playbackRate ?? bundle.speed;
@@ -18577,7 +18686,8 @@
 
         /** Find the indexed event represented by a drawNote call. */
         function trailYieldEventForNote(n) {
-            const events = _trailYieldEventsByFret[n.f];
+            const fret = n.f === 127 && isUnpitchedMute(n) ? 0 : n.f;
+            const events = _trailYieldEventsByFret[fret];
             if (!events || events.length === 0) return null;
             let lo = 0, hi = events.length;
             while (lo < hi) {
@@ -18588,7 +18698,7 @@
             for (let i = lo; i < events.length; i++) {
                 const event = events[i];
                 if (event.t > n.t + 1e-6) break;
-                if (event.s === n.s) return event;
+                if (event.s === n.s && event.sourceFret === n.f) return event;
             }
             return null;
         }
@@ -18618,6 +18728,7 @@
 
         function trailYieldApplyBehindLayerRecord(
             worldZ, outline, core, face, coveringRenderOrder = Infinity, halo = null,
+            record = null,
         ) {
             const outlineOrder = renderOrderForLayerAtZ(
                 worldZ, 'NOTE_OUTLINE_BEHIND_TRAIL',
@@ -18643,6 +18754,18 @@
             // The optional RS+ halo is part of this gem, including when a
             // later crossing demotes it after its initial layer was chosen.
             if (halo) halo.renderOrder = outline.renderOrder - 0.01;
+            // Technique ink is distinct from the lateral verdict face. Leave
+            // space above that face and below the covering strand's outline.
+            // Remember the constraint for attachments emitted after this pass.
+            if (record) {
+                record._trailYieldAttachmentOrder = Number.isFinite(coveringRenderOrder)
+                    ? Math.min(faceOrder + 0.00025, coveringRenderOrder - 0.00075)
+                    : faceOrder + 0.00025;
+                for (let i = 0; i < (record._trailYieldAttachmentCount || 0); i++) {
+                    const mesh = record._trailYieldAttachments[i];
+                    mesh.renderOrder = Math.min(mesh.renderOrder, record._trailYieldAttachmentOrder);
+                }
+            }
         }
 
         function trailYieldApplyBehindLayers(event) {
@@ -18660,6 +18783,7 @@
                 event._trailYieldGemFace,
                 coveringRenderOrder,
                 event._trailYieldGemHalo,
+                event,
             );
             const extras = event._trailYieldGemExtraRecords;
             for (let i = 1; i < count; i++) {
@@ -18668,6 +18792,7 @@
                     record.worldZ, record.outline, record.core, record.face,
                     coveringRenderOrder,
                     record.halo,
+                    record,
                 );
             }
             trailYieldConstrainOwnTrailBehindGem(event);
@@ -18700,12 +18825,13 @@
         }
 
         function trailYieldRegisterGem(event, worldZ, outline, core, face, halo = null) {
-            if (!event) return;
+            if (!event) return null;
             if (event._trailYieldGemFrame !== _trailYieldFrameId) {
                 event._trailYieldGemFrame = _trailYieldFrameId;
                 event._trailYieldGemRecordCount = 0;
             }
             const index = event._trailYieldGemRecordCount++;
+            let record = event;
             if (index === 0) {
                 // One rendered gem per indexed event is the normal path. Keep
                 // its mesh references directly on the reusable event so this
@@ -18720,16 +18846,33 @@
                 // Allocate records only for that uncommon second emission.
                 const extras = event._trailYieldGemExtraRecords
                     || (event._trailYieldGemExtraRecords = []);
-                const record = extras[index - 1] || (extras[index - 1] = {});
+                record = extras[index - 1] || (extras[index - 1] = {});
                 record.worldZ = worldZ;
                 record.outline = outline;
                 record.core = core;
                 record.face = face;
                 record.halo = halo;
             }
+            // Pooled meshes may now belong to a different note/style. Clear
+            // only this emission's old references, retaining allocated storage.
+            if (record._trailYieldAttachments) {
+                record._trailYieldAttachments.fill(null, 0, record._trailYieldAttachmentCount);
+            }
+            record._trailYieldAttachmentCount = 0;
+            record._trailYieldAttachmentOrder = Infinity;
             if (event._trailYieldTargetFrame === _trailYieldFrameId) {
                 trailYieldApplyBehindLayers(event);
             }
+            return record;
+        }
+
+        /** Attach actual technique ink to one drawNote emission, not its previews. */
+        function trailYieldRegisterAttachment(record, mesh) {
+            if (!record) return;
+            const attachments = record._trailYieldAttachments
+                || (record._trailYieldAttachments = []);
+            attachments[record._trailYieldAttachmentCount++] = mesh;
+            mesh.renderOrder = Math.min(mesh.renderOrder, record._trailYieldAttachmentOrder);
         }
 
         function trailYieldApplyTargetTrailOrder(event) {
@@ -19920,7 +20063,8 @@
             const trailYieldIncludeTrails = !!(
                 _trailVisibilityFrontMask & TRAIL_OCCLUSION_TRAIL
             );
-            const trailYieldTargetEvent = trailYieldEventForNote(n);
+            const trailYieldTargetEvent = trailYieldEventForNote(sourceNote);
+            let trailYieldGemRecord = null;
 
             if (!effSkipBody && !arpGhostOnlyMode && !_overLinger) {
 
@@ -20102,7 +20246,10 @@
                 outline.renderOrder = renderOrderForLayerAtZ(noteZ, noteOutlineLayer);
                 outline.position.set(x, y + techniqueYNow, noteZ);
                 outline.rotation.z = approachRot;
-                const ndRim = rsPlusNotation ? (n.ac ? 1.15 : 1.075) : 1.1;
+                // Only ordinary rims become finer; accent and verdict widths
+                // remain their existing gameplay cues.
+                const ndRim = rsPlusNotation
+                    ? (n.ac ? 1.15 : (rsHit || rsMiss ? 1.075 : 1.06)) : 1.1;
                 if (rsPlusNotation && n.f === 0) {
                     // Open strings are bars, not stretched fretted-note rims.
                     // Reuse the outline mesh for the reference's pale vertical
@@ -20181,7 +20328,7 @@
                     hwyShapeOpenGhostGeometry(core, core.geometry, bodyWidth, markerScale, NW, _ownedSharedGeos);
                 }
                 _registerIncomingLabelOccluder(core, noteZ, outline);
-                trailYieldRegisterGem(
+                trailYieldGemRecord = trailYieldRegisterGem(
                     trailYieldGemEvent, noteZ, outline, core, noteFaceMesh, noteHaloMesh,
                 );
                 trailOrderRegisterUpcomingGem(
@@ -20713,6 +20860,7 @@
                     arrow.position.set(x + direction * NW * 1.15, y + techniqueYNow, noteZ + K);
                     arrow.rotation.z = 0;
                     arrow.renderOrder = techniqueMarkerRenderOrder;
+                    trailYieldRegisterAttachment(trailYieldGemRecord, arrow);
                     arrow.material.opacity = 1;
                 }
                 // ── Slide direction arrow (on the note/gem) ─────────────────
@@ -20740,6 +20888,7 @@
                         // direction ambiguous. Always flat.
                         arrow.rotation.z = 0;
                         arrow.renderOrder = techniqueMarkerRenderOrder;
+                        trailYieldRegisterAttachment(trailYieldGemRecord, arrow);
                         _registerIncomingLabelOccluder(arrow, noteZ);
                         arrow.material.opacity = 1;
                     }
@@ -20769,6 +20918,7 @@
                     l.position.set(x, y + techniqueYNow + bendDir * (NH * 1.1 + extraHeight * 0.5), noteZ + K);
                     l.rotation.z = approachRot + (bendDir < 0 ? Math.PI : 0);
                     l.renderOrder = techniqueMarkerRenderOrder;
+                    trailYieldRegisterAttachment(trailYieldGemRecord, l);
                     _registerIncomingLabelOccluder(l, noteZ);
                     // Only an upward bend occupies the upper label stack.
                     if (bendDir > 0) yo = Math.max(yo, y + techniqueYNow + NH * 2.5 + extraHeight);
@@ -20787,6 +20937,7 @@
                         face.position.set(x, y + techniqueYNow, noteZ + K);
                         face.rotation.z = approachRot;
                         face.renderOrder = techniqueMarkerRenderOrder;
+                        trailYieldRegisterAttachment(trailYieldGemRecord, face);
                         _registerIncomingLabelOccluder(face, noteZ);
                     }
                 } else if (n.ho || n.po || n.tp) {
@@ -20800,6 +20951,7 @@
                         tri.position.set(x, y + techniqueYNow, noteZ + K);
                         tri.rotation.z = approachRot;
                         tri.renderOrder = techniqueMarkerRenderOrder;
+                        trailYieldRegisterAttachment(trailYieldGemRecord, tri);
                         _registerIncomingLabelOccluder(tri, noteZ);
                         // Reserve stack space above the triangle for stacked labels.
                         yo = Math.max(yo, y + techniqueYNow + NH * 1.0);
@@ -20810,6 +20962,7 @@
                         chevron.rotation.z = approachRot;
                         chevron.scale.set(chevronScale, chevronScale, 1);
                         chevron.renderOrder = techniqueMarkerRenderOrder;
+                        trailYieldRegisterAttachment(trailYieldGemRecord, chevron);
                         _registerIncomingLabelOccluder(chevron, noteZ);
                     }
                 }
@@ -20825,6 +20978,7 @@
                         attackMark.position.set(x, y + techniqueYNow + attackOffset, noteZ + K);
                         attackMark.rotation.z = approachRot;
                         attackMark.renderOrder = techniqueMarkerRenderOrder;
+                        trailYieldRegisterAttachment(trailYieldGemRecord, attackMark);
                         _registerIncomingLabelOccluder(attackMark, noteZ);
                     }
                 }
@@ -20846,6 +21000,7 @@
                     _pmMark.position.set(x, y + techniqueYNow, noteZ + K);
                     _pmMark.rotation.z = approachRot;
                     _pmMark.renderOrder = techniqueMarkerRenderOrder;
+                    trailYieldRegisterAttachment(trailYieldGemRecord, _pmMark);
                     _registerIncomingLabelOccluder(_pmMark, noteZ);
                 }
                 // hm / hp — PlaneGeometry overlay sized like the palm-mute X,
@@ -20861,6 +21016,7 @@
                     harmMark.position.set(x, y + techniqueYNow, noteZ + K);
                     harmMark.rotation.z = approachRot;
                     harmMark.renderOrder = techniqueMarkerRenderOrder;
+                    trailYieldRegisterAttachment(trailYieldGemRecord, harmMark);
                     _registerIncomingLabelOccluder(harmMark, noteZ);
                 }
 
@@ -21509,14 +21665,14 @@
         // Visible geometry is a safety envelope, not a composition target.
         // The playing-position resolver below supplies that separately, so a
         // distant note or label cannot pull the view away from the player.
-        // 32 depth bins bound the solver cost independently of chart length.
+        // Frustum support points bound solver cost independently of chart length.
         const _stableCam = {
             active: false, initialized: false, x: 0, distance: 100 * K,
             lastTime: NaN, lastWall: NaN, rate: 1, rateTime: NaN, rateWall: NaN, preset: '', lefty: false, strings: 0,
             reset: -1, song: null, notes: null, chords: null, anchors: null, anchorCount: -1, aspect: 0,
             quietZoomTime: 0, quietPanTime: 0, centreCandidateX: NaN,
-            zoomReturnFrom: 0, zoomRequired: 0, collectCentre: 0,
-            pointCount: 0, minX: 0, maxX: 0,
+            zoomReturnFrom: 0, zoomRequired: 0, zoomVelocity: 0, collectCentre: 0,
+            pointCount: 0, viewPointCount: 0, minX: 0, maxX: 0,
             targetX: 0, targetDistance: 0, correction: false,
             focusValid: false, focusX: 0, focusMinX: 0, focusMaxX: 0,
             regionTime: NaN, regionSource: '', regionMinX: NaN, regionMaxX: NaN,
@@ -21525,12 +21681,22 @@
             rejoinOffset: 0, rejoinVelocity: 0,
             safetyOffset: 0, safetyVelocity: 0,
         };
+        // Preserve nominal composition bounds; the calibrated visibility fit
+        // must use real support points. Depth bins invent corners as objects
+        // cross their edges, which must not trigger a last-moment correction.
         const _stableBins = Array.from({ length: 32 }, () => ({
             minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity,
             minZ: Infinity, maxZ: -Infinity,
         }));
+        const _stableSupport = Array.from({ length: 2 }, () => ({
+            maxima: new Float64Array(5), prediction: 0, horizontal: 0, top: 0, bottom: 0,
+        }));
         const _stablePoints = new Float64Array(32 * 8 * 3);
+        const _stableViewPoints = new Float64Array(2 * 5 * 3);
+        let _stablePointSamples = 0;
         const _stableRegionPoints = new Float64Array(16 * 3);
+        const _stableViewRegionPoints = new Float64Array(24 * 3);
+        const _stableViewFuturePlan = {};
         const _stableRibbonPrevious = new Float64Array(4 * 3);
         const _stableBoxPoints = new Float64Array(8 * 3);
         const _stableBasis = { bx: 0, by: 0, bz: 1, rx: 1, rz: 0, ux: 0, uy: 1, uz: 0, x: 0, y: 0, distanceMul: 1 };
@@ -21538,6 +21704,49 @@
         const _stableInterval = { min: 0, max: 0, valid: true };
         const _stableFit = { x: 0, distance: 0 };
         let _stableVector = null;
+
+        function stableSupportReset() {
+            _stablePointSamples = 0;
+            _stableCam.minX = Infinity; _stableCam.maxX = -Infinity;
+            for (const bin of _stableBins) {
+                bin.minX = bin.minY = bin.minZ = Infinity;
+                bin.maxX = bin.maxY = bin.maxZ = -Infinity;
+            }
+            const tan = Math.tan(STABLE_CAMERA_FOV * Math.PI / 360);
+            for (let i = 0; i < _stableSupport.length; i++) {
+                const q = _stableSupport[i];
+                const margin = .96;
+                const horizontal = tan * cam.aspect * margin;
+                const top = tan * (Math.max(.90, margin) + STABLE_CAMERA_SHIFT);
+                const bottom = tan * (Math.max(.90, margin) - STABLE_CAMERA_SHIFT);
+                q.horizontal = horizontal; q.top = top; q.bottom = bottom;
+                q.prediction = i ? 0 : Math.min(AHEAD, .15 * _stableCam.rate) * TS;
+                q.maxima.fill(-Infinity);
+            }
+        }
+
+        function stableSupportPoint(index, x, y, z, depth, right, up) {
+            const q = _stableSupport[index], m = q.maxima, p = _stableViewPoints;
+            let slot = index * 15, value = right + q.horizontal * depth;
+            if (value > m[0]) { m[0] = value; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+            slot += 3; value = -right + q.horizontal * depth;
+            if (value > m[1]) { m[1] = value; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+            slot += 3; value = up + q.top * depth;
+            if (value > m[2]) { m[2] = value; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+            slot += 3; value = -up + q.bottom * depth;
+            if (value > m[3]) { m[3] = value; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+            slot += 3;
+            if (depth > m[4]) { m[4] = depth; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+        }
+
+        function stableCollectViewPoint(x, y, z) {
+            const b = _stableViewBasis;
+            const dz = Math.max(z, Math.min(0, z + _stableSupport[0].prediction)) - z;
+            const depth = b.bx * x + b.by * y + b.bz * z;
+            const right = b.rx * x + b.rz * z, up = b.ux * x + b.uy * y + b.uz * z;
+            stableSupportPoint(0, x, y, z, depth + b.bz * dz, right + b.rz * dz, up + b.uz * dz);
+            stableSupportPoint(1, x, y, z, depth, right, up);
+        }
 
         function stableAddPoint(x, y, z) {
             const horizon = Math.min(AHEAD, 0.9 * _stableCam.rate);
@@ -21549,15 +21758,18 @@
             const weight = u * u * (3 - 2 * u);
             x = _stableCam.collectCentre + (x - _stableCam.collectCentre) * weight;
             y = _stableBasis.y + (y - _stableBasis.y) * weight;
+            _stablePointSamples++;
+            _stableCam.minX = Math.min(_stableCam.minX, x); _stableCam.maxX = Math.max(_stableCam.maxX, x);
             const bin = _stableBins[Math.max(0, Math.min(31, Math.floor(-z / (TS * AHEAD) * 32)))];
             bin.minX = Math.min(bin.minX, x); bin.maxX = Math.max(bin.maxX, x);
             bin.minY = Math.min(bin.minY, y); bin.maxY = Math.max(bin.maxY, y);
             bin.minZ = Math.min(bin.minZ, z); bin.maxZ = Math.max(bin.maxZ, z);
+            stableCollectViewPoint(x, y, z);
         }
 
         // A long hold can cross the near window with both endpoints outside.
         // Clip edges so its relevant portion still participates in the fit.
-        function stableAddSegment(ax, ay, az, bx, by, bz) {
+        function stableAddSegment(ax, ay, az, bx, by, bz, endpointsAdded = false) {
             const near = 8 * K, far = dZ(Math.min(AHEAD, 0.9 * _stableCam.rate));
             let lo = 0, hi = 1;
             const dz = bz - az;
@@ -21570,9 +21782,18 @@
             }
             const fullZ = dZ(Math.max(0, Math.min(AHEAD, 0.9 * _stableCam.rate) - 0.3 * _stableCam.rate));
             const full = Math.abs(dz) > 1e-10 ? (fullZ - az) / dz : lo;
-            for (let i = 0; i < 3; i++) {
-                const t = i === 0 ? lo : i === 1 ? Math.max(lo, Math.min(hi, full)) : hi;
-                stableAddPoint(ax + (bx - ax) * t, ay + (by - ay) * t, az + dz * t);
+            if (!endpointsAdded || az < fullZ || bz < fullZ || lo > 0 || hi < 1) {
+                for (let i = 0; i < 3; i++) {
+                    const t = i === 0 ? lo : i === 1 ? Math.max(lo, Math.min(hi, full)) : hi;
+                    stableAddPoint(ax + (bx - ax) * t, ay + (by - ay) * t, az + dz * t);
+                }
+            }
+            // Within full strength, affine planes attain extrema at corners.
+            // Predicted depth has two kinks, so retain their intersections too.
+            if (Math.abs(dz) > 1e-10) for (let i = 0; i < 2; i++) {
+                const plane = i ? 0 : dZ(Math.min(AHEAD, .15 * _stableCam.rate));
+                const t = (plane - az) / dz;
+                if (t > lo && t < hi) stableAddPoint(ax + (bx - ax) * t, ay + (by - ay) * t, plane);
             }
         }
 
@@ -21630,15 +21851,12 @@
             for (let i = 0; i < 8; i++) for (let bit = 1; bit <= 4; bit *= 2) {
                 if (i & bit) continue;
                 const a = i * 3, b = (i | bit) * 3, p = _stableBoxPoints;
-                stableAddSegment(p[a], p[a + 1], p[a + 2], p[b], p[b + 1], p[b + 2]);
+                stableAddSegment(p[a], p[a + 1], p[a + 2], p[b], p[b + 1], p[b + 2], true);
             }
         }
 
         function stableCollectGeometry(region) {
-            for (const bin of _stableBins) {
-                bin.minX = bin.minY = bin.minZ = Infinity;
-                bin.maxX = bin.maxY = bin.maxZ = -Infinity;
-            }
+            stableSupportReset();
             pNote?.forEachActive(stableCollectObject);
             pSus?.forEachActive(stableCollectObject);
             pSusRibbon?.forEachActive(stableCollectObject);
@@ -21671,11 +21889,8 @@
                 }
             }
             let count = 0;
-            _stableCam.minX = Infinity; _stableCam.maxX = -Infinity;
             for (const bin of _stableBins) {
                 if (!Number.isFinite(bin.minX)) continue;
-                _stableCam.minX = Math.min(_stableCam.minX, bin.minX);
-                _stableCam.maxX = Math.max(_stableCam.maxX, bin.maxX);
                 for (let i = 0; i < 8; i++) {
                     _stablePoints[count++] = i & 1 ? bin.maxX : bin.minX;
                     _stablePoints[count++] = i & 2 ? bin.maxY : bin.minY;
@@ -21683,6 +21898,7 @@
                 }
             }
             _stableCam.pointCount = count;
+            _stableCam.viewPointCount = _stablePointSamples ? _stableViewPoints.length : 0;
         }
 
         // Intersect a*x <= b with the feasible camera-centre interval. With a
@@ -21865,6 +22081,36 @@
             return stableSolve(preferred, baseDistance, 0, margin, fixed, _stableRegionPoints, 48);
         }
 
+        function stableRegionViewDistance(row, baseDistance, centre = row.x) {
+            stableRegionFootprint(row);
+            const points = _stableViewRegionPoints, b = _stableViewBasis;
+            points.set(_stableRegionPoints);
+            const bottom = Math.min(sY(0), sY(nStr - 1));
+            for (let end = 0; end < 2; end++) {
+                const fret = end ? row.lastFret : row.firstFret;
+                const x = xFretMid(fret), scale = _textSizeMul * fretLabelScaleForFret(fret);
+                const fixedSize = 5.95 * K * scale;
+                // Reserve approaching, top-anchored digits through their
+                // arrival handoff. They are taller/lower than the fixed row.
+                const incomingSize = 7 * K * scale;
+                for (let i = 0; i < 4; i++) {
+                    const dx = (i & 1 ? .5 : -.5) * fixedSize;
+                    const dy = (i & 2 ? .5 : -.5) * fixedSize;
+                    let j = (8 + end * 4 + i) * 3;
+                    points[j] = x + b.rx * dx + b.ux * dy;
+                    points[j + 1] = bottom - S_GAP * 1.4 + b.uy * dy;
+                    points[j + 2] = .5 * K + b.rz * dx + b.uz * dy;
+                    const ix = (i & 1 ? .5 : -.5) * incomingSize;
+                    const iy = (i & 2 ? 0 : -1) * incomingSize;
+                    j = (16 + end * 4 + i) * 3;
+                    points[j] = x + b.rx * ix + b.ux * iy;
+                    points[j + 1] = bottom - S_GAP * .8 + b.uy * iy;
+                    points[j + 2] = b.rz * ix + b.uz * iy;
+                }
+            }
+            return stableSolve(centre, baseDistance, 0, .96, true, points, points.length, b).distance;
+        }
+
         function stableCameraPlan(bundle, now, baseDistance) {
             const cache = _stablePlan, rows = stableRegionAnchors(bundle);
             // Honour explicit speed exactly. Estimates need a small dead band:
@@ -21885,6 +22131,7 @@
                     const region = { time: row.time, minX: Math.min(a, b), maxX: Math.max(a, b), preferred, closeDistance, firstFret: row.fret, lastFret: row.fret + row.width - 1 };
                     const fit = stableRegionFraming(region, preferred, closeDistance);
                     region.x = fit.x; region.distance = fit.distance;
+                    region.viewDistance = stableRegionViewDistance(region, region.distance);
                     return region;
                 });
                 cache.stops = hwyBuildCameraStops(regions, rate, (row, centre) =>
@@ -21912,7 +22159,8 @@
                 if (cache.regions[mid].time <= now) lo = mid + 1; else hi = mid;
             }
             const current = cache.regions[Math.max(0, lo - 1)];
-            cache.result.distance = current?.distance || baseDistance;
+            cache.result.regionIndex = Math.max(0, lo - 1);
+            cache.result.distance = current?.viewDistance || baseDistance;
             cache.result.closeDistance = current?.closeDistance || baseDistance;
             cache.result.returnFloor = baseDistance;
             for (let i = lo; i < Math.min(cache.regions.length, lo + 32); i++) {
@@ -21920,11 +22168,11 @@
                 if (until > 1.3) break;
                 // Do not start closing only to reopen during the 800ms return.
                 // This holds an existing wider view, never widens early.
-                cache.result.returnFloor = Math.max(cache.result.returnFloor, row.distance);
+                cache.result.returnFloor = Math.max(cache.result.returnFloor, row.viewDistance);
                 const u = Math.max(0, Math.min(1, 1 - until / 0.6));
                 const eased = u * u * u * (10 + u * (-15 + 6 * u));
                 cache.result.distance = Math.max(cache.result.distance,
-                    baseDistance + (row.distance - baseDistance) * eased);
+                    baseDistance + (row.viewDistance - baseDistance) * eased);
             }
             cache.result.revision = cache.revision;
             return cache.result;
@@ -21932,13 +22180,16 @@
 
         function stableCamUpdate(bundle, frameTime = Number(bundle.currentTime) || 0) {
             const s = _stableCam, b = _stableBasis;
+            const previousDistance = s.distance;
             const wall = performance.now() / 1000;
             const elapsed = Number.isFinite(s.lastWall) ? Math.max(0, wall - s.lastWall) : 0;
             const dt = Math.min(0.25, elapsed);
-            const now = Number(bundle.currentTime) || 0;
+            const now = bundle.transport ? frameTime : Number(bundle.currentTime) || 0;
             const advance = now - s.lastTime;
-            const seek = Number.isFinite(s.lastTime) && ((bundle.isPlaying === false && Math.abs(advance) > 0.0001) || advance < -0.04
-                || Math.abs(advance - elapsed * s.rate) > Math.max(0.4, elapsed * 2));
+            const seek = bundle.transport ? s.epoch !== bundle.transport.epoch
+                : Number.isFinite(s.lastTime) && ((bundle.isPlaying === false && Math.abs(advance) > 0.0001) || advance < -0.04
+                    || Math.abs(advance - elapsed * s.rate) > Math.max(0.4, elapsed * 2));
+            s.epoch = bundle.transport?.epoch;
             // Audio time often arrives in 20–23ms steps. Estimate speed across
             // a quarter-second sample, never from one render frame (which
             // would alternate between zero and an inflated playback rate).
@@ -21998,6 +22249,7 @@
             const prediction = Math.min(AHEAD, 0.15 * s.rate);
             const closeDistance = plan.closeDistance;
             const snap = reset || !s.initialized || (seek && stableCameraFollow);
+            s.clockReset = seek;
             s.correction = false;
             if (snap) {
                 const centre = plan.valid ? plan.x : focus.valid ? focus.x
@@ -22014,6 +22266,7 @@
                 s.quietPanTime = 0;
                 s.quietZoomTime = 0; s.initialized = true;
                 s.zoomReturnFrom = s.zoomRequired = s.distance;
+                s.zoomVelocity = 0;
                 s.rejoinOffset = s.rejoinVelocity = 0;
                 s.safetyOffset = s.x - centre; s.safetyVelocity = 0;
             } else if (resize) {
@@ -22021,6 +22274,7 @@
                 // viewing angle, even with following switched off.
                 const fit = stableSolve(s.x, baseDistance, 0, 0.90, true);
                 s.distance = fit.distance; s.quietZoomTime = 0;
+                s.zoomVelocity = 0;
                 s.quietPanTime = 0; s.panPending = false;
             } else if (stableCameraFollow && bundle.isPlaying !== false && focus.valid && !seek) {
                 const plannedX = plan.valid ? plan.x : focus.x;
@@ -22049,7 +22303,26 @@
                 s.safetyOffset = safetyTarget + safety.offset; s.safetyVelocity = safety.velocity;
                 s.x += s.safetyOffset;
                 const fit = stableSolve(s.x, closeDistance, prediction, comfortable ? 0.96 : 0.82, true);
-                const neutralDistance = Math.max(fit.distance, plan.distance, Math.min(s.distance, plan.returnFloor));
+                // Feed the actual preset's visibility requirement into the
+                // zoom controller, including the short anticipation window.
+                // A fit applied only after smoothing bypasses the controller
+                // and leaves its return state unaware of the widened view.
+                const viewDistance = stableSolve(s.x, fit.distance, prediction, 0.96, true,
+                    _stableViewPoints, s.viewPointCount, v).distance;
+                // Geometry approaches while the scheduled camera also pans.
+                // Predict both; predicting note Z alone reacts late when a
+                // playing-area change moves the viewpoint sideways.
+                const future = hwyCameraPlanAt(_stablePlan.stops, frameTime + .25 * s.rate,
+                    s.rate, cameraSmoothing, _stableViewFuturePlan);
+                const futureX = future.valid ? s.x + future.x - plan.x : s.x;
+                const panDistance = stableSolve(futureX, viewDistance, prediction, .96, true,
+                    _stableViewPoints, s.viewPointCount, v).distance;
+                // While panning, the current area's reserved arrival envelope
+                // must fit from the moving centre as well as at its own stop.
+                const region = _stablePlan.regions[plan.regionIndex];
+                const regionDistance = region ? stableRegionViewDistance(region, closeDistance, s.x) : closeDistance;
+                const neutralDistance = Math.max(panDistance, regionDistance, plan.distance,
+                    Math.min(s.distance, plan.returnFloor));
                 s.centreCandidateX = plannedX;
                 s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
                 s.targetDistance = neutralDistance;
@@ -22082,10 +22355,17 @@
                 // Protect the actual built-in viewpoint, including its closer
                 // zoom and pan. Widen only as needed; keep the planned centre.
                 // Explicit Camera Director offsets remain outside auto fitting.
-                const safe = stableSolve(s.x, s.distance, 0, 0.96, true, _stablePoints, s.pointCount, v);
+                const safe = stableSolve(s.x, s.distance, 0, 0.96, true, _stableViewPoints, s.viewPointCount, v);
                 s.correction = safe.distance > s.distance + 1e-7;
                 s.distance = safe.distance;
+                if (s.correction) {
+                    s.quietZoomTime = 0;
+                    s.zoomReturnFrom = s.zoomRequired = s.distance;
+                    s.zoomVelocity = !snap && !resize && dt > 0
+                        ? Math.max(0, (s.distance - previousDistance) / dt) : 0;
+                }
             }
+            if (!stableCameraFollow || bundle.isPlaying === false) s.zoomVelocity = 0;
             stableApplyPose();
         }
 
@@ -22096,7 +22376,7 @@
                 _stableCam.active = false;
                 cam.updateProjectionMatrix(); // clear the experimental lens shift
             }
-            const bpm = computeBPM(bundle.beats, bundle.currentTime);
+            const bpm = computeBPM(bundle.beats, _frameNow);
             const lerp = CAM_LERP_BASE * Math.max(bpm, 60) / 120;
 
             // ── Horizontal-FOV-hold + optional wide-pane pose nudges ──
@@ -22589,6 +22869,7 @@
             _lookaheadHiNeckLatch = false;
             _measureStarts = []; _measureStartsRef = null;
             _clkAudioT = NaN; _clkPerf = NaN; _clkRate = 1; _frameNow = 0;
+            _presentationClock.reset();
             _clkFramePerf = NaN; _clkRateAudioT = NaN; _clkRatePerf = NaN;
             _coincidentRepeatNoteSet = null;
             _coincidentRepeatNotesRef = null;
@@ -22911,7 +23192,7 @@
                 }
                 if (bcCtrl) {
                     const cfg = _bcLoadSettings();
-                    const _ct = bundle.currentTime || 0;
+                    const _ct = _frameNow || 0;
                     if (cfg.chartAccents) {
                         if (_ct < _chartPrevT - 0.08 || _ct - _chartPrevT > 1.0) {
                             _bcBeatIdx = _bcFfIdx(bundle.beats, _ct, 'time');
@@ -22983,7 +23264,7 @@
                     // step down past every wrapped row, not just a 2-row estimate.
                     let lyricsBottom = 0;
                     if (bundle.lyricsVisible && bundle.lyrics?.length) {
-                        lyricsBottom = drawLyrics(bundle.lyrics, bundle.currentTime, lyricsCtx, lyricsCanvas.width, lyricsCanvas.height) || 0;
+                        lyricsBottom = drawLyrics(bundle.lyrics, _frameNow, lyricsCtx, lyricsCanvas.width, lyricsCanvas.height) || 0;
                     }
                     drawNotedetectLabels(lyricsCtx, lyricsCanvas.width, lyricsCanvas.height);
                     drawScoreFx(lyricsCtx, lyricsCanvas.width, lyricsCanvas.height);
@@ -23052,7 +23333,7 @@
                     if (sectionHudVisible && bundle.sections && bundle.sections.length) {
                         const secH = drawSectionHud(lyricsCtx, {
                             sections: bundle.sections,
-                            currentTime: bundle.currentTime,
+                            currentTime: _frameNow,
                             canvasW: lyricsCanvas.width, canvasH: lyricsCanvas.height,
                             position: sectionHudPosition,
                             sizeSlider: sectionHudSize,
@@ -23067,7 +23348,7 @@
                         const toneH = drawToneHud(lyricsCtx, {
                             toneChanges: bundle.toneChanges,
                             toneBase: bundle.toneBase,
-                            currentTime: bundle.currentTime,
+                            currentTime: _frameNow,
                             canvasW: lyricsCanvas.width, canvasH: lyricsCanvas.height,
                             position: toneHudPosition,
                             sizeSlider: toneHudSize,
@@ -23088,7 +23369,7 @@
                             name: _diagPrev.name, frets: _diagPrev.frets,
                             opacity: _diagPrevOpacity,
                             entranceT: (_diagPrev.t !== undefined)
-                                ? Math.min(1.0, Math.max(0, (bundle.currentTime - _diagPrev.t) / DIAG_ENTRANCE_S))
+                                ? Math.min(1.0, Math.max(0, (_frameNow - _diagPrev.t) / DIAG_ENTRANCE_S))
                                 : 1.0,
                             canvasW: lyricsCanvas.width, canvasH: lyricsCanvas.height,
                             inverted: _invertedCached,
@@ -23102,7 +23383,7 @@
                     if (chordDiagramVisible && _diagChord) {
                         const diagH = _drawDiagramCached(lyricsCtx, {
                             name: _diagChord.name, frets: _diagChord.frets,
-                            opacity: Math.max(0, 1 + (_diagChord.t - bundle.currentTime) / DIAG_LINGER_S),
+                            opacity: Math.max(0, 1 + (_diagChord.t - _frameNow) / DIAG_LINGER_S),
                             entranceT: _diagEntranceT,
                             canvasW: lyricsCanvas.width, canvasH: lyricsCanvas.height,
                             inverted: _invertedCached,
@@ -23129,6 +23410,8 @@
                 }
             },
 
+            setClockDiagnostics(enabled) { _presentationClock.trace(enabled); },
+            getClockDiagnostics() { return _presentationClock.diagnostics(); },
             resize(w, h) {
                 if (!_isReady) return;
                 const s = canvasSize(highwayCanvas);
@@ -23136,6 +23419,8 @@
             },
 
             destroy() {
+                _presentationClock.trace(false);
+                _presentationClock.reset();
                 _destroyed = true; _isReady = false; _diagChord = null; _diagPrev = null; _diagLastKey = null; _diagRenderCache.clear();
                 _lastHwW = 0; _lastHwH = 0;
                 _appliedW = 0; _appliedH = 0;
@@ -23220,6 +23505,7 @@
     //                        picking us on machines without WebGL2.
     window.feedBackViz_highway_3d.contextType = 'webgl2';
     window.feedBackViz_highway_3d.__test = {
+        createPresentationClock,
         getAnalyserForBridgeTest: _bgGetAnalyser,
         readBandsForBridgeTest: _bgReadBands,
         resetAnalyserBridgeForTest() { _bgBridgeKeys.clear(); _bgAudio = null; _bgAudioCore = null; _bgAudioFailedAt = 0; },

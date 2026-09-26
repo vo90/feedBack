@@ -319,6 +319,23 @@ timing are independent of this ordering constraint.
 
 ## Object pools
 
+Trail-obscured note attachments belong to the specific emission record returned
+by `trailYieldRegisterGem`. Call `trailYieldRegisterAttachment` for actual face
+symbols, bend stacks and attached slide arrows after setting their natural
+order. The final physical-order pass can change the body again after all notes
+have drawn. The registry's lateral verdict face is not its technique ink.
+Keep neck/board previews, connectors, labels and chord guidance independent;
+do not infer attachment ownership from use of the same mesh pool. Registration
+clears each reused record's attachment references and counts without discarding
+its storage. Browser regressions must enumerate real emitted meshes separately
+from registry contents, including duplicate chord/arpeggio emissions.
+
+Visibility events use a drawing fret (`f`) and authored fret (`sourceFret`).
+Renderable unpitched mutes draw and intersect as open bars, but lookup must use
+the pre-normalization note. Keep real open and unpitched events distinct when
+deduplicating coincident notes; preserve exact standalone/chord copies. Never
+normalize authored chart objects or scoring identities to repair visibility.
+
 Pools live as closure refs (`pNote`, `pSus`, `pLbl`, `pBeat`, `pSec`, `pFretLbl`, `pLane`, `pLaneDivider`, `pChordBox`, `pChordLbl`, `pBarreLine`, `pNoteFretLabel`, `pConnectorLine`, `pDropLine`, `pSusOutline`).
 
 The pool factory `pool(parent, mk)` returns `{ get(), reset() }`. **Every pool MUST be `.reset()`-ed at the top of `update()`** — otherwise objects from the previous frame stay visible. When you add a new pool, add the reset call too. Search for the existing block of `.reset()` calls at the top of `update()` to find where to add yours.

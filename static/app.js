@@ -1865,7 +1865,7 @@ setInterval(() => {
     const dur = _audioDuration();
     if (dur && !isCountingIn()) {
         // JUCE end-of-track: HTML5 fires 'ended'; JUCE needs a manual check
-        if (window._juceMode && S.isPlaying && ct >= dur) {
+        if (window._juceMode && S.isPlaying && (ct >= dur || jucePlayer._sourceEnded)) {
             _handlePlaybackEnded();
         }
         // The unified controller distinguishes configured/armed bounds from an
@@ -1901,6 +1901,7 @@ setInterval(() => {
     if (!isCountingIn()) {
         window.highway.setPlaybackRate(window._juceMode ? jucePlayer._speed : audio.playbackRate);
         window.highway.setTime(ct);
+        window.highway.setPlaybackSample?.(window._juceMode ? jucePlayer.getClockSnapshot() : null, S.isPlaying);
     }
 }, 1000 / 60);
 

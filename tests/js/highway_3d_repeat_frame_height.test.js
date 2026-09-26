@@ -103,6 +103,8 @@ const muteMarkerStart = hasRsPlusFace
     : 'if (n.pm || n.mt || n.fhm) {';
 const noteMuteSymbols = new Function('n', 'rsPlusNotation', `
     'use strict';
+    ${fn('trailYieldRegisterAttachment')}
+    const trailYieldGemRecord = {_trailYieldAttachmentCount: 0, _trailYieldAttachmentOrder: 1};
     ${hasRsPlusFace ? fn('rsPlusTechniqueFlags') + fn('rsPlusTechniqueCells') : ''}
     const marks = [];
     const pTechPlane = { get() {

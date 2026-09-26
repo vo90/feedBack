@@ -17,7 +17,7 @@ const args = process.argv.slice(2),
   option = (n, d) => args.includes(n) ? args[args.indexOf(n) + 1] : d;
 const repo = path.resolve(option('--repo', path.join(__dirname, '../..'))),
   out = path.resolve(option('--out', path.join(repo, 'test-results/stable-camera')));
-const sourcePath = path.join(repo, 'plugins/highway_3d/screen.js'),
+const sourcePath = path.resolve(option('--screen', path.join(repo, 'plugins/highway_3d/screen.js'))),
   source = fs.readFileSync(sourcePath, 'utf8').replace(/\r\n/g, '\n');
 const results = [],
   failures = [],
@@ -47,6 +47,7 @@ __cameraBenchmark(bundle, iterations) {
     pointCount:typeof _stableCam==='undefined'?null:_stableCam.pointCount };
 },
 __stableAudit(){return {ren,cam,scene,curX,curDist,curLookY,tgtX,tgtDist,tgtLookY,mode:cameraMode,
+ projectAttack(n){return new T.Vector3(xFretMid(n.f),sY(n.s),dZ(n.t-_frameNow)).project(cam).toArray();},
  state:typeof _stableCam==='undefined'?null:Object.fromEntries(Object.entries(_stableCam).filter(([k,v])=>v===null||['number','string','boolean'].includes(typeof v))),
  labels:Array.from({length:_incomingFloorLabelCount},(_,i)=>{const r=_incomingFloorLabels[i];return {kind:'gold-label',mesh:r.sprite,t:r.time,f:r.fret};}),
  fixedLabels:_incomingFixedFretLabels.map((mesh,f)=>mesh&&mesh.material.opacity>=0.999?{kind:'fixed-gold-label',mesh,t:0,f}:null).filter(Boolean),
@@ -312,7 +313,10 @@ async function main() {
           rotation: a.cam.rotation.toArray(),
           fov: a.cam.fov,
           aspect: a.cam.aspect,
-          geometry
+          geometry,
+          attacks:window.__collectAttacks ? [...(bundle.notes||[]),...(bundle.chords||[]).flatMap(c=>c.notes.map(n=>({...n,t:c.t})))]
+            .filter(n=>n.f>0&&n.s>=0&&n.s<bundle.stringCount&&n.t>bundle.currentTime+.08&&n.t<bundle.currentTime+1.2)
+            .map(n=>({key:[n.t,n.s,n.f].join('/'),point:a.projectAttack(n)})) : undefined
         };
       };
       window.cameraStep = (time, ms, playing = bundle.isPlaying) => {
@@ -394,6 +398,55 @@ async function main() {
       });
     }
     const chosen = name => !option('--case') || option('--case').split(',').some(s => name.includes(s));
+    if (chosen('zoom-continuity')) {
+      const fixturePath = option('--camera-fixture');
+      const fixture = fixturePath ? JSON.parse(fs.readFileSync(fixturePath, 'utf8')) : null;
+      const fps=Number(option('--camera-fps',100)), rate=Number(option('--camera-rate',1));
+      const preset=option('--camera-preset','straight');
+      await page.setViewportSize({width:Number(option('--camera-width',3440)),height:Number(option('--camera-height',1323))});
+      const chart = fixture ? fixture.bundle : base({
+        currentTime:10, notes:[], anchors:[{time:0,fret:14,width:4}],
+        chords:Array.from({length:40}, (_,i)=>({t:12+Math.floor(i/2)*.8+(i%2)*.12,id:i%2,
+          notes:i%2 ? [note({s:2,f:16,ho:true}),note({s:4,f:15,ho:true})]
+            : [note({s:1,f:0}),note({s:2,f:14}),note({s:3,f:14}),note({s:4,f:14})]})),
+        chordTemplates:[{name:'A',frets:[-1,0,14,14,14,-1]},
+          {name:'B',frets:[-1,-1,16,-1,15,-1]}]
+      });
+      chart.currentTime=10;chart.isPlaying=true;chart.transport=null;chart.playbackRate=rate;
+      await init(chart, preset, {settings:{repeatChordFullBorder:true}});
+      const samples=await page.evaluate(({frames,fps,rate})=>{
+        const rows=[];
+        // Exercise actual geometry/camera/projection at every frame without
+        // queueing 1,900 software-GPU draws. Separate cases render screenshots.
+        const ren=r.__stableAudit().ren, render=ren.render;
+        ren.render=()=>{};
+        window.__collectAttacks=true;
+        try {for(let i=1;i<=frames;i++)rows.push(cameraStep(10+i/fps*rate,1000/fps,true));}
+        finally {ren.render=render;window.__collectAttacks=false;}
+        return rows;
+      }, {frames:Number(option('--camera-frames',Math.round(19*fps/rate))),fps,rate});
+      const jumps=[], retreats=[];
+      let maxRelative=0, maxAcceleration=0, previousVelocity=0;
+      for(let i=1;i<samples.length;i++){
+        const before=samples[i-1],after=samples[i];
+        const relative=Math.abs(after.state.distance-before.state.distance)/before.state.distance;
+        maxRelative=Math.max(maxRelative,relative);
+        const velocity=Math.log(after.state.distance/before.state.distance)*fps;
+        const acceleration=Math.abs(velocity-previousVelocity)*fps;
+        previousVelocity=velocity;maxAcceleration=Math.max(maxAcceleration,acceleration);
+        // Scheduled pans can require steady zoom travel. Detect isolated
+        // steps by changes in velocity, rather than banning that travel.
+        if(acceleration>10)jumps.push({time:after.time,relative,acceleration,before:before.state.distance,after:after.state.distance});
+        const prior=new Map(before.attacks.map(n=>[n.key,n.point]));
+        for(const n of after.attacks){const p=prior.get(n.key);if(p&&n.point[1]>p[1]+1e-5)retreats.push({time:after.time,key:n.key,dy:n.point[1]-p[1]});}
+      }
+      check(jumps.length===0,'zoom-continuity: abrupt distance changes '+JSON.stringify(jumps.slice(0,5)));
+      check(retreats.length===0,'zoom-continuity: projected attacks retreat '+JSON.stringify(retreats.slice(0,5)));
+      for(let i=0;i<samples.length;i+=20)validateFrame('zoom-continuity#'+i,samples[i]);
+      results.push({name:'zoom-continuity',preset,fps,rate,jumps,retreats,maxRelative,maxAcceleration,samples});
+      console.log(JSON.stringify({case:'zoom-continuity',preset,fps,rate,frames:samples.length,jumps:jumps.length,retreats:retreats.length,maxRelative,maxAcceleration}));
+      await page.setViewportSize({width:1280,height:720});
+    }
     async function record(name, samples, image = false, opts = {}) {
       for (const [i, p] of samples.entries()) {
         validateFrame(name + '#' + i, p, opts);
@@ -408,6 +461,44 @@ async function main() {
         path: path.join(out, name + '.png')
       });
       console.log(name + ': ' + samples.length + ' samples');
+    }
+    if (chosen('clock-continuity')) {
+      await init({...low(), transport: {epoch: 1, state: 'playing', position: 9,
+        sampledAt: 1000, freshAt: 1000, rate: 1, endTime: 40, sequence: 0, generation: 1}});
+      const audit = await page.evaluate(() => {
+        r.setClockDiagnostics(true);
+        let cameraResets = 0;
+        const noteDepths = [];
+        for (let i = 1; i <= 300; i++) {
+          const raw = 9 + i / 100 - (i % 10 === 0 ? .035 : 0);
+          Object.assign(bundle.transport, {position: raw, sampledAt: __cameraWall + 10,
+            freshAt: __cameraWall + 10, sequence: i});
+          const shot = cameraStep(raw, 10, true);
+          if (shot.state.clockReset) cameraResets++;
+          const n = __stableProbe.find(n => n.kind === 'gem' && n.t === 10 && n.s === 3 && n.f === 3);
+          if (n && n.mesh.visible) noteDepths.push(n.mesh.matrixWorld.elements[14]);
+        }
+        const run = r.getClockDiagnostics();
+        const beforePause = run.rows.at(-1)[1];
+        bundle.transport.state = 'paused';
+        cameraStep(bundle.currentTime - .05, 10, false);
+        cameraStep(bundle.currentTime, 1000, false);
+        const afterPause = r.getClockDiagnostics().rows.at(-1)[1];
+        const target = beforePause - .001;
+        Object.assign(bundle.transport, {epoch: 2, state: 'playing', position: target,
+          sampledAt: __cameraWall + 10, freshAt: __cameraWall + 10});
+        const seek = cameraStep(target, 10, true);
+        const afterSeek = r.getClockDiagnostics().rows.at(-1)[1];
+        return {run, cameraResets, noteDepths, beforePause, afterPause, target, afterSeek, seekReset: seek.state.clockReset};
+      });
+      check(audit.run.rows.every(row => row[10] >= -1e-8), 'clock: presentation rewound on a correction');
+      check(audit.cameraResets === 0, 'clock: raw correction reset the camera');
+      check(audit.noteDepths.length > 10, 'clock: expected visible reference-note samples');
+      check(audit.noteDepths.every((z, i, zs) => !i || z >= zs[i - 1] - 1e-8), 'clock: note geometry reversed');
+      check(audit.afterPause === audit.beforePause, 'clock: pause drifted or snapped');
+      check(Math.abs(audit.afterSeek - audit.target) < 1e-8 && audit.seekReset, 'clock: tiny explicit seek was lost');
+      results.push({name: 'clock-continuity', audit});
+      console.log('clock-continuity: ' + audit.run.rows.length + ' rendered frames');
     }
     for (const preset of ['straight', 'angled']) if (chosen('preset-' + preset)) {
       const p = await init(low(), preset);
