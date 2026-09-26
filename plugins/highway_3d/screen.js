@@ -17342,12 +17342,13 @@
             if (beats) {
                 const board = boardSpanX();
                 const bw2 = board.width + 4 * K;
-                let lastM = -1;
                 for (const b of beats) {
-                    const meas = b.measure !== lastM; lastM = b.measure;
                     if (b.time < t0 || b.time > t1) continue;
+                    // Only explicit bar starts are bright. Ordinary beats use
+                    // measure=-1, including the beat immediately after a bar.
+                    const isMeasure = Number.isInteger(b.measure) && b.measure >= 0;
                     const bl2 = pBeat.get();
-                    bl2.material = meas ? mBeatM : mBeatQ;
+                    bl2.material = isMeasure ? mBeatM : mBeatQ;
                     bl2.scale.set(bw2, 1, 1);
                     bl2.position.set(board.min - 2 * K, S_BASE - NH / 2 - 1.5 * K, dZ(b.time - now));
                 }
