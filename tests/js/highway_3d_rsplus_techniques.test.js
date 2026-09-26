@@ -408,6 +408,8 @@ test('bend amounts use one proportional plane with unchanged gem clearance and c
         ${fn('bendVisualDirY')}
         const activePalette=Array(6).fill(options.color ?? 0x22aaff);
         const techniqueMarkerRenderOrder=20, meshes=[], registrations=[], legacyCounts=[];
+        const trailYieldGemRecord={_trailYieldAttachmentCount:0,_trailYieldAttachmentOrder:Infinity};
+        ${fn('trailYieldRegisterAttachment')}
         const _registerIncomingLabelOccluder=(mesh,z)=>registrations.push({mesh,z});
         const pTechPlane={get:()=>{ const m={ material:{}, scale:{set(x,y,z){Object.assign(this,{x,y,z});}},
             position:{set(x,y,z){Object.assign(this,{x,y,z});}}, rotation:{} }; meshes.push(m); return m; }};
@@ -461,6 +463,8 @@ test('the rendered face keeps circular markers square and does not stretch them 
     assert.ok(start >= 0 && end > start);
     const render = new Function('f', 'n', `
         const rsPlusNotation=true, rsPlusTechniqueFlags=f.flags, rsPlusNoteFaceMat=f.faceMat;
+        const trailYieldGemRecord={_trailYieldAttachmentCount:0,_trailYieldAttachmentOrder:Infinity};
+        ${fn('trailYieldRegisterAttachment')}
         const _spriteMat2MeshMat=(m,sm)=>sm, activePalette=[0xff0000], s=0,
             NW=5, NH=3, K=1, openWScale=7, x=1, y=2, techniqueYNow=0,
             noteZ=-10, approachRot=.2, techniqueMarkerRenderOrder=20;
