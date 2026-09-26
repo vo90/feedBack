@@ -73,8 +73,15 @@ if(orientationOnly)for(const [anchor,name,kind] of [
   ['const arrow = pTechPlane.get();','arrow','slide'],
   ['const halo = pAccentHalo.get();','halo','halo'],
   ['const edges = pNoteEdge.get();','edges','verdict-edge'],
-])served=once(served,anchor,`${anchor}
-  if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'${kind}',mesh:${name}});`);
+]){
+  const instrumented=`${anchor}
+  if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'${kind}',mesh:${name}});`;
+  // Both the timed and legacy direction-only slide paths use this local name.
+  if(kind==='slide'){
+    assert.ok(served.includes(anchor),'Missing slide marker instrumentation anchor');
+    served=served.replaceAll(anchor,instrumented);
+  }else served=once(served,anchor,instrumented);
+}
 if(bendsOnly&&!orientationOnly)served=once(served,'const l = pTechPlane.get();',`const l = pTechPlane.get();
   if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'bend',steps,mesh:l});`);
 if(readabilityOnly){
