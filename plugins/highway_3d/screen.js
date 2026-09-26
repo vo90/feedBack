@@ -1569,13 +1569,17 @@
             t, s, f, sustain, accent = false, chordMeta = null, pathNote = null, sourceChord = null,
         ) => {
             if (!Number.isFinite(t) || !Number.isInteger(s) || s < 0 || s >= stringCount) return;
+            // Match drawNote's local open-bar view, retaining the authored
+            // identity for lookup/dedup and all scoring/linked-path consumers.
+            const sourceFret = f;
+            if (f === 127 && pathNote && isUnpitchedMute(pathNote)) f = 0;
             if (!Number.isInteger(f) || f < 0 || f > NFRETS) return;
             const duration = Number.isFinite(sustain) ? Math.max(0, sustain) : 0;
             const trailStart = options?.visualStartForNote ? options.visualStartForNote(pathNote, t) : t;
             const trailVisible = (duration > 0.01 || trailStart < t) && (options?.trailVisible
                 ? options.trailVisible(pathNote, chordMeta, sourceChord) : (f > 0 || chordMeta === null));
             (byFret[f] || (byFret[f] = [])).push({
-                t, s, f, end: t + duration,
+                t, s, f, sourceFret, end: t + duration,
                 gemVisible: !options?.suppressedAttacks?.has(pathNote),
                 trailVisible,
                 standaloneTrailVisible: trailVisible && chordMeta === null,
@@ -1611,12 +1615,13 @@
                 let minF = Infinity, maxF = -Infinity;
                 for (let ni = 0; ni < ch.notes.length; ni++) {
                     const n = ch.notes[ni];
+                    const fret = n?.f === 127 && isUnpitchedMute(n) ? 0 : n?.f;
                     if (!Number.isInteger(n?.s) || n.s < 0 || n.s >= stringCount
-                        || !Number.isInteger(n?.f) || n.f < 0 || n.f > NFRETS) continue;
+                        || !Number.isInteger(fret) || fret < 0 || fret > NFRETS) continue;
                     strings.add(n.s);
-                    if (n.f > 0) {
-                        minF = Math.min(minF, n.f);
-                        maxF = Math.max(maxF, n.f);
+                    if (fret > 0) {
+                        minF = Math.min(minF, fret);
+                        maxF = Math.max(maxF, fret);
                     }
                 }
                 const chordMeta = {
@@ -1633,7 +1638,7 @@
         for (let f = 0; f < byFret.length; f++) {
             const events = byFret[f];
             if (!events || events.length < 2) continue;
-            events.sort((a, b) => a.t - b.t || a.s - b.s);
+            events.sort((a, b) => a.t - b.t || a.s - b.s || a.sourceFret - b.sourceFret);
             // Standalone arpeggio notes can duplicate chord members. Collapse
             // exact onset/string/fret duplicates so dense charts stay cheap to
             // scan, retaining enough origin metadata to resolve open-gem bounds.
@@ -1641,7 +1646,7 @@
             for (let read = 1; read < events.length; read++) {
                 const prev = events[write - 1], cur = events[read];
                 if (Math.abs(cur.t - prev.t) < 1e-6
-                    && cur.s === prev.s) {
+                    && cur.s === prev.s && cur.sourceFret === prev.sourceFret) {
                     prev.end = Math.max(prev.end, cur.end);
                     prev.accent = prev.accent || cur.accent;
                     prev.ghost = prev.ghost || cur.ghost;
@@ -18531,7 +18536,8 @@
 
         /** Find the indexed event represented by a drawNote call. */
         function trailYieldEventForNote(n) {
-            const events = _trailYieldEventsByFret[n.f];
+            const fret = n.f === 127 && isUnpitchedMute(n) ? 0 : n.f;
+            const events = _trailYieldEventsByFret[fret];
             if (!events || events.length === 0) return null;
             let lo = 0, hi = events.length;
             while (lo < hi) {
@@ -18542,7 +18548,7 @@
             for (let i = lo; i < events.length; i++) {
                 const event = events[i];
                 if (event.t > n.t + 1e-6) break;
-                if (event.s === n.s) return event;
+                if (event.s === n.s && event.sourceFret === n.f) return event;
             }
             return null;
         }
@@ -18572,6 +18578,7 @@
 
         function trailYieldApplyBehindLayerRecord(
             worldZ, outline, core, face, coveringRenderOrder = Infinity, halo = null,
+            record = null,
         ) {
             const outlineOrder = renderOrderForLayerAtZ(
                 worldZ, 'NOTE_OUTLINE_BEHIND_TRAIL',
@@ -18597,6 +18604,18 @@
             // The optional RS+ halo is part of this gem, including when a
             // later crossing demotes it after its initial layer was chosen.
             if (halo) halo.renderOrder = outline.renderOrder - 0.01;
+            // Technique ink is distinct from the lateral verdict face. Leave
+            // space above that face and below the covering strand's outline.
+            // Remember the constraint for attachments emitted after this pass.
+            if (record) {
+                record._trailYieldAttachmentOrder = Number.isFinite(coveringRenderOrder)
+                    ? Math.min(faceOrder + 0.00025, coveringRenderOrder - 0.00075)
+                    : faceOrder + 0.00025;
+                for (let i = 0; i < (record._trailYieldAttachmentCount || 0); i++) {
+                    const mesh = record._trailYieldAttachments[i];
+                    mesh.renderOrder = Math.min(mesh.renderOrder, record._trailYieldAttachmentOrder);
+                }
+            }
         }
 
         function trailYieldApplyBehindLayers(event) {
@@ -18614,6 +18633,7 @@
                 event._trailYieldGemFace,
                 coveringRenderOrder,
                 event._trailYieldGemHalo,
+                event,
             );
             const extras = event._trailYieldGemExtraRecords;
             for (let i = 1; i < count; i++) {
@@ -18622,6 +18642,7 @@
                     record.worldZ, record.outline, record.core, record.face,
                     coveringRenderOrder,
                     record.halo,
+                    record,
                 );
             }
             trailYieldConstrainOwnTrailBehindGem(event);
@@ -18654,12 +18675,13 @@
         }
 
         function trailYieldRegisterGem(event, worldZ, outline, core, face, halo = null) {
-            if (!event) return;
+            if (!event) return null;
             if (event._trailYieldGemFrame !== _trailYieldFrameId) {
                 event._trailYieldGemFrame = _trailYieldFrameId;
                 event._trailYieldGemRecordCount = 0;
             }
             const index = event._trailYieldGemRecordCount++;
+            let record = event;
             if (index === 0) {
                 // One rendered gem per indexed event is the normal path. Keep
                 // its mesh references directly on the reusable event so this
@@ -18674,16 +18696,33 @@
                 // Allocate records only for that uncommon second emission.
                 const extras = event._trailYieldGemExtraRecords
                     || (event._trailYieldGemExtraRecords = []);
-                const record = extras[index - 1] || (extras[index - 1] = {});
+                record = extras[index - 1] || (extras[index - 1] = {});
                 record.worldZ = worldZ;
                 record.outline = outline;
                 record.core = core;
                 record.face = face;
                 record.halo = halo;
             }
+            // Pooled meshes may now belong to a different note/style. Clear
+            // only this emission's old references, retaining allocated storage.
+            if (record._trailYieldAttachments) {
+                record._trailYieldAttachments.fill(null, 0, record._trailYieldAttachmentCount);
+            }
+            record._trailYieldAttachmentCount = 0;
+            record._trailYieldAttachmentOrder = Infinity;
             if (event._trailYieldTargetFrame === _trailYieldFrameId) {
                 trailYieldApplyBehindLayers(event);
             }
+            return record;
+        }
+
+        /** Attach actual technique ink to one drawNote emission, not its previews. */
+        function trailYieldRegisterAttachment(record, mesh) {
+            if (!record) return;
+            const attachments = record._trailYieldAttachments
+                || (record._trailYieldAttachments = []);
+            attachments[record._trailYieldAttachmentCount++] = mesh;
+            mesh.renderOrder = Math.min(mesh.renderOrder, record._trailYieldAttachmentOrder);
         }
 
         function trailYieldApplyTargetTrailOrder(event) {
@@ -19871,7 +19910,8 @@
             const trailYieldIncludeTrails = !!(
                 _trailVisibilityFrontMask & TRAIL_OCCLUSION_TRAIL
             );
-            const trailYieldTargetEvent = trailYieldEventForNote(n);
+            const trailYieldTargetEvent = trailYieldEventForNote(sourceNote);
+            let trailYieldGemRecord = null;
 
             if (!effSkipBody && !arpGhostOnlyMode && !_overLinger) {
 
@@ -20140,7 +20180,7 @@
                     hwyShapeOpenGhostGeometry(core, core.geometry, bodyWidth, markerScale, NW, _ownedSharedGeos);
                 }
                 _registerIncomingLabelOccluder(core, noteZ, outline);
-                trailYieldRegisterGem(
+                trailYieldGemRecord = trailYieldRegisterGem(
                     trailYieldGemEvent, noteZ, outline, core, noteFaceMesh, noteHaloMesh,
                 );
                 trailOrderRegisterUpcomingGem(
@@ -20591,6 +20631,7 @@
                     arrow.position.set(x + direction * NW * 1.15, y + techniqueYNow, noteZ + K);
                     arrow.rotation.z = 0;
                     arrow.renderOrder = techniqueMarkerRenderOrder;
+                    trailYieldRegisterAttachment(trailYieldGemRecord, arrow);
                     arrow.material.opacity = 1;
                 }
                 // ── Slide direction arrow (on the note/gem) ─────────────────
@@ -20618,6 +20659,7 @@
                         // direction ambiguous. Always flat.
                         arrow.rotation.z = 0;
                         arrow.renderOrder = techniqueMarkerRenderOrder;
+                        trailYieldRegisterAttachment(trailYieldGemRecord, arrow);
                         _registerIncomingLabelOccluder(arrow, noteZ);
                         arrow.material.opacity = 1;
                     }
@@ -20647,6 +20689,7 @@
                     l.position.set(x, y + techniqueYNow + bendDir * (NH * 1.1 + extraHeight * 0.5), noteZ + K);
                     l.rotation.z = approachRot + (bendDir < 0 ? Math.PI : 0);
                     l.renderOrder = techniqueMarkerRenderOrder;
+                    trailYieldRegisterAttachment(trailYieldGemRecord, l);
                     _registerIncomingLabelOccluder(l, noteZ);
                     // Only an upward bend occupies the upper label stack.
                     if (bendDir > 0) yo = Math.max(yo, y + techniqueYNow + NH * 2.5 + extraHeight);
@@ -20665,6 +20708,7 @@
                         face.position.set(x, y + techniqueYNow, noteZ + K);
                         face.rotation.z = approachRot;
                         face.renderOrder = techniqueMarkerRenderOrder;
+                        trailYieldRegisterAttachment(trailYieldGemRecord, face);
                         _registerIncomingLabelOccluder(face, noteZ);
                     }
                 } else if (n.ho || n.po || n.tp) {
@@ -20678,6 +20722,7 @@
                         tri.position.set(x, y + techniqueYNow, noteZ + K);
                         tri.rotation.z = approachRot;
                         tri.renderOrder = techniqueMarkerRenderOrder;
+                        trailYieldRegisterAttachment(trailYieldGemRecord, tri);
                         _registerIncomingLabelOccluder(tri, noteZ);
                         // Reserve stack space above the triangle for stacked labels.
                         yo = Math.max(yo, y + techniqueYNow + NH * 1.0);
@@ -20688,6 +20733,7 @@
                         chevron.rotation.z = approachRot;
                         chevron.scale.set(chevronScale, chevronScale, 1);
                         chevron.renderOrder = techniqueMarkerRenderOrder;
+                        trailYieldRegisterAttachment(trailYieldGemRecord, chevron);
                         _registerIncomingLabelOccluder(chevron, noteZ);
                     }
                 }
@@ -20703,6 +20749,7 @@
                         attackMark.position.set(x, y + techniqueYNow + attackOffset, noteZ + K);
                         attackMark.rotation.z = approachRot;
                         attackMark.renderOrder = techniqueMarkerRenderOrder;
+                        trailYieldRegisterAttachment(trailYieldGemRecord, attackMark);
                         _registerIncomingLabelOccluder(attackMark, noteZ);
                     }
                 }
@@ -20724,6 +20771,7 @@
                     _pmMark.position.set(x, y + techniqueYNow, noteZ + K);
                     _pmMark.rotation.z = approachRot;
                     _pmMark.renderOrder = techniqueMarkerRenderOrder;
+                    trailYieldRegisterAttachment(trailYieldGemRecord, _pmMark);
                     _registerIncomingLabelOccluder(_pmMark, noteZ);
                 }
                 // hm / hp — PlaneGeometry overlay sized like the palm-mute X,
@@ -20739,6 +20787,7 @@
                     harmMark.position.set(x, y + techniqueYNow, noteZ + K);
                     harmMark.rotation.z = approachRot;
                     harmMark.renderOrder = techniqueMarkerRenderOrder;
+                    trailYieldRegisterAttachment(trailYieldGemRecord, harmMark);
                     _registerIncomingLabelOccluder(harmMark, noteZ);
                 }
 

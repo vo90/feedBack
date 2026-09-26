@@ -141,7 +141,7 @@ test('ordinary and physical corrections share one finalizer in every mode', () =
 test('mode 0 keeps relationships active but bypasses every narrowing geometry path', () => {
     assert.match(
         source,
-        /const\s+trailYieldTargetEvent\s*=\s*trailYieldEventForNote\(n\)/,
+        /const\s+trailYieldTargetEvent\s*=\s*trailYieldEventForNote\(sourceNote\)/,
         'canonical event lookup must remain active when narrowing is disabled',
     );
     assert.match(
