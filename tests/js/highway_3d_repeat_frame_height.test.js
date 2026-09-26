@@ -101,10 +101,11 @@ const hasRsPlusFace = src.includes('function rsPlusTechniqueFlags(');
 const muteMarkerStart = hasRsPlusFace
     ? 'if (!rsPlusNotation && (n.pm || n.mt || n.fhm)) {'
     : 'if (n.pm || n.mt || n.fhm) {';
-const noteMuteSymbols = new Function('n', 'rsPlusNotation', `
+const noteMuteSymbols = new Function('n', 'rsPlusNotation', 'assert', `
     'use strict';
+    // Match drawNote's attachment context while executing the real helper.
     ${fn('trailYieldRegisterAttachment')}
-    const trailYieldGemRecord = {_trailYieldAttachmentCount: 0, _trailYieldAttachmentOrder: 1};
+    const trailYieldGemRecord={_trailYieldAttachmentCount:0,_trailYieldAttachmentOrder:Infinity};
     ${hasRsPlusFace ? fn('rsPlusTechniqueFlags') + fn('rsPlusTechniqueCells') : ''}
     const marks = [];
     const pTechPlane = { get() {
@@ -122,6 +123,13 @@ const noteMuteSymbols = new Function('n', 'rsPlusNotation', `
     ${hasRsPlusFace ? 'if (rsPlusNotation) {'
         + between('const faceFlags = rsPlusTechniqueFlags(n);', '} else if (n.ho || n.po || n.tp)') + '}' : ''}
     ${between(muteMarkerStart, '// hm / hp')}
+    assert.equal(trailYieldGemRecord._trailYieldAttachmentCount, marks.length);
+    for (let i = 0; i < marks.length; i++) {
+        assert.equal(trailYieldGemRecord._trailYieldAttachments[i], marks[i],
+            'each emitted technique mark stays attached to its gem');
+        assert.equal(marks[i].renderOrder, techniqueMarkerRenderOrder,
+            'an unconstrained attachment keeps its technique layer');
+    }
     return marks.flatMap(mark => mark.material.kind)
         .map(kind => kind === 'palmMute' ? 'palm' : kind === 'fretHandMute' ? 'fretHand' : kind)
         .filter(kind => kind === 'palm' || kind === 'fretHand');
@@ -133,9 +141,9 @@ const bbSus2 = () => [
 function render(notes, options = {}) {
     const output = dispatch(notes, options);
     const frame = frameGeometry(output.isRepeat, output.retainsChordGems, !!options.inverted);
-    const noteSymbols = output.drawn.map(note => noteMuteSymbols(note, false));
+    const noteSymbols = output.drawn.map(note => noteMuteSymbols(note, false, assert));
     if (hasRsPlusFace) {
-        assert.deepEqual(output.drawn.map(note => noteMuteSymbols(note, true)), noteSymbols,
+        assert.deepEqual(output.drawn.map(note => noteMuteSymbols(note, true, assert)), noteSymbols,
             'RS+ face masks and Current overlays convey the same per-note mute instructions');
     }
     return { ...output, frame, frameSymbols: frameSymbols(notes, frame.compactRepeatFrame),
