@@ -159,6 +159,19 @@ def test_guitar_instrument_keeps_default(make_client):
     assert idx == 0  # guitar falls through to the default → Lead
 
 
+@pytest.mark.parametrize("preference,explicit,expected", [(None, None, 0), ("Hybrid Lead", None, 1), (None, 1, 1)])
+def test_hybrid_is_optional_and_saved_or_explicit_choice_wins(make_client, preference, explicit, expected):
+    server = make_client(instrument="guitar", default_arrangement=preference)
+    pak = _write_sloppak(server._get_dlc_dir(), "hybrid", [("lead", "Lead"), ("hybrid", "Hybrid Lead")])
+    manifest = yaml.safe_load((pak / "manifest.yaml").read_text())
+    manifest["arrangements"][1].update(type="lead", derived={"kind": "hybrid-lead-v1", "receipt": "import/hybrid-lead.json"})
+    (pak / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+    (pak / "arrangements/hybrid.json").write_text(json.dumps(_arr([{"t": 1, "s": 0, "f": 3, "sus": 1}])))
+    url = "/ws/highway/hybrid.sloppak?naming_mode=smart" + (f"&arrangement={explicit}" if explicit is not None else "")
+    with TestClient(server.app) as client:
+        assert _arr_index(client, url) == expected
+
+
 def test_explicit_arrangement_overrides_instrument(make_client):
     server = make_client(instrument="bass")
     _write_multi_arr_sloppak(server._get_dlc_dir())

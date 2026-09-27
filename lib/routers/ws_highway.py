@@ -312,7 +312,10 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
             # Fallback: most notes
             best = 0
             best_count = 0
+            has_original = any(a.derived_kind != "hybrid-lead-v1" for a in song.arrangements)
             for i, a in enumerate(song.arrangements):
+                if has_original and a.derived_kind == "hybrid-lead-v1":
+                    continue
                 c = len(a.notes) + sum(len(ch.notes) for ch in a.chords)
                 if c > best_count:
                     best_count = c

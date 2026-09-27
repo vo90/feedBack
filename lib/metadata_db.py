@@ -190,6 +190,8 @@ def _ensure_smart_names(arrangements: list[dict]) -> list[dict]:
             arr_objs = [
                 _ArrCls(
                     name=a.get("name", ""),
+                    type=a.get("type", "") if a.get("derived_kind") == "hybrid-lead-v1" else "",
+                    derived_kind=a.get("derived_kind", ""),
                     path_lead=a.get("_path_lead", False),
                     path_rhythm=a.get("_path_rhythm", False),
                     path_bass=a.get("_path_bass", False),

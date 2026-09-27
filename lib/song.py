@@ -229,6 +229,9 @@ class Arrangement:
     # follows the song-level tempo; when present a Reader uses it for this
     # chart and ignores the song-level tempo.
     tempos: list | None = None
+    # Imported compositions keep their authored display identity in smart mode.
+    # This is presentation metadata, not permission to bypass chart validation.
+    derived_kind: str = ""
 
 
 @dataclass
@@ -978,6 +981,10 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
         return path_attr, bool(a.bonus_arr) if bonus_override is None else bonus_override
 
     _resolved = [_resolve(a) for a in arrangements]
+    for i, arrangement in enumerate(arrangements):
+        if arrangement.derived_kind == "hybrid-lead-v1" and arrangement.type == "lead":
+            result[i] = "Hybrid Lead"
+            _resolved[i] = (None, False)
 
     for path_attr, label in (
         ("path_lead", "Lead"),
