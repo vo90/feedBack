@@ -982,7 +982,7 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
 
     _resolved = [_resolve(a) for a in arrangements]
     for i, arrangement in enumerate(arrangements):
-        if arrangement.derived_kind == "hybrid-lead-v1" and arrangement.type == "lead":
+        if arrangement.derived_kind in {"hybrid-lead-v1", "hybrid-lead-v2"} and arrangement.type == "lead":
             result[i] = "Hybrid Lead"
             _resolved[i] = (None, False)
 

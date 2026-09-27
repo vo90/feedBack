@@ -160,11 +160,12 @@ def test_guitar_instrument_keeps_default(make_client):
 
 
 @pytest.mark.parametrize("preference,explicit,expected", [(None, None, 0), ("Hybrid Lead", None, 1), (None, 1, 1)])
-def test_hybrid_is_optional_and_saved_or_explicit_choice_wins(make_client, preference, explicit, expected):
+@pytest.mark.parametrize('policy', ['hybrid-lead-v1','hybrid-lead-v2'])
+def test_hybrid_is_optional_and_saved_or_explicit_choice_wins(make_client, preference, explicit, expected,policy):
     server = make_client(instrument="guitar", default_arrangement=preference)
     pak = _write_sloppak(server._get_dlc_dir(), "hybrid", [("lead", "Lead"), ("hybrid", "Hybrid Lead")])
     manifest = yaml.safe_load((pak / "manifest.yaml").read_text())
-    manifest["arrangements"][1].update(type="lead", derived={"kind": "hybrid-lead-v1", "receipt": "import/hybrid-lead.json"})
+    manifest["arrangements"][1].update(type="lead", derived={"kind": policy, "receipt": "import/hybrid-lead.json"})
     (pak / "manifest.yaml").write_text(yaml.safe_dump(manifest))
     (pak / "arrangements/hybrid.json").write_text(json.dumps(_arr([{"t": 1, "s": 0, "f": 3, "sus": 1}])))
     url = "/ws/highway/hybrid.sloppak?naming_mode=smart" + (f"&arrangement={explicit}" if explicit is not None else "")

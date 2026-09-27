@@ -1075,8 +1075,8 @@ def load_song(
         # an arrangement whose NAME doesn't say "bass" still reports 4 strings.
         if entry.get("type"):
             arr.type = str(entry["type"]).strip().lower()
-        if isinstance(entry.get("derived"), dict) and entry["derived"].get("kind") == "hybrid-lead-v1":
-            arr.derived_kind = "hybrid-lead-v1"
+        if isinstance(entry.get("derived"), dict) and entry["derived"].get("kind") in {"hybrid-lead-v1", "hybrid-lead-v2"}:
+            arr.derived_kind = entry['derived']['kind']
         if "tuning" in entry:
             arr.tuning = list(entry["tuning"])
         if "capo" in entry:
@@ -1579,7 +1579,7 @@ def extract_meta(path: Path) -> dict:
                 "index": i,
                 "name": str(entry.get("name", entry.get("id", f"Arr{i}"))),
                 "type": str(entry.get("type", "")),
-                **({"derived_kind": "hybrid-lead-v1"} if isinstance(entry.get("derived"), dict) and entry["derived"].get("kind") == "hybrid-lead-v1" else {}),
+                **({"derived_kind": entry['derived']['kind']} if isinstance(entry.get("derived"), dict) and entry["derived"].get("kind") in {"hybrid-lead-v1", "hybrid-lead-v2"} else {}),
                 "notes": 0,  # unknown without loading; fine for the index
             }
         )
