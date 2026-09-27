@@ -160,7 +160,7 @@ def test_guitar_instrument_keeps_default(make_client):
 
 
 @pytest.mark.parametrize("preference,explicit,expected", [(None, None, 0), ("Hybrid Lead", None, 1), (None, 1, 1)])
-@pytest.mark.parametrize('policy', ['hybrid-lead-v1','hybrid-lead-v2'])
+@pytest.mark.parametrize('policy', ['hybrid-lead-v1','hybrid-lead-v2','hybrid-lead-v3'])
 def test_hybrid_is_optional_and_saved_or_explicit_choice_wins(make_client, preference, explicit, expected,policy):
     server = make_client(instrument="guitar", default_arrangement=preference)
     pak = _write_sloppak(server._get_dlc_dir(), "hybrid", [("lead", "Lead"), ("hybrid", "Hybrid Lead")])

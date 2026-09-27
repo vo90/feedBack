@@ -312,9 +312,9 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
             # Fallback: most notes
             best = 0
             best_count = 0
-            has_original = any(a.derived_kind not in {"hybrid-lead-v1", "hybrid-lead-v2"} for a in song.arrangements)
+            has_original = any(a.derived_kind not in {"hybrid-lead-v1", "hybrid-lead-v2", "hybrid-lead-v3"} for a in song.arrangements)
             for i, a in enumerate(song.arrangements):
-                if has_original and a.derived_kind in {"hybrid-lead-v1", "hybrid-lead-v2"}:
+                if has_original and a.derived_kind in {"hybrid-lead-v1", "hybrid-lead-v2", "hybrid-lead-v3"}:
                     continue
                 c = len(a.notes) + sum(len(ch.notes) for ch in a.chords)
                 if c > best_count:

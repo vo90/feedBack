@@ -5,7 +5,7 @@ import sloppak
 import pytest
 
 
-@pytest.mark.parametrize('policy', ['hybrid-lead-v1','hybrid-lead-v2'])
+@pytest.mark.parametrize('policy', ['hybrid-lead-v1','hybrid-lead-v2','hybrid-lead-v3'])
 def test_hybrid_name_does_not_renumber_original_smart_names(policy):
     originals = [Arrangement(name="Guitar A", type="lead"), Arrangement(name="Guitar B", type="lead"),
                  Arrangement(name="Bass", type="bass")]
@@ -14,7 +14,7 @@ def test_hybrid_name_does_not_renumber_original_smart_names(policy):
     assert compute_smart_names(originals + [hybrid]) == before + ["Hybrid Lead"]
 
 
-@pytest.mark.parametrize('policy', ['hybrid-lead-v1','hybrid-lead-v2'])
+@pytest.mark.parametrize('policy', ['hybrid-lead-v1','hybrid-lead-v2','hybrid-lead-v3'])
 def test_manifest_derived_identity_reaches_smart_naming(tmp_path,policy):
     pak = tmp_path / "hybrid.feedpak"
     pak.mkdir()
