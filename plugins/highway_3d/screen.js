@@ -1207,6 +1207,27 @@
 
     const TRAIL_CROSSING_BOUNDARY_REFINEMENTS = 6;
     const TRAIL_CROSSING_TIME_EPS = 1e-5;
+    const TRAIL_BOUNDARY_OVERLAP_TOLERANCE_S = 0.005;
+
+    /**
+     * A barely overlapping tail must not create a long visibility notch.
+     * Compare complete authored intervals, never the current rendered slice or
+     * a short geometric crossing. Contained and simultaneous sustains retain
+     * their normal visibility treatment. This affects trail geometry only.
+     */
+    function hwyTrailBoundaryOverlapIsNegligible(startA, endA, startB, endB) {
+        if (!Number.isFinite(startA) || !Number.isFinite(endA)
+            || !Number.isFinite(startB) || !Number.isFinite(endB)
+            || endA <= startA || endB <= startB) return false;
+        const aEarlier = startA < startB;
+        const earlierStart = aEarlier ? startA : startB;
+        const earlierEnd = aEarlier ? endA : endB;
+        const laterStart = aEarlier ? startB : startA;
+        const laterEnd = aEarlier ? endB : endA;
+        if (laterStart <= earlierStart + 1e-9 || earlierEnd >= laterEnd) return false;
+        const overlap = earlierEnd - laterStart;
+        return overlap >= 0 && overlap <= TRAIL_BOUNDARY_OVERLAP_TOLERANCE_S + 1e-9;
+    }
 
     /** Add one raw trail-overlap interval, coalescing only touching geometry. */
     function hwyAppendTrailCrossingWindow(
@@ -19315,6 +19336,14 @@
                 const target = candidateEvents[i];
                 if (!target || target.end <= (target.trailStart ?? target.t)
                     + (target.trailStart < target.t ? 1e-6 : 0.01)) continue;
+                // Use both complete linked paths. A tiny last visible slice or
+                // internal continuation is not a barely overlapping tail.
+                const targetPath = target.linkedPath?.path;
+                if (hwyTrailBoundaryOverlapIsNegligible(
+                    ctx.path?.visualStart ?? slideInVisualStart(n), ctx.path?.end ?? susEnd,
+                    targetPath?.visualStart ?? target.trailStart ?? target.t,
+                    targetPath?.end ?? target.end,
+                )) continue;
                 const overlapStart = Math.max(ctx.path?.visualStart ?? slideInVisualStart(n), target.trailStart ?? target.t, now);
                 const overlapEnd = Math.min(susEnd, target.end, visibleEnd);
                 if (!(overlapEnd > overlapStart + TRAIL_CROSSING_TIME_EPS)) continue;
