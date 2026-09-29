@@ -3558,6 +3558,10 @@
             const key = `${hold.dMin}:${hold.dMax}`;
             const active = (activeByBounds.get(key) || []).filter(other => other.end > hold.start);
             for (const other of active) {
+                // A rounded tail at the next attack is not a conflicting hold.
+                // Keep the same visual boundary tolerance as individual trails;
+                // original per-chord endpoints and genuine overlaps stay intact.
+                if (hwyTrailBoundaryOverlapIsNegligible(other.start, other.end, hold.start, hold.end)) continue;
                 if (candidateVoicings.get(other) === candidateVoicings.get(hold)
                     && Math.abs(other.end - hold.end) <= 1e-6) continue;
                 if (other.source === 'explicit') individualHolds.add(other);
