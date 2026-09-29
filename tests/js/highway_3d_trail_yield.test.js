@@ -26,7 +26,7 @@ function loadHelpers() {
         + src.slice(depthStart, depthEnd)
         + block
         + '\n({ renderOrderForLayerAtZ, hwyBuildTrailYieldEvents, hwyFillTrailYieldTimes, hwyFillTrailCrossingWindows, hwyTrailOverlapsGemX, hwyTrailYieldAmountAt,'
-        + ' hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailPriorityStringOffset, hwyTrailYieldGemLayer,'
+        + ' hwyTrailBoundaryOverlapIsNegligible, hwyTrailFootprintsCanOcclude, hwyTrailPriorityWorldZ, hwyTrailPriorityStringOffset, hwyTrailYieldGemLayer,'
         + ' hwyTrailTargetBehindOrder, hwyBuildTrailOcclusionIndex, hwyFillTrailOcclusionTargets, hwyTrailOcclusionFarthestTargetTime, hwyTrailVisibilityScratchCapacity, hwyMergeTrailPriorityWorldZ, hwyTrailOcclusionFrontMask, hwyTrailVisibilityFrontMask, hwyTrailOcclusionFlagsForPair, hwyTrailOcclusionTrailShouldStayBehind, hwyTrailOcclusionTrailShouldMoveInFront,'
         + ' TRAIL_OCCLUSION_GEM, TRAIL_OCCLUSION_TRAIL, TRAIL_OCCLUSION_TRAIL_FRONT, TRAIL_YIELD_DEFAULTS })',
     );
@@ -59,6 +59,90 @@ function loadTremoloOffset() {
 }
 
 const helpers = loadHelpers();
+
+test('only tiny overlaps at staggered sustain boundaries are negligible', () => {
+    const negligible = helpers.hwyTrailBoundaryOverlapIsNegligible;
+    for (const origin of [0, 22.473, 3600.123456]) {
+        for (const milliseconds of [0, 1, 2, 5, 5.001, 6, 10, 50]) {
+            const intervals = [origin - 1, origin + milliseconds / 1000, origin, origin + 1];
+            assert.equal(negligible(...intervals), milliseconds <= 5,
+                `boundary at ${origin}, ${milliseconds} ms`);
+            assert.equal(negligible(...intervals.slice(2), ...intervals.slice(0, 2)),
+                milliseconds <= 5, 'source/target orientation does not change the policy');
+        }
+    }
+    for (const intervals of [
+        [0, 1, 1.002, 2], // A real gap needs no special overlap treatment.
+        [0, 1, 0, 0.002], // Simultaneous attacks.
+        [0, 1, 0.5, 0.502], // A short event contained in a longer sustain.
+        [0, 1, 0.998, 1], // Contained event sharing the ending.
+        [0, 0, 0, 1], [0, 1, NaN, 2], [0, Infinity, 1, 2],
+    ]) assert.equal(negligible(...intervals), false, JSON.stringify(intervals));
+});
+
+function loadBoundaryCollector() {
+    const src = fs.readFileSync(SCREEN_JS, 'utf8');
+    const start = src.indexOf('        function collectTrailCrossingWindowsForStrand(');
+    const end = src.indexOf('        /** Collect one strand', start);
+    const context = {
+        hwyTrailBoundaryOverlapIsNegligible: helpers.hwyTrailBoundaryOverlapIsNegligible,
+        TRAIL_OCCLUSION_TRAIL: helpers.TRAIL_OCCLUSION_TRAIL,
+        TRAIL_CROSSING_TIME_EPS: 1e-5,
+        SLIDE_RIBBON_SAMPLES: 96,
+        _trailYieldMatchContext: { path: null },
+        _trailOcclusionEventsScratch: [], _trailOcclusionFlagsScratch: [],
+        _trailCrossingTargetBases: [0], _trailCrossingTargetWidths: [1],
+        slideInVisualStart: n => n.t,
+        slideTrailEnd: () => null,
+        trailCrossingTargetStrands: () => 1,
+        slideOutMarks: () => [], slideInMarks: () => [],
+        trailVisibilitySourceSweep: () => false,
+        trailCrossingFootprintsOverlapAt: () => true,
+        hwyAppendTrailCrossingWindow: (a, b, starts, ends, count) => {
+            starts[count] = a; ends[count] = b; return count + 1;
+        },
+    };
+    const collect = vm.runInNewContext(src.slice(start, end)
+        + '\ncollectTrailCrossingWindowsForStrand', context);
+    return { context, collect };
+}
+
+test('crossing collector ignores a tiny tail without dropping other crossing windows', () => {
+    const { context, collect } = loadBoundaryCollector();
+    const n = { t: 22.473, sus: 0.331 };
+    const target = { t: 22.308, trailStart: 22.308, end: 22.474 };
+    const starts = new Float64Array(4), ends = new Float64Array(4);
+    starts[0] = 22.6; ends[0] = 22.7; // Existing upcoming-gem narrowing.
+    assert.equal(collect(n, 22, 22.804, 23, starts, ends, null, 1, 1, 1,
+        [target], [helpers.TRAIL_OCCLUSION_TRAIL]), 1);
+    assert.equal(starts[0], 22.6);
+    assert.equal(ends[0], 22.7);
+    target.end = 22.523; // Genuine 50 ms overlap.
+    assert.equal(collect(n, 22, 22.804, 23, starts, ends, null, 1, 1, 1,
+        [target], [helpers.TRAIL_OCCLUSION_TRAIL]), 2);
+    assert.equal(starts[1], n.t);
+    assert.equal(ends[1], target.end);
+    assert.equal(context._trailYieldMatchContext.crossingTarget, null);
+});
+
+test('boundary policy uses complete durations through seek slices and linked continuations', () => {
+    const { context, collect } = loadBoundaryCollector();
+    const starts = new Float64Array(4), ends = new Float64Array(4);
+    const check = (n, target, now, visibleEnd, expected) => {
+        assert.equal(collect(n, now, n.t + n.sus, visibleEnd, starts, ends, null, 0, 0, 1,
+            [target], [helpers.TRAIL_OCCLUSION_TRAIL]), expected);
+    };
+    // Only 2 ms remains in this frame, but the full overlap is 500 ms.
+    check({ t: 1, sus: 1 }, { t: 0, end: 1.5 }, 1.498, 2, 1);
+    // Only 2 ms has entered the horizon; the same full overlap still qualifies.
+    check({ t: 1, sus: 1 }, { t: 0, end: 1.5 }, 0.9, 1.002, 1);
+    // A short target segment actually continues as part of a longer path.
+    check({ t: 1, sus: 1 }, { t: 0, end: 1.002,
+        linkedPath: { path: { visualStart: 0, end: 1.5 } } }, 0.9, 2, 1);
+    // The source continuation is not a new attack at 1; its path started at 0.5.
+    context._trailYieldMatchContext.path = { visualStart: 0.5, end: 2 };
+    check({ t: 1, sus: 1 }, { t: 0, end: 1.002 }, 0.9, 2, 1);
+});
 
 test('reviewed trail-visibility defaults match the showcase settings', () => {
     assert.equal(helpers.TRAIL_YIELD_DEFAULTS.enabled, true);
