@@ -243,7 +243,7 @@ test('standalone and chord render paths pass explicit target membership separate
     const standalone = sourceBetween('const _isLinkNextTgt', 'if (arGhostCid != null)');
     assert.match(standalone, /_linkNextTargetSet\.has\(n\)/);
     assert.match(standalone, /drawNote\([\s\S]*?skipLabel,\s*false,/);
-    assert.match(standalone, /_arpBoundsForNote\s*!==\s*null,[\s\S]*?_isLinkNextTgt,\s*\);/);
+    assert.match(standalone, /_arpBoundsForNote\s*!==\s*null,[\s\S]*?_isLinkNextTgt,\s*false,[\s\S]*?boxedChordMembers\.has\(_noteFretKey\(n\.t, n\.s, n\.f\)\),\s*\);/);
 
     const chord = sourceBetween('if (!deferChordGems', 'lastFretForString[cn.s] = cn.f;');
     assert.match(chord, /_linkNextTargetSet\.has\(cn\)/);
