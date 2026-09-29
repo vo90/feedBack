@@ -34,6 +34,7 @@ const dispatch = new Function('chordNotes', 'options', `
     ${fn('isUnpitchedMute')}
     ${fn('usesUnfrettedPosition')}
     ${fn('noteStemVisible')}
+    ${fn('chordHasFrameShape')}
     const isRepeat = options.repeat !== false;
     const chordLinksSlide = !!options.slide;
     const deferChordGems = !!options.defer;
