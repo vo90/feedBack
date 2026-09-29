@@ -18,10 +18,10 @@ function extract(name) {
 const helpers = [
     'isPlayableFret', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
     'laneBoundsFromAnchor', 'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape',
-    'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks', 'hwyBuildChordHoldGuidance',
+    'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks', 'hwyTrailBoundaryOverlapIsNegligible', 'hwyBuildChordHoldGuidance',
     'chordGuideTimedRowAt', 'hwyUncoveredHandPositionGuides',
 ];
-const constants = ['CHORD_ANCHOR_TIME_EPS', 'NEXT_ON_STRING_T_EPS', 'BEND_LINK_TIME_EPS']
+const constants = ['CHORD_ANCHOR_TIME_EPS', 'NEXT_ON_STRING_T_EPS', 'BEND_LINK_TIME_EPS', 'TRAIL_BOUNDARY_OVERLAP_TOLERANCE_S']
     .map(name => source.match(new RegExp('const ' + name + ' = [^;]+;'))[0]).join('\n') + '\nconst _slideInMarkCache = new WeakMap(), SLIDE_OUT_EMPTY_MARKS = Object.freeze([]);';
 const build = new Function('const NFRETS = 24;\n' + constants + '\n'
     + helpers.map(extract).join('\n') + '\nreturn hwyBuildChordHoldGuidance;')();
@@ -254,6 +254,64 @@ test('touching explicit holds still share edges while keeping distinct attacks',
     assert.equal(result.byChord.size, 2);
     near(result.byChord.get(a).end, 11);
     near(result.byChord.get(b).end, 13);
+});
+
+test('tiny staggered chord boundaries retain shared rails without changing authored endpoints', () => {
+    for (const t of [0, 29.358, 16000]) for (const overlap of [0, 0.001, 0.002, 0.005, 0.005001, 0.006, 0.05]) {
+        for (const frets of [[3, 5], [4, 6]]) {
+            const a = chord(t, [3, 5], 1), b = chord(t + 1 - overlap, frets, 1.5);
+            const chords = freezeDeep([a, b]);
+            const before = JSON.stringify(chords);
+            const result = resolve(chords, [], [], [{ time: 0, fret: 3, width: 4 }]);
+            if (overlap <= 0.005) {
+                assert.equal(result.byChord.size, 2, `${t}: ${overlap}`);
+                assert.equal(result.byChord.get(a).suppressMemberTrails, true);
+                assert.equal(result.byChord.get(b).suppressMemberTrails, true);
+                near(result.byChord.get(a).end, a.t + 1);
+                near(result.byChord.get(b).end, b.t + 1.5);
+                assert.equal(result.holds.length, 1, 'no stacked rail geometry');
+            } else {
+                assert.equal(result.byChord.size, 0, `${t}: real overlap ${overlap}`);
+                assert.equal(result.holds.length, 0);
+            }
+            assert.equal(JSON.stringify(chords), before);
+        }
+    }
+});
+
+test('Back in Black rounded repeated chords retain the shared hold for every attack', () => {
+    const chords = [[29.195, 0.163], [29.358, 0.163], [29.520, 0.325]].map(([t, sus]) => {
+        const ch = chord(t, [0, 2, 3], sus);
+        ch.notes.forEach(n => { n.s += 2; });
+        return ch;
+    });
+    freezeDeep(chords);
+    const first = resolve(chords);
+    const second = resolve(chords);
+    assert.deepEqual(first, second, 'rebuilding after a seek gives the same model');
+    assert.equal(first.byChord.size, 3);
+    assert.equal(first.holds.length, 1);
+    near(first.holds[0].start, 29.195);
+    near(first.holds[0].end, 29.845);
+    near(first.byChord.get(chords[1]).end, 29.521, 'the original rounded release is preserved');
+});
+
+test('tiny contained holds and a genuine older overlap still retain individual trails', () => {
+    const a = chord(10, [3, 5], 3), b = chord(11.999, [3, 5], 0.003);
+    assert.equal(resolve([a, b]).byChord.size, 0, 'a short contained event is not a boundary');
+    const c = chord(12.001, [3, 5], 2);
+    assert.equal(resolve([a, b, c]).byChord.size, 0, 'ignoring the tiny b/c boundary cannot hide the real a/c overlap');
+});
+
+test('boundary tolerance does not turn techniques or unequal string releases into ordinary shared holds', () => {
+    for (const cue of [{ bn: 1 }, { sl: 7 }, { vb: true }, { slide_out: 'down' }, { pm: true }]) {
+        const a = chord(10, [3, 5], 1), b = chord(10.998, [3, 5], 1);
+        Object.assign(a.notes[0], cue);
+        assert.equal(resolve([a, b]).byChord.has(a), false, JSON.stringify(cue));
+    }
+    const a = chord(10, [3, 5], 1), b = chord(10.998, [3, 5], 1);
+    a.notes[1].sus = 0.8;
+    assert.equal(resolve([a, b]).byChord.has(a), false);
 });
 
 test('an overlapping legacy repeat keeps its cue while conflicting explicit trails remain individual', () => {
