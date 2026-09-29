@@ -61,10 +61,11 @@ const harness = new Function('assert', `
             assert.equal(trailYieldOpenTargetXBounds(event, bounds), true);
             return Array.from(bounds);
         },
-        renderedOpenWidth(laneWidth, accent, rsPlus, hasEnclosingChordFrame = false, openStringStemsVisible = true) {
+        renderedOpenWidth(laneWidth, accent, rsPlus, belongsToBoxedChord = false, openStringStemsVisible = true) {
             rsPlusNotation = rsPlus;
             const K = 1, NW = 8, NH = 3, S_GAP = 4, nStr = 6;
             const n = { f: 0, ac: accent };
+            const stemVisible = !belongsToBoxedChord && openStringStemsVisible;
             const sourceNote = n;
             const x = 0, y = 0, noteZ = 0, techniqueYNow = 0;
             const fromChord = true, _leftyCached = false, rsMiss = false, rsHit = false;

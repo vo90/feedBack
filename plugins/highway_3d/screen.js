@@ -2904,6 +2904,13 @@
         return n.f === 0 || isUnpitchedMute(n);
     }
 
+    // A chord box replaces every member's stem for the whole event, including
+    // its post-onset sustain. Unboxed notes use only their own stem preference.
+    function noteStemVisible(n, belongsToBoxedChord, noteStemsVisible, openStringStemsVisible) {
+        return !belongsToBoxedChord
+            && (usesUnfrettedPosition(n) ? openStringStemsVisible : noteStemsVisible);
+    }
+
     /**
      * Return the chart time of the first fretted event that can still affect
      * the camera at `now`, or the next fretted onset after it.
@@ -7130,6 +7137,10 @@
         let _coincidentRepeatNoteSet = null;
         let _coincidentRepeatNotesRef = null;
         let _coincidentRepeatChordsRef = null;
+
+        // Event membership, not drawing lifetime: standalone notes can carry
+        // unique annotations while sharing a boxed chord member's attack.
+        let _boxedChordMembership = null;
 
         // Cache of measure-start times (beats with measure !== -1), rebuilt when
         // the beats array changes. Drives the camera lookahead window
@@ -13195,6 +13206,57 @@
             return name.endsWith('(arp)') || name.includes(' arpeggio');
         }
 
+        function chordUsesArpeggioFrame(ch, hint) {
+            const start = hint.hs ? hsStart(hint.hs) : NaN;
+            return hint.explicit && !isNaN(start) && Math.abs(ch.t - start) <= 0.1;
+        }
+
+        function suppressSynthChordForNotes(ch, shape, notes) {
+            if (!ch.h3dSynth || !notes || shape.size === 0) return false;
+            const lo = ch.t - ARP_FRAME_ONSET_PAD_S;
+            const hi = ch.t + ARP_FRAME_ONSET_CLUSTER_S;
+            for (let i = lowerBoundT(notes, lo - 0.02); i < notes.length; i++) {
+                const n = notes[i];
+                if (n.t > hi) break;
+                if (n.t >= lo && shape.get(n.s) === n.f) return true;
+            }
+            return false;
+        }
+
+        // Structural frame eligibility is shared by both note streams. Width
+        // and time-window checks remain in the chord geometry pass.
+        function chordHasFrameShape(ch, shape, suppressSynthChord, templates) {
+            return shape.size > 1
+                && (!suppressSynthChord || chordTemplateMarkedArpeggio(ch.id, templates));
+        }
+
+        function _ensureBoxedChordMembership(notes, chords, handShapes, templates) {
+            const old = _boxedChordMembership;
+            if (old && old.notes === notes && old.chords === chords
+                && old.handShapes === handShapes && old.templates === templates
+                && old.stringCount === nStr) return old.keys;
+
+            // Shape entries depend on templates as well as chord identity.
+            // Refresh them when chart inputs change, including template-only edits.
+            _chordShapeCache = new WeakMap();
+            const keys = new Set();
+            for (const ch of chords || []) {
+                if (!Number.isFinite(ch.t) || !Array.isArray(ch.notes)) continue;
+                const members = filterValidNotes(ch.notes);
+                if (!members.length) continue;
+                const shape = mergeChordShape(ch, members, templates);
+                const hint = chordHandShapeArpeggioHint(ch, handShapes, templates);
+                if (chordUsesArpeggioFrame(ch, hint)) continue;
+                const suppressed = suppressSynthChordForNotes(ch, shape, notes);
+                if (!chordHasFrameShape(ch, shape, suppressed, templates)) continue;
+                // Only actual members qualify. Template-only positions and later
+                // plucks inside a handshape must keep their own note stems.
+                for (const cn of members) keys.add(_noteFretKey(ch.t, cn.s, cn.f));
+            }
+            _boxedChordMembership = { notes, chords, handShapes, templates, stringCount: nStr, keys };
+            return keys;
+        }
+
         function handShapeMarkedArpeggio(hs, chordTemplates) {
             if (!hs) return false;
             if (truthyChartFlag(hs.arp) || truthyChartFlag(hs.arpeggio)) return true;
@@ -13515,6 +13577,7 @@
             _coincidentRepeatNoteSet = null;
             _coincidentRepeatNotesRef = null;
             _coincidentRepeatChordsRef = null;
+            _boxedChordMembership = null;
             _filterValidNotesCache = new WeakMap();
             _chordSigCache = new WeakMap();
             _chordShapeCache = new WeakMap();
@@ -14791,6 +14854,8 @@
                 _mergeCacheHsRef = bundle.handShapes;
                 _mergeCacheTplRef = bundle.chordTemplates;
             }
+            const boxedChordMembers = _ensureBoxedChordMembership(
+                notes, chords, bundle.handShapes, bundle.chordTemplates);
             const chordGuideEnds = _ensureChordGuideEnds(chords, bundle);
             _ensureChordCullIndex(chords, AHEAD, nStr, chordGuideEnds);
 
@@ -15671,6 +15736,8 @@
                         _ghostPrevBuf.get(Math.round(n.t * 1e4) * 10 + n.s) ?? -Infinity,
                         _arpBoundsForNote !== null, // showDropLine: white line for arp note-stream notes
                         _isLinkNextTgt,
+                        false, // standalone sustain ownership stays unchanged
+                        boxedChordMembers.has(_noteFretKey(n.t, n.s, n.f)),
                     );
                     if (arGhostCid != null) {
                         const _arpBounds = _arpBoundsForNote;
@@ -16026,8 +16093,7 @@
                      * regardless of how wide the span is.
                      */
                     const _hsStartT = hsHintFrame.hs ? hsStart(hsHintFrame.hs) : NaN;
-                    const chordHighwayLavenderArpVisual = hsHintFrame.explicit
-                        && !isNaN(_hsStartT) && Math.abs(ch.t - _hsStartT) <= 0.1;
+                    const chordHighwayLavenderArpVisual = chordUsesArpeggioFrame(ch, hsHintFrame);
                     const chordSusTrailMatchArpFrame = chordWireHighDensity(ch)
                         || chordHighwayLavenderArpVisual;
 
@@ -16164,20 +16230,9 @@
                     // guided by the note stream. Weaker than chordShapeCoveredByStandaloneNotes
                     // (all strings covered) to handle patterns where one shape string only
                     // appears well after the onset cluster (e.g. Walk intro, string 5 at
-                    // +0.7 s outside the 0.26 s window). Inlined for the same reason as
-                    // _deferFallback above.
-                    let suppressSynthChord = false;
-                    if (ch.h3dSynth && notes && chShape.size > 0) {
-                        const _sLo = ch.t - ARP_FRAME_ONSET_PAD_S;
-                        const _sHi = ch.t + ARP_FRAME_ONSET_CLUSTER_S;
-                        let _si = lowerBoundT(notes, _sLo - 0.02);
-                        for (; _si < notes.length; _si++) {
-                            const _sn = notes[_si];
-                            if (_sn.t > _sHi) break;
-                            if (_sn.t < _sLo) continue;
-                            if (chShape.get(_sn.s) === _sn.f) { suppressSynthChord = true; break; }
-                        }
-                    }
+                    // +0.7 s outside the 0.26 s window). Share this decision with
+                    // the standalone-note membership index.
+                    const suppressSynthChord = suppressSynthChordForNotes(ch, chShape, notes);
 
                     // suppressSynthChord: skip gems + frame but still call drawNote with
                     // skipBody=true so the board projection (fret ghost on fretboard) renders
@@ -16216,14 +16271,13 @@
                         }
                         return hwyPostHitTailFadeMul(chDt, chordTailHoldS, chordNextSoon, chordTailFadeS);
                     })();
-                    const chordFrameEligible = chShape.size > 1 && chDt > -chordTailHoldS && chDt < AHEAD && chordOpenBoxW != null
-                        && (!suppressSynthChord || chordTemplateMarkedArpeggio(ch.id, bundle.chordTemplates));
-                    // The flying box is drawn only before onset. Its side replaces
-                    // the open-note stem; arpeggio brackets and post-onset notes
-                    // still need their own marker. Share eligibility with the frame
-                    // below so a suppressed frame cannot hide a note's stem.
-                    const hasEnclosingChordFrame = chordFrameEligible && chDt > 0
-                        && chordTailMul > 0 && !chordHighwayLavenderArpVisual;
+                    const chordHasFrame = chordOpenBoxW != null
+                        && chordHasFrameShape(ch, chShape, suppressSynthChord, bundle.chordTemplates);
+                    const chordFrameEligible = chordHasFrame && chDt > -chordTailHoldS && chDt < AHEAD;
+                    // Membership outlives the flying frame. Do not restore stems
+                    // at onset, during a sustain, or when a newer event fades the
+                    // box. Open arpeggio brackets are not enclosing chord boxes.
+                    const belongsToBoxedChord = chordHasFrame && !chordHighwayLavenderArpVisual;
 
                     // Repeat gems remain visible for technique cues or visible sustains.
                     const suppressRepeatGems = repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes);
@@ -16315,7 +16369,7 @@
                                 chordHighwayLavenderArpVisual || suppressSynthChord || chordWireHighDensity(ch),
                                 _isLinkNextTgt,
                                 !!sharedChordHold?.suppressMemberTrails,
-                                hasEnclosingChordFrame,
+                                belongsToBoxedChord,
                             );
                             // Frame height follows the gems this path actually retains,
                             // including arpeggio deferral and linked continuation skips.
@@ -19566,7 +19620,7 @@
             drawNote(view, now, undefined, true, true);
         }
 
-        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, hasEnclosingChordFrame = false) {
+        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, belongsToBoxedChord = false) {
             _stableNoteRelevant = n.t + Math.max(0.03, n.sus || 0) >= now;
             const s = n.s;
             // Belt + suspenders: callers already gate via validString(),
@@ -19674,6 +19728,7 @@
                 ? techniqueYOffsetWorld(n, Math.min(now, susEnd))
                 : now <= n.t ? prebendOffsetWorld(n) : 0;
             const noteZ = sustained ? 0 : Math.min(0, dZ(dt));
+            const stemVisible = noteStemVisible(n, belongsToBoxedChord, noteStemsVisible, openStringStemsVisible);
             // Per-note Z-based renderOrder: far notes get a low value (render
             // first, get overdrawn by close geometry), close notes get a high
             // value (render last, appear on top). RENDER_ORDER_LAYER_STACK decides
@@ -20111,12 +20166,7 @@
                     outline.position.set(x + (_leftyCached ? 1 : -1) * (barW - stemW) * 0.5,
                         (stemTop + stemBottom) * 0.5, noteZ);
                     outline.scale.set(stemW / NW, Math.max(stemW, stemTop - stemBottom) / NH, 0.6);
-                    // An enclosing ordinary chord box supplies this edge for
-                    // both open strings and unpitched mute slabs. Otherwise the
-                    // enabled stem reaches the floor: fromChord also describes
-                    // hand-shape/arpeggio association, not physical enclosure.
-                    // Pool reuse restores the full stem once the frame ends.
-                    outline.visible = openStringStemsVisible && !hasEnclosingChordFrame;
+                    outline.visible = stemVisible;
                 } else if (n.f === 0) {
                     outline.scale.set(
                         (35 * K / NW) * ndRim * rimXY * openWScale,
@@ -20804,9 +20854,9 @@
                     // depth so they stay above non-arp connector lines of the same chord.
                     const _isArpNote = arpBounds !== null;
 
-                    // The RS+ stem preference only gates the connector;
+                    // The stem preference only gates the connector;
                     // the fret number retains its own visibility and position.
-                    if (!fromChord && (!rsPlusNotation || noteStemsVisible)) {
+                    if (!fromChord && stemVisible) {
                         const line = pConnectorLine.get();
                         line.position.set(x, labelY, noteZ);
                         // RS+ connects the moving gem all the way to the floor.
@@ -20919,9 +20969,7 @@
             // fret-label end), instead of a full-height white line to the board.
             const _wantDropLine = pDropLine && n.f > 0 && dt >= 0 && fromChord
                 && showDropLine && !skipBody && !explicitLinkTarget
-                // Individual gems associated with an arpeggio/hand shape use
-                // this path. Apply their stem preference; chord members are separate.
-                && (!rsPlusNotation || noteStemsVisible || arpBounds === null);
+                && stemVisible;
             if (_wantDropLine) {
                 const _minStrY = Math.min(sY(0), sY(nStr - 1));
                 const _dropY = _minStrY - S_GAP * 0.8;
@@ -22586,6 +22634,7 @@
             _coincidentRepeatNoteSet = null;
             _coincidentRepeatNotesRef = null;
             _coincidentRepeatChordsRef = null;
+            _boxedChordMembership = null;
             prevLowFretBonus = 0;
             prevLockActive = false;
             _camSnapped = false;
@@ -23163,8 +23212,8 @@
             options: [{ id: 'current', label: 'Current' }, { id: 'rsplus', label: 'RS+ inspired' }],
             default: BG_DEFAULTS.notationStyle,
         },
-        { key: 'noteStemsVisible', label: 'Note-gem stems (RS+)', type: 'toggle', default: BG_DEFAULTS.noteStemsVisible },
-        { key: 'openStringStemsVisible', label: 'Open-string stems (RS+)', type: 'toggle', default: BG_DEFAULTS.openStringStemsVisible },
+        { key: 'noteStemsVisible', label: 'Note-gem stems', type: 'toggle', default: BG_DEFAULTS.noteStemsVisible },
+        { key: 'openStringStemsVisible', label: 'Open-string stems', type: 'toggle', default: BG_DEFAULTS.openStringStemsVisible },
         { key: 'glow', label: 'Highway glow', type: 'range', min: 0, max: 1, step: 0.05, default: BG_DEFAULTS.glow },
         { key: 'bloom', label: 'Soft glow / bloom', type: 'toggle', default: BG_DEFAULTS.bloom },
         {
