@@ -3612,7 +3612,7 @@
         const candidates = [];
         const candidateVoicings = new Map();
         let shapeCursor = 0;
-        const hasIndividualCue = n => !!n.harmonic_changes || flag(n.mt) || flag(n.fhm) || flag(n.pm) || flag(n.ln)
+        const hasIndividualCue = n => !!n.harmonic_changes || n.whammy?.version === 1 || flag(n.mt) || flag(n.fhm) || flag(n.pm) || flag(n.ln)
             || Number(n.bn) > 0 || (Array.isArray(n.bnv) && n.bnv.length > 0)
             || flag(n.vb) || flag(n.vibrato) || flag(n.v) || flag(n.tr)
             || ['sl', 'slu', 'su'].some(k => n[k] != null && Number.isFinite(Number(n[k])) && Number(n[k]) >= 0)
@@ -3649,10 +3649,35 @@
                 if (!legacy || shape.start > legacy.start || (shape.start === legacy.start && shape.end < legacy.end)) legacy = shape;
             }
             if (arpeggioShape) continue;
-            const duration = Number(sounding[0].sus);
-            const shared = Number.isFinite(duration) && duration > 0
+            let duration = Number(sounding[0].sus);
+            let shared = Number.isFinite(duration) && duration > 0
                 && sounding.every(n => Number.isFinite(Number(n.sus)) && Number(n.sus) > 0
                     && Math.abs(Number(n.sus) - duration) <= 1e-6);
+            if (!shared && sounding.every(n => Number.isFinite(Number(n.sus)) && Number(n.sus) > 0)) {
+                // A strict majority may share the lane while release exceptions
+                // keep their own trails. Compare only known sounding durations;
+                // dead strings neither vote nor inherit a ringing hold. Build
+                // this once with the chart cache, never in the frame loop.
+                const groups = [];
+                for (const n of sounding.slice().sort((a, b) => Number(a.sus) - Number(b.sus))) {
+                    let group = groups[groups.length - 1];
+                    if (!group || Number(n.sus) - group.duration > 1e-6) {
+                        group = { duration: Number(n.sus), members: [] };
+                        groups.push(group);
+                    }
+                    group.members.push(n);
+                }
+                const majority = groups.find(g => g.members.length > sounding.length / 2);
+                if (majority) {
+                    const matching = new Set(majority.members);
+                    for (const n of suppressedMembers) if (!matching.has(n)) suppressedMembers.delete(n);
+                    // Techniques keep their own instruction even when their
+                    // durations match. A partial shared lane needs two ordinary
+                    // members; otherwise retain individual trails.
+                    shared = suppressedMembers.size >= 2;
+                    duration = majority.duration;
+                }
+            }
             let end, source;
             if (shared) {
                 end = chord.t + duration;
