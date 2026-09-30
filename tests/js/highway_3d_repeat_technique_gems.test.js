@@ -61,10 +61,13 @@ test('repeat presentation agrees with the existing chord trail cutoff', () => {
         assert.equal(maySuppress(true, false, [{ s: 1, f: 5, sus }]), true, String(sus));
     }
     assert.equal(maySuppress(true, false, [{ s: 1, f: 5, sus: 0.010001 }]), false);
-    // Ordinary open chord members have no separate sustain ribbons.
+    // Open members have independent ribbons unless a shared hold owns them.
     assert.equal(maySuppress(true, false, [
         { s: 0, f: 0, sus: 0.5 }, { s: 1, f: 0, sus: 0.5 },
-    ]), true);
+    ]), false);
+    assert.equal(maySuppress(true, false, [
+        { s: 0, f: 0, sus: 0.5 }, { s: 1, f: 0, sus: 0.5 },
+    ], true), true);
 });
 
 test('Back In Black repeated vibrato chord keeps its note heads', () => {
@@ -88,6 +91,6 @@ test('non-repeats and slide-linked repeats are never suppressed here', () => {
 test('chord rendering passes the targeted decision into drawNote', () => {
     assert.match(
         screenSrc,
-        /const suppressRepeatGems = repeatChordMaySuppressGems\([\s\S]*?isRepeat, chordLinksSlide, chordNotes\);[\s\S]*?drawNote\([\s\S]*?skipLabel,[\s\S]*?suppressRepeatGems \|\| suppressSynthChord,/,
+        /const suppressRepeatGems = repeatChordMaySuppressGems\([\s\S]*?isRepeat, chordLinksSlide, chordNotes,[\s\S]*?sharedChordHold\?\.suppressMemberTrails === true\);[\s\S]*?drawNote\([\s\S]*?skipLabel,[\s\S]*?suppressRepeatGems \|\| suppressSynthChord,/,
     );
 });
