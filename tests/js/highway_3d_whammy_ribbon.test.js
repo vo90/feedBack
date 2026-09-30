@@ -16,7 +16,7 @@ async function harness() {
   ${src.slice(src.indexOf('    function slideTrailEnd('),src.indexOf('    // Camera tgtDist building blocks'))}
   ${['noteHasVibrato','bnvSampleAt','bendCurveStartSemis','bendCurveSemisAt','bendSemisAtElapsed','bendSemisAtTime','vibratoSemisAtTime','techniqueYOffsetWorld','ensureSlideRibbonCapacity','slideRibbonUpdatePair'].map(fn).join('\n')}
   return n=>{
-   const yieldCount=0,scrape=false,slideSt=slideTrailEnd(n),hasTechniqueVibrato=noteHasVibrato(n);
+   const yieldCount=0,sameStringYield=false,scrape=false,slideSt=slideTrailEnd(n),hasTechniqueVibrato=noteHasVibrato(n);
    // Execute the renderer's actual path-selection statement before building
    // the real ribbon. Calling the ribbon helper alone missed this regression.
    ${src.match(/const ribbonSusTrail = [\s\S]*?;/)[0]}
