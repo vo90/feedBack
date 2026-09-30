@@ -32,7 +32,7 @@ function membershipHarness() {
         let _chordShapeCache=new WeakMap(), _chordSigCache=new WeakMap();
         let _coincidentRepeatNoteSet, _coincidentRepeatNotesRef, _coincidentRepeatChordsRef, _mergeCacheResult;
         const trailVisibilityReleaseChartReferences=()=>{};
-        ${['validString', 'isPlayableFret', 'isUnpitchedMute', 'isRenderableNote',
+        ${['validString', 'isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote',
             'usesUnfrettedPosition', '_noteKey', '_noteFretKey', 'lowerBoundT',
             'filterValidNotes', 'mergeChordShape', 'truthyChartFlag', 'hsStart', 'hsEnd',
             'hsChordIdNorm', 'chordTemplateMarkedArpeggio', 'handShapeMarkedArpeggio',
@@ -55,7 +55,7 @@ function membershipHarness() {
 const dispatchStart = src.indexOf('const _isLinkNextTgt =', src.indexOf('const _noteRenderLo ='));
 const dispatch = new Function('n', 'now', 'boxedChordMembers', 'options', `
     'use strict';
-    ${fn('_noteKey')}${fn('_noteFretKey')}${fn('isUnpitchedMute')}${fn('usesUnfrettedPosition')}
+    ${fn('_noteKey')}${fn('_noteFretKey')}const NFRETS=24; ${fn('isPlayableFret')}${fn('isPlainDeadNote')}${fn('isUnpitchedMute')}${fn('usesUnfrettedPosition')}
     const _linkNextTargetSet=new Set(options.linked ? [n] : []);
     const anchors=[], anchorLaneBoundsAt=()=>null, xFret=f=>f, openNoteLaneBoxW=()=>40;
     const bundle={handShapes:[],chordTemplates:[]}, notes=[n], arpGhostHsInfer=[];
@@ -80,7 +80,7 @@ function meshPool() {
 const drawParameters=src.match(/function drawNote\(([^)]*)\)/)[1];
 const draw = new Function('meshPool', 'args', 'options', `
     'use strict';
-    ${fn('isUnpitchedMute')}${fn('usesUnfrettedPosition')}${fn('noteStemVisible')}
+    const NFRETS=24; ${fn('isPlayableFret')}${fn('isPlainDeadNote')}${fn('isUnpitchedMute')}${fn('usesUnfrettedPosition')}${fn('noteStemVisible')}
     ${fn('teachingFingerLabel')}${fn('teachingDegreeLabel')}${fn('hwyShouldSuppressNoteBody')}
     ${fn('naturalNode')}${fn('harmonicLabel')}
     function drawNote(${drawParameters}) {
@@ -189,8 +189,7 @@ test('open, unpitched mute and fretted mute overlaps obey box membership and ind
             assert.equal(boxed.connectors+boxed.drops,0);
             assert.equal(boxed.openStem,false);
             const free=render(membershipHarness(),{...n,t:10.1},[ch],options);
-            if(member.f===3) assert.equal(free.connectors,Number(noteStems));
-            else assert.equal(free.openStem,style==='rsplus' && openStems);
+            assert.equal(free.openStem,style==='rsplus' && openStems);
         }
     }
 });

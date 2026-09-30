@@ -40,7 +40,7 @@ function harness() {
             if(!textCache.has(key))textCache.set(key,{map:{key}});
             return textCache.get(key);
         }
-        ${['isPlayableFret','isUnpitchedMute','isRenderableNote','slideTrailEnd',
+        ${['isPlayableFret','isPlainDeadNote','isUnpitchedMute','isRenderableNote','slideTrailEnd',
             'rsPlusTechniqueFlags','rsPlusTechniqueCells','rsPlusTechniqueColor',
             'drawRsPlusTechniqueGlyph','rsPlusTechniqueMat','rsPlusNoteFaceMat',
             '_usesRsDefaultHighway','_highwayReferenceLabelColor','chordTemplateLabel',

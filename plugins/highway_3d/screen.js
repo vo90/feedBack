@@ -1597,11 +1597,11 @@
             // Match drawNote's local open-bar view, retaining the authored
             // identity for lookup/dedup and all scoring/linked-path consumers.
             const sourceFret = f;
-            if (f === 127 && pathNote && isUnpitchedMute(pathNote)) f = 0;
+            if (pathNote && isUnpitchedMute(pathNote)) f = 0;
             if (!Number.isInteger(f) || f < 0 || f > NFRETS) return;
             const duration = Number.isFinite(sustain) ? Math.max(0, sustain) : 0;
             const trailStart = options?.visualStartForNote ? options.visualStartForNote(pathNote, t) : t;
-            const trailVisible = (duration > 0.01 || trailStart < t) && (options?.trailVisible
+            const trailVisible = !isPlainDeadNote(pathNote) && (duration > 0.01 || trailStart < t) && (options?.trailVisible
                 ? options.trailVisible(pathNote, chordMeta, sourceChord) : (f > 0 || chordMeta === null));
             (byFret[f] || (byFret[f] = [])).push({
                 t, s, f, sourceFret, end: t + duration,
@@ -1642,7 +1642,7 @@
                 let minF = Infinity, maxF = -Infinity;
                 for (let ni = 0; ni < ch.notes.length; ni++) {
                     const n = ch.notes[ni];
-                    const fret = n?.f === 127 && isUnpitchedMute(n) ? 0 : n?.f;
+                    const fret = n && isUnpitchedMute(n) ? 0 : n?.f;
                     if (!Number.isInteger(n?.s) || n.s < 0 || n.s >= stringCount
                         || !Number.isInteger(fret) || fret < 0 || fret > NFRETS) continue;
                     strings.add(n.s);
@@ -2689,7 +2689,7 @@
     function hwyBuildIndependentTrailOrigins(notes, chords, holds, stringCount) {
         const drawable = new WeakSet(), openOrigins = new WeakMap();
         const add = (note, meta) => {
-            if (!(note?.sus > 0.01)) return;
+            if (!(note?.sus > 0.01) || isPlainDeadNote(note)) return;
             drawable.add(note);
             if (note.f !== 0) return;
             // Reused notes with several rendering origins are ambiguous. Leave
@@ -2706,10 +2706,10 @@
                 if (!Number.isInteger(note?.s) || note.s < 0 || note.s >= stringCount
                     || !Number.isInteger(note?.f) || note.f < 0 || note.f > NFRETS) continue;
                 strings.add(note.s);
-                if (note.f > 0 && !note.pick_scrape_marks?.length) { minF = Math.min(minF, note.f); maxF = Math.max(maxF, note.f); }
+                if (note.f > 0 && !isUnpitchedMute(note)) { minF = Math.min(minF, note.f); maxF = Math.max(maxF, note.f); }
             }
             const meta = { size: strings.size, minF, maxF };
-            for (const note of chord.notes || []) add(note, meta);
+            for (const note of chord.notes || []) if (!chordMemberTrailSuppressed(holds?.get(chord), note)) add(note, meta);
         }
         return { drawable, openOrigins };
     }
@@ -2984,11 +2984,27 @@
         return Number.isInteger(f) && f >= 0 && f <= NFRETS;
     }
 
+    // A dead-note fret can be an editor's hidden placeholder. Only an explicit
+    // pitch/motion instruction gives that position visual meaning. Palm mute
+    // and fret-hand-mute alone are deliberately not classified as dead notes.
+    function isPlainDeadNote(n) {
+        return n?.mt === true && (isPlayableFret(n.f) || n.f === 127)
+            && !(n.sl != null && n.sl >= 0) && !(n.slu != null && n.slu >= 0) && !(n.su != null && n.su >= 0)
+            && !n.slide_out && !n.slideOut && !n.slide_out_marks?.length && !n.slide_in_marks?.length
+            && !n.pick_scrape_marks?.length && !n.bn && !n.bnv?.length && !n.vb && !n.vibrato && !n.tr
+            && !n.whammy && !n.hm && !n.hp && !n.harmonic_target && !n.harmonic_changes
+            && !n.ho && !n.po && !n.ln;
+    }
+
+    function chordMemberTrailSuppressed(hold, note) {
+        return isPlainDeadNote(note) || !!hold?.suppressedMembers?.has(note);
+    }
+
     // Some imported muted chord members retain the source's unpitched 127
     // sentinel. Keep the strike, using the open/muted slab in its anchor lane;
     // never interpret the sentinel as a fret or clamp it to a playable pitch.
     function isUnpitchedMute(n) {
-        return (n.f === 127 || (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0)) && !!n.mt;
+        return isPlainDeadNote(n) || (n.f === 127 || (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0)) && !!n.mt;
     }
 
     function isRenderableNote(n) {
@@ -3026,7 +3042,7 @@
         let first = Infinity;
 
         const validFretted = n => n
-            && isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0)
+            && isPlayableFret(n.f) && n.f > 0 && !isUnpitchedMute(n)
             && Number.isInteger(n.s)
             && n.s >= 0
             && n.s < nStrings;
@@ -3458,9 +3474,9 @@
             || String(obj.name || '').toLowerCase().endsWith('(arp)')
             || String(obj.name || '').toLowerCase().includes(' arpeggio'));
         const validMember = n => n && Number.isInteger(n.s) && n.s >= 0
-            && n.s < count && isPlayableFret(n.f);
+            && n.s < count && isRenderableNote(n);
         const signature = members => members.slice().sort((a, b) => a.s - b.s)
-            .map(n => `${n.s}:${n.f}`).join('|');
+            .map(n => `${n.s}:${isPlainDeadNote(n) ? 'x' : n.f}`).join('|');
         const lower = (rows, t, key = 't') => {
             let lo = 0, hi = rows.length;
             while (lo < hi) {
@@ -3571,8 +3587,11 @@
             }
             if (members.length < 2 || members.length !== chord.notes.length
                 || new Set(members.map(n => n.s)).size !== members.length
-                || chord.notes.some(n => n && hasIndividualCue(n)) || members.some(n => linkTargets.has(n))
                 || markedArp(chord) || templateInfo(chord.id).arpeggio) continue;
+            const sounding = members.filter(n => !isPlainDeadNote(n));
+            if (!sounding.length || sounding.some(n => n.mt)) continue;
+            const suppressedMembers = new Set(sounding.filter(n => !hasIndividualCue(n) && !linkTargets.has(n)));
+            if (!suppressedMembers.size) continue;
             // Coincident independent chord records are ambiguous; do not decide
             // which record's common border should represent the combined strike.
             if ((i > 0 && chord.t - realChords[i - 1].t <= eps)
@@ -3588,9 +3607,9 @@
                 if (!legacy || shape.start > legacy.start || (shape.start === legacy.start && shape.end < legacy.end)) legacy = shape;
             }
             if (arpeggioShape) continue;
-            const duration = Number(members[0].sus);
+            const duration = Number(sounding[0].sus);
             const shared = Number.isFinite(duration) && duration > 0
-                && members.every(n => Number.isFinite(Number(n.sus)) && Number(n.sus) > 0
+                && sounding.every(n => Number.isFinite(Number(n.sus)) && Number(n.sus) > 0
                     && Math.abs(Number(n.sus) - duration) <= 1e-6);
             let end, source;
             if (shared) {
@@ -3599,7 +3618,8 @@
             } else {
                 // Positive, partial or invalid durations must retain individual
                 // notation; hand-shape fallback is only for unspecified values.
-                if (!legacy || members.some(n => n.sus != null && (!Number.isFinite(Number(n.sus)) || Number(n.sus) !== 0))) continue;
+                if (!legacy || sounding.length !== members.length || suppressedMembers.size !== members.length
+                    || members.some(n => n.sus != null && (!Number.isFinite(Number(n.sus)) || Number(n.sus) !== 0))) continue;
                 const attackIndex = lower(attacks, chord.t - eps);
                 if (attackIndex < attacks.length && attacks[attackIndex].t <= chord.t + eps) continue;
                 end = legacy.end;
@@ -3609,7 +3629,7 @@
             }
             if (!(end > chord.t)) continue;
             const hold = { start: chord.t, end, ...boundsAt(members, chord.t), source,
-                chord, suppressMemberTrails: true };
+                chord, suppressedMembers, suppressMemberTrails: suppressedMembers.size === sounding.length };
             byChord.set(chord, hold);
             candidates.push(hold);
             candidateVoicings.set(hold, sig);
@@ -3914,7 +3934,7 @@
             scrapeGeometry.scrapeProgress(mark, chartTime - n.t)) : 0;
     }
     function appendPickScrapeContourTimes(n, start, end, out) {
-        if (!(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0)) return;
+        if (!(n?.mt === true && n.pick_scrape_marks?.length)) return;
         for (const mark of n.pick_scrape_marks) {
             // Stable samples follow chart time, not frame time, so the rough
             // edge moves with the music rather than flickering each frame.
@@ -8168,7 +8188,7 @@
             const chordNotes = filterValidNotes(ch.notes);
             let sig = null;
             if (chordNotes.length > 0) {
-                sig = chordNotes.slice().sort((a, b) => a.s - b.s).map(n => `${n.s}:${n.f}`).join('|');
+                sig = chordNotes.slice().sort((a, b) => a.s - b.s).map(n => `${n.s}:${isPlainDeadNote(n) ? 'x' : n.f}`).join('|');
             }
             _chordSigCache.set(ch, sig);
             return sig;
@@ -14133,7 +14153,7 @@
                                     if (_cn.t < tw.tLo) continue;
                                     if (!validString(_cn.s)) continue;
                                     if (shape.get(_cn.s) !== _cn.f) continue;
-                                    if (isPlayableFret(_cn.f) && _cn.f > 0 && !(_cn?.mt === true && Array.isArray(_cn.pick_scrape_marks) && _cn.pick_scrape_marks.length > 0) && !_fSeen.has(_cn.s)) {
+                                    if (isPlayableFret(_cn.f) && _cn.f > 0 && !isUnpitchedMute(_cn) && !_fSeen.has(_cn.s)) {
                                         _frettedCount++;
                                         _fSeen.add(_cn.s);
                                         if (_onsetNote === null) _onsetNote = _cn;
@@ -14439,7 +14459,7 @@
             if (notesArr) {
                 for (let _i = 0; _i < notesArr.length; _i++) {
                     const _n = notesArr[_i];
-                    if (isPlayableFret(_n.f) && _n.f > 0 && !(_n?.mt === true && Array.isArray(_n.pick_scrape_marks) && _n.pick_scrape_marks.length > 0)) events.push({ t: _n.t, f: _n.f });
+                    if (isPlayableFret(_n.f) && _n.f > 0 && !isUnpitchedMute(_n)) events.push({ t: _n.t, f: _n.f });
                 }
             }
             // Chord events intentionally excluded: regular chord notes don't show
@@ -15167,8 +15187,8 @@
                 _trailYieldEventsByFret = hwyBuildTrailYieldEvents(notes, chords, nStr, {
                     suppressedAttacks: _linkNextTargetSet,
                     linkedPaths: _linkedTrailPaths,
-                    trailVisible: (note, meta, chord) => !chord
-                        || !_chordGuideCache.model.byChord.get(chord)?.suppressMemberTrails,
+                    trailVisible: (note, meta, chord) => !chordMemberTrailSuppressed(
+                        chord && _chordGuideCache.model.byChord.get(chord), note),
                     visualStartForNote: slideInVisualStart,
                 });
                 _trailAttacksByString = hwyBuildTrailAttackIndex(_trailYieldEventsByFret, nStr);
@@ -15344,7 +15364,7 @@
                     const susEnd = n.t + (n.sus || 0);
                     if (dt > 0 && dt < 0.6)
                         noteState.stringAnticipation[n.s] = Math.max(noteState.stringAnticipation[n.s], 1 - dt / 0.6);
-                    if (isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0)) {
+                    if (isPlayableFret(n.f) && n.f > 0 && !isUnpitchedMute(n)) {
                         if (now >= n.t && now <= susEnd) noteState.fretHeat[n.f] = 1;
                         else if (n.t > now) noteState.fretHeat[n.f] = Math.max(noteState.fretHeat[n.f], Math.max(0, 1 - dt / 2));
                     }
@@ -15373,7 +15393,7 @@
                     for (const cn of chordNotes) {
                         if (dt > 0 && dt < 0.6)
                             noteState.stringAnticipation[cn.s] = Math.max(noteState.stringAnticipation[cn.s], 1 - dt / 0.6);
-                        if (isPlayableFret(cn.f) && cn.f > 0 && !(cn?.mt === true && Array.isArray(cn.pick_scrape_marks) && cn.pick_scrape_marks.length > 0)) {
+                        if (isPlayableFret(cn.f) && cn.f > 0 && !isUnpitchedMute(cn)) {
                             if (now >= ch.t && now <= susEnd) { noteState.fretHeat[cn.f] = 1; continue; }
                             if (ch.t > now) noteState.fretHeat[cn.f] = Math.max(noteState.fretHeat[cn.f], Math.max(0, 1 - dt / 2));
                         }
@@ -15405,7 +15425,7 @@
                     if (n.t > now + 2) break;
                     if (!validString(n.s) || !isRenderableNote(n)) continue;
                     if (!nextNoteByString[n.s] || n.t < nextNoteByString[n.s].t) nextNoteByString[n.s] = n;
-                    if (isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0)) fretLastActiveTime[n.f] = now;
+                    if (isPlayableFret(n.f) && n.f > 0 && !isUnpitchedMute(n)) fretLastActiveTime[n.f] = now;
                 }
             }
             if (chords) {
@@ -15425,7 +15445,7 @@
                             _sd.t = ch.t;
                             nextNoteByString[cn.s] = _sd;
                         }
-                        if (isPlayableFret(cn.f) && cn.f > 0 && !(cn?.mt === true && Array.isArray(cn.pick_scrape_marks) && cn.pick_scrape_marks.length > 0)) fretLastActiveTime[cn.f] = now;
+                        if (isPlayableFret(cn.f) && cn.f > 0 && !isUnpitchedMute(cn)) fretLastActiveTime[cn.f] = now;
                     }
                 }
             }
@@ -15807,8 +15827,8 @@
                         if (n.t + (n.sus || 0) < bootstrapT0) continue;
                         if (n.t > bootstrapT1) break;
                         if (!validString(n.s) || !isRenderableNote(n)) continue;
-                        const nInWin = isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) && n.t >= bootstrapT0;
-                        const nSusNow = isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) && n.t < bootstrapT0
+                        const nInWin = isPlayableFret(n.f) && n.f > 0 && !isUnpitchedMute(n) && n.t >= bootstrapT0;
+                        const nSusNow = isPlayableFret(n.f) && n.f > 0 && !isUnpitchedMute(n) && n.t < bootstrapT0
                             && n.t + (n.sus || 0) >= bootstrapNow;
                         if (nInWin || nSusNow) {
                             const w = Math.exp(-Math.abs(n.t - bootstrapNow) / camTau);
@@ -15835,7 +15855,7 @@
                         for (const cn of chNotes) {
                             const cnOk = chOnsetInWin
                                 || (chSusNow && ch.t + (cn.sus || 0) >= bootstrapNow);
-                            if (isPlayableFret(cn.f) && cn.f > 0 && !(cn?.mt === true && Array.isArray(cn.pick_scrape_marks) && cn.pick_scrape_marks.length > 0) && cnOk) {
+                            if (isPlayableFret(cn.f) && cn.f > 0 && !isUnpitchedMute(cn) && cnOk) {
                                 preWX += xNote(cn) * chW;
                                 preWSum += chW;
                                 if (cn.f < preDistMin) preDistMin = cn.f;
@@ -15895,7 +15915,7 @@
                         continue;
                     }
                     if (_coincidentRepeatNoteSet.has(n)) continue;
-                    if (isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) && n.t > now && n.t < now + 2) activeFrets.add(n.f);
+                    if (isPlayableFret(n.f) && n.f > 0 && !isUnpitchedMute(n) && n.t > now && n.t < now + 2) activeFrets.add(n.f);
                     if (n.t > now) {
                         const dt = n.t - now;
                         if (dt < AHEAD) highwayIntensity = Math.max(highwayIntensity, 1 - dt / AHEAD);
@@ -15995,7 +16015,7 @@
                     if (!(cameraMode === 'lookahead')) {
                     const nInWin = n.t >= camT0 && n.t <= camT1;
                     const nSusActive = n.t < camT0 && n.t + (n.sus || 0) >= now;
-                    if (isPlayableFret(n.f) && n.f > 0 && !(n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) && (nInWin || nSusActive)) {
+                    if (isPlayableFret(n.f) && n.f > 0 && !isUnpitchedMute(n) && (nInWin || nSusActive)) {
                         // Symmetric decay around now: previously this
                         // clamped n.t - now at 0, giving every past-
                         // onset note weight 1. That was a tolerable
@@ -16120,7 +16140,7 @@
                         if (dt < AHEAD) highwayIntensity = Math.max(highwayIntensity, 1 - dt / AHEAD);
                     }
                     if (ch.t > now && ch.t < now + 2)
-                        for (const cn of chordNotes) { if (isPlayableFret(cn.f) && cn.f > 0 && !(cn?.mt === true && Array.isArray(cn.pick_scrape_marks) && cn.pick_scrape_marks.length > 0)) activeFrets.add(cn.f); }
+                        for (const cn of chordNotes) { if (isPlayableFret(cn.f) && cn.f > 0 && !isUnpitchedMute(cn)) activeFrets.add(cn.f); }
 
                     // Computed once when the chart-static cull index is built;
                     // avoid rescanning every member of every visible chord per frame.
@@ -16183,7 +16203,7 @@
                     else {
                         let cxL = Infinity, cxR = -Infinity, fretted = 0;
                         for (const cn of chordNotes) {
-                            if (isPlayableFret(cn.f) && cn.f > 0 && !(cn?.mt === true && Array.isArray(cn.pick_scrape_marks) && cn.pick_scrape_marks.length > 0)) {
+                            if (isPlayableFret(cn.f) && cn.f > 0 && !isUnpitchedMute(cn)) {
                                 const fx = xNote(cn);
                                 if (fx < cxL) cxL = fx;
                                 if (fx > cxR) cxR = fx;
@@ -16594,7 +16614,7 @@
                                 _ghostPrevBuf.get(Math.round(ch.t * 1e4) * 10 + cn.s) ?? -Infinity,
                                 chordHighwayLavenderArpVisual || suppressSynthChord || chordWireHighDensity(ch),
                                 _isLinkNextTgt,
-                                !!sharedChordHold?.suppressMemberTrails,
+                                chordMemberTrailSuppressed(sharedChordHold, cn),
                                 belongsToBoxedChord,
                             );
                             // Frame height follows the gems this path actually retains,
@@ -16610,7 +16630,7 @@
                             // over-pullback for mixed-sustain chords).
                             if (!(cameraMode === 'lookahead')) {
                             const cnSustainOk = chOnsetInWin || (chSusActive && ch.t + (cn.sus || 0) >= now);
-                            if (isPlayableFret(cn.f) && cn.f > 0 && !(cn?.mt === true && Array.isArray(cn.pick_scrape_marks) && cn.pick_scrape_marks.length > 0) && cnSustainOk) {
+                            if (isPlayableFret(cn.f) && cn.f > 0 && !isUnpitchedMute(cn) && cnSustainOk) {
                                 camWX += xNote(cn) * chW;
                                 camWSum += chW;
                                 if (cn.f < camDistMin) camDistMin = cn.f;
@@ -18898,7 +18918,7 @@
 
         /** Find the indexed event represented by a drawNote call. */
         function trailYieldEventForNote(n) {
-            const fret = n.f === 127 && isUnpitchedMute(n) ? 0 : n.f;
+            const fret = isUnpitchedMute(n) ? 0 : n.f;
             const events = _trailYieldEventsByFret[fret];
             if (!events || events.length === 0) return null;
             let lo = 0, hi = events.length;
@@ -19964,7 +19984,7 @@
             const isNextOnString = nextTAligned || ghostPastHold;
             const y = sY(s);
             const susEnd = n.t + (n.sus || 0);
-            const hasSus = n.sus > 0;
+            const hasSus = n.sus > 0 && !isPlainDeadNote(sourceNote);
             const visualTrailStart = slideInVisualStart(n);
             const hasLeadIn = visualTrailStart < n.t;
             // Nearest event time across ALL strings strictly after this note —

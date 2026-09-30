@@ -16,11 +16,11 @@ function extract(name) {
     throw new Error(name);
 }
 const names = [
-    'isPlayableFret', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
+    'isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
     'laneBoundsFromAnchor', 'anchorLaneBoundsAt', 'anchorPlayedFretInclusiveSpan',
     'playedFretSpanCoversShape', 'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes',
     'slideInMarks', 'hwyBuildChordHoldGuidance', 'chordGuideTimedRowAt', 'hwyUncoveredHandPositionGuides',
-    'hwyBuildIndependentTrailOrigins', 'hwyBuildLinkedTrailPaths',
+    'chordMemberTrailSuppressed', 'hwyBuildIndependentTrailOrigins', 'hwyBuildLinkedTrailPaths',
     'openNoteLaneBoxW', 'trailOpenLayoutAt',
 ];
 const constants = ['CHORD_ANCHOR_TIME_EPS', 'BEND_LINK_TIME_EPS']
@@ -34,7 +34,7 @@ const h = new Function(`
     ${constants}
     ${names.map(extract).join('\n')}
     ${source.slice(eventStart,eventEnd)}
-    return { hwyBuildIndependentTrailOrigins, hwyBuildChordHoldGuidance,
+    return { chordMemberTrailSuppressed, hwyBuildIndependentTrailOrigins, hwyBuildChordHoldGuidance,
         hwyBuildTrailYieldEvents, trailOpenLayoutAt, hwyBuildTrailOcclusionIndex };
 `)();
 const chord = (durations, extra={}) => ({ t:10, id:0,
@@ -43,7 +43,7 @@ const modelFor = chords => h.hwyBuildChordHoldGuidance(chords,[],[],[],6,[]);
 function eventsFor(chords, notes=[]) {
     const model = modelFor(chords);
     return h.hwyBuildTrailYieldEvents(notes,chords,6,{
-        trailVisible: (note,meta,ch) => !ch || !model.byChord.get(ch)?.suppressMemberTrails,
+        trailVisible: (note,meta,ch) => !h.chordMemberTrailSuppressed(ch && model.byChord.get(ch), note),
     });
 }
 
@@ -117,10 +117,10 @@ test('incoming techniques bypass shared holds in actual trail origins and crossi
     const ch = chord([2, 2]);
     ch.notes[1].slide_in_marks = [{ direction: 'up', time: 0 }];
     const model = modelFor([ch]);
-    assert.equal(model.byChord.get(ch), undefined);
+    assert.equal(model.byChord.get(ch).suppressMemberTrails, false);
     const origins = h.hwyBuildIndependentTrailOrigins([], [ch], model.byChord, 6);
-    for (const n of ch.notes) assert.equal(origins.drawable.has(n), true);
+    for (const n of ch.notes) assert.equal(origins.drawable.has(n), n.s === 1);
     for (const bucket of eventsFor([ch])) for (const event of bucket || []) {
-        assert.equal(event.trailVisible, true);
+        assert.equal(event.trailVisible, event.s === 1);
     }
 });

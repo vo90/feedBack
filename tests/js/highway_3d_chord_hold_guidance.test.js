@@ -16,7 +16,7 @@ function extract(name) {
     throw new Error('Unbalanced helper: ' + name);
 }
 const helpers = [
-    'isPlayableFret', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
+    'isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
     'laneBoundsFromAnchor', 'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape',
     'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks', 'hwyTrailBoundaryOverlapIsNegligible', 'hwyBuildChordHoldGuidance',
     'chordGuideTimedRowAt', 'hwyUncoveredHandPositionGuides',
@@ -146,7 +146,13 @@ test('muted and moving technique chords do not lose per-string instruction', () 
         const ch = chord(10, [3, 5], sustain);
         Object.assign(ch.notes[0], cue);
         const result = resolve([ch], [hs()], [template(ch)]);
-        assert.equal(result.holds.length, 0, JSON.stringify(cue));
+        if (sustain === undefined) assert.equal(result.holds.length, 0, JSON.stringify(cue));
+        else {
+            const hold = result.byChord.get(ch);
+            assert.ok(hold);
+            assert.equal(hold.suppressedMembers.has(ch.notes[0]), false, 'the technique remains independent');
+            assert.equal(hold.suppressedMembers.has(ch.notes[1]), true, 'ordinary ringing uses the lane');
+        }
         assert.equal(result.guides.length, 1);
     }
     const ch = chord(120.472, [5, 5, 5, 5]);
@@ -157,10 +163,10 @@ test('muted and moving technique chords do not lose per-string instruction', () 
 test('incoming linked targets cannot collapse into a shared chord hold', () => {
     const ch = chord(11, [5, 7], 1);
     const source = { t: 10, s: 0, f: 3, sl: 5, sus: 1, ln: true };
-    assert.equal(resolve([ch], [], [], [], [source]).holds.length, 0);
+    assert.equal(resolve([ch], [], [], [], [source]).byChord.get(ch).suppressedMembers.has(ch.notes[0]), false);
     const preceding = chord(10, [5, 7], 1);
     preceding.notes[0].ln = true;
-    assert.equal(resolve([preceding, ch]).holds.length, 0);
+    for (const row of [preceding, ch]) assert.equal(resolve([preceding, ch]).byChord.get(row).suppressedMembers.has(row.notes[0]), false);
     source.sus = 0.2;
     assert.equal(resolve([ch], [], [], [], [source]).holds.length, 1, 'expired link is not a continuation');
 });
@@ -307,7 +313,7 @@ test('boundary tolerance does not turn techniques or unequal string releases int
     for (const cue of [{ bn: 1 }, { sl: 7 }, { vb: true }, { slide_out: 'down' }, { pm: true }]) {
         const a = chord(10, [3, 5], 1), b = chord(10.998, [3, 5], 1);
         Object.assign(a.notes[0], cue);
-        assert.equal(resolve([a, b]).byChord.has(a), false, JSON.stringify(cue));
+        assert.equal(resolve([a, b]).byChord.get(a).suppressedMembers.has(a.notes[0]), false, JSON.stringify(cue));
     }
     const a = chord(10, [3, 5], 1), b = chord(10.998, [3, 5], 1);
     a.notes[1].sus = 0.8;
@@ -416,9 +422,9 @@ test('valid incoming chord techniques keep their independent ribbons for both di
         ch.notes[0].slide_in_marks = [{ direction, time }];
         const before = JSON.stringify(ch);
         const result = resolve([ch], [hs()], [template(ch)]);
-        assert.equal(result.holds.length, 0, `${direction} at ${time}`);
+        assert.equal(result.holds.length, 1, `${direction} at ${time}`);
         assert.equal(result.guides.length, 1);
-        assert.equal(result.byChord.get(ch), undefined);
+        assert.equal(result.byChord.get(ch).suppressedMembers.has(ch.notes[0]), false);
         assert.equal(JSON.stringify(ch), before, 'notation never rewrites authored timing');
     }
 });
@@ -440,4 +446,24 @@ test('invalid and open-only incoming metadata do not cancel ordinary shared hold
     ch.notes[0].slide_in_marks = [{ direction: 'up', time: 0 }];
     assert.equal(resolve([ch]).byChord.get(ch).suppressMemberTrails, true,
         'open destinations do not draw an incoming fret approach');
+});
+
+
+test('plain dead strings neither widen the box nor prevent shared ringing rails', () => {
+    for (const fret of [0, 1, 7, 127]) for (const sus of [.1, .46125, 3]) {
+        const ch = chord(64, [3, fret, 0, 0, 3, 3], .46125);
+        Object.assign(ch.notes[1], {mt:true,sus});
+        const before = JSON.stringify(ch);
+        const model = resolve([ch], [], [], [{time:0,fret:3,width:4}]);
+        const hold = model.byChord.get(ch);
+        assert.deepEqual([hold.dMin,hold.dMax], [2,6]);
+        near(hold.end,64.46125);
+        assert.equal(hold.suppressMemberTrails,true);
+        assert.equal(hold.suppressedMembers.size,5);
+        assert.equal(JSON.stringify(ch),before);
+    }
+});
+test('all-dead attacks cannot fabricate ringing chord rails', () => {
+    const ch=chord(2,[1,7,127],2); ch.notes.forEach(n=>n.mt=true);
+    assert.equal(resolve([ch]).holds.length,0);
 });

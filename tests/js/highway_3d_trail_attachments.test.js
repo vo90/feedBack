@@ -19,7 +19,7 @@ function extract(name) {
 const visibility = new Function(`
     const NFRETS = 24;
     let _trailYieldEventsByFret;
-    ${['isUnpitchedMute', 'hwyBuildTrailEventEndIndex', 'hwyBuildTrailYieldEvents',
+    ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'hwyBuildTrailEventEndIndex', 'hwyBuildTrailYieldEvents',
         'trailYieldEventForNote'].map(extract).join('\n')}
     return {
         build(...args) { return _trailYieldEventsByFret = hwyBuildTrailYieldEvents(...args); },
@@ -38,7 +38,7 @@ test('unpitched mutes use open visibility footprints without rewriting authored 
     assert.equal(visibility.find(note), event);
     assert.equal(note.f, 127);
     assert.equal(event.end, 12);
-    assert.equal(event.trailVisible, true);
+    assert.equal(event.trailVisible, false);
 });
 
 test('coincident real open and unpitched events stay distinct but exact chord copies deduplicate', () => {
@@ -99,7 +99,7 @@ test('unpitched visibility preserves linked membership, suppressed heads and cho
     const event = visibility.build([note], [], 6, options)[0]?.[0];
     assert.ok(event);
     assert.equal(event.gemVisible, false);
-    assert.equal(event.trailVisible, true);
+    assert.equal(event.trailVisible, false);
     assert.equal(event.linkedPath, membership);
     const held = visibility.build([], [{t: 10, notes: [note]}], 6, {...options, trailVisible: () => false})[0][0];
     assert.equal(held.trailVisible, false);

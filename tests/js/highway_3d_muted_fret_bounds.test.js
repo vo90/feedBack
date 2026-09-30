@@ -18,7 +18,7 @@ function fn(name) {
     throw new Error('Unclosed function ' + name);
 }
 
-const helpers = ['isPlayableFret', 'isUnpitchedMute', 'isRenderableNote',
+const helpers = ['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote',
     'usesUnfrettedPosition', 'filterValidNotes', 'mergeChordShape',
     'chordNotesFromTemplate', 'getChartAnchorAt', 'laneBoundsFromAnchor',
     'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape', 'chordFallbackLaneBounds',
@@ -109,8 +109,8 @@ test('standalone muted arpeggio brackets use the same width as the unfretted sla
     const end = src.indexOf('drawArpBrackets(', start);
     assert.ok(start > 0 && end > start);
     const width = new Function('n', '_arpBrktAncB', 'singleOpenLaneW',
-        'const NW = 1, K = 1, xFret = f => f;'
-        + fn('isUnpitchedMute') + fn('usesUnfrettedPosition')
+        'const NFRETS = 24, NW = 1, K = 1, xFret = f => f;'
+        + fn('isPlayableFret') + fn('isPlainDeadNote') + fn('isUnpitchedMute') + fn('usesUnfrettedPosition')
         + src.slice(start, end) + ';return _openHalfW;');
     for (const anchor of [{ dMin: 2, dMax: 6 }, null]) {
         const expected = width({ f: 0 }, anchor, 12);
@@ -118,5 +118,18 @@ test('standalone muted arpeggio brackets use the same width as the unfretted sla
         assert.equal(width({ f: 127, mt: true }, anchor, 12), expected);
         assert.equal(width({ f: 7 }, anchor, 12), null);
         assert.equal(width({ f: 127 }, anchor, 12), null);
+    }
+});
+
+
+test('ordinary dead editor frets use the chord lane, while explicit motion and palm mutes keep frets', () => {
+    for (const f of [0,1,7,24,127]) {
+        const dead=Object.freeze({s:1,f,mt:true,sus:2});
+        assert.equal(run.usesUnfrettedPosition(dead),true);
+        assert.equal(run.hwyFirstRelevantFrettedTime([{...dead,t:1}],[],0,.2,6),null);
+    }
+    for (const flags of [{pm:true},{fhm:true},{mt:true,sl:9},{mt:true,ln:true},{mt:true,pick_scrape_marks:[{}]}]) {
+        const n={s:1,f:7,...flags};
+        assert.equal(run.isPlainDeadNote(n),false);
     }
 });
