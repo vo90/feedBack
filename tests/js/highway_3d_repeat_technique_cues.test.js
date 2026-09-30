@@ -47,6 +47,6 @@ test('ordinary and muted repeats stay compact, and slide exemptions remain', () 
 });
 
 test('the chord draw path uses technique-aware suppression without changing synth deferral', () => {
-    assert.match(src, /const suppressRepeatGems = repeatChordMaySuppressGems\(isRepeat, chordLinksSlide, chordNotes\)/);
+    assert.match(src, /const suppressRepeatGems = repeatChordMaySuppressGems\(\s*isRepeat, chordLinksSlide, chordNotes,/);
     assert.match(src, /drawNote\([\s\S]*?suppressRepeatGems \|\| suppressSynthChord,/);
 });
