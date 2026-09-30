@@ -34,6 +34,7 @@ const dispatch = new Function('chordNotes', 'options', `
     ${fn('isUnpitchedMute')}
     ${fn('usesUnfrettedPosition')}
     ${fn('noteStemVisible')}
+    ${fn('hwyChordHasNewAttack')}
     const isRepeat = options.repeat !== false;
     const chordLinksSlide = !!options.slide;
     const deferChordGems = !!options.defer;
@@ -303,11 +304,10 @@ test('a first strum remains full-height even when deferred to an arpeggio note s
     assert.equal(result.frame.withTopFrame, true);
 });
 
-test('deferred, synthesized and fully linked repeats stay compact when no approach gem remains', () => {
-    for (const options of [{ defer: true }, { synth: true }, { allLinked: true }]) {
+test('deferred and synthesized repeats stay compact when no approach gem remains', () => {
+    for (const options of [{ defer: true }, { synth: true }]) {
         const notes = bbSus2();
         notes[0].ac = true;
-        if (options.allLinked) options.linked = notes;
         const result = render(notes, options);
         assert.equal(result.drawn.length, 0);
         assert.equal(result.frame.height, result.frame.fullChordBoxH / 2);
@@ -380,6 +380,25 @@ test('boxed high-density, repeat and fallback dispatch never permits member stem
         const unboxed = render(notes,{repeat:false,arpeggio:true,noteStems,openStems});
         assert.deepEqual(unboxed.drawCalls.map(call => call.stemVisible),[openStems,noteStems,openStems]);
     }
+});
+
+test('continuation-only chord dispatch removes the attack frame while retaining note and trail dispatch', () => {
+    const notes=[{s:3,f:9,sus:.5},{s:4,f:9,sus:.5}];
+    for (const repeat of [false,true]) for (const inverted of [false,true]) {
+        for (const dt of [.3,.001,0,-.001,-.3]) {
+            const result=dispatch(notes,{repeat,inverted,dt,linked:notes});
+            assert.equal(result.chordFrameEligible,false);
+            assert.equal(result.drawn.length,0,'no new attack gems');
+            assert.equal(result.drawCalls.length,2,'both continuations still reach drawNote for their trails/guidance');
+            assert.ok(result.drawCalls.every(call=>call.linked && call.belongsToBoxedChord && !call.stemVisible));
+        }
+    }
+    const mixed=dispatch(notes,{repeat:false,linked:[notes[0]]});
+    assert.equal(mixed.chordFrameEligible,true,'one fresh attack preserves the frame');
+    assert.equal(mixed.drawn.length,1);
+    const arp=dispatch(notes,{repeat:false,linked:notes,arpeggio:true,markedArpeggio:true});
+    assert.equal(arp.chordFrameEligible,true,'arpeggio position guidance is not a strum box');
+    assert.equal(arp.drawn.length,0,'retaining a position guide must not invent attacks');
 });
 
 test('full frame sides, corners and halo geometry use the same compact decision', () => {
