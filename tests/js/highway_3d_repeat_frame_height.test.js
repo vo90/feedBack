@@ -80,7 +80,7 @@ const frameGeometry = new Function('isRepeat', 'retainsChordGems', 'inverted', `
     return { compactRepeatFrame, yBot, yTop, height, fullChordBoxH, withTopFrame,
         stringY: Array.from({ length: nStr }, (_, s) => sY(s)) };
 `);
-const frameSymbols = new Function('chordNotes', 'compactRepeatFrame', 'suppressRepeatGems', `
+const frameSymbols = new Function('chordNotes', 'compactRepeatFrame', `
     'use strict';
     ${fn('chordMuteKind')}
     const NFRETS=24; ${fn('isPlayableFret')}${fn('isPlainDeadNote')}
@@ -95,10 +95,6 @@ const frameSymbols = new Function('chordNotes', 'compactRepeatFrame', 'suppressR
     const pPMXFill = pool('palm', fills), pFHXFill = pool('fretHand', fills);
     const pMuteXLines = pool('palm', lines), pFHXLines = pool('fretHand', lines);
     const z = -1, cx = 0, cY = 1, K = 1, innerW = 2, innerH = 3, thickZ = 1;
-    const pLaneDivider = pool('deadString', lines), pTechPlane = pool('deadString', fills);
-    const width=4, NH=1, sY=s=>s, mSus=Array(8).fill({}), gLaneDivider={};
-    const _spriteMat2MeshMat=()=>({}), fretHandMuteXSpriteMat=()=>({});
-    const _registerIncomingLabelOccluder=()=>{};
     const edgeOp = 1, CHORD_BOX_EDGE_ALPHA = 1, baseRimHex = 0xffffff;
     const renderOrderForLayerAtZ = () => 1;
     ${between('const frameMuteKind =', '} // end if (chDt > 0)')}
@@ -153,7 +149,7 @@ function render(notes, options = {}) {
         assert.deepEqual(output.drawn.map(note => noteMuteSymbols(note, true, assert)), noteSymbols,
             'RS+ face masks and Current overlays convey the same per-note mute instructions');
     }
-    return { ...output, frame, frameSymbols: frameSymbols(notes, frame.compactRepeatFrame, output.suppressRepeatGems),
+    return { ...output, frame, frameSymbols: frameSymbols(notes, frame.compactRepeatFrame),
         noteSymbols };
 }
 function assertEnclosed(result) {
@@ -481,7 +477,7 @@ test('mixed muting does not invent attacks for linked continuations or arpeggio 
 });
 
 
-test('repeated ringing chords with dead strings use half boxes and per-string mute cues', () => {
+test('repeated ringing chords with dead strings use plain half boxes', () => {
     for (const f of [0, 7, 127]) for (const inverted of [false, true]) {
         const notes = [3,f,0,0,3,3].map((f,s)=>({s,f,sus:.46125,mt:s===1}));
         notes[1].sus = 3; // hidden editor duration must not block the repeat
@@ -490,18 +486,24 @@ test('repeated ringing chords with dead strings use half boxes and per-string mu
         assert.equal(result.frame.compactRepeatFrame,true);
         assert.equal(result.frame.height,result.frame.fullChordBoxH/2);
         assert.equal(result.drawn.length,0);
-        assert.deepEqual(result.frameSymbols,{fills:['deadString'],lines:['deadString']});
+        assert.deepEqual(result.frameSymbols,{fills:[],lines:[]});
         assert.ok(result.drawCalls.every(n=>!n.stemVisible));
         assert.equal(JSON.stringify(notes),before);
-        assertEnclosed(resolvedRepeat(notes,{repeat:false,inverted}).result);
+        const first=resolvedRepeat(notes,{repeat:false,inverted}).result;
+        assertEnclosed(first);
+        assert.equal(first.drawn.length,6);
+        assert.deepEqual(first.noteSymbols,[[],['fretHand'],[],[],[],[]]);
     }
 });
 
-test('multiple dead strings retain one cue per string without muting the whole repeat', () => {
+test('multiple dead strings need no repeated per-string reminders', () => {
     const notes=[{s:0,f:3},{s:1,f:7,mt:true},{s:3,f:127,mt:true},{s:4,f:3}];
     const result=render(notes);
     assert.equal(result.frame.compactRepeatFrame,true);
-    assert.deepEqual(result.frameSymbols,{fills:['deadString','deadString'],lines:['deadString','deadString']});
+    assert.deepEqual(result.frameSymbols,{fills:[],lines:[]});
+    const first=render(notes,{repeat:false});
+    assertEnclosed(first);
+    assert.deepEqual(first.noteSymbols,[[],['fretHand'],['fretHand'],[]]);
 });
 
 test('mixed dead repeats retain full frames for independent trails and musical cues', () => {
@@ -510,5 +512,48 @@ test('mixed dead repeats retain full frames for independent trails and musical c
     for(const flag of [{vb:true},{sl:5},{ho:true},{ghost:true},{pm:true}]) {
         const changed=notes.map(n=>({...n}));Object.assign(changed[0],flag);
         assertEnclosed(resolvedRepeat(changed).result);
+    }
+});
+
+// Execute the production signature and repeat condition before dispatching the
+// frame, so a changed mute pattern cannot silently inherit a half-box.
+const sameChordRepeat = new Function('previous', 'ch', `
+    const NFRETS=24, nStr=6;
+    const _chordSigCache=new WeakMap(), _filterValidNotesCache=new WeakMap();
+    ${['isPlayableFret','isPlainDeadNote','isUnpitchedMute','isRenderableNote',
+        'validString','filterValidNotes','chordShapeSignature'].map(fn).join('\n')}
+    const prevChordSig=chordShapeSignature(previous), prevChordTime=previous.t;
+    const runSig=chordShapeSignature(ch);
+    ${src.match(/const isRepeat = !ch\.h3dStrum[^;]+;/)[0]}
+    return isRepeat;
+`);
+
+test('dead-string and fret changes restore full chord instructions before another plain repeat', () => {
+    const original=[3,7,0,0,3,3].map((f,s)=>({s,f,mt:s===1}));
+    const variants=[
+        original.map(n=>({...n,mt:false})), // remove the dead string
+        original.map(n=>({...n,mt:n.s===1||n.s===3})), // add one
+        original.map(n=>({...n,mt:n.s===3})), // move it
+        original.map(n=>({...n,f:n.s===0?5:n.f})), // change a sounding fret
+    ];
+    for (const notes of variants) for (const inverted of [false,true]) {
+        const previous={t:10,notes:original}, changed={t:10.2,notes};
+        const before=JSON.stringify([previous,changed]);
+        const repeat=sameChordRepeat(previous,changed);
+        assert.equal(repeat,false);
+        const full=render(notes,{repeat,inverted});
+        assertEnclosed(full);
+        assert.deepEqual(full.noteSymbols,notes.map(n=>n.mt?['fretHand']:[]));
+        const next={t:10.4,notes:notes.map(n=>({...n}))};
+        const compact=render(next.notes,{repeat:sameChordRepeat(changed,next),inverted});
+        assert.equal(compact.frame.compactRepeatFrame,true);
+        assert.equal(compact.drawn.length,0);
+        assert.deepEqual(compact.frameSymbols,{fills:[],lines:[]});
+        assert.equal(JSON.stringify([previous,changed]),before);
+    }
+    for (const f of [0,7,127]) {
+        const notes=original.map(n=>({...n,f:n.mt?f:n.f}));
+        assert.equal(sameChordRepeat({t:10,notes:original},{t:10.2,notes}),true,
+            'hidden dead-string fret is not a changed playing instruction');
     }
 });
