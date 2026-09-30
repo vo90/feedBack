@@ -17269,6 +17269,26 @@
                         // Only gemless compact repeats need a frame-wide cue, and
                         // only when every member shares the same effective mute.
                         const frameMuteKind = compactRepeatFrame ? chordMuteKind(chordNotes) : 'none';
+                        if (suppressRepeatGems && frameMuteKind === 'mixed') {
+                            for (const cn of chordNotes) {
+                                if (!isPlainDeadNote(cn)) continue;
+                                const muteStringLine = pLaneDivider.get();
+                                muteStringLine.geometry = gLaneDivider;
+                                muteStringLine.material = mSus[cn.s];
+                                muteStringLine.renderOrder = renderOrderForLayerAtZ(z, 'CHORD_STRUM_LINE');
+                                muteStringLine.position.set(cx, sY(cn.s), z);
+                                muteStringLine.scale.set(width * 0.96 / (0.15 * K), NH * 0.08 / (0.15 * K), 0.4 * K);
+                                muteStringLine.rotation.set(0, 0, 0);
+                                const muteStringX = pTechPlane.get();
+                                muteStringX.material = _spriteMat2MeshMat(muteStringX, fretHandMuteXSpriteMat());
+                                muteStringX.material.opacity = edgeOp * 0.85;
+                                muteStringX.renderOrder = renderOrderForLayerAtZ(z, 'CHORD_STRUM_LINE');
+                                muteStringX.position.set(cx, sY(cn.s), z + K);
+                                muteStringX.scale.set(NH * 1.6, NH * 1.6, 1);
+                                muteStringX.rotation.set(0, 0, 0);
+                                _registerIncomingLabelOccluder(muteStringX, z);
+                            }
+                        }
                         // Per-chord Z-proportional renderOrder: muted fill/lines and
                         // frame edges all use the named layer offsets above.
                         if (frameMuteKind === 'palm') {
@@ -18333,14 +18353,17 @@
 
         function repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes, sharedHoldOnApproach = false) {
             if (!isRepeat || chordLinksSlide) return false;
-            // One strum glyph cannot convey different instructions per string.
-            if (chordMuteKind(chordNotes) === 'mixed') return false;
+            // Plain dead strings get per-string X cues on compact repeats.
+            // Mixed palm/fret-hand muting still needs individual gem instructions.
+            const mixedMute = chordMuteKind(chordNotes) === 'mixed';
+            if (mixedMute
+                && chordNotes.some(n => !isPlainDeadNote(n) && (n.mt || n.fhm || n.pm))) return false;
             // Use the cached shared-hold decision, never infer equivalent releases
             // here or shorten source timing. Independent open-string trails need
             // their heads too. Technique and teaching cues always remain visible.
             return !chordNotes.some(n => {
                 if (noteHasVisibleMotionSustain(n) || noteHasRepeatTechniqueCue(n)) return true;
-                if (!Number.isFinite(n.sus) || n.sus <= 0.01) return false;
+                if ((mixedMute && isPlainDeadNote(n)) || !Number.isFinite(n.sus) || n.sus <= 0.01) return false;
                 if (sharedHoldOnApproach !== true) return true;
                 return (Number.isInteger(n.fg) && n.fg >= 0)
                     || (Number.isInteger(n.sd) && n.sd >= 0)

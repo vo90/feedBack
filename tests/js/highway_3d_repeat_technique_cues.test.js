@@ -17,6 +17,7 @@ function fn(name) {
 }
 const sourceGestures = src.slice(src.indexOf('    function slideTrailEnd('), src.indexOf('    // Camera tgtDist building blocks'));
 const suppress = new Function(sourceGestures + fn('noteHasRepeatTechniqueCue')
+    + 'const NFRETS=24;' + fn('isPlayableFret') + fn('isPlainDeadNote')
     + fn('chordMuteKind')
     + fn('noteHasVibrato') + fn('noteHasVisibleMotionSustain')
     + fn('repeatChordMaySuppressGems') + ';return repeatChordMaySuppressGems;')();

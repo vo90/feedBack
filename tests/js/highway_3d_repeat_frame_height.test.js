@@ -69,7 +69,7 @@ const dispatch = new Function('chordNotes', 'options', `
     }
     ${between('const chDt = chDtEarly;', 'const suppressRepeatGems = repeatChordMaySuppressGems(')}
     ${between('const suppressRepeatGems = repeatChordMaySuppressGems(', '// ── Arpeggio note brackets')}
-    return { retainsChordGems, drawn, isRepeat, drawCalls, chordFrameEligible, belongsToBoxedChord };
+    return { retainsChordGems, drawn, isRepeat, drawCalls, chordFrameEligible, belongsToBoxedChord, suppressRepeatGems };
 `);
 const frameGeometry = new Function('isRepeat', 'retainsChordGems', 'inverted', `
     'use strict';
@@ -80,9 +80,10 @@ const frameGeometry = new Function('isRepeat', 'retainsChordGems', 'inverted', `
     return { compactRepeatFrame, yBot, yTop, height, fullChordBoxH, withTopFrame,
         stringY: Array.from({ length: nStr }, (_, s) => sY(s)) };
 `);
-const frameSymbols = new Function('chordNotes', 'compactRepeatFrame', `
+const frameSymbols = new Function('chordNotes', 'compactRepeatFrame', 'suppressRepeatGems', `
     'use strict';
     ${fn('chordMuteKind')}
+    const NFRETS=24; ${fn('isPlayableFret')}${fn('isPlainDeadNote')}
     const fills = [], lines = [];
     function pool(kind, output) {
         return { get() {
@@ -94,6 +95,10 @@ const frameSymbols = new Function('chordNotes', 'compactRepeatFrame', `
     const pPMXFill = pool('palm', fills), pFHXFill = pool('fretHand', fills);
     const pMuteXLines = pool('palm', lines), pFHXLines = pool('fretHand', lines);
     const z = -1, cx = 0, cY = 1, K = 1, innerW = 2, innerH = 3, thickZ = 1;
+    const pLaneDivider = pool('deadString', lines), pTechPlane = pool('deadString', fills);
+    const width=4, NH=1, sY=s=>s, mSus=Array(8).fill({}), gLaneDivider={};
+    const _spriteMat2MeshMat=()=>({}), fretHandMuteXSpriteMat=()=>({});
+    const _registerIncomingLabelOccluder=()=>{};
     const edgeOp = 1, CHORD_BOX_EDGE_ALPHA = 1, baseRimHex = 0xffffff;
     const renderOrderForLayerAtZ = () => 1;
     ${between('const frameMuteKind =', '} // end if (chDt > 0)')}
@@ -148,7 +153,7 @@ function render(notes, options = {}) {
         assert.deepEqual(output.drawn.map(note => noteMuteSymbols(note, true, assert)), noteSymbols,
             'RS+ face masks and Current overlays convey the same per-note mute instructions');
     }
-    return { ...output, frame, frameSymbols: frameSymbols(notes, frame.compactRepeatFrame),
+    return { ...output, frame, frameSymbols: frameSymbols(notes, frame.compactRepeatFrame, output.suppressRepeatGems),
         noteSymbols };
 }
 function assertEnclosed(result) {
@@ -439,7 +444,6 @@ test('uniform gemless repeats have exactly one mute symbol with matching fill an
 test('mixed mute instructions retain the entire chord and each member own symbol', () => {
     for (const [flags, expected] of [
         [[{ pm: true }, {}], [['palm'], []]],
-        [[{}, { mt: true }], [[], ['fretHand']]],
         [[{ pm: true }, { fhm: true }], [['palm'], ['fretHand']]],
         [[{ pm: true }, { pm: true, mt: true }], [['palm'], ['fretHand']]],
     ]) {
@@ -474,4 +478,37 @@ test('mixed muting does not invent attacks for linked continuations or arpeggio 
     const partial = render(notes, { linked: notes.slice(1) });
     assert.deepEqual(partial.drawn.map(n => n.s), [1]);
     assert.deepEqual(partial.frameSymbols, { fills: [], lines: [] });
+});
+
+
+test('repeated ringing chords with dead strings use half boxes and per-string mute cues', () => {
+    for (const f of [0, 7, 127]) for (const inverted of [false, true]) {
+        const notes = [3,f,0,0,3,3].map((f,s)=>({s,f,sus:.46125,mt:s===1}));
+        notes[1].sus = 3; // hidden editor duration must not block the repeat
+        const before=JSON.stringify(notes);
+        const result=resolvedRepeat(notes,{inverted}).result;
+        assert.equal(result.frame.compactRepeatFrame,true);
+        assert.equal(result.frame.height,result.frame.fullChordBoxH/2);
+        assert.equal(result.drawn.length,0);
+        assert.deepEqual(result.frameSymbols,{fills:['deadString'],lines:['deadString']});
+        assert.ok(result.drawCalls.every(n=>!n.stemVisible));
+        assert.equal(JSON.stringify(notes),before);
+        assertEnclosed(resolvedRepeat(notes,{repeat:false,inverted}).result);
+    }
+});
+
+test('multiple dead strings retain one cue per string without muting the whole repeat', () => {
+    const notes=[{s:0,f:3},{s:1,f:7,mt:true},{s:3,f:127,mt:true},{s:4,f:3}];
+    const result=render(notes);
+    assert.equal(result.frame.compactRepeatFrame,true);
+    assert.deepEqual(result.frameSymbols,{fills:['deadString','deadString'],lines:['deadString','deadString']});
+});
+
+test('mixed dead repeats retain full frames for independent trails and musical cues', () => {
+    const notes=[{s:0,f:3,sus:1},{s:1,f:7,mt:true,sus:1},{s:4,f:3,sus:1}];
+    assertEnclosed(render(notes)); // no shared hold available
+    for(const flag of [{vb:true},{sl:5},{ho:true},{ghost:true},{pm:true}]) {
+        const changed=notes.map(n=>({...n}));Object.assign(changed[0],flag);
+        assertEnclosed(resolvedRepeat(changed).result);
+    }
 });
