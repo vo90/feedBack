@@ -59,6 +59,7 @@ const dispatch = new Function('n', 'now', 'boxedChordMembers', 'options', `
     const _linkNextTargetSet=new Set(options.linked ? [n] : []);
     const anchors=[], anchorLaneBoundsAt=()=>null, xFret=f=>f, openNoteLaneBoxW=()=>40;
     const bundle={handShapes:[],chordTemplates:[]}, notes=[n], arpGhostHsInfer=[];
+    const strumFrames={byNote:new Map(options.strum ? [[n,options.strum]] : [])};
     const arpeggioChordIdForNoteWithInferCache=()=>options.arpeggio ? 7 : null;
     const arpHsBoundsForNote=()=>options.arpeggio ? {start:n.t,end:n.t+1} : null;
     const _ghostPrevBuf=new Map(), GHOST_HOLD_AFTER_ONSET=.1;
@@ -122,6 +123,18 @@ function render(h, n, chords, options={}) {
     return draw(meshPool,args,options);
 }
 const chord=(t=10)=>({t,id:1,notes:[{s:0,f:3},{s:1,f:5}]});
+
+test('staggered brush dispatch preserves attack identity, suppresses stems, and centres open members on shared bounds',()=>{
+    const h=membershipHarness();
+    for(const style of ['current','rsplus'])for(const n of [{t:10.02,s:1,f:0},{t:10.04,s:2,f:5}]){
+        const options={style,strum:{bounds:{dMin:2,dMax:6}}};
+        const args=dispatch(n,9,new Set(),options);
+        assert.equal(args[0],n);
+        if(n.f===0){assert.equal(args[2],4);assert.equal(args[6],4);}
+        const result=render(h,n,[],options);
+        assert.equal(result.connectors,0);assert.equal(result.drops,0);assert.equal(result.openStem,false);
+    }
+});
 
 test('Wrathchild note-stream overlaps lose stems while retaining fret and finger hints in both styles',()=>{
     for(const [t,s,f,id] of [[131.537994,1,2,3],[141.966995,0,3,1]]) {
