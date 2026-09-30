@@ -27,6 +27,7 @@ const maySuppress = new Function(
     extractFn(screenSrc, 'noteHasVibrato') +
     extractFn(screenSrc, 'noteHasVisibleMotionSustain') +
     extractFn(screenSrc, 'noteHasRepeatTechniqueCue') +
+    'const NFRETS=24;' + extractFn(screenSrc, 'isPlayableFret') + extractFn(screenSrc, 'isPlainDeadNote') +
     extractFn(screenSrc, 'chordMuteKind') +
     extractFn(screenSrc, 'repeatChordMaySuppressGems') +
     '\nreturn repeatChordMaySuppressGems;',
