@@ -44,7 +44,7 @@ function helpers(lefty = false) {
         const BEND_LINK_TIME_EPS=.001;
         const _trailYieldFrameId=1;
         let _trailCrossingTargetBaseCount=0;
-        ${visibility}${motion}
+        ${source.slice(source.indexOf('    function isPlayableFret('), source.indexOf('    function isRenderableNote('))}${visibility}${motion}
         ${fn('naturalNode')}${fn('notePositionX')}
         const xNote = n => (_leftyCached ? -1 : 1) * notePositionX(n);
         ${fn('sustainMotionWidth')}${fn('sustainTrailCenterXAt')}${fn('ensureSlideRibbonCapacity')}${fn('slideRibbonUpdatePair')}

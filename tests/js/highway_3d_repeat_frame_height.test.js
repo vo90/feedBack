@@ -31,7 +31,7 @@ const dispatch = new Function('chordNotes', 'options', `
     ${fn('chordMuteKind')}
     ${fn('repeatChordMaySuppressGems')}
     ${fn('hwyPostHitTailFadeMul')}
-    ${fn('isUnpitchedMute')}
+    const NFRETS=24; ${fn('isPlayableFret')}${fn('chordMemberTrailSuppressed')}${fn('isPlainDeadNote')}${fn('isUnpitchedMute')}
     ${fn('usesUnfrettedPosition')}
     ${fn('noteStemVisible')}
     ${fn('chordHasFrameShape')}
@@ -169,7 +169,7 @@ const resolveHold = new Function(
     ['CHORD_ANCHOR_TIME_EPS', 'NEXT_ON_STRING_T_EPS', 'BEND_LINK_TIME_EPS', 'TRAIL_BOUNDARY_OVERLAP_TOLERANCE_S']
         .map(name => src.match(new RegExp('const ' + name + ' = [^;]+;'))[0]).join('\n') +
     '\nconst _slideInMarkCache = new WeakMap(), SLIDE_OUT_EMPTY_MARKS = Object.freeze([]);\n' +
-    ['isPlayableFret', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
+    ['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
         'laneBoundsFromAnchor', 'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape',
         'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks',
         'hwyTrailBoundaryOverlapIsNegligible', 'hwyBuildChordHoldGuidance'].map(fn).join('\n') +

@@ -180,7 +180,7 @@ function visibilityHelpers() {
     assert.ok(start >= 0 && end > start);
     return new Function(`
         const NFRETS = 24, MAX_RENDER_STRINGS = 8;
-        ${source.slice(start, end)}
+        ${source.slice(source.indexOf('    function isPlayableFret('), source.indexOf('    function isRenderableNote('))}${source.slice(start, end)}
         return {hwyBuildTrailYieldEvents, hwyBuildTrailOcclusionIndex,
             hwyFillTrailYieldTimes, hwyFillTrailOcclusionTargets,
             TRAIL_OCCLUSION_GEM, TRAIL_OCCLUSION_TRAIL};

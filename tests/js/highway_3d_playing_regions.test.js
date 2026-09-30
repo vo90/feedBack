@@ -18,7 +18,7 @@ function extract(name) {
     assert.equal(depth, 0, name);
     return source.slice(start, end);
 }
-const helpers = ['isPlayableFret', 'isUnpitchedMute', 'isRenderableNote', 'usesUnfrettedPosition',
+const helpers = ['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote', 'usesUnfrettedPosition',
     'naturalNode', 'notePositionX', 'slideTrailEnd', 'getChartAnchorAt', 'hwyBuildPlayingRegions'].map(extract).join('\n');
 function harness(logarithmic = false) {
     return new Function(`
