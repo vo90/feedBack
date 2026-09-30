@@ -2886,6 +2886,47 @@
      * used by the chord loop's `_chFilterSus` check; parent nodes store the
      * maximum end in their range, allowing whole expired ranges to be skipped.
      */
+    // Explicit note `ch` IDs describe one brush gesture, never a timing guess.
+    // These frames are presentation-only: source events, camera, holds and scoring
+    // continue to consume the original note/chord arrays at their own attack times.
+    function hwyBuildAuthoredStrumFrames(notes, chords, anchors, stringCount = 6) {
+        const groups = new Map(), byNote = new Map(), frames = [];
+        const realMembers = new Set();
+        const key = (t, s, f) => Math.round(t * 1e6) + ':' + s + ':' + f;
+        for (const chord of chords || []) {
+            for (const n of chord.notes || []) realMembers.add(key(chord.t, n.s, n.f));
+        }
+        for (const n of notes || []) {
+            if (!Number.isSafeInteger(n.ch) || n.ch < 0) continue;
+            if (!groups.has(n.ch)) groups.set(n.ch, []);
+            groups.get(n.ch).push(n);
+        }
+        for (const members of groups.values()) {
+            if (members.length < 2 || members.length > stringCount
+                || new Set(members.map(n => n.s)).size !== members.length
+                || members.some(n => !Number.isFinite(n.t) || !Number.isInteger(n.s)
+                    || n.s < 0 || n.s >= stringCount || !isRenderableNote(n)
+                    || realMembers.has(key(n.t, n.s, n.f)))) continue;
+            const start = Math.min(...members.map(n => n.t));
+            const end = Math.max(...members.map(n => n.t));
+            if (end <= start) continue; // already simultaneous chords have their own box
+            const anchor = getChartAnchorAt(anchors, start + CHORD_ANCHOR_TIME_EPS);
+            let bounds = laneBoundsFromAnchor(anchor);
+            const frets = members.filter(n => n.f > 0 && !isUnpitchedMute(n)).map(n => n.f);
+            if (frets.length && (!bounds || !playedFretSpanCoversShape(
+                anchorPlayedFretInclusiveSpan(anchor), Math.min(...frets), Math.max(...frets)))) {
+                bounds = chordFallbackLaneBounds(Math.min(...frets), Math.max(...frets));
+            }
+            // All-open/muted groups without anchors still need a stable normal lane.
+            if (!bounds) bounds = chordFallbackLaneBounds(1, 1);
+            const frame = { t: start, id: -1, notes: members, h3dStrum: true, lastAttack: end, bounds };
+            frames.push(frame);
+            for (const n of members) byNote.set(n, frame);
+        }
+        frames.sort((a, b) => a.t - b.t);
+        return { frames, byNote };
+    }
+
     function _buildChordCullIndex(chords, ahead, stringCount, guideEnds = null) {
         const count = Array.isArray(chords) ? chords.length : 0;
         let leafBase = 1;
@@ -2908,6 +2949,7 @@
                     if ((cn.sus || 0) > maxSus) maxSus = cn.sus;
                 }
             }
+            if (ch?.h3dStrum) maxSus = Math.max(maxSus, ch.lastAttack - ch.t);
             maxSustains[i] = maxSus;
             if (!hasValidNote) continue;
 
@@ -7295,6 +7337,7 @@
         // the inputs are identity-equal to the previous frame's. On dense
         // arrangements this avoids per-frame Set construction, nested
         // O(hs × notes) scans, and a sort — significant FPS recovery.
+        let _authoredStrumCache = null;
         let _mergeCacheResult = null;
         let _mergeCacheChordsRef = null;
         let _mergeCacheHsRef = null;
@@ -15086,7 +15129,15 @@
             const boxedChordMembers = _ensureBoxedChordMembership(
                 notes, chords, bundle.handShapes, bundle.chordTemplates);
             const chordGuideEnds = _ensureChordGuideEnds(chords, bundle);
-            _ensureChordCullIndex(chords, AHEAD, nStr, chordGuideEnds);
+            if (!_authoredStrumCache || _authoredStrumCache.notes !== notes
+                || _authoredStrumCache.chords !== chords || _authoredStrumCache.anchors !== bundle.anchors
+                || _authoredStrumCache.stringCount !== nStr) {
+                const model = hwyBuildAuthoredStrumFrames(notes, chords, bundle.anchors, nStr);
+                _authoredStrumCache = { notes, chords, anchors: bundle.anchors, stringCount: nStr, ...model,
+                    displayChords: model.frames.length
+                        ? [...chords, ...model.frames].sort((a, b) => a.t - b.t) : chords };
+            }
+            const strumFrames = _authoredStrumCache;
 
             let arpGhostHsInfer = null;
             const hsForArpGhost = bundle.handShapes;
@@ -15935,13 +15986,16 @@
                     // only appear moments before being played (when the previous note's linger
                     // window expired).  Each note now owns its label for its full flight.
                     const skipLabel = false;
+                    const strumFrame = strumFrames.byNote.get(n);
                     let singleOpenX;
                     if (usesUnfrettedPosition(n)) {
-                        const ab = anchorLaneBoundsAt(anchors, n.t);
+                        const ab = strumFrame ? strumFrame.bounds : anchorLaneBoundsAt(anchors, n.t);
                         if (ab) singleOpenX = (xFret(ab.dMin) + xFret(ab.dMax)) / 2;
                     }
-                    const singleOpenLaneW = usesUnfrettedPosition(n) ? openNoteLaneBoxW(n.t) : undefined;
-                    const arGhostCid = arpeggioChordIdForNoteWithInferCache(
+                    const singleOpenLaneW = usesUnfrettedPosition(n)
+                        ? (strumFrame ? Math.abs(xFret(strumFrame.bounds.dMax) - xFret(strumFrame.bounds.dMin))
+                            : openNoteLaneBoxW(n.t)) : undefined;
+                    const arGhostCid = strumFrame ? null : arpeggioChordIdForNoteWithInferCache(
                         n,
                         bundle.handShapes,
                         bundle.chordTemplates,
@@ -15967,7 +16021,7 @@
                         _arpBoundsForNote !== null, // showDropLine: white line for arp note-stream notes
                         _isLinkNextTgt,
                         false, // standalone sustain ownership stays unchanged
-                        boxedChordMembers.has(_noteFretKey(n.t, n.s, n.f)),
+                        !!strumFrame || boxedChordMembers.has(_noteFretKey(n.t, n.s, n.f)),
                     );
                     if (arGhostCid != null) {
                         const _arpBounds = _arpBoundsForNote;
@@ -16047,7 +16101,9 @@
             pbEnd(4);
             pbBeg(5);
             // ── Chords ────────────────────────────────────────────────────
-            if (chords) {
+            if (strumFrames.displayChords) {
+                const chords = strumFrames.displayChords;
+                _ensureChordCullIndex(chords, AHEAD, nStr, chordGuideEnds);
                 // Single-pass shape-run tracking: the previous pre-loop scanned
                 // every chord (and re-allocated chordShapeSignature() per chord)
                 // each frame, even though the render loop already iterates the
@@ -16088,7 +16144,7 @@
                     // highwayIntensity needs dt<AHEAD, both < t1).
                     if (ch.t > t1) {
                         if (ch.t > t1 + SLIDE_IN_CUE_SECONDS) break;
-                        for (const cn of ch.notes || []) drawSlideInHorizonNote(cn, ch.t, now);
+                        if (!ch.h3dStrum) for (const cn of ch.notes || []) drawSlideInHorizonNote(cn, ch.t, now);
                         continue;
                     }
                     // The sustain index can jump over expired ranges before the normal
@@ -16169,7 +16225,7 @@
                     // handshape start_time (e.g. a slide-in where the real strum
                     // falls mid-handshape, > 28 ms after the onset) would see the
                     // synth as its "previous chord" and be falsely flagged isRepeat.
-                    const isRepeat = runSig !== null && prevChordSig === runSig && Math.abs(ch.t - prevChordTime) < 0.5;
+                    const isRepeat = !ch.h3dStrum && runSig !== null && prevChordSig === runSig && Math.abs(ch.t - prevChordTime) < 0.5;
                     if (!ch.h3dSynth) {
                         prevChordSig = runSig;
                         prevChordTime = ch.t;
@@ -16189,7 +16245,7 @@
                     const chDtEarly = ch.t - now;
                     // Match the rail's onset tolerance, including the tiny interval
                     // between a rounded chord onset and its source-precision anchor.
-                    const _chAnchorT = chDtEarly >= -CHORD_ANCHOR_TIME_EPS
+                    const _chAnchorT = ch.h3dStrum || chDtEarly >= -CHORD_ANCHOR_TIME_EPS
                         || (maxSus > 0 && now < ch.t + maxSus) || now < _chGuideEnd
                         ? ch.t + CHORD_ANCHOR_TIME_EPS
                         : now;
@@ -16276,6 +16332,13 @@
                         }
                     }
 
+                    if (ch.h3dStrum) {
+                        chordFrameXL = xFret(ch.bounds.dMin);
+                        chordFrameXR = xFret(ch.bounds.dMax);
+                        chordOpenBoxW = Math.abs(chordFrameXR - chordFrameXL);
+                        chordCX = (chordFrameXL + chordFrameXR) * 0.5;
+                        chordFrameAnchorMatched = true;
+                    }
                     const laneWForOpenStrings = (chordOpenBoxW != null && chordOpenBoxW > 1e-8)
                         ? chordOpenBoxW
                         : openNoteLaneBoxW(ch.t);
@@ -16292,7 +16355,7 @@
                     // per-chord IIFE memo is therefore redundant — drop it
                     // to avoid the per-chord closure allocation in dense
                     // PM/FH passages.
-                    const inferredArpPattern = (!hsHintFrame.hs
+                    const inferredArpPattern = !ch.h3dStrum && (!hsHintFrame.hs
                         || handShapeChartSpanSec(hsHintFrame.hs) >= ARP_INFER_MIN_HAND_SHAPE_SPAN_S)
                         && inferArpeggioFromNotePattern(
                             ch, chShape, notes, hsTimeWinFrame, bundle.handShapes,
@@ -16307,7 +16370,8 @@
                     const noteStreamCoversArpShape = () => chordShapeCoveredByStandaloneNotes(ch, chShape, notes);
                     const deferChordGems = (ch.h3dSynth && noteStreamCoversArpShape())
                         || inferredArpPattern
-                        || (hsHintFrame.explicit && hsHintFrame.covered && noteStreamCoversArpShape());
+                        || (hsHintFrame.explicit && hsHintFrame.covered && noteStreamCoversArpShape())
+                        || ch.h3dStrum;
                     /**
                      * Lavender chord frame + purple highway rails: authored
                      * arpeggio metadata only. RS ``highDensity`` marks gallops /
@@ -16323,7 +16387,7 @@
                      * regardless of how wide the span is.
                      */
                     const _hsStartT = hsHintFrame.hs ? hsStart(hsHintFrame.hs) : NaN;
-                    const chordHighwayLavenderArpVisual = chordUsesArpeggioFrame(ch, hsHintFrame);
+                    const chordHighwayLavenderArpVisual = !ch.h3dStrum && chordUsesArpeggioFrame(ch, hsHintFrame);
                     const chordSusTrailMatchArpFrame = chordWireHighDensity(ch)
                         || chordHighwayLavenderArpVisual;
 
@@ -16334,7 +16398,7 @@
                     // rendered on screen.
                     const chOnsetInWin = ch.t >= camT0 && ch.t <= camT1;
                     const chSusActive  = ch.t < camT0 && ch.t + maxSus >= now;
-                    const chWindowed   = chOnsetInWin || chSusActive;
+                    const chWindowed   = !ch.h3dStrum && (chOnsetInWin || chSusActive);
                     // Symmetric decay — see matching comment in the
                     // single-note branch. The chord-wide chW uses
                     // ch.t (not per-note onset) since chord notes
@@ -16357,11 +16421,11 @@
                     // Pull from the same sorted scalar scratch used by drawNote
                     // — the per-string Math.min walk became O(log N) over the
                     // shared 2*nStr buffer.
-                    const _chFirstEventAfter = _firstEventTimeGreaterThan(ch.t + 1e-6);
+                    const _chFirstEventAfter = _firstEventTimeGreaterThan((ch.h3dStrum ? ch.lastAttack : ch.t) + 1e-6);
                     const _chNextEventT = cjNext != null
                         ? Math.min(cjNext.t, _chFirstEventAfter)
                         : _chFirstEventAfter;
-                    let chordTailHoldS = CHORD_HWY_LINGER_S;
+                    let chordTailHoldS = CHORD_HWY_LINGER_S + (ch.h3dStrum ? ch.lastAttack - ch.t : 0);
                     let chordNextSoon = false;
                     if (cjNext && cjNext.t > ch.t + 1e-6) {
                         // Clip the hold tail to the gap for both same-voicing (repeat)
@@ -16369,7 +16433,7 @@
                         // check handles the precise zero at onset; the clipped holdS
                         // prevents the outer gate and hwyPostHitTailFadeMul from
                         // lingering past that point.
-                        chordTailHoldS = Math.min(CHORD_HWY_LINGER_S, Math.max(cjNext.t - ch.t, 1e-3));
+                        chordTailHoldS = Math.min(chordTailHoldS, Math.max(cjNext.t - ch.t, 1e-3));
                     }
                     // feedBack#254 — engine verdicts land ~0.4 s after the
                     // chord crosses; on a fast different-voicing sequence
@@ -16438,7 +16502,7 @@
                     // the fallback deactivates precisely when the stream truly covers the
                     // onset. Inlined (not an IIFE) to skip the per-chord closure allocation.
                     let _deferFallback = false;
-                    if (deferChordGems && chDtEarly > 0) {
+                    if (!ch.h3dStrum && deferChordGems && chDtEarly > 0) {
                         _deferFallback = true;
                         const _fLo = ch.t - ARP_FRAME_ONSET_PAD_S;
                         const _fHi = ch.t + ARP_FRAME_ONSET_CLUSTER_S;
@@ -16520,7 +16584,7 @@
                         chDt > 0 && chordFrameEligible && belongsToBoxedChord
                             && !deferChordGems && !suppressSynthChord
                             && sharedChordHold?.suppressMemberTrails === true);
-                    let retainsChordGems = false;
+                    let retainsChordGems = !!ch.h3dStrum;
                     if (!deferChordGems || _deferFallback || suppressSynthChord) {
                         for (const cn of chordNotes) {
                             const _isLinkNextTgt = !!(_linkNextTargetSet && _linkNextTargetSet.has(cn));
@@ -16810,7 +16874,7 @@
                                 let anyState = false;  // true if any constituent had a non-null state this scan
                                 for (const cn of chordNotes) {
                                     let cs = null;
-                                    try { cs = _ndGetNoteState(cn, ch.t); } catch (e) { cs = null; }
+                                    try { cs = _ndGetNoteState(cn, ch.h3dStrum ? cn.t : ch.t); } catch (e) { cs = null; }
                                     const st = (cs && typeof cs === 'object') ? cs.state : cs;
                                     if (st === 'hit' || st === 'active') {
                                         anyState = true;
