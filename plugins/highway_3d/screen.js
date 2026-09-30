@@ -1194,6 +1194,9 @@
         recoverDuration: 0.05,
         endLeadTime: 0.50,
         endTaperDuration: 0.05,
+        sameStringEnabled: true,
+        sameStringMaxGap: 0.05,
+        sameStringLeadTime: 0.10,
     });
     function hwySmoothstep01(x) {
         const t = Math.max(0, Math.min(1, x));
@@ -2232,6 +2235,56 @@
                 const recoverStart = ends[i] + cfg.holdAfter;
                 for (let k = 0; k <= 4; k++) push(recoverStart + cfg.recoverDuration * k / 4);
             }
+        }
+    }
+
+    /** Attack-only index: continuations never become same-string obstacles. */
+    function hwyBuildTrailAttackIndex(eventsByFret, stringCount) {
+        const index = Array.from({ length: stringCount }, () => []);
+        for (const events of eventsByFret) {
+            if (!events) continue;
+            for (const event of events) {
+                if (event.gemVisible !== false) index[event.s].push(event);
+            }
+        }
+        for (const events of index) events.sort((a, b) => a.t - b.t || a.f - b.f);
+        return index;
+    }
+
+    /** Find the next real attack, never jump over a different-fret attack. */
+    function hwyNextTrailAttack(events, sourceStart, sourceEnd, settings = TRAIL_YIELD_DEFAULTS) {
+        if (!settings.enabled || !settings.sameStringEnabled || !events?.length) return null;
+        let lo = 0, hi = events.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (events[mid].t <= sourceStart + 1e-6) lo = mid + 1;
+            else hi = mid;
+        }
+        const event = events[lo];
+        return event && event.t <= sourceEnd + settings.sameStringMaxGap + 1e-9 ? event : null;
+    }
+
+    function hwySameStringTaperDuration(targetTime, trailEnd, settings) {
+        return Math.max(0.001, targetTime >= trailEnd - 1e-6
+            ? settings.endTaperDuration : settings.taperDuration);
+    }
+
+    /** Width only: preserve technique motion, note timing and physical string order. */
+    function hwySameStringTrailYieldAmountAt(time, targetTime, trailStart, trailEnd, settings = TRAIL_YIELD_DEFAULTS) {
+        if (!settings.enabled || !settings.sameStringEnabled || !Number.isFinite(targetTime)
+            || time < trailStart || time > trailEnd + 1e-9) return 0;
+        const start = Math.max(trailStart, targetTime - settings.sameStringLeadTime);
+        // Clip a short trail's envelope; never speed up the user's chosen taper.
+        return hwySmoothstep01((time - start) / hwySameStringTaperDuration(targetTime, trailEnd, settings));
+    }
+
+    function hwyAppendSameStringContourTimes(start, end, targetTime, trailStart, trailEnd, settings, out) {
+        if (!Number.isFinite(targetTime)) return;
+        const taperStart = Math.max(trailStart, targetTime - settings.sameStringLeadTime);
+        const duration = hwySameStringTaperDuration(targetTime, trailEnd, settings);
+        for (let k = 0; k <= 4; k++) {
+            const time = taperStart + duration * k / 4;
+            if (time >= start && time <= end) out.push(time);
         }
     }
 
@@ -4861,7 +4914,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration };
+    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration, trailYieldSameStringEnabled: TRAIL_YIELD_DEFAULTS.sameStringEnabled, trailYieldSameStringMaxGap: TRAIL_YIELD_DEFAULTS.sameStringMaxGap, trailYieldSameStringLeadTime: TRAIL_YIELD_DEFAULTS.sameStringLeadTime };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -5273,7 +5326,7 @@
     // means (fall back to default rather than silently flipping to
     // false). Add new boolean keys to BG_DEFAULTS and they pick this
     // up via the dispatch below.
-    const _BG_BOOL_KEYS = new Set(['repeatChordFullBorder', 'reactive', 'showFretOnNote', 'cameraLockLow', 'stableCameraFollow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'noteStemsVisible', 'openStringStemsVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront', 'trailYieldIncludeTrails']);
+    const _BG_BOOL_KEYS = new Set(['repeatChordFullBorder', 'reactive', 'showFretOnNote', 'cameraLockLow', 'stableCameraFollow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'noteStemsVisible', 'openStringStemsVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront', 'trailYieldIncludeTrails', 'trailYieldSameStringEnabled']);
     function _bgCoerceBool(val, fallback) {
         if (val === 'true' || val === '1') return true;
         if (val === 'false' || val === '0') return false;
@@ -5283,9 +5336,11 @@
     // hysteresis; zoomSmoothing the zoom dead zone; tiltSmoothing the
     // vertical-tilt deadband + correction strength. All three slider-
     // shaped settings share the same parse + clamp behaviour.
-    const _BG_FLOAT_KEYS = new Set(['intensity', 'cameraSmoothing', 'zoomSmoothing', 'tiltSmoothing', 'cameraLockZoom', 'textSize', 'vibrancy', 'glow', 'chordDiagramSize', 'sectionHudSize', 'toneHudSize', 'hitFx', 'trailYieldMinScale', 'trailYieldLeadTime', 'trailYieldTaperDuration', 'trailYieldHoldAfter', 'trailYieldRecoverDuration', 'trailYieldEndLeadTime', 'trailYieldEndTaperDuration']);
+    const _BG_FLOAT_KEYS = new Set(['intensity', 'cameraSmoothing', 'zoomSmoothing', 'tiltSmoothing', 'cameraLockZoom', 'textSize', 'vibrancy', 'glow', 'chordDiagramSize', 'sectionHudSize', 'toneHudSize', 'hitFx', 'trailYieldMinScale', 'trailYieldLeadTime', 'trailYieldTaperDuration', 'trailYieldHoldAfter', 'trailYieldRecoverDuration', 'trailYieldEndLeadTime', 'trailYieldEndTaperDuration', 'trailYieldSameStringMaxGap', 'trailYieldSameStringLeadTime']);
     function _bgCoerce(key, val) {
-        const trailRange = key === 'trailYieldMinScale' ? [0.05, 0.50]
+        const trailRange = key === 'trailYieldSameStringMaxGap' ? [0, 0.20]
+            : key === 'trailYieldSameStringLeadTime' ? [0.05, 1]
+            : key === 'trailYieldMinScale' ? [0.05, 0.50]
             : (key === 'trailYieldHoldAfter' ? [0, 0.50]
                 : (key === 'trailYieldLeadTime' || key === 'trailYieldEndLeadTime'
                     ? [0.10, 1]
@@ -5447,6 +5502,9 @@
     window.h3dBgSetTimingFx     = (v) => _bgWriteGlobal('timingFx', !!v);
     window.h3dBgSetStreakFx     = (v) => _bgWriteGlobal('streakFx', !!v);
     window.h3dBgSetBloom        = (v) => _bgWriteGlobal('bloom', !!v);
+    window.h3dBgSetTrailYieldSameStringEnabled = (v) => _bgWriteGlobal('trailYieldSameStringEnabled', !!v);
+    window.h3dBgSetTrailYieldSameStringMaxGap = (v) => _bgWriteGlobal('trailYieldSameStringMaxGap', v);
+    window.h3dBgSetTrailYieldSameStringLeadTime = (v) => _bgWriteGlobal('trailYieldSameStringLeadTime', v);
     window.h3dBgSetTrailYieldEnabled = (v) => _bgWriteGlobal('trailYieldEnabled', !!v);
     window.h3dBgSetTrailYieldGemInFront = (v) => _bgWriteGlobal('trailYieldGemInFront', !!v);
     window.h3dBgSetTrailYieldIncludeTrails = (v) => _bgWriteGlobal('trailYieldIncludeTrails', !!v);
@@ -7301,6 +7359,8 @@
         // bounded chart-time windows into fixed scratch buffers.
         let _trailYieldEventsByFret = [];
         let _trailOcclusionEventsByString = [];
+        let _trailAttacksByString = [];
+        const _sameStringTargetsScratch = new Float64Array(2);
         let _trailYieldNotesRef = null;
         let _trailYieldChordsRef = null;
         let _trailYieldNStr = 0;
@@ -7427,6 +7487,7 @@
         function trailVisibilityReleaseChartReferences() {
             _trailYieldEventsByFret = [];
             _trailOcclusionEventsByString = [];
+            _trailAttacksByString = [];
             _trailYieldNotesRef = null;
             _trailYieldChordsRef = null;
             _trailYieldNStr = 0;
@@ -11677,7 +11738,10 @@
                     changedKey === 'trailYieldHoldAfter' ||
                     changedKey === 'trailYieldRecoverDuration' ||
                     changedKey === 'trailYieldEndLeadTime' ||
-                    changedKey === 'trailYieldEndTaperDuration') {
+                    changedKey === 'trailYieldEndTaperDuration' ||
+                    changedKey === 'trailYieldSameStringEnabled' ||
+                    changedKey === 'trailYieldSameStringMaxGap' ||
+                    changedKey === 'trailYieldSameStringLeadTime') {
                     // Flag flips don't need a mesh rebuild — just refresh
                     // the per-instance state for the next frame to consult.
                     // Same shape for showFretOnNote (#12), cameraSmoothing
@@ -12016,6 +12080,9 @@
             slideArrowChainPreviewVisible = rsPlusNotation && !_bgHasStored(panelKey, 'slideArrowChainPreviewVisible')
                 ? false : _bgReadSetting(panelKey, 'slideArrowChainPreviewVisible');
             trailYieldSettings.enabled = _bgReadSetting(panelKey, 'trailYieldEnabled');
+            trailYieldSettings.sameStringEnabled = _bgReadSetting(panelKey, 'trailYieldSameStringEnabled');
+            trailYieldSettings.sameStringMaxGap = _bgReadSetting(panelKey, 'trailYieldSameStringMaxGap');
+            trailYieldSettings.sameStringLeadTime = _bgReadSetting(panelKey, 'trailYieldSameStringLeadTime');
             trailYieldSettings.gemInFront = _bgReadSetting(panelKey, 'trailYieldGemInFront');
             trailYieldSettings.includeTrails = _bgReadSetting(panelKey, 'trailYieldIncludeTrails');
             trailYieldSettings.minScale = _bgReadSetting(panelKey, 'trailYieldMinScale');
@@ -15104,6 +15171,7 @@
                         || !_chordGuideCache.model.byChord.get(chord)?.suppressMemberTrails,
                     visualStartForNote: slideInVisualStart,
                 });
+                _trailAttacksByString = hwyBuildTrailAttackIndex(_trailYieldEventsByFret, nStr);
                 _trailOcclusionEventsByString = hwyBuildTrailOcclusionIndex(
                     _trailYieldEventsByFret, nStr,
                 );
@@ -18042,6 +18110,7 @@
             y, sliceDur, susStart, now, n, slideSt,
             yieldStarts = null, yieldEnds = null, yieldCount = 0,
             trailEnd = Infinity, yieldSettings = TRAIL_YIELD_DEFAULTS,
+            sameStringTargetTime = NaN, sameStringTrailStart = n.t,
         ) {
             const times = slideRibbonSampleTimes(n, susStart, sliceDur, _slideRibbonTimesScratch);
             const contact=n.harmonic_changes ? window.feedBackHarmonicContacts?.events(n)[0] : null;
@@ -18050,7 +18119,10 @@
                 if(t>susStart && t<susStart+sliceDur)times.push(t);
             }
             if(contact)times.sort((a,b)=>a-b);
-            if (yieldCount > 0) {
+            if (yieldCount > 0 || Number.isFinite(sameStringTargetTime)) {
+                if (Number.isFinite(sameStringTargetTime)) hwyAppendSameStringContourTimes(
+                    susStart, susStart + sliceDur, sameStringTargetTime,
+                    sameStringTrailStart, trailEnd, yieldSettings, times);
                 hwyAppendTrailYieldContourTimes(susStart, susStart + sliceDur,
                     yieldStarts, yieldEnds, yieldCount, trailEnd, yieldSettings, times);
                 times.sort((a, b) => a - b);
@@ -18079,11 +18151,12 @@
                     n, strandBaseX, Tk, slideSt, bodyTw,
                 );
                 const yc = y + techniqueYOffsetWorld(n, Tk);
-                const yieldAmount = yieldCount > 0
+                const yieldAmount = Math.max(Number.isFinite(sameStringTargetTime) ? hwySameStringTrailYieldAmountAt(
+                    Tk, sameStringTargetTime, sameStringTrailStart, trailEnd, yieldSettings) : 0, yieldCount > 0
                     ? hwyTrailYieldAmountAt(
                         Tk, yieldStarts, yieldEnds, yieldCount, trailEnd, yieldSettings,
                     )
-                    : 0;
+                    : 0);
                 // Artistic taper and user-selected visibility narrowing compose
                 // by the smaller envelope, never multiply into a thin sliver.
                 const scrapeAlpha = (n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) ? pickScrapeAlpha(n, Tk) : 1;
@@ -18788,6 +18861,39 @@
             // real crossing times. Keeping this predicate onset-only prevents
             // a later crossing from incorrectly anchoring a notch at event.t.
             return onsetMatches;
+        }
+
+        /** Same-string attack protection is width-only, outside the string-order DAG. */
+        function sameStringTrailTargetTime(n, now, visibleEnd, sourceEnd, strandX, slideSt, strandIndex) {
+            const cfg = trailYieldSettings;
+            const path = _linkedTrailPaths.byNote.get(n)?.path || null;
+            const sourceStart = path?.start ?? n.t;
+            const event = hwyNextTrailAttack(_trailAttacksByString[n.s], sourceStart, sourceEnd, cfg);
+            if (!event || event.t - cfg.sameStringLeadTime > visibleEnd || sourceEnd < now) return NaN;
+            const ctx = _trailYieldMatchContext;
+            ctx.note = n; ctx.path = path; ctx.slideSt = slideSt;
+            ctx.strandBaseX = strandX; ctx.strandIndex = strandIndex;
+            ctx.sourceSampleMember = null;
+            const sampleT = Math.min(event.t, sourceEnd);
+            const sourceWidth = trailVisibilitySourceWidthAt(sampleT);
+            const sourceNote = trailVisibilitySourceNoteAt(sampleT);
+            // Vibrato moves vertically; eligibility uses its whole gesture, not
+            // an instantaneous Y intersection. Tremolo's X sweep is bounded too.
+            const center = trailVisibilitySourceCenterXAt(sampleT, sourceWidth)
+                - tremoloOffsetWorldX(sourceNote, sampleT, sourceWidth);
+            const reach = sourceNote.tr ? sustainMotionWidth(sourceWidth) * 0.375 : 0;
+            let targetX, targetWidth;
+            if (event.f === 0) {
+                if (!trailYieldOpenTargetXBounds(event, _trailYieldTargetXBounds)) return NaN;
+                targetX = (_trailYieldTargetXBounds[0] + _trailYieldTargetXBounds[1]) * 0.5;
+                targetWidth = _trailYieldTargetXBounds[1] - _trailYieldTargetXBounds[0];
+            } else {
+                targetX = xNote(event);
+                targetWidth = NW * 1.1 * (event.accent ? ACCENT_RIM_XY_SCALE_MUL : 1)
+                    * (event.ghost ? 1.48 : 1);
+            }
+            return hwyTrailOverlapsGemX(center, sourceWidth + reach * 2, targetX, targetWidth)
+                ? event.t : NaN;
         }
 
         /** Find the indexed event represented by a drawNote call. */
@@ -20627,7 +20733,15 @@
                         const mode3PriorityWorldZ = hasMode3Priority
                             ? Math.min(0, -(mode3PriorityTime - now) * TS)
                             : null;
-                        const ribbonSusTrail = yieldCount > 0 || !!(scrape ||
+                        const sameStringTrailStart = visibilityPath?.start ?? n.t;
+                        let sameStringYield = false;
+                        for (let si = 0; si < offsets.length; si++) {
+                            _sameStringTargetsScratch[si] = sameStringTrailTargetTime(
+                                n, now, visibleYieldEnd, visibilityEnd, xBase + offsets[si], slideSt, si,
+                            );
+                            sameStringYield ||= Number.isFinite(_sameStringTargetsScratch[si]);
+                        }
+                        const ribbonSusTrail = yieldCount > 0 || sameStringYield || !!(scrape ||
                             (slideSt && n.f > 0 && (n.sus || 0) > 1e-4)
                             || n.whammy?.version === 1 || n.harmonic_changes?.version === 1
                             || (Number(n.bn) > 0)
@@ -20788,6 +20902,7 @@
                                     sliceDur, susStart, now, n, slideSt,
                                     strandYieldStarts, strandYieldEnds, strandYieldCount,
                                     visibilityEnd, trailYieldSettings,
+                                    _sameStringTargetsScratch[si], sameStringTrailStart,
                                 );
                                 trailYieldRegisterTargetTrail(
                                     trailYieldTargetEvent, olMesh, body,
@@ -20799,8 +20914,10 @@
                                 const contact=n.harmonic_changes ? window.feedBackHarmonicContacts?.events(n)[0] : null;
                                 const contactTime=contact ? n.t+contact.start : -Infinity;
                                 if(contact && contactTime>=now && contactTime<=now+AHEAD) {
-                                    const amount=strandYieldCount ? hwyTrailYieldAmountAt(contactTime,
-                                        strandYieldStarts,strandYieldEnds,strandYieldCount,visibilityEnd,trailYieldSettings) : 0;
+                                    const amount=Math.max(hwySameStringTrailYieldAmountAt(contactTime,
+                                        _sameStringTargetsScratch[si],sameStringTrailStart,visibilityEnd,trailYieldSettings),
+                                        strandYieldCount ? hwyTrailYieldAmountAt(contactTime,
+                                        strandYieldStarts,strandYieldEnds,strandYieldCount,visibilityEnd,trailYieldSettings) : 0);
                                     const envelope=1-(1-trailYieldSettings.minScale)*amount;
                                     const cx=sustainTrailCenterXAt(n,strandX,contactTime,slideSt,tw);
                                     const cy=y+techniqueYOffsetWorld(n,contactTime),cz=dZ(contactTime-now);
