@@ -921,6 +921,9 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
        "Lead" / "Rhythm" / "Bass" / "Combo" → the matching path. Anything
        outside that set (Vocals, ShowLights, …) → None.
 
+    A lead named "Hybrid Lead" retains that display name. Its role and the
+    numbering of other arrangements are unchanged.
+
     Naming rules per path type (Lead / Rhythm / Bass):
     - Main group (bonusArr=False):
         represent=1 → "Lead" (or "Rhythm" / "Bass") — the canonical
@@ -943,6 +946,7 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
     # override means "leave the dataclass's bonus_arr alone".
     _NAME_FALLBACK: dict[str, tuple[str, bool | None]] = {
         "lead": ("path_lead", None),
+        "hybrid lead": ("path_lead", None),
         "rhythm": ("path_rhythm", None),
         "bass": ("path_bass", None),
         "bass 2": ("path_bass", None),
@@ -1034,6 +1038,13 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
                 result[i] = f"Bonus {label}"
             else:
                 result[i] = f"Bonus {label} {j + 1}"
+
+    # Preserve the derived chart's identity without renumbering the existing
+    # alternates (saved arrangement choices can refer to those names).
+    for i, (path_attr, _) in enumerate(_resolved):
+        name = arrangements[i].name
+        if path_attr == "path_lead" and isinstance(name, str) and name.strip().casefold() == "hybrid lead":
+            result[i] = "Hybrid Lead"
 
     return result
 
