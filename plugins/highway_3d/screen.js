@@ -2620,6 +2620,18 @@
         return targets;
     }
 
+    // A destination chord can describe only held/slide continuations. Its
+    // trails and position guidance remain, but it must not suggest a strum.
+    // Reuse the same resolved targets as gem suppression; a slide or matching
+    // frets alone do not prove that the destination has no new attack.
+    function hwyChordHasNewAttack(chordNotes, linkedTargets) {
+        if (!linkedTargets || !Array.isArray(chordNotes) || chordNotes.length === 0) return true;
+        for (const note of chordNotes) {
+            if (!linkedTargets.has(note)) return true;
+        }
+        return false;
+    }
+
     /** Independent tails only: shared chord holds replace their members' ribbons. */
     function hwyBuildIndependentTrailOrigins(notes, chords, holds, stringCount) {
         const drawable = new WeakSet(), openOrigins = new WeakMap();
@@ -16403,7 +16415,10 @@
                     })();
                     const chordHasFrame = chordOpenBoxW != null
                         && chordHasFrameShape(ch, chShape, suppressSynthChord, bundle.chordTemplates);
-                    const chordFrameEligible = chordHasFrame && chDt > -chordTailHoldS && chDt < AHEAD;
+                    // An arpeggio enclosure is hand-position guidance, not a
+                    // strum cue. Ordinary frames require at least one attack.
+                    const chordFrameEligible = chordHasFrame && chDt > -chordTailHoldS && chDt < AHEAD
+                        && (chordHighwayLavenderArpVisual || hwyChordHasNewAttack(chordNotes, _linkNextTargetSet));
                     // Membership outlives the flying frame. Do not restore stems
                     // at onset, during a sustain, or when a newer event fades the
                     // box. Open arpeggio brackets are not enclosing chord boxes.
