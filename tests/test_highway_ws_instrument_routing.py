@@ -212,3 +212,24 @@ def test_guitar_still_honors_saved_pref(make_client):
     with TestClient(server.app) as client:
         idx = _arr_index(client, "/ws/highway/gtr2.sloppak")
     assert idx == 1  # Rhythm, per preference
+
+
+@pytest.mark.parametrize("mode", ["smart", "legacy"])
+@pytest.mark.parametrize("has_hybrid", [False, True])
+def test_hybrid_preference_routes_and_falls_back_in_both_naming_modes(make_client, mode, has_hybrid):
+    server = make_client(instrument="guitar", default_arrangement="Hybrid Lead")
+    arrs = [("bass", "Bass"), ("lead", "Lead")]
+    if has_hybrid:
+        arrs.append(("hybrid", "Hybrid Lead"))
+    _write_sloppak(server._get_dlc_dir(), "hybrid", arrs)
+    with TestClient(server.app) as client:
+        assert _arr_index(client, f"/ws/highway/hybrid.sloppak?naming_mode={mode}") == (2 if has_hybrid else 1)
+        assert _arr_index(client, f"/ws/highway/hybrid.sloppak?naming_mode={mode}&arrangement=0") == 0
+
+
+def test_hybrid_preference_keeps_bass_instrument_routing(make_client):
+    server = make_client(instrument="bass", default_arrangement="Hybrid Lead")
+    _write_sloppak(server._get_dlc_dir(), "hybrid", [("lead", "Lead"), ("bass", "Bass"), ("hybrid", "Hybrid Lead")])
+    with TestClient(server.app) as client:
+        assert _arr_index(client, "/ws/highway/hybrid.sloppak?naming_mode=smart") == 1
+        assert _arr_index(client, "/ws/highway/hybrid.sloppak?naming_mode=smart&arrangement=2") == 2

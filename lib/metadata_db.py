@@ -161,7 +161,8 @@ def _ensure_smart_names(arrangements: list[dict]) -> list[dict]:
     tracks in a archive that bundles all path flags as zero), name-based inference
     cannot distinguish Lead from Rhythm — so we emit ``smart_name: null`` and
     let the UI fall back to the legacy name until the background rescan corrects
-    the row.  Arrangements that already have the field are never modified.
+    the row. Existing classifications are retained, with a display-only
+    correction for explicitly named Hybrid Lead arrangements.
     """
     if not arrangements:
         return arrangements
@@ -190,6 +191,7 @@ def _ensure_smart_names(arrangements: list[dict]) -> list[dict]:
             arr_objs = [
                 _ArrCls(
                     name=a.get("name", ""),
+                    type=a.get("type", ""),
                     path_lead=a.get("_path_lead", False),
                     path_rhythm=a.get("_path_rhythm", False),
                     path_bass=a.get("_path_bass", False),
@@ -202,6 +204,24 @@ def _ensure_smart_names(arrangements: list[dict]) -> list[dict]:
             for a, sn in zip(arrangements, smart):
                 if "smart_name" not in a:
                     a["smart_name"] = sn
+
+    # Cached imports retain their original manifest name/type. Apply the same
+    # Hybrid Lead display rule without changing the package or saved indices.
+    for a in arrangements:
+        name = a.get("name")
+        if not isinstance(name, str) or name.strip().casefold() != "hybrid lead":
+            continue
+        current = a.get("smart_name")
+        role = str(a.get("type") or "").strip().lower()
+        if not role and isinstance(current, str):
+            if current == "Lead" or current.startswith(("Alt. Lead", "Bonus Lead")):
+                role = "lead"
+            elif current != "Hybrid Lead":
+                continue  # An authoritative non-lead classification wins.
+        from song import Arrangement as _ArrCls
+        label = compute_smart_names([_ArrCls(name=name, type=role)])[0]
+        if label == "Hybrid Lead":
+            a["smart_name"] = label
 
     # Always sort by smart priority order so the client receives a consistent
     # list regardless of how the DB row was originally stored.
@@ -378,6 +398,8 @@ def _arr_smart_sort_key(entry: dict) -> tuple[int, int]:
     sn = entry.get("smart_name")
     if not sn:
         return (99, 0)
+    if sn == "Hybrid Lead":
+        return (3, 0)  # Remains with the lead family, before rhythm and bass.
     for label, base in _SMART_TYPE_BASE.items():
         if sn == label:
             return (base, 0)
@@ -3531,7 +3553,7 @@ class MetadataDB:
     # name-fallback branch (key-absent smart_name). Covers legacy raw names
     # and load_song()'s synthesised display names that map to each smart type.
     _SMART_NULL_FALLBACK_EXTRAS: dict[str, tuple[tuple[str, str], ...]] = {
-        "Lead": (("=", "Combo"), ("LIKE", "Alt. Combo%"), ("LIKE", "Bonus Combo%")),
+        "Lead": (("=", "Combo"), ("LIKE", "Alt. Combo%"), ("LIKE", "Bonus Combo%"), ("=", "Hybrid Lead")),
         "Bass": (("=", "Bass 2"),),
     }
     # Stem ids match the bare strings sloppak manifests use today —
@@ -3729,6 +3751,8 @@ class MetadataDB:
                     #   Lead: "Combo" (combined guitar) + Alt./Bonus Combo
                     #   Bass: "Bass 2" (load_song synthesises for real_bass_22)
                     extra_null, extra_null_params = self._smart_null_extras(arr_type)
+                    extra_smart = (" OR json_extract(value, '$.smart_name') = 'Hybrid Lead'"
+                                   if arr_type == "Lead" else "")
                     # json_type() returns NULL when the key is absent and the
                     # string 'null' when the key exists with explicit JSON null
                     # (set by the scanner for ambiguous duplicate-name rows).
@@ -3739,7 +3763,7 @@ class MetadataDB:
                         "(json_extract(value, '$.smart_name') IS NOT NULL AND ("
                         f"json_extract(value, '$.smart_name') = ? OR "
                         f"json_extract(value, '$.smart_name') LIKE ? OR "
-                        f"json_extract(value, '$.smart_name') LIKE ?"
+                        f"json_extract(value, '$.smart_name') LIKE ?{extra_smart}"
                         ")) OR ("
                         "json_type(value, '$.smart_name') IS NULL AND ("
                         "json_extract(value, '$.name') = ? OR "
@@ -3773,6 +3797,8 @@ class MetadataDB:
                 clauses = []
                 for arr_type in arr_lacks:
                     extra_null, extra_null_params = self._smart_null_extras(arr_type)
+                    extra_smart = (" OR json_extract(value, '$.smart_name') = 'Hybrid Lead'"
+                                   if arr_type == "Lead" else "")
                     # See "has" branch above for the json_type rationale.
                     # Extra branch (vs `has`): an explicit smart_name=null
                     # arrangement is ambiguous; we don't know whether it's
@@ -3784,7 +3810,7 @@ class MetadataDB:
                         "(json_extract(value, '$.smart_name') IS NOT NULL AND ("
                         f"json_extract(value, '$.smart_name') = ? OR "
                         f"json_extract(value, '$.smart_name') LIKE ? OR "
-                        f"json_extract(value, '$.smart_name') LIKE ?"
+                        f"json_extract(value, '$.smart_name') LIKE ?{extra_smart}"
                         ")) OR ("
                         "json_type(value, '$.smart_name') = 'null'"
                         ") OR ("
