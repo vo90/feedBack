@@ -19,7 +19,8 @@ function listenerHarness() {
     `)();
 }
 
-for (const key of ['notationStyle', 'hitFx', 'sparks', 'cinematic', 'verdictMarks', 'timingFx',
+for (const key of ['trailYieldSameStringEnabled', 'trailYieldSameStringMaxGap', 'trailYieldSameStringLeadTime',
+    'notationStyle', 'hitFx', 'sparks', 'cinematic', 'verdictMarks', 'timingFx',
     'streakFx', 'bloom', 'fpsVisible', 'fretDividersVisible', 'chordDiagramVisible']) {
     test(`${key} immediately refreshes live state without rebuilding the background`, () => {
         const h = listenerHarness();
