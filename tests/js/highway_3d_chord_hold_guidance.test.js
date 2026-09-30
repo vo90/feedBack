@@ -467,3 +467,60 @@ test('all-dead attacks cannot fabricate ringing chord rails', () => {
     const ch=chord(2,[1,7,127],2); ch.notes.forEach(n=>n.mt=true);
     assert.equal(resolve([ch]).holds.length,0);
 });
+
+
+test('Back in Black bar 26 shares the three tied strings and retains the shorter open A', () => {
+    const ch={t:67.40125,id:15,notes:[
+        {s:1,f:0,sus:.31375},{s:2,f:0,sus:1.56875},
+        {s:3,f:2,sus:1.56875},{s:4,f:3,sus:1.56875}]};
+    freezeDeep(ch);const before=JSON.stringify(ch);
+    const hold=resolve([ch]).byChord.get(ch);
+    near(hold.end,68.97);
+    assert.equal(hold.suppressMemberTrails,false);
+    assert.deepEqual([...hold.suppressedMembers].map(n=>n.s),[2,3,4]);
+    assert.equal(JSON.stringify(ch),before);
+});
+
+test('a shorter or longer exception keeps its own duration and trail', () => {
+    for(const extra of [.2,3]) for(const reverse of [false,true]) {
+        const ch=chord(10,[3,5,5,0],1);ch.notes[3].sus=extra;
+        if(reverse)ch.notes.reverse();freezeDeep(ch);
+        const a=resolve([ch]), b=resolve([ch]);assert.deepEqual(a,b);
+        const hold=a.byChord.get(ch);near(hold.end,11);
+        assert.equal(hold.suppressedMembers.size,3);
+        assert.ok([...hold.suppressedMembers].every(n=>n.sus===1));
+        assert.equal(hold.suppressMemberTrails,false);
+    }
+});
+
+test('ties, pluralities and unknown durations cannot elect a shared majority', () => {
+    for(const durations of [[1,1,2,2],[1,1,2,3],[1,2,3],[1,1,undefined],[1,1,0],[1,1,NaN],[1,1,-1]]) {
+        const ch=chord(10,durations.map(()=>3));ch.notes.forEach((n,i)=>n.sus=durations[i]);
+        assert.equal(resolve([ch],[hs()],[template(ch)]).holds.length,0,String(durations));
+    }
+});
+
+test('majority duration respects clock precision and excludes dead strings from voting', () => {
+    const ch=chord(10,[3,5,5,7],1);
+    ch.notes[0].sus=.2;ch.notes[2].sus=1.0000004;Object.assign(ch.notes[3],{mt:true,sus:.2});
+    const hold=resolve([ch]).byChord.get(ch);near(hold.end,11);
+    assert.deepEqual([...hold.suppressedMembers].map(n=>n.s),[1,2]);
+    ch.notes[2].sus=1.000004;assert.equal(resolve([ch]).holds.length,0);
+});
+
+test('majority lanes do not erase moving techniques or linked continuations', () => {
+    for(const cue of [{vb:true},{sl:7},{bn:1},{pm:true},{ln:true},{whammy:{version:1}}]) {
+        const ch=chord(10,[3,5,5,0],1);ch.notes[3].sus=.2;Object.assign(ch.notes[0],cue);
+        const hold=resolve([ch]).byChord.get(ch);
+        assert.deepEqual([...hold.suppressedMembers].map(n=>n.s),[1,2],JSON.stringify(cue));
+    }
+    const ch=chord(10,[3,5,0],1);ch.notes[2].sus=.2;ch.notes[0].vb=true;
+    assert.equal(resolve([ch]).holds.length,0,'one ordinary member cannot form a partial lane');
+});
+
+test('partial majority lanes retain overlap and arpeggio safeguards', () => {
+    const a=chord(10,[3,5,5,0],2);a.notes[3].sus=.2;
+    const b=chord(11,[4,6,6,0],2);b.notes[3].sus=.2;
+    assert.equal(resolve([a,b],[],[],[{time:0,fret:3,width:4}]).holds.length,0);
+    a.arp=true;assert.equal(resolve([a]).holds.length,0);
+});
