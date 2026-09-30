@@ -159,6 +159,113 @@ function assertEnclosed(result) {
     }
 }
 
+// Use the production hold resolver, including overlap and source-cue exclusions.
+// A fabricated boolean alone would miss the boundary between shared and
+// independent sustains which caused the Songsterr/PSARC discrepancy.
+const resolveHold = new Function(
+    'const NFRETS = 24;\n' +
+    ['CHORD_ANCHOR_TIME_EPS', 'NEXT_ON_STRING_T_EPS', 'BEND_LINK_TIME_EPS', 'TRAIL_BOUNDARY_OVERLAP_TOLERANCE_S']
+        .map(name => src.match(new RegExp('const ' + name + ' = [^;]+;'))[0]).join('\n') +
+    '\nconst _slideInMarkCache = new WeakMap(), SLIDE_OUT_EMPTY_MARKS = Object.freeze([]);\n' +
+    ['isPlayableFret', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
+        'laneBoundsFromAnchor', 'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape',
+        'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks',
+        'hwyTrailBoundaryOverlapIsNegligible', 'hwyBuildChordHoldGuidance'].map(fn).join('\n') +
+    '\nreturn hwyBuildChordHoldGuidance;'
+)();
+const sharedMembers = (sus = .164) => [
+    {s:2,f:0,sus}, {s:3,f:2,sus}, {s:4,f:3,sus},
+];
+function resolvedRepeat(notes, options = {}, previous = []) {
+    const chord = {t:186.461,id:1,notes};
+    const model = resolveHold([...previous, chord], [], [], [], 6, []);
+    return {model, result:render(notes, {...options,sharedChordHold:model.byChord.get(chord)})};
+}
+
+test('ordinary shared holds use half-height repeats on approach and full first chords', () => {
+    for (const notes of [sharedMembers(), [{s:0,f:0,sus:.164},{s:1,f:0,sus:.164}]]) {
+        for (const inverted of [false,true]) {
+            const before = JSON.stringify(notes);
+            const {model,result} = resolvedRepeat(notes,{inverted});
+            assert.equal(model.byChord.size,1);
+            assert.equal(result.frame.compactRepeatFrame,true);
+            assert.equal(result.drawn.length,0);
+            assertEnclosed(resolvedRepeat(notes,{repeat:false,inverted}).result);
+            assert.equal(JSON.stringify(notes),before,'source durations and notes are untouched');
+        }
+    }
+});
+
+test('shared sustain heads are enclosed on the play line, after it, and after rewinding', () => {
+    for (const dt of [.460999,.000001,0,-.001,-.1,.460999]) {
+        const {result} = resolvedRepeat(sharedMembers(),{dt});
+        if (dt > 0) {
+            assert.equal(result.drawn.length,0);
+            assert.equal(result.frame.compactRepeatFrame,true);
+        } else assertEnclosed(result);
+    }
+});
+
+test('unequal, partial and overlapping holds retain all individual note cues including open strings', () => {
+    for (const notes of [
+        [{s:0,f:0,sus:.4},{s:1,f:0,sus:.164}],
+        [{s:0,f:0,sus:.4},{s:1,f:2,sus:.164}],
+        [{s:0,f:0,sus:.4},{s:1,f:2}],
+        [{s:1,f:3,sus:.4},{s:2,f:5,sus:.164}],
+    ]) {
+        const {model,result} = resolvedRepeat(notes);
+        assert.equal(model.byChord.size,0);
+        assertEnclosed(result);
+    }
+    for (const [start,duration] of [[186.2,1],[186.46,.3]]) {
+        const previous = {t:start,id:1,notes:sharedMembers(duration)};
+        const {model,result} = resolvedRepeat(sharedMembers(),{},[previous]);
+        assert.equal(model.byChord.size,0,'conflicting releases need individual holds');
+        assertEnclosed(result);
+    }
+});
+
+test('tiny boundary overlap keeps compact shared repeats without shifting either release', () => {
+    const previous = {t:186.3,id:1,notes:sharedMembers(.162)};
+    const before = JSON.stringify(previous);
+    const {model,result} = resolvedRepeat(sharedMembers(),{},[previous]);
+    assert.equal(model.byChord.size,2);
+    assert.equal(model.byChord.get(previous).end,186.3+.162);
+    assert.equal(result.frame.compactRepeatFrame,true);
+    assert.equal(JSON.stringify(previous),before);
+});
+
+test('shared-hold eligibility never hides note-level technique or teaching instructions', () => {
+    const cues = ['ghost','hm','hp','ho','po','tp','ac','slp','plk'].map(key=>({[key]:true}));
+    cues.push({bn:1},{vb:true},{tr:true},{sl:5},{slide_out:'up'});
+    // The standalone renderer fix also runs on integration baselines which
+    // do not yet implement these Songsterr gestures.
+    if (src.includes('n.whammy?.version')) cues.push({whammy:{version:1}});
+    if (src.includes('n.harmonic_changes?.version')) cues.push({harmonic_changes:{version:1}});
+    for (const key of ['fg','sd','rh','pkd','sg']) cues.push({[key]:0});
+    for (const cue of cues) {
+        const notes = sharedMembers(); Object.assign(notes[1],cue);
+        assertEnclosed(resolvedRepeat(notes).result);
+    }
+});
+
+test('muted repeats keep their existing symbols and sustained members remain explicit', () => {
+    for (const flags of [{pm:true},{mt:true},{fhm:true}]) {
+        assertEnclosed(resolvedRepeat(sharedMembers().map(n=>({...n,...flags}))).result);
+        const ordinary = render(sharedMembers(0).map(n=>({...n,...flags})));
+        assert.equal(ordinary.frame.compactRepeatFrame,true);
+        assert.equal(ordinary.frameSymbols.fills.length,1);
+    }
+    const mixed = sharedMembers(); mixed[1].pm=true;
+    assertEnclosed(resolvedRepeat(mixed).result);
+});
+
+test('arpeggio fallback, missing frames and slide links cannot claim compact shared approach', () => {
+    for (const options of [{arpeggio:true},{width:null},{slide:true},{defer:true,fallback:true}]) {
+        assertEnclosed(resolvedRepeat(sharedMembers(),options).result);
+    }
+});
+
 test('Free Fallin accented Bbsus2 repeat encloses every retained gem in both string orientations', () => {
     for (const inverted of [false, true]) {
         const notes = bbSus2();
