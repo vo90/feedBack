@@ -16304,8 +16304,14 @@
                     // box. Open arpeggio brackets are not enclosing chord boxes.
                     const belongsToBoxedChord = chordHasFrame && !chordHighwayLavenderArpVisual;
 
-                    // Repeat gems remain visible for technique cues or visible sustains.
-                    const suppressRepeatGems = repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes);
+                    // An ordinary shared hold already conveys each member's duration.
+                    // Compact only on approach: drawNote restores sustained heads at
+                    // the play line, where they must have a full enclosing frame.
+                    const suppressRepeatGems = repeatChordMaySuppressGems(
+                        isRepeat, chordLinksSlide, chordNotes,
+                        chDt > 0 && chordFrameEligible && belongsToBoxedChord
+                            && !deferChordGems && !suppressSynthChord
+                            && sharedChordHold?.suppressMemberTrails === true);
                     let retainsChordGems = false;
                     if (!deferChordGems || _deferFallback || suppressSynthChord) {
                         for (const cn of chordNotes) {
@@ -18025,17 +18031,23 @@
             return kind || 'none';
         }
 
-        function repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes) {
+        function repeatChordMaySuppressGems(isRepeat, chordLinksSlide, chordNotes, sharedHoldOnApproach = false) {
             if (!isRepeat || chordLinksSlide) return false;
             // One strum glyph cannot convey different instructions per string.
             if (chordMuteKind(chordNotes) === 'mixed') return false;
-            // Match the fretted chord trail's initial visibility cutoff. Use
-            // authored duration, not remaining duration, so an approaching
-            // sustained repeat keeps its full frame and attached note heads.
-            // Open chord members do not emit trails; linked-target attack
-            // suppression is still handled independently by drawNote.
-            return !chordNotes.some(n => (n.f > 0 && Number.isFinite(n.sus) && n.sus > 0.01)
-                || noteHasVisibleMotionSustain(n) || noteHasRepeatTechniqueCue(n));
+            // Use the cached shared-hold decision, never infer equivalent releases
+            // here or shorten source timing. Independent open-string trails need
+            // their heads too. Technique and teaching cues always remain visible.
+            return !chordNotes.some(n => {
+                if (noteHasVisibleMotionSustain(n) || noteHasRepeatTechniqueCue(n)) return true;
+                if (!Number.isFinite(n.sus) || n.sus <= 0.01) return false;
+                if (sharedHoldOnApproach !== true) return true;
+                return (Number.isInteger(n.fg) && n.fg >= 0)
+                    || (Number.isInteger(n.sd) && n.sd >= 0)
+                    || (Number.isInteger(n.rh) && n.rh >= 0)
+                    || (Number.isInteger(n.pkd) && n.pkd >= 0)
+                    || (Number.isInteger(n.sg) && n.sg >= 0);
+            });
         }
 
         function bendVisualDirY(stringIdx) {
