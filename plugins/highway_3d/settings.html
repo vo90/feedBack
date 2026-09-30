@@ -740,7 +740,7 @@
                 <span>
                     Reveal notes behind sustain trails
                     <span class="block text-[10px] text-gray-500 mt-1">
-                        Locally narrows an overlapping trail before a note on a visually lower string.
+                        Locally narrows trails to keep upcoming notes readable. Includes the optional same-string rule below.
                     </span>
                 </span>
             </label>
@@ -775,9 +775,30 @@
                     <input type="range" id="h3d-trail-yield-min-scale" min="0.05" max="0.50" step="0.01" value="0.30"
                         class="w-full accent-accent">
                     <p class="text-[10px] text-gray-500 mt-1">
-                        Shared by passing-note notches and trail endpoints.
+                        Shared by passing-note notches, trail endpoints and the same-string rule.
                     </p>
                 </div>
+
+                <h4 class="text-xs font-medium text-gray-400 mt-4 mb-2">Next note on the same string</h4>
+                <label class="flex items-start gap-2 text-sm text-gray-300 cursor-pointer mb-2">
+                    <input type="checkbox" id="h3d-trail-yield-same-string-enabled" checked class="mt-1 accent-accent">
+                    <span>Narrow trail ends near the next note</span>
+                </label>
+                <p class="text-[10px] text-gray-500 mb-2">
+                    Keeps a new attack clear when the previous trail reaches it. Uses the existing minimum width and time to narrow at end (passing-note speed for overlapping trails). Tied continuations are excluded.
+                </p>
+                <fieldset id="h3d-trail-yield-same-string-controls">
+                    <label for="h3d-trail-yield-same-string-max-gap" class="text-xs font-medium text-gray-400 mb-1 block">
+                        Maximum gap after trail: <span id="h3d-trail-yield-same-string-max-gap-label">0.05 s</span>
+                    </label>
+                    <input type="range" id="h3d-trail-yield-same-string-max-gap" min="0" max="0.20" step="0.005" value="0.05"
+                        class="w-full accent-accent">
+                    <label for="h3d-trail-yield-same-string-lead-time" class="text-xs font-medium text-gray-400 mt-3 mb-1 block">
+                        Start narrowing: <span id="h3d-trail-yield-same-string-lead-time-label">0.10 s</span> before the next note
+                    </label>
+                    <input type="range" id="h3d-trail-yield-same-string-lead-time" min="0.05" max="1" step="0.01" value="0.10"
+                        class="w-full accent-accent">
+                </fieldset>
 
                 <h4 class="text-xs font-medium text-gray-400 mt-4 mb-2">Passing note</h4>
                 <div>
@@ -855,8 +876,13 @@
                 trailYieldRecoverDuration: 0.05,
                 trailYieldEndLeadTime: 0.50,
                 trailYieldEndTaperDuration: 0.05,
+                trailYieldSameStringEnabled: true,
+                trailYieldSameStringMaxGap: 0.05,
+                trailYieldSameStringLeadTime: 0.10,
             };
             const controls = [
+                ['h3d-trail-yield-same-string-max-gap', 'trailYieldSameStringMaxGap', 'h3dBgSetTrailYieldSameStringMaxGap', 0, 0.20, false],
+                ['h3d-trail-yield-same-string-lead-time', 'trailYieldSameStringLeadTime', 'h3dBgSetTrailYieldSameStringLeadTime', 0.05, 1, false],
                 ['h3d-trail-yield-min-scale', 'trailYieldMinScale', 'h3dBgSetTrailYieldMinScale', 0.05, 0.50, true],
                 ['h3d-trail-yield-lead-time', 'trailYieldLeadTime', 'h3dBgSetTrailYieldLeadTime', 0.10, 1, false],
                 ['h3d-trail-yield-taper-duration', 'trailYieldTaperDuration', 'h3dBgSetTrailYieldTaperDuration', 0.01, 1, false],
@@ -866,6 +892,8 @@
                 ['h3d-trail-yield-end-taper-duration', 'trailYieldEndTaperDuration', 'h3dBgSetTrailYieldEndTaperDuration', 0.01, 1, false],
             ];
             const byKey = new Map(controls.map(function (c) { return [c[1], c]; }));
+            const sameStringEnabled = document.getElementById('h3d-trail-yield-same-string-enabled');
+            const sameStringControls = document.getElementById('h3d-trail-yield-same-string-controls');
             const enabled = document.getElementById('h3d-trail-yield-enabled');
             const gemInFront = document.getElementById('h3d-trail-yield-gem-in-front');
             const includeTrails = document.getElementById('h3d-trail-yield-include-trails');
@@ -892,7 +920,7 @@
                 if (input) input.value = String(value);
                 if (label) label.textContent = c[5]
                     ? Math.round(value * 100) + '%'
-                    : value.toFixed(2) + ' s';
+                    : value.toFixed(c[1] === 'trailYieldSameStringMaxGap' ? 3 : 2) + ' s';
             }
             function readBoolean(key) {
                 const raw = stored(key);
@@ -902,6 +930,11 @@
                 if (!fieldset || !enabled) return;
                 fieldset.disabled = !enabled.checked;
                 fieldset.style.opacity = enabled.checked ? '1' : '0.45';
+            }
+            function syncSameString() {
+                if (!sameStringControls || !sameStringEnabled) return;
+                sameStringControls.disabled = !sameStringEnabled.checked;
+                sameStringControls.style.opacity = sameStringEnabled.checked ? '1' : '0.45';
             }
             function syncFrontPriority() {
                 if (!includeTrailsControl || !gemInFront) return;
@@ -922,6 +955,8 @@
                 }
             }
             function hydrate() {
+                if (sameStringEnabled) sameStringEnabled.checked = readBoolean('trailYieldSameStringEnabled');
+                syncSameString();
                 if (enabled) enabled.checked = readBoolean('trailYieldEnabled');
                 if (gemInFront) gemInFront.checked = readBoolean('trailYieldGemInFront');
                 if (includeTrails) includeTrails.checked = readBoolean('trailYieldIncludeTrails');
@@ -934,6 +969,10 @@
                 syncFrontPriority();
             }
 
+            if (sameStringEnabled) sameStringEnabled.addEventListener('change', function () {
+                write('trailYieldSameStringEnabled', 'h3dBgSetTrailYieldSameStringEnabled', sameStringEnabled.checked);
+                syncSameString();
+            });
             if (enabled) enabled.addEventListener('change', function () {
                 write('trailYieldEnabled', 'h3dBgSetTrailYieldEnabled', enabled.checked);
                 syncEnabled();
@@ -960,6 +999,7 @@
             });
             const reset = document.getElementById('h3d-trail-yield-reset');
             if (reset) reset.addEventListener('click', function () {
+                write('trailYieldSameStringEnabled', 'h3dBgSetTrailYieldSameStringEnabled', defaults.trailYieldSameStringEnabled);
                 write('trailYieldEnabled', 'h3dBgSetTrailYieldEnabled', defaults.trailYieldEnabled);
                 write('trailYieldGemInFront', 'h3dBgSetTrailYieldGemInFront', defaults.trailYieldGemInFront);
                 write('trailYieldIncludeTrails', 'h3dBgSetTrailYieldIncludeTrails', defaults.trailYieldIncludeTrails);
@@ -1267,7 +1307,7 @@
          no-selection / NaN state. -->
     <script>
         (function () {
-            const DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, trailYieldEnabled: true, trailYieldGemInFront: false, trailYieldIncludeTrails: false, trailYieldMinScale: 0.30, trailYieldLeadTime: 0.50, trailYieldTaperDuration: 0.05, trailYieldHoldAfter: 0.05, trailYieldRecoverDuration: 0.05, trailYieldEndLeadTime: 0.50, trailYieldEndTaperDuration: 0.05 };
+            const DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, trailYieldEnabled: true, trailYieldGemInFront: false, trailYieldIncludeTrails: false, trailYieldMinScale: 0.30, trailYieldLeadTime: 0.50, trailYieldTaperDuration: 0.05, trailYieldHoldAfter: 0.05, trailYieldRecoverDuration: 0.05, trailYieldEndLeadTime: 0.50, trailYieldEndTaperDuration: 0.05, trailYieldSameStringEnabled: true, trailYieldSameStringMaxGap: 0.05, trailYieldSameStringLeadTime: 0.10 };
             const VALID_STYLES = new Set(['off', 'particles', 'silhouettes', 'lights', 'geometric', 'butterchurn', 'image', 'video']);
             // Scene color themes — the single id+label source for BOTH the
             // Background and Highway dropdowns AND the validator below. The
