@@ -139,7 +139,7 @@ test('bounds agree with chord fret cells, including out-of-anchor chords', () =>
 });
 
 test('muted and moving technique chords do not lose per-string instruction', () => {
-    const cues = [{ pm: true }, { mt: true }, { fhm: true }, { ln: true }, { bn: 1 },
+    const cues = [{ mt: true }, { fhm: true }, { ln: true }, { ho: true }, { po: true }, { bn: 1 },
         { bnv: [{ t: 0.2, v: 1 }] }, { vb: true }, { tr: true }, { sl: 7 }, { slu: 7 },
         { slide_out: 'down' }, { slide_out_marks: [{ start: 0.5, end: 1, direction: 'up' }] }];
     for (const cue of cues) for (const sustain of [undefined, 1]) {
@@ -310,7 +310,7 @@ test('tiny contained holds and a genuine older overlap still retain individual t
 });
 
 test('boundary tolerance does not turn techniques or unequal string releases into ordinary shared holds', () => {
-    for (const cue of [{ bn: 1 }, { sl: 7 }, { vb: true }, { slide_out: 'down' }, { pm: true }]) {
+    for (const cue of [{ bn: 1 }, { sl: 7 }, { vb: true }, { slide_out: 'down' }]) {
         const a = chord(10, [3, 5], 1), b = chord(10.998, [3, 5], 1);
         Object.assign(a.notes[0], cue);
         assert.equal(resolve([a, b]).byChord.get(a).suppressedMembers.has(a.notes[0]), false, JSON.stringify(cue));
@@ -509,7 +509,7 @@ test('majority duration respects clock precision and excludes dead strings from 
 });
 
 test('majority lanes do not erase moving techniques or linked continuations', () => {
-    for(const cue of [{vb:true},{sl:7},{bn:1},{pm:true},{ln:true},{whammy:{version:1}}]) {
+    for(const cue of [{vb:true},{sl:7},{bn:1},{ln:true},{whammy:{version:1}}]) {
         const ch=chord(10,[3,5,5,0],1);ch.notes[3].sus=.2;Object.assign(ch.notes[0],cue);
         const hold=resolve([ch]).byChord.get(ch);
         assert.deepEqual([...hold.suppressedMembers].map(n=>n.s),[1,2],JSON.stringify(cue));
@@ -523,4 +523,103 @@ test('partial majority lanes retain overlap and arpeggio safeguards', () => {
     const b=chord(11,[4,6,6,0],2);b.notes[3].sus=.2;
     assert.equal(resolve([a,b],[],[],[{time:0,fret:3,width:4}]).holds.length,0);
     a.arp=true;assert.equal(resolve([a]).holds.length,0);
+});
+
+test('palm-muted open, fretted and mixed chords share explicit holds without mutating marks', () => {
+    for (const frets of [[0, 0], [3, 5], [0, 5]]) for (const mixed of [false, true]) {
+        const ch = chord(20.875, frets, .21375);
+        ch.notes.forEach((n, i) => { n.pm = !mixed || i === 0; });
+        freezeDeep(ch);
+        const hold = resolve([ch]).byChord.get(ch);
+        near(hold.end, 21.08875);
+        assert.equal(hold.suppressMemberTrails, true);
+        assert.equal(ch.notes[0].pm, true);
+    }
+    for (const sus of [undefined, 0]) {
+        const ch = chord(10, [0, 0], sus); ch.notes.forEach(n => { n.pm = true; });
+        assert.equal(resolve([ch], [hs()], [template(ch)]).holds.length, 0,
+            'a handshape alone does not prove how long a muted hit sounds');
+    }
+});
+
+test('palm mute preserves unequal releases, movement and dead-note exclusions', () => {
+    const ch = chord(10, [0, 5], 1); ch.notes.forEach(n => { n.pm = true; });
+    ch.notes[1].sus = .2;
+    assert.equal(resolve([ch]).holds.length, 0);
+    ch.notes[1].sus = 1; ch.notes[1].sl = 7;
+    assert.deepEqual([...resolve([ch]).byChord.get(ch).suppressedMembers], [ch.notes[0]]);
+    ch.notes.forEach(n => { n.mt = true; delete n.sl; });
+    assert.equal(resolve([ch]).holds.length, 0);
+});
+
+test('Evil in this House shares the tied yellow hold while keeping the blue hammer-on', () => {
+    const ch = { t: 50.98, id: 25, notes: [
+        { s: 1, f: 5, sus: .87 }, { s: 2, f: 5, sus: .2175, ln: true },
+    ] };
+    const notes = [{ t: 51.1975, s: 2, f: 7, sus: .6525, ho: true }];
+    freezeDeep(ch); freezeDeep(notes);
+    const model = resolve([ch], [], [], [], notes), hold = model.byChord.get(ch);
+    near(hold.end, 51.85);
+    assert.deepEqual([...hold.suppressedMembers], [ch.notes[0]]);
+    assert.equal(hold.suppressMemberTrails, false);
+    assert.deepEqual(resolve([ch], [], [], [], notes), model, 'seeks rebuild deterministically');
+});
+
+test('multi-step hammer-ons and pull-offs include open targets, with or without ln', () => {
+    for (const ln of [true, false]) for (const frets of [[3, 5, 7], [7, 5, 0], [3, 5, 3]]) {
+        const ch = chord(10, [3, frets[0]], 1); Object.assign(ch.notes[1], { sus: .25, ln });
+        const notes = frets.slice(1).map((f, i) => ({ t: 10.25 + i * .25, s: 1, f,
+            sus: i === 0 ? .25 : .5, ln, [f > frets[i] ? 'ho' : 'po']: true }));
+        const hold = resolve([ch], [], [], [], notes).byChord.get(ch);
+        near(hold.end, 11);
+        assert.deepEqual([...hold.suppressedMembers], [ch.notes[0]]);
+    }
+});
+
+test('several moving strings keep their own cues alongside one held chord member', () => {
+    const ch = chord(10, [3, 5, 7], 1);
+    ch.notes[1].sus = .25; ch.notes[2].sus = .5;
+    const target = { t: 10.25, id: 1, notes: [{ s: 1, f: 7, sus: .75, ho: true }] };
+    const notes = [{ t: 10.5, s: 2, f: 0, sus: .5, po: true }];
+    const hold = resolve([ch, target], [], [], [], notes).byChord.get(ch);
+    near(hold.end, 11);
+    assert.deepEqual([...hold.suppressedMembers], [ch.notes[0]]);
+});
+
+test('uncertain or independently articulated sequences do not extend a shared hold', () => {
+    const variations = [
+        n => { delete n.ho; }, n => { n.po = true; delete n.ho; }, n => { n.po = true; },
+        n => { n.t += .02; n.sus -= .02; }, n => { n.t -= .02; n.sus += .02; },
+        n => { n.sus = 0; }, n => { n.sus = NaN; }, n => { n.f = 127; },
+        n => { n.mt = true; }, n => { n.sl = 9; }, n => { n.bn = 1; },
+    ];
+    for (const change of variations) {
+        const ch = chord(10, [3, 5], 1); Object.assign(ch.notes[1], { sus: .25, ln: true });
+        const target = { t: 10.25, s: 1, f: 7, sus: .75, ho: true }; change(target);
+        assert.equal(resolve([ch], [], [], [], [target]).holds.length, 0, String(change));
+    }
+    const ch = chord(10, [3, 5], 1); ch.notes[1].sus = .25;
+    const target = { t: 10.25, s: 1, f: 7, sus: .75, ho: true };
+    for (const conflict of [{ ...target, f: 8 }, { ...target, sus: .5 }, { ...target, ho: false }]) {
+        assert.equal(resolve([ch], [], [], [], [target, conflict]).holds.length, 0);
+    }
+    const intervening = { t: 10.1, s: 1, f: 6, sus: .15 };
+    assert.equal(resolve([ch], [], [], [], [intervening, target]).holds.length, 0);
+});
+
+test('exact duplicated legato rows are harmless; different final releases stay individual', () => {
+    const ch = chord(10, [3, 5], 1); ch.notes[1].sus = .25;
+    const target = { t: 10.25, s: 1, f: 7, sus: .75, ho: true };
+    const notes = [{ ...ch.notes[1], t: 10 }, target, { ...target }];
+    assert.deepEqual([...resolve([ch], [], [], [], notes).byChord.get(ch).suppressedMembers], [ch.notes[0]]);
+    for (const sus of [.5, 1]) {
+        assert.equal(resolve([ch], [], [], [], [{ ...target, sus }]).holds.length, 0);
+    }
+});
+
+test('a legato destination cannot claim a release across a later same-string pick', () => {
+    const ch = chord(10, [3, 5], 1); ch.notes[1].sus = .25;
+    const notes = [{ t: 10.25, s: 1, f: 7, sus: .75, ho: true },
+        { t: 10.5, s: 1, f: 9, sus: .1 }];
+    assert.equal(resolve([ch], [], [], [], notes).holds.length, 0);
 });

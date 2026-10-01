@@ -252,15 +252,25 @@ test('shared-hold eligibility never hides note-level technique or teaching instr
     }
 });
 
-test('muted repeats keep their existing symbols and sustained members remain explicit', () => {
-    for (const flags of [{pm:true},{mt:true},{fhm:true}]) {
+test('palm-muted repeats share holds and retain the compact frame mute symbol', () => {
+    const { result, model } = resolvedRepeat(sharedMembers().map(n => ({ ...n, pm: true })));
+    assert.ok(model.holds.length > 0);
+    assert.equal(result.frame.compactRepeatFrame, true);
+    assert.equal(result.drawn.length, 0);
+    assert.equal(result.frameSymbols.fills.length, 1);
+    const mixed = sharedMembers(); mixed[1].pm = true;
+    const individual = resolvedRepeat(mixed).result;
+    assertEnclosed(individual);
+    assert.ok(individual.noteSymbols.some(symbols => symbols.includes('palm')));
+});
+
+test('other muted repeats keep their existing symbols and sustained members remain explicit', () => {
+    for (const flags of [{mt:true},{fhm:true}]) {
         assertEnclosed(resolvedRepeat(sharedMembers().map(n=>({...n,...flags}))).result);
         const ordinary = render(sharedMembers(0).map(n=>({...n,...flags})));
         assert.equal(ordinary.frame.compactRepeatFrame,true);
         assert.equal(ordinary.frameSymbols.fills.length,1);
     }
-    const mixed = sharedMembers(); mixed[1].pm=true;
-    assertEnclosed(resolvedRepeat(mixed).result);
 });
 
 test('arpeggio fallback, missing frames and slide links cannot claim compact shared approach', () => {
