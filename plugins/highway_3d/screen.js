@@ -3612,13 +3612,58 @@
         const candidates = [];
         const candidateVoicings = new Map();
         let shapeCursor = 0;
-        const hasIndividualCue = n => !!n.harmonic_changes || n.whammy?.version === 1 || flag(n.mt) || flag(n.fhm) || flag(n.pm) || flag(n.ln)
+        // Palm mute changes the attack/timbre, not the representation of a
+        // known shared hold. Its gem/frame mark remains independent of tails.
+        const hasIndividualCue = (n, ignoreLegato = false) => !!n.harmonic_changes || n.whammy?.version === 1 || flag(n.mt) || flag(n.fhm)
+            || (!ignoreLegato && (flag(n.ln) || flag(n.ho) || flag(n.po)))
             || Number(n.bn) > 0 || (Array.isArray(n.bnv) && n.bnv.length > 0)
             || flag(n.vb) || flag(n.vibrato) || flag(n.v) || flag(n.tr)
             || ['sl', 'slu', 'su'].some(k => n[k] != null && Number.isFinite(Number(n[k])) && Number(n[k]) >= 0)
             || (Array.isArray(n.slide_out_marks) && n.slide_out_marks.length > 0)
             || (n.f > 0 && slideInMarks(n).length > 0)
             || n.slide_out === 'up' || n.slide_out === 'down' || n.slideOut === 'up' || n.slideOut === 'down';
+        // Complete legato releases are presentation metadata only. A target's
+        // explicit HO/PO mark, direction and contiguous same-string timing are
+        // required; ln alone must not turn a later picked note into legato.
+        // Resolve backwards once so long chains do not require repeated walks.
+        const legatoEnds = new Map(), legatoSources = new Set();
+        const lanes = Array.from({ length: count }, () => []);
+        for (const n of streamNotes) lanes[n.s].push({ note: n, time: n.t });
+        for (const ch of realChords) for (const n of membersByChord.get(ch)) {
+            lanes[n.s].push({ note: n, time: ch.t });
+        }
+        const legatoOnly = n => !hasIndividualCue(n, true);
+        for (const lane of lanes) {
+            lane.sort((a, b) => a.time - b.time);
+            let next = null, nextTime = Infinity;
+            for (let end = lane.length; end > 0;) {
+                let start = end - 1;
+                while (start > 0 && lane[end - 1].time - lane[start - 1].time <= eps) start--;
+                const group = lane.slice(start, end), first = group[0];
+                // Exact duplicate chord/standalone rows are safe. Conflicting
+                // notes, times or technique metadata at an onset are not.
+                const same = group.every(e => e.time === first.time
+                    && e.note.f === first.note.f && e.note.sus === first.note.sus
+                    && flag(e.note.ho) === flag(first.note.ho) && flag(e.note.po) === flag(first.note.po)
+                    && legatoOnly(e.note));
+                const n = first.note, duration = Number(n.sus);
+                let release = first.time + duration;
+                const valid = same && isPlayableFret(n.f) && Number.isFinite(duration) && duration > 0
+                    && release <= nextTime + BEND_LINK_TIME_EPS + 1e-9;
+                if (valid && next && Math.abs(release - next.time) <= BEND_LINK_TIME_EPS + 1e-9) {
+                    const target = next.note;
+                    const hammer = flag(target.ho), pull = flag(target.po);
+                    if (hammer !== pull && (hammer ? target.f > n.f : target.f < n.f)) {
+                        release = next.release;
+                        for (const e of group) legatoSources.add(e.note);
+                    }
+                }
+                if (legatoSources.has(n)) for (const e of group) legatoEnds.set(e.note, release);
+                next = valid ? { note: n, time: first.time, release } : null;
+                nextTime = first.time;
+                end = start;
+            }
+        }
         for (let i = 0; i < realChords.length; i++) {
             const chord = realChords[i], members = membersByChord.get(chord);
             while (shapeCursor < shapes.length && shapes[shapeCursor].start <= chord.t + eps) {
@@ -3632,7 +3677,8 @@
                 || markedArp(chord) || templateInfo(chord.id).arpeggio) continue;
             const sounding = members.filter(n => !isPlainDeadNote(n));
             if (!sounding.length || sounding.some(n => n.mt)) continue;
-            const suppressedMembers = new Set(sounding.filter(n => !hasIndividualCue(n) && !linkTargets.has(n)));
+            const suppressedMembers = new Set(sounding.filter(n => !hasIndividualCue(n)
+                && !linkTargets.has(n) && !legatoSources.has(n)));
             if (!suppressedMembers.size) continue;
             // Coincident independent chord records are ambiguous; do not decide
             // which record's common border should represent the combined strike.
@@ -3649,20 +3695,21 @@
                 if (!legacy || shape.start > legacy.start || (shape.start === legacy.start && shape.end < legacy.end)) legacy = shape;
             }
             if (arpeggioShape) continue;
-            let duration = Number(sounding[0].sus);
+            const durationFor = n => legatoEnds.has(n) ? legatoEnds.get(n) - chord.t : Number(n.sus);
+            let duration = durationFor(sounding[0]);
             let shared = Number.isFinite(duration) && duration > 0
-                && sounding.every(n => Number.isFinite(Number(n.sus)) && Number(n.sus) > 0
-                    && Math.abs(Number(n.sus) - duration) <= 1e-6);
-            if (!shared && sounding.every(n => Number.isFinite(Number(n.sus)) && Number(n.sus) > 0)) {
+                && sounding.every(n => Number.isFinite(durationFor(n)) && durationFor(n) > 0
+                    && Math.abs(durationFor(n) - duration) <= 1e-6);
+            if (!shared && sounding.every(n => Number.isFinite(durationFor(n)) && durationFor(n) > 0)) {
                 // A strict majority may share the lane while release exceptions
                 // keep their own trails. Compare only known sounding durations;
                 // dead strings neither vote nor inherit a ringing hold. Build
                 // this once with the chart cache, never in the frame loop.
                 const groups = [];
-                for (const n of sounding.slice().sort((a, b) => Number(a.sus) - Number(b.sus))) {
+                for (const n of sounding.slice().sort((a, b) => durationFor(a) - durationFor(b))) {
                     let group = groups[groups.length - 1];
-                    if (!group || Number(n.sus) - group.duration > 1e-6) {
-                        group = { duration: Number(n.sus), members: [] };
+                    if (!group || durationFor(n) - group.duration > 1e-6) {
+                        group = { duration: durationFor(n), members: [] };
                         groups.push(group);
                     }
                     group.members.push(n);
@@ -3686,6 +3733,7 @@
                 // Positive, partial or invalid durations must retain individual
                 // notation; hand-shape fallback is only for unspecified values.
                 if (!legacy || sounding.length !== members.length || suppressedMembers.size !== members.length
+                    || members.some(n => flag(n.pm))
                     || members.some(n => n.sus != null && (!Number.isFinite(Number(n.sus)) || Number(n.sus) !== 0))) continue;
                 const attackIndex = lower(attacks, chord.t - eps);
                 if (attackIndex < attacks.length && attacks[attackIndex].t <= chord.t + eps) continue;

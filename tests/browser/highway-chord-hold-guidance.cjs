@@ -3,6 +3,7 @@
  * node tests/browser/highway-chord-hold-guidance.cjs --out <fresh directory>
  * Optional: --repo <checkout> --reference --style current|rsplus --case <substring>
  * --real-root <verification root> --perf [--perf-only] --width 1280 --height 720
+ * --evil-chart <extracted Hybrid Lead JSON> adds the reported Songsterr cases.
  * PLAYWRIGHT_MODULE can identify an existing Playwright installation.
  */
 'use strict';
@@ -74,6 +75,21 @@ for(const now of [9.7,10.05,10.11]) add('short-known-'+now,
 add('unknown',base({chords:[chord()]}),[],{image:true});
 add('legacy-repeat',base({chords:[chord(10),chord(10.6,0,{hd:true}),chord(11.2,0,{hd:true})],handShapes:[shape(10,12)]}),[[10,12]],{image:true,wantFrames:3});
 add('muted',base({chords:[chord(10,0,{notes:pair().map(n=>({...n,pm:true}))})],handShapes:[shape()]}),[],{image:true});
+add('palm-muted-open-chord',base({chords:[chord(10,.21375,{notes:[note({s:0,f:0,sus:.21375,pm:true}),note({s:1,f:0,sus:.21375,pm:true})]})]}),
+  [[10,10.21375]],{image:true,noTrails:true,wantMute:true});
+add('palm-muted-single-open',base({notes:[note({t:10,s:0,f:0,sus:.4,pm:true})]}),[],{image:true,wantOpenTrail:true,wantMute:true});
+add('palm-muted-repeat',base({chords:[chord(10,.3,{notes:pair(.3).map(n=>({...n,pm:true}))}),
+  chord(10.3,.3,{hd:true,notes:pair(.3).map(n=>({...n,pm:true}))})]}),[[10,10.6]],{image:true,noTrails:true,wantFrames:2});
+for(const [name,frets] of [['hammer',[5,7]],['pull-open',[5,0]],['hammer-pull',[5,7,5,0]]]) {
+  const step=.2, total=1;
+  for(const now of [9.7,10.3,11.01]) {
+    const notes=frets.slice(1).map((f,i)=>note({t:10+(i+1)*step,s:2,f,sus:i===frets.length-2?total-(i+1)*step:step,
+      ln:i<frets.length-2,[f>frets[i]?'ho':'po']:true}));
+    add('legato-'+name+'-'+now,base({currentTime:now,notes,
+      chords:[chord(10,0,{notes:[note({s:1,f:5,sus:total}),note({s:2,f:frets[0],sus:step,ln:true})]})]}),
+      now<11?[[10,11]]:[],{image:now===9.7,trailStrings:now<11?[2]:[],wantLegato:now===9.7});
+  }
+}
 add('partial',base({chords:[chord(10,0,{notes:[...pair().slice(0,1)]})],handShapes:[shape()]}),[],{image:true});
 add('picked',base({notes:[note({t:10,s:1,f:3,sus:.4}),note({t:10.5,s:2,f:5,sus:.5})],handShapes:[shape()]}),[],{image:true});
 add('picked-carrier',base({chords:[chord()],notes:[note({t:10.1,s:1,f:3,sus:.4}),note({t:10.5,s:2,f:5,sus:.5})],handShapes:[shape()]}),[],{image:true});
@@ -95,6 +111,15 @@ add('overlap-explicit-shorter-repeat',base({chords:[chord(10,2),chord(11,.5)]}),
 for(const [name,extra] of [['left-handed',{lefty:true}],['inverted',{inverted:true}],['bass',{stringCount:4,tuning:[0,0,0,0]}],['eight-string',{stringCount:8,tuning:Array(8).fill(0)}],['no-anchor',{anchors:[]}]])
   add(name,base({...extra,chords:[chord(10,1)],handShapes:[shape()]}),[[10,11]],{image:false,noTrails:true});
 const realRoot=option('--real-root');
+if(option('--evil-chart')) {
+  const raw=JSON.parse(fs.readFileSync(option('--evil-chart'),'utf8'));
+  const bundle=currentTime=>base({...raw,currentTime,chordTemplates:raw.templates,handShapes:raw.handshapes});
+  add('evil-palm-muted',bundle(20.5),null,{image:true,
+    hiddenTrailNotes:[{t:20.875,s:0},{t:20.875,s:1},{t:21.08875,s:0},{t:21.08875,s:1}],
+    wantHoldRange:[20.875,21.3025]});
+  add('evil-hammer',bundle(50.7),null,{image:true,hiddenTrailNotes:[{t:50.98,s:1}],
+    visibleTrailNotes:[{t:50.98,s:2},{t:51.1975,s:2}],wantHoldRange:[50.98,51.85]});
+}
 if(realRoot)for(const [name,file,times] of [
   ['bon-jovi','highway-bon-jovi-guide-audit-20260919/bon-jovi-lead-production-wire.json',[30,31,33,33.3,39,40]],
   ['twilight','highway-chord-rails-integration-20260919/twilight-production-wire.json',[92.6,92.95,93.37]],
@@ -180,6 +205,20 @@ async function main() {
         check(proof.positionRails.filter(g=>g.start===start&&g.end===end).length===2,scenario.name+': hand-shape guidance lost after anchor change');}
       if(!reference&&scenario.wantTrailOnsets)for(const onset of scenario.wantTrailOnsets)
         check([...proof.trails,...proof.ribbons].some(t=>t.note.t===onset),scenario.name+': missing independent trail at '+onset);
+      if(!reference&&scenario.trailStrings) {
+        const actual=[...new Set([...proof.trails,...proof.ribbons].map(t=>t.note.s))].sort();
+        check(JSON.stringify(actual)===JSON.stringify(scenario.trailStrings),scenario.name+': wrong strings retain trails: '+actual);
+      }
+      if(!reference&&scenario.wantLegato)check(proof.notes.some(n=>n.note.ho||n.note.po),scenario.name+': missing legato target gem');
+      if(!reference&&scenario.wantMute)check(proof.notes.some(n=>n.note.pm),scenario.name+': missing palm-muted attack gem');
+      if(!reference)for(const [key,wanted] of [['hiddenTrailNotes',false],['visibleTrailNotes',true]])for(const n of scenario[key]||[]) {
+        const found=[...proof.trails,...proof.ribbons].some(t=>t.note.s===n.s&&Math.abs(t.note.t-n.t)<1e-6);
+        check(found===wanted,scenario.name+': trail visibility at '+JSON.stringify(n)+' should be '+wanted);
+      }
+      if(!reference&&scenario.wantHoldRange) {
+        const [start,end]=scenario.wantHoldRange;
+        check(proof.rails.some(r=>r.start<=start+1e-6&&r.end>=end-1e-6),scenario.name+': shared hold missing');
+      }
       if(scenario.image)await page.screenshot({path:path.join(out,scenario.name+'.png')});
       console.log(`${scenario.name}: ${proof.rails.length} rails, ${proof.trails.length} trails, ${proof.ribbons.length} ribbons`);
     }

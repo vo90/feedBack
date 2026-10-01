@@ -39,9 +39,9 @@ const h = new Function(`
 `)();
 const chord = (durations, extra={}) => ({ t:10, id:0,
     notes:durations.map((sus,s)=>({s,f:s===0?0:5,sus})), ...extra });
-const modelFor = chords => h.hwyBuildChordHoldGuidance(chords,[],[],[],6,[]);
+const modelFor = (chords, notes = []) => h.hwyBuildChordHoldGuidance(chords,[],[],[],6,notes);
 function eventsFor(chords, notes=[]) {
-    const model = modelFor(chords);
+    const model = modelFor(chords, notes);
     return h.hwyBuildTrailYieldEvents(notes,chords,6,{
         trailVisible: (note,meta,ch) => !h.chordMemberTrailSuppressed(ch && model.byChord.get(ch), note),
     });
@@ -123,4 +123,33 @@ test('incoming techniques bypass shared holds in actual trail origins and crossi
     for (const bucket of eventsFor([ch])) for (const event of bucket || []) {
         assert.equal(event.trailVisible, event.s === 1);
     }
+});
+
+test('palm-muted chord trails disappear from both drawing and occlusion, single opens remain', () => {
+    const ch = chord([.21375, .21375]); ch.notes.forEach(n => { n.f = 0; n.pm = true; });
+    const single = { t: 11, s: 0, f: 0, sus: .4, pm: true };
+    const model = modelFor([ch], [single]);
+    const origins = h.hwyBuildIndependentTrailOrigins([single], [ch], model.byChord, 6);
+    assert.equal(origins.drawable.has(single), true);
+    for (const n of ch.notes) assert.equal(origins.drawable.has(n), false);
+    const events = eventsFor([ch], [single])[0];
+    assert.equal(events.find(e => e.sourceNote === single).trailVisible, true);
+    for (const n of ch.notes) {
+        const event = events.find(e => e.sourceNote === n);
+        assert.equal(event.trailVisible, false);
+        assert.equal(event.gemVisible, true);
+    }
+});
+
+test('legato chords suppress only the held string throughout the trail pipeline', () => {
+    const ch = chord([1, .25]); ch.notes[1].ln = true;
+    const target = { t: 10.25, s: 1, f: 7, sus: .75, ho: true };
+    const model = modelFor([ch], [target]);
+    const origins = h.hwyBuildIndependentTrailOrigins([target], [ch], model.byChord, 6);
+    assert.equal(origins.drawable.has(ch.notes[0]), false);
+    assert.equal(origins.drawable.has(ch.notes[1]), true);
+    assert.equal(origins.drawable.has(target), true);
+    const events = eventsFor([ch], [target]).flat().filter(Boolean);
+    for (const e of events) assert.equal(e.trailVisible, e.s === 1);
+    assert.equal(events.find(e => e.sourceNote === target).gemVisible, true);
 });
