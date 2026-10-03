@@ -53,7 +53,24 @@ __stableAudit(){return {ren,cam,scene,curX,curDist,curLookY,tgtX,tgtDist,tgtLook
  state:typeof _stableCam==='undefined'?null:Object.fromEntries(Object.entries(_stableCam).filter(([k,v])=>v===null||['number','string','boolean'].includes(typeof v))),
  labels:Array.from({length:_incomingFloorLabelCount},(_,i)=>{const r=_incomingFloorLabels[i];return {kind:'gold-label',mesh:r.sprite,t:r.time,f:r.fret};}),
  fixedLabels:_incomingFixedFretLabels.map((mesh,f)=>mesh&&mesh.material.opacity>=0.999?{kind:'fixed-gold-label',mesh,t:0,f}:null).filter(Boolean),
- rect(mesh){const r={};return _incomingLabelScreenRect(mesh,r,true)?r:null;}};},contextType:'webgl2',`);
+ rect(mesh){
+   const r={},g=mesh.geometry;
+   // Pooled ribbons retain unused vertices and cached bounding boxes. Measure
+   // only the populated slices, exactly as the production camera collects them.
+   if(g && Number.isFinite(g.userData.ribbonSlices)){
+     mesh.updateWorldMatrix(true,false);
+     const a=g.attributes.position,v=new T.Vector3();
+     const count=Math.min(a.count,(g.userData.ribbonSlices+1)*4);
+     r.minX=r.minY=Infinity;r.maxX=r.maxY=-Infinity;
+     for(let i=0;i<count;i++){
+       v.fromBufferAttribute(a,i).applyMatrix4(mesh.matrixWorld).project(cam);
+       r.minX=Math.min(r.minX,v.x);r.maxX=Math.max(r.maxX,v.x);
+       r.minY=Math.min(r.minY,v.y);r.maxY=Math.max(r.maxY,v.y);
+     }
+     return Number.isFinite(r.minX+r.maxX+r.minY+r.maxY)?r:null;
+   }
+   return _incomingLabelScreenRect(mesh,r,true)?r:null;
+ }};},contextType:'webgl2',`);
 const note = e => ({
   t: 10,
   s: 2,
@@ -500,9 +517,47 @@ async function main() {
       const capture = Number(option('--preparation-capture',205.15));
       const chart = privateChart(option('--preparation-chart'),start);
       chart.lefty = args.includes('--preparation-lefty');
-      await init(chart,option('--preparation-preset','straight'));
-      await record('preparation-chart',await steps(start,capture-start),true);
+      const initial = await init(chart,option('--preparation-preset','straight'));
+      const samples = await steps(start,capture-start);
+      if (option('--preparation-attack')) {
+        const attack=Number(option('--preparation-attack'));
+        check(initial.planStops.some(s=>Math.abs(s.time-attack)<.001 && s.lead>1), 'preparation-chart: early plan missing');
+        check(Math.abs(samples.at(-1).state.targetX-initial.state.targetX)>.00001,'preparation-chart: no early camera travel');
+      }
+      if (option('--preparation-opens')) {
+        const times=option('--preparation-opens').split(',').map(Number);
+        const fret=Number(option('--preparation-fret'));
+        const alignment=await page.evaluate(({times,fret})=>times.map(time=>{
+          const anchor=[...bundle.anchors].reverse().find(a=>a.time<=time);
+          const gem=__stableProbe.find(n=>n.kind==='gem'&&Math.abs(n.t-time)<.000001&&n.f===0);
+          return {time,correctLane:anchor?.fret===fret,
+            actual:gem?.mesh.position.x,expected:r.__stableAudit().openCentre(time)};
+        }),{times,fret});
+        check(alignment.every(a=>a.correctLane&&Math.abs(a.actual-a.expected)<1e-8),
+          'preparation-chart: open group missed destination '+JSON.stringify(alignment));
+      }
+      await record('preparation-chart',samples,true);
       await record('preparation-chart-arrival',await steps(capture,1.5));
+    }
+    if (chosen('quiet-preparation')) {
+      for (const kind of option('--quiet-kind','single,overlap,silence').split(',')) {
+        const rate=Number(option('--preparation-rates',1));
+        const trails=kind==='silence' ? [note({t:10,f:19,s:5,sus:.1})]
+          : [note({t:10,f:19,s:5,sus:3,slide_out:'down',
+              slide_out_marks:[{start:2.5,end:3,direction:'down'}]}),
+            ...(kind==='overlap'?[note({t:10.3,f:17,s:4,sus:2.7})]:[])];
+        const fixture=base({currentTime:10.5,playbackRate:rate,lefty:args.includes('--preparation-lefty'),
+          notes:[...trails,note({t:13,f:0,sus:.35}),note({t:13.35,f:2,sus:.3})],
+          anchors:[{time:0,fret:17,width:4},{time:13,fret:2,width:4}]});
+        const initial=await init(fixture,option('--preparation-preset','straight'),
+          {settings:{notationStyle:option('--preparation-style','rsplus')}});
+        check(initial.planStops.some(s=>s.time===13 && s.lead>1),'quiet-preparation: early stop missing '+kind);
+        const earlyTime=13-.9*rate;
+        const samples=await steps(10.5,(earlyTime-10.5)/rate,30,rate);
+        check(Math.abs(samples.at(-1).state.targetX-initial.state.targetX)>.00001,'quiet-preparation: no early pan '+kind);
+        await record('quiet-preparation-'+kind,samples,true);
+        await record('quiet-preparation-'+kind+'-arrival',await steps(earlyTime,(13.65-earlyTime)/rate,30,rate));
+      }
     }
     if (chosen('clock-continuity')) {
       await init({...low(), transport: {epoch: 1, state: 'playing', position: 9,

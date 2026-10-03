@@ -3247,7 +3247,7 @@
         return stops;
     }
 
-    /** Add bounded preparation only where the preceding attack is a plain hold.
+    /** Prepare during quiet sustains or silence after the preceding attack.
      * Built with the cached stop plan, never by scanning the song each frame.
      * The lane/notes remain authoritative; this changes only camera timing. */
     function hwyPrepareCameraStops(stops, notes, chords, rate, stringCount = 6) {
@@ -3256,20 +3256,22 @@
         const eps = 0.000501, events = [];
         const expressive = n => ['bn', 'bnv', 'vb', 'v', 'vibrato', 'vibrato_marks', 'tr', 'whammy', 'hm', 'hp',
             'harmonic_target', 'harmonic_changes', 'ho', 'po', 'ln', 'mt', 'fhm',
-            'slide_in_marks', 'slide_out', 'slideOut', 'slide_out_marks', 'pick_scrape_marks']
+            'slide_in_marks', 'pick_scrape_marks']
             .some(k => Array.isArray(n[k]) ? n[k].length > 0 : !!n[k])
             || ['sl', 'slu', 'su'].some(k => Number.isFinite(n[k]) && n[k] >= 0);
         const valid = n => n && Number.isInteger(n.s) && n.s >= 0 && n.s < stringCount
             && isRenderableNote(n);
-        const add = (time, members, chord) => {
+        // A directional slide-out is a finishing gesture, not a new target.
+        // Known fret-target slides and other active techniques still need focus.
+        const add = (time, members) => {
             if (!Number.isFinite(time)) return;
             members = members.filter(valid);
             if (!members.length) return;
             const end = n => time + Math.max(0, Number(n.sus) || 0);
-            events.push({ time, members, chord, end });
+            events.push({ time, members, end });
         };
-        for (const n of notes || []) add(n?.t, [n], false);
-        for (const c of chords || []) if (c && !c.h3dSynth) add(c.t, c.notes || [], true);
+        for (const n of notes || []) add(n?.t, [n]);
+        for (const c of chords || []) if (c && !c.h3dSynth) add(c.t, c.notes || []);
         events.sort((a, b) => a.time - b.time);
         // Written tails can overlap their replacement on the same string.
         // Only that string's next attack ends its earlier focus constraint.
@@ -3280,8 +3282,6 @@
             for (let j = first; j <= i; j++) {
                 const event = events[j];
                 const end = n => Math.min(event.end(n), nextByString[n.s]);
-                event.hold = event.chord && event.members.length > 1 && !event.members.some(expressive)
-                    ? Math.min(...event.members.map(end)) : -Infinity;
                 event.busy = Math.max(-Infinity, ...event.members.filter(expressive).map(end));
             }
             for (let j = first; j <= i; j++) for (const n of events[j].members) nextByString[n.s] = events[j].time;
@@ -3293,10 +3293,9 @@
             busyUntil = Math.max(busyUntil, event.busy);
             let group = attacks[attacks.length - 1];
             if (!group || event.time - group.time > eps) {
-                group = { time: event.time, hold: -Infinity, busy: busyUntil };
+                group = { time: event.time, busy: busyUntil };
                 attacks.push(group);
             }
-            group.hold = Math.max(group.hold, event.hold);
             group.busy = busyUntil;
         }
         let index = 0;
@@ -3304,10 +3303,14 @@
             while (index < attacks.length && attacks[index].time < stop.time - eps) index++;
             const next = attacks[index], previous = attacks[index - 1];
             let lead = 0.6;
-            if (previous && next && Math.abs(next.time - stop.time) <= eps
-                && previous.hold >= stop.time - eps) {
+            // The interval since the last attack may contain ordinary holds,
+            // slide-outs, silence, or a mixture across strings. Their visible
+            // geometry remains protected by the existing camera fit. Only an
+            // active significant technique can delay the extra preparation.
+            if (next && Math.abs(next.time - stop.time) <= eps) {
                 const start = Math.max(stop.time - 1.2 * rate,
-                    previous.time + 0.3 * rate, previous.busy);
+                    previous ? previous.time + 0.3 * rate : 0,
+                    previous?.busy ?? -Infinity);
                 lead = Math.max(lead, Math.min(1.2, (stop.time - start) / rate));
             }
             return { ...stop, lead };

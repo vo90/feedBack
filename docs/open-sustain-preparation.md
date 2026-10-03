@@ -20,10 +20,11 @@ lead for a busy passage and a plain held chord.
    unknown policies and current imports retain their saved positions. Explicit
    FeedForge regeneration upgrades recognized older guidance, including phrase
    windows; ordinary finalization preserves existing receipts.
-3. Annotate the stable camera's cached stops with individual lead times. A plain
-   chord held until the next position-changing attack can prepare up to 1.2
-   real seconds early, after at least 0.3 seconds of initial chord focus. Every
-   intervening attack counts, including unpitched muted strikes. Slides, bends,
+3. Annotate the stable camera's cached stops with individual lead times. A quiet
+   sustain or silent interval before the next position-changing attack can
+   prepare up to 1.2 real seconds early, after at least 0.3 seconds of initial
+   attack focus. Every intervening attack counts, including unpitched muted
+   strikes. Slides with a destination fret, bends,
    timed vibrato, tremolo, harmonic changes and other technique holds retain
    ordinary focus. Same-string replacement ends an older technique constraint;
    activity on another string remains protected.
@@ -71,10 +72,32 @@ These tests start their own headless browser and never attach to the live game.
 
 ## Activation
 
-Developed from Core 1885775 and paired with the FeedForge open-preparation
-feature. The running game and packaged FeedForge were intentionally left intact.
-Integrate the two reviewed commits into their Songsterr source branches and
-build FeedForge from that composition. After the user finishes playing, use the
+Integrate the reviewed commits into their Songsterr source branches and build
+FeedForge from that composition. Once restart is authorized, use the
 existing combined runtime refresh, seal and check workflow, then launch normally.
 The existing refresh tool requires a stopped runtime. No source-to-runtime
 copying or hot reload is required or appropriate during an active session.
+
+## Quiet-interval camera extension
+
+Preparation now applies to ordinary single-note holds, overlapping holds,
+partial chord releases, finishing directional slide-outs and silence. Each
+position-changing attack can receive up to 1.2 real seconds of anticipation,
+after at least 0.3 seconds of focus on the latest attack. An intervening attack
+resets that focus interval. Bends, timed vibrato, slides with a destination fret
+and other significant techniques on any string constrain the extra lead until
+their effective sustain ends. Finishing slide-outs alone do not constrain it.
+Normal 0.6-second behavior remains the minimum; geometry fitting still keeps
+held notes and trails visible. No future destination means no extra movement.
+This is Stable-camera timing only; music, lane geometry and transport are
+unchanged. Silence before an open pickup uses that pickup's destination lane
+as soon as the bounded preparation window opens.
+
+Validation: 884 highway JavaScript tests pass, including 28 focused preparation
+checks. Production-renderer cases exercise single and overlapping trails,
+silence, directional slide-outs, real Rats/Cirice passages, mirrored/angled
+views and 0.5/1/1.5 playback rates. The harness measures populated ribbon
+vertices rather than unused pooled-buffer capacity when checking clipping.
+Use `--case quiet-preparation` for synthetic cases, or `--case preparation-chart`
+with `--preparation-attack`, `--preparation-opens` and `--preparation-fret` to
+assert anticipation and open-lane alignment in a private audited chart.

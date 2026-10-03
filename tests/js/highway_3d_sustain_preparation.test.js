@@ -45,18 +45,15 @@ test('shorter holds leave 300ms after the strike before extra preparation', () =
     assert.equal(plan([note(4)], [chord(3.4,.6)])[1].lead, .6);
 });
 
-test('intervening attacks, isolated notes and ended holds retain normal lead', () => {
+test('intervening attacks and release-only lane changes retain normal lead', () => {
     assert.equal(plan([note(3.2),note(4)])[1].lead,.6);
     assert.equal(plan([note(3.2,127,{mt:true}),note(4)])[1].lead,.6);
-    assert.equal(plan([note(1,5,{sus:3}),note(4)],[])[1].lead,.6);
-    assert.equal(plan([note(4)],[chord(1,1)])[1].lead,.6);
-    assert.equal(plan([note(4)],[{...chord(),h3dSynth:true}])[1].lead,.6);
     assert.equal(plan([note(5)])[1].lead,.6); // a release-only lane change
 });
 
 for (const extra of [{bn:1}, {bnv:[{t:0,v:1}]}, {vb:1}, {vibrato_marks:[{start:1,end:2,intensity:'slight'}]}, {tr:1}, {sl:12},
     {slu:0}, {whammy:[{t:1,v:1}]}, {harmonic_changes:[{t:1}]},
-    {slide_out_marks:[{t:1}]}, {ho:true}, {po:true}, {ln:true}, {mt:true}]) {
+    {ho:true}, {po:true}, {ln:true}, {mt:true}]) {
     test('active chord technique keeps normal focus: '+JSON.stringify(extra), () => {
         assert.equal(plan([note(4)], [chord(1,3,extra)])[1].lead,.6);
     });
@@ -73,9 +70,9 @@ test('an overlapping technique on another string prevents early movement', () =>
     assert.equal(plan(notes)[1].lead,1);
 });
 
-test('partial chord releases and all-open chords use actual hold duration', () => {
+test('partial chord releases and all-open chords remain quiet preparation', () => {
     const c = chord(); c.notes[0].sus = .25;
-    assert.equal(plan([note(4)],[c])[1].lead,.6);
+    assert.equal(plan([note(4)],[c])[1].lead,1.2);
     c.notes = c.notes.map(n => ({...n,f:0,sus:3}));
     assert.equal(plan([note(4)],[c])[1].lead,1.2);
 });
@@ -108,8 +105,57 @@ test('mixed normal/early overlapping transitions are continuous and mirrored', (
     assert.equal(at(p,20,1,.5).x,3);
 });
 
-test('malformed strings and unrelated future notes do not enable preparation', () => {
-    const c = chord(); c.notes[1].s=99; c.notes[2].s=-1;
-    assert.equal(plan([note(4)],[c])[1].lead,.6);
+test('malformed strings and unrelated future notes do not invent intervening activity', () => {
+    assert.equal(plan([note(3.9,12,{s:99}),note(4)])[1].lead,1.2);
     assert.deepEqual(plan([note(4),note(100,24)]),plan());
+});
+
+test('single sustained notes and directional slide-outs get the same early plan as chords', () => {
+    for (const extra of [{}, {slide_out:'down'}, {slideOut:'up'},
+        {slide_out:'down',slide_out_marks:[{start:2.5,end:3,direction:'down'}]}]) {
+        const notes=[note(1,19,{s:5,sus:3,...extra}),note(4)];
+        const before=JSON.stringify(notes);
+        const p=plan(notes,[]);
+        assert.equal(p[1].lead,1.2);
+        assert.ok(at(p,3.1,1,.5).x>5);
+        assert.equal(JSON.stringify(notes),before);
+        assert.equal(plan([note(4)],[chord(1,3,extra)])[1].lead,1.2);
+    }
+});
+
+test('silence after notes or techniques and initial silence can prepare the first open attack', () => {
+    for (const notes of [[note(1,5,{sus:.25}),note(4,0)],
+        [note(1,5,{sus:.25,bn:1}),note(4,0)], [note(4,0)]]) {
+        assert.equal(plan(notes,[])[1].lead,1.2);
+    }
+    assert.equal(plan([note(4)],[chord(1,1)])[1].lead,1.2);
+    assert.equal(plan([note(4)],[{...chord(),h3dSynth:true}])[1].lead,1.2);
+    assert.equal(plan([note(3.2,5,{sus:0}),note(4)],[])[1].lead,.6);
+});
+
+test('overlapping single trails use the latest attack and protect techniques on every string', () => {
+    const notes=[note(1,5,{s:0,sus:4}),note(2,7,{s:1,sus:2,slide_out:'down'}),note(4)];
+    assert.equal(plan(notes,[])[1].lead,1.2);
+    notes.splice(2,0,note(3,8,{s:2,sus:1}));
+    assert.ok(Math.abs(plan(notes,[])[1].lead-.7)<1e-10);
+    notes[0].bn=1;
+    assert.equal(plan(notes,[])[1].lead,.6);
+    notes[0].sus=2;
+    assert.ok(Math.abs(plan(notes,[])[1].lead-.7)<1e-10);
+});
+
+test('a slide-out combined with a bend or a target-fret slide retains technique protection', () => {
+    for (const extra of [{bn:1},{sl:12},{slu:12},{vibrato_marks:[{start:0,end:3,intensity:'slight'}]}]) {
+        assert.equal(plan([note(1,19,{sus:3,slide_out:'down',...extra}),note(4)],[])[1].lead,.6);
+    }
+});
+
+test('single trails and silence keep real-time lead at half and double speed', () => {
+    for (const rate of [.5,1,2]) for (const sus of [.1,3]) {
+        const rows=stops.map(s=>({...s,time:s.time*rate}));
+        const notes=[note(rate,5,{sus:sus*rate}),note(4*rate)];
+        const p=plan(notes,[],rate,rows);
+        assert.equal(p[1].lead,1.2);
+        assert.ok(Math.abs(at(p,3.1*rate,rate,.5).x-at(plan(),3.1,1,.5).x)<1e-9);
+    }
 });
