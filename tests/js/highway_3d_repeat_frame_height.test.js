@@ -51,6 +51,7 @@ const dispatch = new Function('chordNotes', 'options', `
     const now = 186, chDtEarly = options.dt ?? .460999;
     const ch = { t: now + chDtEarly, id: 1 };
     const chordCX = 0, chordTailHoldS = 0.75, laneWForOpenStrings = 40;
+    const chordFrameBounds = {dMin:2,dMax:6};
     const chordTailFadeS = .15, chordNextSoon = false, AHEAD = 3;
     const _chNextEventT = options.nextEvent ?? Infinity;
     const chShape = new Map(chordNotes.map(n => [n.s,n.f]));
@@ -172,7 +173,7 @@ const resolveHold = new Function(
     '\nconst _slideInMarkCache = new WeakMap(), SLIDE_OUT_EMPTY_MARKS = Object.freeze([]);\n' +
     ['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
         'laneBoundsFromAnchor', 'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape',
-        'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks',
+        'chordFallbackLaneBounds', 'chordShapeLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks',
         'hwyTrailBoundaryOverlapIsNegligible', 'hwyBuildChordHoldGuidance'].map(fn).join('\n') +
     '\nreturn hwyBuildChordHoldGuidance;'
 )();

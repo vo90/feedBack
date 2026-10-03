@@ -1131,6 +1131,8 @@ def arrangement_to_wire(arr: Arrangement) -> dict:
 
 def arrangement_from_wire(d: dict) -> Arrangement:
     """Parse a wire-format arrangement dict back into an Arrangement dataclass."""
+    from lib.generated_guidance_compat import refresh_generated_positions
+    d = refresh_generated_positions(d)
     return Arrangement(
         name=d.get("name", ""),
         tuning=list(d.get("tuning", [0] * 6)),

@@ -4,7 +4,9 @@
  * Optional: --repo <checkout> --reference --style current|rsplus --case <substring>
  * --real-root <verification root> --perf [--perf-only] --width 1280 --height 720
  * --evil-chart <extracted Hybrid Lead JSON> adds the reported Songsterr cases.
+ * --position-chart <audited Rats JSON> adds chord-position regression cases.
  * PLAYWRIGHT_MODULE can identify an existing Playwright installation.
+ * PLAYWRIGHT_EXECUTABLE_PATH can select an existing headless Chromium binary.
  */
 'use strict';
 const fs = require('node:fs');
@@ -35,7 +37,7 @@ if(served.includes('function hwyBuildChordHoldGuidance(chords, handShapes, templ
 served = once(served, 'const core = pNote.get();', `const core = pNote.get();
  if(window.__holdProbe)window.__holdProbe.notes.push({note:{...n},fromChord,mesh:core});`);
 served = once(served, 'const fill = pChordFrameFill.get();', `const fill = pChordFrameFill.get();
- if(window.__holdProbe)window.__holdProbe.frames.push({t:ch.t,isRepeat,isArpeggioFrame,compactRepeatFrame,mesh:fill});`);
+ if(window.__holdProbe)window.__holdProbe.frames.push({t:ch.t,isRepeat,isArpeggioFrame,compactRepeatFrame,outerWidth:width,borderWidth:ftSide,mesh:fill});`);
 served = once(served, 'const tr = pSus.get();', `const tr = pSus.get();
  if(window.__holdProbe)window.__holdProbe.trails.push({note:{...n},mesh:tr});`);
 if (served.includes('const holdRail = pSusRail.get();')) {
@@ -54,7 +56,7 @@ if(served.includes('const positionRail = pLaneDivider.get();'))served=once(serve
   'const positionRail = pLaneDivider.get(); if(window.__holdProbe)window.__holdProbe.positionRails.push({start:guide.start,end:guide.end,dMin:guide.dMin,dMax:guide.dMax,nearTime,farTime,mesh:positionRail});');
 served = once(served, 'bodyGeom.attributes.position.needsUpdate = true;', `bodyGeom.attributes.position.needsUpdate = true;
  if(window.__holdProbe)window.__holdProbe.ribbons.push({note:{...n},end:susStart+sliceDur});`);
-served = once(served, "contextType: 'webgl2',", `__holdAudit(){return {ren,cam,scene,style:typeof rsPlusNotation==='undefined'?'current':rsPlusNotation?'rsplus':'current'};},contextType: 'webgl2',`);
+served = once(served, "contextType: 'webgl2',", `__holdAudit(){return {ren,cam,scene,fretWorld:xFret,style:typeof rsPlusNotation==='undefined'?'current':rsPlusNotation?'rsplus':'current'};},contextType: 'webgl2',`);
 
 const note = values => ({sus:0,sl:-1,slu:-1,bn:0,ho:false,po:false,hm:false,hp:false,pm:false,mt:false,fhm:false,vb:false,tr:false,ac:false,tp:false,...values});
 const pair = (sus=0) => [note({s:1,f:3,sus}),note({s:2,f:5,sus})];
@@ -105,8 +107,8 @@ add('equivalent-template',base({chords:[chord()],chordTemplates:[template,{...te
 add('gap',base({chords:[chord(10),chord(11)],handShapes:[shape(10,10.4),shape(11,11.5)]}),[[10,10.4],[11,11.5]],{image:true});
 add('no-duplicate-open-trail',base({chords:[chord(10,0,{notes:[note({s:1,f:0,sus:1}),note({s:2,f:2,sus:1})]})],
   chordTemplates:[{name:'A5',frets:[-1,0,2,-1,-1,-1],fingers:[-1,-1,1,-1,-1,-1]}]}),[[10,11]],{image:true,noTrails:true});
-add('overlap-explicit-different-chords',base({chords:[chord(10,2),chord(11,2,{id:1,notes:pair(2).map(n=>({...n,f:n.f+1}))})],
-  chordTemplates:[template,{name:'C#5',frets:[-1,4,6,-1,-1,-1],fingers:[-1,1,3,-1,-1,-1]}]}),[],{image:true,wantTrailOnsets:[10,11]});
+add('overlap-explicit-different-chords',base({chords:[chord(10,2),chord(11,2,{id:1,notes:pair(2).map(n=>({...n,f:n.s===1?3:6}))})],
+  chordTemplates:[template,{name:'Alternate voicing',frets:[-1,3,6,-1,-1,-1],fingers:[-1,1,3,-1,-1,-1]}]}),[],{image:true,wantTrailOnsets:[10,11]});
 add('overlap-explicit-shorter-repeat',base({chords:[chord(10,2),chord(11,.5)]}),[],{image:true,wantTrailOnsets:[10,11]});
 for(const [name,extra] of [['left-handed',{lefty:true}],['inverted',{inverted:true}],['bass',{stringCount:4,tuning:[0,0,0,0]}],['eight-string',{stringCount:8,tuning:Array(8).fill(0)}],['no-anchor',{anchors:[]}]])
   add(name,base({...extra,chords:[chord(10,1)],handShapes:[shape()]}),[[10,11]],{image:false,noTrails:true});
@@ -130,6 +132,15 @@ if(realRoot)for(const [name,file,times] of [
   for(const currentTime of times)add(name+'-'+currentTime,base({...raw,currentTime,chordTemplates:raw.chordTemplates||raw.templates,
     handShapes:raw.handShapes||raw.handshapes,stringCount:raw.stringCount||raw.tuning?.length||6}),null,{image:true,realFileSha:sha(fs.readFileSync(filePath))});
 }
+if(option('--position-chart')) {
+  const raw=JSON.parse(fs.readFileSync(option('--position-chart'),'utf8'));
+  for(const cameraMode of ['lookahead','stable']) for(const lefty of [false,true]) {
+    const currentTime=105.6;
+    add('rats-position-'+cameraMode+(lefty?'-lefty':''),base({...raw,currentTime,lefty,cameraMode,
+      chordTemplates:raw.templates,handShapes:raw.handshapes}),null,{image:true,
+      frameBounds:[[105.78625,6,10],[107.03,2,6],[107.75375,4,8]]});
+  }
+}
 function dense() {
   const b=base({currentTime:9.7});
   for(let i=0;i<800;i++) {const t=8+i*.10;b.chords.push(chord(t,i%5===0?.4:0));if(i%4===0)b.handShapes.push(shape(t,t+.4));}
@@ -141,7 +152,8 @@ async function main() {
   if(fs.existsSync(path.join(out,'results.json')))throw new Error('Choose fresh output directory.');
   fs.mkdirSync(out,{recursive:true});
   fs.writeFileSync(path.join(out,'source-sha256.txt'),sha(source)+'  '+sourcePath+'\n'+sha(source.replace(/\r\n/g,'\n'))+'  normalized-LF\n');
-  const browser=await chromium.launch({headless:true});
+  const browser=await chromium.launch({headless:true,
+    ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? {executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH} : {})});
   try {
     const context=await browser.newContext({viewport:{width,height},deviceScaleFactor:1});
     const page=await context.newPage();
@@ -172,7 +184,7 @@ async function main() {
     async function init(b) {
       await page.evaluate(async({b,style})=>{
         if(window.r)r.destroy();localStorage.clear();
-        const settings={style:'off',notationStyle:style,palette:'default',glow:0,vibrancy:.85,cinematic:false,sparks:false,bloom:false,verdictMarks:false,timingFx:false,streakFx:false,hitFx:0,chordDiagramVisible:false,cameraSmoothing:0,zoomSmoothing:0,tiltSmoothing:0};
+        const settings={cameraMode:b.cameraMode||'lookahead',style:'off',notationStyle:style,palette:'default',glow:0,vibrancy:.85,cinematic:false,sparks:false,bloom:false,verdictMarks:false,timingFx:false,streakFx:false,hitFx:0,chordDiagramVisible:false,cameraSmoothing:0,zoomSmoothing:0,tiltSmoothing:0};
         for(const [k,v] of Object.entries(settings)){localStorage.setItem('h3d_bg_'+k,String(v));const setter=window['h3dBgSet'+k[0].toUpperCase()+k.slice(1)];if(typeof setter==='function')setter(v);}
         window.__holdBuilds=0;window.bundle=b;window.r=feedBackViz_highway_3d();r.init(document.getElementById('highway'),bundle);await r.readyPromise;
         for(let i=0;i<5;i++)r.draw(bundle);
@@ -218,6 +230,20 @@ async function main() {
       if(!reference&&scenario.wantHoldRange) {
         const [start,end]=scenario.wantHoldRange;
         check(proof.rails.some(r=>r.start<=start+1e-6&&r.end>=end-1e-6),scenario.name+': shared hold missing');
+      }
+      if(scenario.frameBounds) {
+        const expected=await page.evaluate(rows=>rows.map(([t,lo,hi])=>{
+          const a=r.__holdAudit(),l=a.fretWorld(lo),h=a.fretWorld(hi);
+          return {t,center:(l+h)/2,width:Math.abs(h-l)};
+        }),scenario.frameBounds);
+        for(const e of expected) {
+          const frame=proof.frames.find(f=>Math.abs(f.t-e.t)<1e-6);
+          check(!!frame,scenario.name+': missing chord frame '+e.t);
+          if(frame){
+            check(Math.abs(frame.mesh.position[0]-e.center)<1e-7,scenario.name+': incorrect frame center '+e.t);
+            check(Math.abs(frame.outerWidth-e.width)<1e-7 && Math.abs(frame.mesh.scale[0]-Math.max(e.width-2*frame.borderWidth,e.width*.45))<1e-7,scenario.name+': incorrect frame width '+e.t);
+          }
+        }
       }
       if(scenario.image)await page.screenshot({path:path.join(out,scenario.name+'.png')});
       console.log(`${scenario.name}: ${proof.rails.length} rails, ${proof.trails.length} trails, ${proof.ribbons.length} ribbons`);

@@ -3,6 +3,9 @@
 # file or directory" on WSL2 / Linux when checked out with autocrlf=true.
 *.sh text eol=lf
 
+# Shared FeedForge policy is audited byte-for-byte across checkouts.
+lib/generated_hand_positions.py text eol=lf
+
 # Keep the minified Three.js bundle byte-identical across platforms.
 # Without this, autocrlf=true would rewrite the bundle's newlines on
 # Windows checkouts and the SHA-256 wouldn't match the upstream tag —

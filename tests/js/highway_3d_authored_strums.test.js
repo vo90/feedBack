@@ -16,7 +16,7 @@ function extract(name) {
 const build = new Function('const NFRETS=24, CHORD_ANCHOR_TIME_EPS=1e-6;\n' + [
     'isPlayableFret','isPlainDeadNote','isUnpitchedMute','isRenderableNote','getChartAnchorAt',
     'laneBoundsFromAnchor','anchorPlayedFretInclusiveSpan','playedFretSpanCoversShape',
-    'chordFallbackLaneBounds','hwyBuildAuthoredStrumFrames',
+    'chordFallbackLaneBounds', 'chordShapeLaneBounds','hwyBuildAuthoredStrumFrames',
 ].map(extract).join('\n') + '\nreturn hwyBuildAuthoredStrumFrames;')();
 const anchor = [{time:0,fret:3,width:4}];
 function brush(up=false, gap=.02, id=0) {

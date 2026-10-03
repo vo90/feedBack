@@ -20,7 +20,7 @@ const constants = ['CHORD_ANCHOR_TIME_EPS', 'NEXT_ON_STRING_T_EPS', 'BEND_LINK_T
     .map(name => src.match(new RegExp('const ' + name + ' = [^;]+;'))[0]).join('\n') + '\nconst _slideInMarkCache = new WeakMap(), SLIDE_OUT_EMPTY_MARKS = Object.freeze([]);';
 const functions = ['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
     'laneBoundsFromAnchor', 'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape',
-    'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks', 'hwyTrailBoundaryOverlapIsNegligible', 'hwyBuildChordHoldGuidance',
+    'chordFallbackLaneBounds', 'chordShapeLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks', 'hwyTrailBoundaryOverlapIsNegligible', 'hwyBuildChordHoldGuidance',
     'chordGuideTimedRowAt', 'hwyUncoveredHandPositionGuides', '_ensureChordGuideEnds',
     'firstVisibleChordGuide', 'drawChordHoldGuides'];
 const anchorStart = src.indexOf('const chDtEarly = ch.t - now;');
