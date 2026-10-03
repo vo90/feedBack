@@ -64,3 +64,36 @@ in each of Current and RS+ (96 total), including both actual imported passages.
 Screenshots confirmed the retained mute marks, removed palm-muted chord trails,
 and independent blue legato trails beside the shared chord border. The running
 Songsterr integration and the original FeedPak were not modified by these checks.
+
+## Playback rounding correction (2026-10-03)
+
+The first acceptance used full-precision chart data. Playback independently
+rounds ordinary onsets and sustains to milliseconds. This made matching yellow
+holds and blue HO/PO sequences in *Evil in this House* appear to release 1 ms
+apart, causing individual yellow ribbons to return at 0:45 and 2:23.
+
+The resolver now compares each verified legato endpoint with the ordinary held
+members using a bounded 2 ms allowance: two onset-plus-sustain endpoints contain
+four independently rounded fields, each with at most 0.5 ms error. A unique held
+duration controls the lane. Nearby conflicting held durations remain ambiguous;
+chains cannot extend the allowance through successive matches. The existing
+1 ms link-continuity test and precise ordinary/majority duration grouping remain
+unchanged. All technique gems, ribbons, authored timings and scoring data remain
+independent of this presentation-only comparison.
+
+Validation of the correction:
+
+- 76 focused tests passed, including the actual wire values from seven reported
+  passage chords, both rounding directions, the tolerance boundary, reversed
+  note order, majority exceptions, long chains, trail eligibility and drawn
+  rail endpoints across impact and backward seeks.
+- The actual `note_from_wire`/`note_to_wire` and chord equivalents were applied
+  to the imported Hybrid Lead arrangement before running the resolver. All 20
+  lost holds were restored: 387 became 407, matching the full-precision chart.
+  Every existing hold kept its release and suppressed members; the library
+  archive checksum and chart inputs were unchanged.
+- The wider highway suite passed 1,052 of 1,053 tests. The remaining ghost-note
+  footprint test fails because its extraction harness omits `isUnpitchedMute`;
+  the same failure was reproduced on the unchanged baseline `1885775`.
+- Syntax and Git whitespace checks passed. No live-game restart, runtime
+  refresh or new WebGL acceptance run was performed during the user's session.
