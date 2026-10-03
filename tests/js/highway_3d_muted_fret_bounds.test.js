@@ -21,7 +21,7 @@ function fn(name) {
 const helpers = ['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote',
     'usesUnfrettedPosition', 'filterValidNotes', 'mergeChordShape',
     'chordNotesFromTemplate', 'getChartAnchorAt', 'laneBoundsFromAnchor',
-    'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape', 'chordFallbackLaneBounds',
+    'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape', 'chordFallbackLaneBounds', 'chordShapeLaneBounds',
     'hwyFirstRelevantFrettedTime', 'lookaheadComputeFretBounds'];
 const frameStart = src.indexOf('let chordFrameXL = null');
 const frameEnd = src.indexOf('const laneWForOpenStrings', frameStart);
@@ -37,7 +37,8 @@ const run = new Function(`
         ${helpers.join(',')},
         frame(ch, templates, anchors) {
             const chShape = mergeChordShape(ch, filterValidNotes(ch.notes), templates);
-            const chAncB = laneBoundsFromAnchor(getChartAnchorAt(anchors, ch.t));
+            const chAnc = getChartAnchorAt(anchors, ch.t);
+            const chAncB = laneBoundsFromAnchor(chAnc);
             const chAncPlayed = anchorPlayedFretInclusiveSpan(getChartAnchorAt(anchors, ch.t));
             let chordCX = chAncB ? (chAncB.dMin + chAncB.dMax) / 2 : 3;
             ${src.slice(frameStart, frameEnd)}

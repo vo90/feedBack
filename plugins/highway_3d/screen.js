@@ -2911,14 +2911,8 @@
             const end = Math.max(...members.map(n => n.t));
             if (end <= start) continue; // already simultaneous chords have their own box
             const anchor = getChartAnchorAt(anchors, start + CHORD_ANCHOR_TIME_EPS);
-            let bounds = laneBoundsFromAnchor(anchor);
             const frets = members.filter(n => n.f > 0 && !isUnpitchedMute(n)).map(n => n.f);
-            if (frets.length && (!bounds || !playedFretSpanCoversShape(
-                anchorPlayedFretInclusiveSpan(anchor), Math.min(...frets), Math.max(...frets)))) {
-                bounds = chordFallbackLaneBounds(Math.min(...frets), Math.max(...frets));
-            }
-            // All-open/muted groups without anchors still need a stable normal lane.
-            if (!bounds) bounds = chordFallbackLaneBounds(1, 1);
+            const bounds = chordShapeLaneBounds(Math.min(...frets), Math.max(...frets), anchor);
             const frame = { t: start, id: -1, notes: members, h3dStrum: true, lastAttack: end, bounds };
             frames.push(frame);
             for (const n of members) byNote.set(n, frame);
@@ -3195,10 +3189,22 @@
     }
 
     function chordFallbackLaneBounds(fMin, fMax) {
+        const width = Math.min(NFRETS, Math.max(4, fMax - fMin + 1));
         return laneBoundsFromAnchor({
-            fret: fMin,
-            width: Math.max(4, fMax - fMin + 1),
+            fret: Math.max(1, Math.min(fMin, NFRETS - width + 1)),
+            width,
         });
+    }
+
+    // One shape-local rule for frames, holds, open members and trail footprints.
+    // An unrelated lane may be wider or begin below the chord; its spare space
+    // must not become part of this chord. All-open shapes retain a local context.
+    function chordShapeLaneBounds(fMin, fMax, anchor) {
+        if (Number.isFinite(fMin) && Number.isFinite(fMax) && fMin > 0 && fMax >= fMin) {
+            return chordFallbackLaneBounds(fMin, fMax);
+        }
+        const fret = Math.max(1, Math.min(NFRETS, Math.round(Number(anchor?.fret)) || 1));
+        return chordFallbackLaneBounds(fret, fret);
     }
 
     function anchorPlayedFretSpanAt(anchorArr, t) {
@@ -3533,11 +3539,8 @@
         const boundsAt = (members, t) => {
             const fretted = members.filter(n => n.f > 0 && !isUnpitchedMute(n));
             const anchor = getChartAnchorAt(positionAnchors, t + eps);
-            const anchored = laneBoundsFromAnchor(anchor);
-            if (!fretted.length) return anchored || chordFallbackLaneBounds(1, 4);
-            const low = Math.min(...fretted.map(n => n.f)), high = Math.max(...fretted.map(n => n.f));
-            return anchored && playedFretSpanCoversShape(anchorPlayedFretInclusiveSpan(anchor), low, high)
-                ? anchored : chordFallbackLaneBounds(low, high);
+            return chordShapeLaneBounds(
+                Math.min(...fretted.map(n => n.f)), Math.max(...fretted.map(n => n.f)), anchor);
         };
         const realChords = (chords || []).filter(ch => ch && !ch.h3dSynth && Number.isFinite(ch.t))
             .slice().sort((a, b) => a.t - b.t);
@@ -16324,93 +16327,27 @@
                         : now;
                     const chAnc = getChartAnchorAt(anchors, _chAnchorT);
                     const chAncB = laneBoundsFromAnchor(chAnc);
-                    const chAncPlayed = anchorPlayedFretInclusiveSpan(chAnc);
-                    // Open-string X: chart <anchor> lane centre when present (not curX /
-                    // fretted centroid), matching highway span.
-                    let chordCX = curX;
-                    if (chAncB) chordCX = (xFret(chAncB.dMin) + xFret(chAncB.dMax)) / 2;
-                    else {
-                        let cxL = Infinity, cxR = -Infinity, fretted = 0;
-                        for (const cn of chordNotes) {
-                            if (isPlayableFret(cn.f) && cn.f > 0 && !isUnpitchedMute(cn)) {
-                                const fx = xNote(cn);
-                                if (fx < cxL) cxL = fx;
-                                if (fx > cxR) cxR = fx;
-                                fretted++;
-                            }
-                        }
-                        if (fretted > 0) chordCX = (cxL + cxR) / 2;
-                    }
-
-                    // Horizontals for chord frame + open-string mesh width. With anchors,
-                    // span matches HWY lane columns (wire dMin..dMax); no extra pad.
-                    let chordFrameXL = null, chordFrameXR = null, chordOpenBoxW = null;
-                    let chordFrameAnchorMatched = false;
+                    let chordCX = chAncB ? (xFret(chAncB.dMin) + xFret(chAncB.dMax)) * 0.5 : curX;
+                    let chordFrameXL = null, chordFrameXR = null, chordOpenBoxW = null, chordFrameBounds = null;
                     if (chShape.size > 1) {
-                        let fMinCh = 99, fMaxCh = 0, anyFretted = false;
+                        let fMinCh = Infinity, fMaxCh = -Infinity;
                         for (const [, f] of chShape) {
-                            if (f > 0) {
-                                anyFretted = true;
-                                fMinCh = Math.min(fMinCh, f);
-                                fMaxCh = Math.max(fMaxCh, f);
-                            }
+                            if (f > 0) { fMinCh = Math.min(fMinCh, f); fMaxCh = Math.max(fMaxCh, f); }
                         }
-                        // Prefer the anchor span so chord frames and arpeggio
-                        // frames align with the highway lane window — BUT only
-                        // when the chord's fretted notes actually fall within
-                        // the anchor range. If the anchor at this chord's time
-                        // doesn't cover the chord's frets (e.g. a chord at frets
-                        // 2–4 with an anchor locked to frets 5–8), the framebox
-                        // would clip the very gems it's supposed to contain, so
-                        // fall back to chord-fret-based bounds instead.
-                        const anchorCoversChordFrets = anyFretted
-                            ? playedFretSpanCoversShape(chAncPlayed, fMinCh, fMaxCh)
-                            : true; // all-open chord: anchor centre is fine
-                        if (chAncB && anchorCoversChordFrets) {
-                            chordFrameXL = xFret(chAncB.dMin);
-                            chordFrameXR = xFret(chAncB.dMax);
-                            chordFrameAnchorMatched = true;
-                        } else if (anyFretted) {
-                            // Recreate a normal four-fret anchor lane around the
-                            // chord. Using only three cells made this fallback
-                            // narrower than an authored width=4 lane and left its
-                            // frame misaligned with neighbouring highway segments.
-                            const fallbackB = chordFallbackLaneBounds(fMinCh, fMaxCh);
-                            chordFrameXL = xFret(fallbackB.dMin);
-                            chordFrameXR = xFret(fallbackB.dMax);
-                            // This fallback is wire-aligned just like a real anchor,
-                            // so keep the open-string slab on the exact same bounds.
-                            chordFrameAnchorMatched = true;
-                            chordCX = (chordFrameXL + chordFrameXR) * 0.5;
-                        } else {
-                            const wNut = openNoteLaneBoxW(ch.t);
-                            chordFrameXL = chordCX - wNut * 0.5;
-                            chordFrameXR = chordCX + wNut * 0.5;
-                        }
-                        if (chordFrameXL != null && chordFrameXR != null) {
-                            const span = Math.abs(chordFrameXR - chordFrameXL);
-                            if (span > 1e-8) {
-                                // Anchor-driven lane stripes span [dMin..dMax] wire-to-wire with
-                                // no horizontal pad — match that ONLY when the frame is actually
-                                // following the anchor (all-open chord, fallback path). The
-                                // fretted-span path always pads so the frame breathes around
-                                // the outermost fretted notes; without the pad it sat exactly
-                                // on the fret lines and looked clipped.
-                                if (chordFrameAnchorMatched) chordOpenBoxW = span;
-                                else {
-                                    const padX = NW * 0.4;
-                                    chordOpenBoxW = span + padX * 2;
-                                }
-                            }
-                        }
+                        const frameBounds = chordShapeLaneBounds(fMinCh, fMaxCh, chAnc);
+                        chordFrameBounds = frameBounds;
+                        chordFrameXL = xFret(frameBounds.dMin);
+                        chordFrameXR = xFret(frameBounds.dMax);
+                        chordOpenBoxW = Math.abs(chordFrameXR - chordFrameXL);
+                        chordCX = (chordFrameXL + chordFrameXR) * 0.5;
                     }
 
                     if (ch.h3dStrum) {
+                        chordFrameBounds = ch.bounds;
                         chordFrameXL = xFret(ch.bounds.dMin);
                         chordFrameXR = xFret(ch.bounds.dMax);
                         chordOpenBoxW = Math.abs(chordFrameXR - chordFrameXL);
                         chordCX = (chordFrameXL + chordFrameXR) * 0.5;
-                        chordFrameAnchorMatched = true;
                     }
                     const laneWForOpenStrings = (chordOpenBoxW != null && chordOpenBoxW > 1e-8)
                         ? chordOpenBoxW
@@ -16753,6 +16690,7 @@
                                 _isLinkNextTgt,
                                 chordMemberTrailSuppressed(sharedChordHold, cn),
                                 belongsToBoxedChord,
+                                chordFrameBounds,
                             );
                             // Frame height follows the gems this path actually retains,
                             // including arpeggio deferral and linked continuation skips.
@@ -17416,28 +17354,13 @@
             // backward resets it — otherwise a flash from a hit we jumped away
             // from would linger on the wire.
             if (fretWireMats.length && _fwHitColor) {
-                // Resolve accumulated chord hits: a chord's flash frames the
-                // LANE, not its own shape. The lit lane strip spans the anchor's
-                // width (min ~4 frets), which can run a fret past the chord's
-                // outermost fret — and a bracket one wire INSIDE the lit lane
-                // reads as misaligned. So a chord lights the anchor lane's edge
-                // wires: the exact wires the lane strip spans, and the same pair
-                // open strings already use. The shape's own outer pair (wire
-                // behind the lowest fret, wire at the highest) survives only as
-                // the fallback for charts with no anchors.
+                // Chord feedback lights the same edges as its own frame.
                 for (const _fwE of _fwChordAcc.values()) {
                     const _fwA = Math.max(_fwE.a, _fwE.openA);
                     if (_fwA <= 0) continue;
-                    let _w0 = -1, _w1 = -1;
-                    const _fwB = anchorLaneBoundsAt(_drawAnchors, _fwE.t);
-                    if (_fwB) {
-                        _w0 = _fwB.dMin;
-                        _w1 = _fwB.dMax;
-                    } else if (_fwE.maxF >= _fwE.minF) {
-                        _w0 = Math.max(0, _fwE.minF - 1);
-                        _w1 = Math.min(NFRETS, _fwE.maxF);
-                    }
-                    if (_w0 < 0) continue; // all-open chord on an anchor-less chart
+                    const _fwB = _fwE.bounds || chordShapeLaneBounds(_fwE.minF, _fwE.maxF,
+                        getChartAnchorAt(_drawAnchors, _fwE.t));
+                    const _w0 = _fwB.dMin, _w1 = _fwB.dMax;
                     if (_fwA > _fwHitIn[_w0]) _fwHitIn[_w0] = _fwA;
                     if (_fwA > _fwHitIn[_w1]) _fwHitIn[_w1] = _fwA;
                 }
@@ -18741,20 +18664,10 @@
             const anchor = laneBoundsFromAnchor(anchorDef);
             let center = anchor ? (xFret(anchor.dMin) + xFret(anchor.dMax)) * 0.5 : curX;
             let width = openNoteLaneBoxW(chartTime, chartAnchors);
-            if (meta) {
-                const anyFretted = Number.isFinite(meta.minF) && Number.isFinite(meta.maxF);
-                if (!anchor && anyFretted) center = (xFretMid(meta.minF) + xFretMid(meta.maxF)) * 0.5;
-                if (meta.size > 1) {
-                    if (anchor && (!anyFretted || playedFretSpanCoversShape(
-                        anchorPlayedFretInclusiveSpan(anchorDef), meta.minF, meta.maxF,
-                    ))) {
-                        width = Math.abs(xFret(anchor.dMax) - xFret(anchor.dMin));
-                    } else if (anyFretted) {
-                        const fallback = chordFallbackLaneBounds(meta.minF, meta.maxF);
-                        center = (xFret(fallback.dMin) + xFret(fallback.dMax)) * 0.5;
-                        width = Math.abs(xFret(fallback.dMax) - xFret(fallback.dMin));
-                    } else width += OPEN_NOTE_PAD_X * 2;
-                }
+            if (meta?.size > 1) {
+                const bounds = chordShapeLaneBounds(meta.minF, meta.maxF, anchorDef);
+                center = (xFret(bounds.dMin) + xFret(bounds.dMax)) * 0.5;
+                width = Math.abs(xFret(bounds.dMax) - xFret(bounds.dMin));
             }
             out[0] = center;
             out[1] = width;
@@ -18778,7 +18691,6 @@
             }
             const anchorDef = getChartAnchorAt(_drawAnchors, event.t);
             const anchor = laneBoundsFromAnchor(anchorDef);
-            const anchorPlayed = anchorPlayedFretInclusiveSpan(anchorDef);
             const anchorCX = anchor
                 ? (xFret(anchor.dMin) + xFret(anchor.dMax)) * 0.5
                 : curX;
@@ -18803,27 +18715,12 @@
 
             const meta = event.chordMeta;
             if (meta) {
-                const anyFretted = Number.isFinite(meta.minF) && Number.isFinite(meta.maxF);
                 let chordCX = anchorCX;
-                if (!anchor && anyFretted) {
-                    chordCX = (xFretMid(meta.minF) + xFretMid(meta.maxF)) * 0.5;
-                }
                 let laneW = openNoteLaneBoxW(event.t);
                 if (meta.size > 1) {
-                    const anchorCoversFrets = anyFretted
-                        ? playedFretSpanCoversShape(
-                            anchorPlayed, meta.minF, meta.maxF,
-                        )
-                        : true;
-                    if (anchor && anchorCoversFrets) {
-                        laneW = Math.abs(xFret(anchor.dMax) - xFret(anchor.dMin));
-                    } else if (anyFretted) {
-                        const fallback = chordFallbackLaneBounds(meta.minF, meta.maxF);
-                        chordCX = (xFret(fallback.dMin) + xFret(fallback.dMax)) * 0.5;
-                        laneW = Math.abs(xFret(fallback.dMax) - xFret(fallback.dMin));
-                    } else {
-                        laneW += OPEN_NOTE_PAD_X * 2;
-                    }
+                    const bounds = chordShapeLaneBounds(meta.minF, meta.maxF, anchorDef);
+                    chordCX = (xFret(bounds.dMin) + xFret(bounds.dMax)) * 0.5;
+                    laneW = Math.abs(xFret(bounds.dMax) - xFret(bounds.dMin));
                 }
                 trailYieldAddTargetXBounds(chordCX, Math.max(laneW * bodyScale, ghostMinBody) + ghostExtent, bounds);
             }
@@ -20097,7 +19994,7 @@
             drawNote(view, now, undefined, true, true);
         }
 
-        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, belongsToBoxedChord = false) {
+        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, belongsToBoxedChord = false, chordFrameBounds = null) {
             _stableNoteRelevant = n.t + Math.max(0.03, n.sus || 0) >= now;
             const s = n.s;
             // Belt + suspenders: callers already gate via validString(),
@@ -20413,6 +20310,8 @@
                         _fwE = { minF: Infinity, maxF: -Infinity, a: 0, openA: 0, t: n.t };
                         _fwChordAcc.set(_fwK, _fwE);
                     }
+                    // A partial hit still refers to the complete visible chord.
+                    if (chordFrameBounds) _fwE.bounds = chordFrameBounds;
                     if (n.f > 0 && n.f <= NFRETS) {
                         if (_fwA > _fwE.a) _fwE.a = _fwA;
                         if (n.f < _fwE.minF) _fwE.minF = n.f;

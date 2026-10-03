@@ -18,7 +18,7 @@ function extract(name) {
 const names = [
     'isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
     'laneBoundsFromAnchor', 'anchorLaneBoundsAt', 'anchorPlayedFretInclusiveSpan',
-    'playedFretSpanCoversShape', 'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes',
+    'playedFretSpanCoversShape', 'chordFallbackLaneBounds', 'chordShapeLaneBounds', 'hwyLinkNextTargetNotes',
     'slideInMarks', 'hwyBuildChordHoldGuidance', 'chordGuideTimedRowAt', 'hwyUncoveredHandPositionGuides',
     'chordMemberTrailSuppressed', 'hwyBuildIndependentTrailOrigins', 'hwyBuildLinkedTrailPaths',
     'openNoteLaneBoxW', 'trailOpenLayoutAt',
@@ -84,12 +84,13 @@ test('a shared chord duplicate does not erase a real standalone open trail', () 
     assert.equal(event.chordTrailMeta,null);
 });
 
-test('open trails match anchor chord width and out-of-anchor fallback width', () => {
+test('open chord trails follow their frame rather than the surrounding lane', () => {
     const out=new Float64Array(2), meta={size:2,minF:5,maxF:5};
     const anchors=[{time:0,fret:4,width:4}];
     const chordLayout=Array.from(h.trailOpenLayoutAt(10,meta,anchors,out));
     const singleLayout=Array.from(h.trailOpenLayoutAt(10,null,anchors,out));
-    assert.equal(chordLayout[0],singleLayout[0]);
+    assert.equal(chordLayout[0],60);
+    assert.equal(singleLayout[0],50);
     assert.equal(singleLayout[1]-chordLayout[1],4,'standalone slab has horizontal padding');
     const fallback=Array.from(h.trailOpenLayoutAt(10,{size:2,minF:12,maxF:14},anchors,out));
     assert.notEqual(fallback[0],chordLayout[0]);

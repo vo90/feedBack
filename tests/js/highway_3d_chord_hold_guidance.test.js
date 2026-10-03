@@ -18,7 +18,7 @@ function extract(name) {
 const helpers = [
     'isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
     'laneBoundsFromAnchor', 'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape',
-    'chordFallbackLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks', 'hwyTrailBoundaryOverlapIsNegligible', 'hwyBuildChordHoldGuidance',
+    'chordFallbackLaneBounds', 'chordShapeLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks', 'hwyTrailBoundaryOverlapIsNegligible', 'hwyBuildChordHoldGuidance',
     'chordGuideTimedRowAt', 'hwyUncoveredHandPositionGuides',
 ];
 const constants = ['CHORD_ANCHOR_TIME_EPS', 'NEXT_ON_STRING_T_EPS', 'BEND_LINK_TIME_EPS', 'TRAIL_BOUNDARY_OVERLAP_TOLERANCE_S']
@@ -135,7 +135,7 @@ test('bounds agree with chord fret cells, including out-of-anchor chords', () =>
     const narrow = resolve([ch], [], [], [{ time: 0, fret: 4, width: 4 }]).holds[0];
     assert.deepEqual([narrow.dMin, narrow.dMax], [2, 6]);
     const covering = resolve([ch], [], [], [{ time: 0, fret: 2, width: 4 }]).holds[0];
-    assert.deepEqual([covering.dMin, covering.dMax], [1, 5]);
+    assert.deepEqual([covering.dMin, covering.dMax], [2, 6]);
 });
 
 test('muted and moving technique chords do not lose per-string instruction', () => {
@@ -230,7 +230,7 @@ test('overlapping same-voicing holds can share edges when their release is ident
 
 test('overlapping different chord voicings retain individual timing despite identical bounds', () => {
     for (const laterDuration of [1, 2]) {
-        const a = chord(10, [3, 5], 2), b = chord(11, [4, 6], laterDuration);
+        const a = chord(10, [3, 5], 2), b = chord(11, [3, 6], laterDuration);
         const anchors = [{ time: 0, fret: 3, width: 4 }];
         const before = JSON.stringify([a, b]);
         const result = resolve([a, b], [], [], anchors);
@@ -254,7 +254,7 @@ test('shorter later repeats cannot inherit the release of an earlier longer chor
 });
 
 test('touching explicit holds still share edges while keeping distinct attacks', () => {
-    const a = chord(10, [3, 5], 1), b = chord(11, [4, 6], 2);
+    const a = chord(10, [3, 5], 1), b = chord(11, [3, 6], 2);
     const result = resolve([a, b], [], [], [{ time: 0, fret: 3, width: 4 }]);
     assert.deepEqual(result.holds.map(h => [h.start, h.end]), [[10, 13]]);
     assert.equal(result.byChord.size, 2);
@@ -264,7 +264,7 @@ test('touching explicit holds still share edges while keeping distinct attacks',
 
 test('tiny staggered chord boundaries retain shared rails without changing authored endpoints', () => {
     for (const t of [0, 29.358, 16000]) for (const overlap of [0, 0.001, 0.002, 0.005, 0.005001, 0.006, 0.05]) {
-        for (const frets of [[3, 5], [4, 6]]) {
+        for (const frets of [[3, 5], [3, 6]]) {
             const a = chord(t, [3, 5], 1), b = chord(t + 1 - overlap, frets, 1.5);
             const chords = freezeDeep([a, b]);
             const before = JSON.stringify(chords);
@@ -353,7 +353,7 @@ test('chart timestamp rounding recognizes the correct onset without shortening i
         [{ time: 0, fret: 8 }, { time: 10.0004, fret: 2, width: 4 }]);
     const hold = result.byChord.get(ch);
     near(hold.end, 12);
-    assert.deepEqual([hold.dMin, hold.dMax], [1, 5]);
+    assert.deepEqual([hold.dMin, hold.dMax], [2, 6]);
 });
 
 test('resolution is deterministic for seeking and does not mutate chart input', () => {
@@ -520,7 +520,7 @@ test('majority lanes do not erase moving techniques or linked continuations', ()
 
 test('partial majority lanes retain overlap and arpeggio safeguards', () => {
     const a=chord(10,[3,5,5,0],2);a.notes[3].sus=.2;
-    const b=chord(11,[4,6,6,0],2);b.notes[3].sus=.2;
+    const b=chord(11,[3,6,6,0],2);b.notes[3].sus=.2;
     assert.equal(resolve([a,b],[],[],[{time:0,fret:3,width:4}]).holds.length,0);
     a.arp=true;assert.equal(resolve([a]).holds.length,0);
 });
@@ -622,4 +622,20 @@ test('a legato destination cannot claim a release across a later same-string pic
     const notes = [{ t: 10.25, s: 1, f: 7, sus: .75, ho: true },
         { t: 10.5, s: 1, f: 9, sus: .1 }];
     assert.equal(resolve([ch], [], [], [], notes).holds.length, 0);
+});
+
+
+test('Rats holds use each chord position after a wide slide lane', () => {
+    const chords = [chord(105.78625, [8,7], 1.24375), chord(107.03, [3,5,5], .72375),
+        chord(107.75375, [5,7,7], 1.20625)];
+    const result = resolve(chords, [], [], [{time:105.5375, fret:3, width:6}]);
+    assert.deepEqual(result.holds.map(h => [h.start,h.end,h.dMin,h.dMax]),
+        [[105.78625,107.03,6,10],[107.03,107.75375,2,6],[107.75375,108.96,4,8]]);
+    assert.equal(result.byChord.size, 3);
+});
+
+test('overlapping chords with different frame edges retain separate release geometry', () => {
+    const a = chord(10, [3,5], 2), b = chord(11, [4,6], 2);
+    const result = resolve([a,b], [], [], [{time:0,fret:3,width:12}]);
+    assert.deepEqual(result.holds.map(h => [h.start,h.end,h.dMin,h.dMax]), [[10,12,2,6],[11,13,3,7]]);
 });
