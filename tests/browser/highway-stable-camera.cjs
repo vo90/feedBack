@@ -47,6 +47,8 @@ __cameraBenchmark(bundle, iterations) {
     pointCount:typeof _stableCam==='undefined'?null:_stableCam.pointCount };
 },
 __stableAudit(){return {ren,cam,scene,curX,curDist,curLookY,tgtX,tgtDist,tgtLookY,mode:cameraMode,
+ planStops:_stablePlan.stops.map(s=>({time:s.time,x:s.x,lead:s.lead})),
+ openCentre(time){const b=anchorLaneBoundsAt(_drawAnchors,time);return b?(xFret(b.dMin)+xFret(b.dMax))/2:null;},
  projectAttack(n){return new T.Vector3(xFretMid(n.f),sY(n.s),dZ(n.t-_frameNow)).project(cam).toArray();},
  state:typeof _stableCam==='undefined'?null:Object.fromEntries(Object.entries(_stableCam).filter(([k,v])=>v===null||['number','string','boolean'].includes(typeof v))),
  labels:Array.from({length:_incomingFloorLabelCount},(_,i)=>{const r=_incomingFloorLabels[i];return {kind:'gold-label',mesh:r.sprite,t:r.time,f:r.fret};}),
@@ -230,6 +232,7 @@ async function main() {
   });
   const browser = await chromium.launch({
     headless: true,
+    executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH || undefined,
     args: ['--enable-unsafe-swiftshader']
   });
   try {
@@ -308,6 +311,7 @@ async function main() {
           state: a.state,
           curX: a.curX,
           curDist: a.curDist,
+          planStops: a.planStops,
           position: a.cam.position.toArray(),
           quaternion: a.cam.quaternion.toArray(),
           rotation: a.cam.rotation.toArray(),
@@ -461,6 +465,44 @@ async function main() {
         path: path.join(out, name + '.png')
       });
       console.log(name + ': ' + samples.length + ' samples');
+    }
+    if (chosen('sustain-preparation')) {
+      for (const preset of option('--preparation-preset','straight,angled').split(','))
+        for (const style of option('--preparation-style','current,rsplus').split(','))
+        for (const rate of option('--preparation-rates','.5,1,2').split(',').map(Number)) {
+          const fixture = base({currentTime:10.5,playbackRate:rate,lefty:args.includes('--preparation-lefty'),
+            chords:[{t:10,id:0,notes:[5,7,7].map((f,s)=>note({t:10,f,s,sus:3}))}],
+            notes:[note({t:13,f:0,s:0,sus:.25}),note({t:13.25,f:2,s:0,sus:.25})],
+            chordTemplates:[{name:'Hold',frets:[5,7,7,-1,-1,-1]}],
+            anchors:[{time:0,fret:5,width:4},{time:13,fret:2,width:4}]});
+          const initial = await init(fixture,preset,{settings:{notationStyle:style}});
+          check(initial.planStops.some(s=>s.time===13 && s.lead>1), 'sustain-preparation: early plan missing');
+          const earlyTime = 13 - .9*rate;
+          const samples = await steps(10.5,(earlyTime-10.5)/rate,30,rate);
+          const early = samples.at(-1);
+          check(Math.abs(early.state.targetX-initial.state.targetX)>.00001, 'sustain-preparation: no early camera travel');
+          const alignment = await page.evaluate(()=>{
+            const n=__stableProbe.find(n=>n.kind==='gem'&&n.t===13&&n.f===0);
+            return n ? {actual:n.mesh.position.x,expected:r.__stableAudit().openCentre(13)} : null;
+          });
+          check(alignment && Math.abs(alignment.actual-alignment.expected)<1e-8,'sustain-preparation: rendered open bar missed the destination lane');
+          const name=`sustain-preparation-${preset}-${style}-${rate}`;
+          await record(name,samples,true);
+          await record(name+'-arrival',await steps(early.time,(13.6-early.time)/rate,30,rate));
+          const busy=structuredClone(fixture);
+          busy.chords[0].notes[0].vibrato_marks=[{start:0,end:3,intensity:'slight'}];
+          const normal=await init(busy,preset,{settings:{notationStyle:style}});
+          check(normal.planStops.every(s=>s.lead===.6),'sustain-preparation: timed vibrato must keep normal lead');
+        }
+    }
+    if (chosen('preparation-chart') && option('--preparation-chart')) {
+      const start = Number(option('--preparation-start',203.8));
+      const capture = Number(option('--preparation-capture',205.15));
+      const chart = privateChart(option('--preparation-chart'),start);
+      chart.lefty = args.includes('--preparation-lefty');
+      await init(chart,option('--preparation-preset','straight'));
+      await record('preparation-chart',await steps(start,capture-start),true);
+      await record('preparation-chart-arrival',await steps(capture,1.5));
     }
     if (chosen('clock-continuity')) {
       await init({...low(), transport: {epoch: 1, state: 'playing', position: 9,

@@ -57,7 +57,7 @@ def test_edited_authored_and_unknown_guidance_is_preserved(edit):
     if edit == "guidance": chart["anchors"][0]["width"] = 7
     if edit == "authored": proof["sourceAuthored"] = True
     if edit == "unknown": proof["policy"] = "other"
-    if edit == "current": proof["positionPolicy"] = "chord-local-v1"
+    if edit == "current": proof["positionPolicy"] = "open-preparation-v1"
     if edit == "future_position": proof["positionPolicy"] = "future-position-policy"
     if edit == "no_ownership": proof["fields"] = ["handshapes"]
     if edit == "bad_hash": proof["musicSha256"] = "bad"
@@ -84,3 +84,20 @@ def test_difficulty_levels_use_inherited_music_identity_and_phrase_window():
     assert anchors[1] == {"time":105.78625,"fret":7,"width":4}
     assert all(105 <= a["time"] < 109 for a in anchors)
     assert chart == before
+
+
+@pytest.mark.parametrize('policy', [None, 'chord-local-v1'])
+def test_existing_open_pickup_uses_new_position_in_memory_only(policy):
+    chart = {'name':'Open pickup','tuning':[0]*6,'capo':0,'templates':[],
+        'chords':[{'t':0,'notes':[{'s':s,'f':f,'sus':2} for s,f in enumerate([5,7,7])]}],
+        'notes':[{'t':2,'s':0,'f':0,'sus':.25},{'t':2.25,'s':0,'f':2,'sus':.25}],
+        'handshapes':[], 'anchors':[{'time':0.,'fret':5,'width':4},{'time':2.25,'fret':2,'width':4}]}
+    seal(chart)
+    chart['ext']['chartGuidance']['positionPolicy'] = policy
+    before = deepcopy(chart)
+    refreshed = refresh_generated_positions(chart)
+    assert refreshed['anchors'] == [{'time':0.,'fret':5,'width':4},{'time':2.,'fret':2,'width':4}]
+    assert refreshed['notes'] == before['notes'] and refreshed['chords'] == before['chords']
+    assert chart == before
+    chart['anchors'][0]['width'] = 5
+    assert refresh_generated_positions(chart) == chart

@@ -3247,15 +3247,82 @@
         return stops;
     }
 
+    /** Add bounded preparation only where the preceding attack is a plain hold.
+     * Built with the cached stop plan, never by scanning the song each frame.
+     * The lane/notes remain authoritative; this changes only camera timing. */
+    function hwyPrepareCameraStops(stops, notes, chords, rate, stringCount = 6) {
+        if (stops.length < 2) return stops.map(stop => ({ ...stop, lead: 0.6 }));
+        rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
+        const eps = 0.000501, events = [];
+        const expressive = n => ['bn', 'bnv', 'vb', 'v', 'vibrato', 'vibrato_marks', 'tr', 'whammy', 'hm', 'hp',
+            'harmonic_target', 'harmonic_changes', 'ho', 'po', 'ln', 'mt', 'fhm',
+            'slide_in_marks', 'slide_out', 'slideOut', 'slide_out_marks', 'pick_scrape_marks']
+            .some(k => Array.isArray(n[k]) ? n[k].length > 0 : !!n[k])
+            || ['sl', 'slu', 'su'].some(k => Number.isFinite(n[k]) && n[k] >= 0);
+        const valid = n => n && Number.isInteger(n.s) && n.s >= 0 && n.s < stringCount
+            && isRenderableNote(n);
+        const add = (time, members, chord) => {
+            if (!Number.isFinite(time)) return;
+            members = members.filter(valid);
+            if (!members.length) return;
+            const end = n => time + Math.max(0, Number(n.sus) || 0);
+            events.push({ time, members, chord, end });
+        };
+        for (const n of notes || []) add(n?.t, [n], false);
+        for (const c of chords || []) if (c && !c.h3dSynth) add(c.t, c.notes || [], true);
+        events.sort((a, b) => a.time - b.time);
+        // Written tails can overlap their replacement on the same string.
+        // Only that string's next attack ends its earlier focus constraint.
+        const nextByString = new Float64Array(stringCount); nextByString.fill(Infinity);
+        for (let i = events.length - 1; i >= 0;) {
+            let first = i;
+            while (first > 0 && events[i].time - events[first - 1].time <= eps) first--;
+            for (let j = first; j <= i; j++) {
+                const event = events[j];
+                const end = n => Math.min(event.end(n), nextByString[n.s]);
+                event.hold = event.chord && event.members.length > 1 && !event.members.some(expressive)
+                    ? Math.min(...event.members.map(end)) : -Infinity;
+                event.busy = Math.max(-Infinity, ...event.members.filter(expressive).map(end));
+            }
+            for (let j = first; j <= i; j++) for (const n of events[j].members) nextByString[n.s] = events[j].time;
+            i = first - 1;
+        }
+        const attacks = [];
+        let busyUntil = -Infinity;
+        for (const event of events) {
+            busyUntil = Math.max(busyUntil, event.busy);
+            let group = attacks[attacks.length - 1];
+            if (!group || event.time - group.time > eps) {
+                group = { time: event.time, hold: -Infinity, busy: busyUntil };
+                attacks.push(group);
+            }
+            group.hold = Math.max(group.hold, event.hold);
+            group.busy = busyUntil;
+        }
+        let index = 0;
+        return stops.map(stop => {
+            while (index < attacks.length && attacks[index].time < stop.time - eps) index++;
+            const next = attacks[index], previous = attacks[index - 1];
+            let lead = 0.6;
+            if (previous && next && Math.abs(next.time - stop.time) <= eps
+                && previous.hold >= stop.time - eps) {
+                const start = Math.max(stop.time - 1.2 * rate,
+                    previous.time + 0.3 * rate, previous.busy);
+                lead = Math.max(lead, Math.min(1.2, (stop.time - start) / rate));
+            }
+            return { ...stop, lead };
+        });
+    }
+
     // Compact quintic easing is a finite convolution of the stop timeline.
     // Overlapping moves add smoothly (continuous velocity and acceleration),
     // finish without residual drift, and evaluate identically after seeking.
     function hwyCameraPlanAt(stops, now, rate, smoothing, out) {
         out = out || {};
         rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
-        const lead = 0.6 * rate;
+        const lead = 1.2 * rate; // maximum preparation; each stop has its own lead
         const baseDuration = 0.6 + Math.max(0, Math.min(1, smoothing)) * 0.2;
-        const maxDuration = (baseDuration + 0.4) * rate;
+        const maxDuration = (baseDuration + 1.0) * rate;
         let lo = 0, hi = stops.length;
         while (lo < hi) {
             const mid = (lo + hi) >>> 1;
@@ -3268,14 +3335,15 @@
         // bounded time window; coalesced equal targets are absent entirely.
         for (let i = first + 1; i < stops.length && stops[i].time < now + lead; i++) {
             const delta = stops[i].x - stops[i - 1].x;
+            const stopLead = Math.max(0.6, Math.min(1.2, stops[i].lead || 0.6));
             const width = Math.max(1e-8, stops[i].maxX - stops[i].minX,
                 stops[i - 1].maxX - stops[i - 1].minX);
             // Crossing more than one whole playing area needs more time.
             // Keep the early start, but do not race to the far side while the
             // previous area's notes and labels still need to remain readable.
             const extra = Math.min(0.4, Math.max(0, Math.abs(delta) / width - 1) * 0.8);
-            const duration = (baseDuration + extra) * rate;
-            const u = Math.max(0, Math.min(1, (now - stops[i].time + lead) / duration));
+            const duration = (baseDuration + extra + stopLead - 0.6) * rate;
+            const u = Math.max(0, Math.min(1, (now - stops[i].time + stopLead * rate) / duration));
             x += delta * u * u * u * (10 + u * (-15 + 6 * u));
             velocity += delta * 30 * u * u * (1 - u) * (1 - u) * rate / duration;
         }
@@ -22470,6 +22538,9 @@
                 cache.stops = hwyBuildCameraStops(regions, rate, (row, centre) =>
                     stableRegionFraming(row, centre, baseDistance, true, 0.96).distance
                         <= row.distance + 1e-6);
+                cache.stops = hwyPrepareCameraStops(cache.stops, bundle.notes, bundle.chords, rate, nStr);
+                const leads = new Map(cache.stops.map(stop => [stop.time, stop.lead]));
+                for (const region of regions) region.lead = leads.get(region.time) || 0.6;
                 cache.regions = regions;
                 cache.rows = rows; cache.key = key; cache.rate = rate; cache.revision++;
             }
@@ -22502,7 +22573,7 @@
                 // Do not start closing only to reopen during the 800ms return.
                 // This holds an existing wider view, never widens early.
                 cache.result.returnFloor = Math.max(cache.result.returnFloor, row.viewDistance);
-                const u = Math.max(0, Math.min(1, 1 - until / 0.6));
+                const u = Math.max(0, Math.min(1, 1 - until / (row.lead || 0.6)));
                 const eased = u * u * u * (10 + u * (-15 + 6 * u));
                 cache.result.distance = Math.max(cache.result.distance,
                     baseDistance + (row.viewDistance - baseDistance) * eased);
