@@ -1422,6 +1422,7 @@ export function bsearchChords(arr, time) {
 export function _noteHasTechniqueFlags(n) {
     if (harmonicContactLabel(n)) return true;
     if (n.ghost === true) return true;
+    if (Array.isArray(n.vibrato_marks) && n.vibrato_marks.length) return true;
     if (n.bn || n.ho || n.po || n.tp || n.pm || n.vb || n.tr || n.ac || n.hm || n.hp || n.mt || n.fhm) return true;
     if (typeof n.sl === 'number' && n.sl >= 0) return true;
     if (Array.isArray(n.slide_in_marks) && slideInMarks2D(n).length > 0) return true;

@@ -3033,7 +3033,7 @@
         return n?.mt === true && (isPlayableFret(n.f) || n.f === 127)
             && !(n.sl != null && n.sl >= 0) && !(n.slu != null && n.slu >= 0) && !(n.su != null && n.su >= 0)
             && !n.slide_out && !n.slideOut && !n.slide_out_marks?.length && !n.slide_in_marks?.length
-            && !n.pick_scrape_marks?.length && !n.bn && !n.bnv?.length && !n.vb && !n.vibrato && !n.tr
+            && !n.pick_scrape_marks?.length && !n.vibrato_marks?.length && !n.bn && !n.bnv?.length && !n.vb && !n.vibrato && !n.tr
             && !n.whammy && !n.hm && !n.hp && !n.harmonic_target && !n.harmonic_changes
             && !n.ho && !n.po && !n.ln;
     }
@@ -3617,7 +3617,7 @@
         const hasIndividualCue = (n, ignoreLegato = false) => !!n.harmonic_changes || n.whammy?.version === 1 || flag(n.mt) || flag(n.fhm)
             || (!ignoreLegato && (flag(n.ln) || flag(n.ho) || flag(n.po)))
             || Number(n.bn) > 0 || (Array.isArray(n.bnv) && n.bnv.length > 0)
-            || flag(n.vb) || flag(n.vibrato) || flag(n.v) || flag(n.tr)
+            || n.vibrato_marks?.length > 0 || flag(n.vb) || flag(n.vibrato) || flag(n.v) || flag(n.tr)
             || ['sl', 'slu', 'su'].some(k => n[k] != null && Number.isFinite(Number(n[k])) && Number(n[k]) >= 0)
             || (Array.isArray(n.slide_out_marks) && n.slide_out_marks.length > 0)
             || (n.f > 0 && slideInMarks(n).length > 0)
@@ -16693,6 +16693,7 @@
                             _scrChordNote.pm  = !!cn.pm;
                             _scrChordNote.mt  = !!cn.mt;
                             _scrChordNote.vb  = !!cn.vb;
+                            _scrChordNote.vibrato_marks = cn.vibrato_marks;
                             _scrChordNote.tr  = !!cn.tr;
                             _scrChordNote.ac  = !!cn.ac;
                             _scrChordNote.tp  = !!cn.tp;
@@ -18366,6 +18367,7 @@
         }
 
         function noteHasVibrato(n) {
+            if (n?.vibrato_marks !== undefined) return Array.isArray(n.vibrato_marks) && n.vibrato_marks.length > 0;
             return !!(n && (n.vb || n.vibrato));
         }
 
@@ -18598,7 +18600,7 @@
             const incoming = new Map(), times = new Map();
             for (const [source, edge] of outgoing) {
                 const destination = edge?.destination;
-                if (!destination || source.ln !== true
+                if (!destination || source.vibrato_marks !== undefined || destination.vibrato_marks !== undefined || source.ln !== true
                     || !Number.isFinite(source.sus) || !(source.sus > 0)
                     || !Number.isFinite(destination.sus) || !(destination.sus > 0)
                     || !Number.isFinite(edge.sourceTime) || !Number.isFinite(edge.targetTime)
@@ -18638,6 +18640,45 @@
 
         function vibratoSemisAtTime(n, chartTime) {
             if (!noteHasVibrato(n) || !(n?.sus > 0)) return 0;
+            if (n.vibrato_marks !== undefined) {
+                const marks = n.vibrato_marks, elapsed = chartTime - n.t;
+                if (!Array.isArray(marks) || !Number.isFinite(elapsed) || elapsed < 0 || elapsed >= n.sus) return 0;
+                // Binary lookup: no allocations or whole-chart scans per frame.
+                let lo = 0, hi = marks.length;
+                while (lo < hi) {
+                    const mid = (lo + hi) >>> 1;
+                    if (marks[mid].start <= elapsed) lo = mid + 1; else hi = mid;
+                }
+                const index = lo - 1, mark = marks[index];
+                if (!mark || elapsed >= mark.end) return 0;
+                // Charts/interval arrays are immutable while loaded. Cache run
+                // extents by their array identity, including chord scratch views.
+                const cache = vibratoSemisAtTime.timedRuns || (vibratoSemisAtTime.timedRuns = new WeakMap());
+                let runs = cache.get(marks);
+                if (!runs) {
+                    runs = new Array(marks.length);
+                    for (let a = 0; a < marks.length;) {
+                        let b = a;
+                        while (b+1 < marks.length && Math.abs(marks[b].end-marks[b+1].start) <= 1e-6) b++;
+                        const run = {first:a, last:b};
+                        for (let i = a; i <= b; i++) runs[i] = run;
+                        a = b+1;
+                    }
+                    cache.set(marks, runs);
+                }
+                const {first, last} = runs[index];
+                const start = marks[first].start, end = Math.min(n.sus, marks[last].end);
+                const fade = Math.min(VIBRATO_HALF_WAVE_S, (end-start)*.5);
+                const edge = Math.max(0, Math.min(1, (elapsed-start)/fade, (end-elapsed)/fade));
+                let strength = mark.intensity === 'wide' ? 1.5 : 1;
+                if (index > first) {
+                    const before = marks[index-1].intensity === 'wide' ? 1.5 : 1;
+                    const blend = Math.min(1, (elapsed-mark.start)/Math.min(VIBRATO_HALF_WAVE_S, (mark.end-mark.start)*.5));
+                    strength = before + (strength-before)*blend*blend*(3-2*blend);
+                }
+                // Slight/wide is a visual cue, not an invented exact pitch.
+                return Math.sin((elapsed-start)*Math.PI/VIBRATO_HALF_WAVE_S)*strength*edge*edge*(3-2*edge);
+            }
             const context = _linkedVibratoRuns.get(n);
             if (context) {
                 // Chart-time sampling is seek-safe; rounding-sized link gaps do
