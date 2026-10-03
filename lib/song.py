@@ -9,6 +9,7 @@ import math
 import xml.etree.ElementTree as ET
 from lib.harmonic_target import validate_target, validate_alias
 from lib.whammy import validate_whammy
+from lib.finger_vibrato import validate_marks as validate_vibrato_marks
 from lib.harmonic_changes import validate_changes
 
 log = logging.getLogger("feedBack.lib.song")
@@ -90,6 +91,8 @@ class Note:
     harmonic_alias: str | None = None
     whammy: dict | None = None
     harmonic_changes: dict | None = None
+    # Present array is authoritative; [] suppresses legacy whole-note vibrato.
+    vibrato_marks: list | None = None
 
 
 @dataclass
@@ -293,6 +296,10 @@ def note_to_wire(n: Note) -> dict:
         out['harmonic_changes'] = validate_changes({**out, 'harmonic_changes':n.harmonic_changes})
     if n.harmonic_alias is not None:
         out["harmonic_alias"] = n.harmonic_alias
+    if n.vibrato_marks is not None:
+        out['t'] = round(n.time, 6)
+        out['sus'] = round(n.sustain, 6)
+        out['vibrato_marks'] = validate_vibrato_marks({'sus': out['sus'], 'vibrato_marks': n.vibrato_marks})
     if n.whammy is not None:
         # Its owning duration must use the same precision as the expression.
         out['t'] = round(n.time, 6)
@@ -362,7 +369,7 @@ def chord_note_to_wire(cn: Note) -> dict:
 
 def chord_to_wire(c: Chord) -> dict:
     out = {
-        "t": round(c.time, 3),
+        "t": round(c.time, 6 if any(n.vibrato_marks is not None for n in c.notes) else 3),
         "id": c.chord_id,
         "hd": c.high_density,
         "notes": [chord_note_to_wire(cn) for cn in c.notes],
@@ -687,6 +694,7 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         palm_mute=bool(d.get("pm", False)),
         mute=bool(d.get("mt", False)),
         vibrato=bool(d.get("vb", d.get("vibrato", False))),
+        vibrato_marks=validate_vibrato_marks(d),
         tremolo=bool(d.get("tr", False)),
         accent=bool(d.get("ac", False)),
         tap=bool(d.get("tp", False)),
