@@ -7,15 +7,16 @@ lead for a busy passage and a plain held chord.
 
 ## Implementation
 
-1. Resolve generated hand positions normally, then let a connected plain open
-   pickup adopt the next four-fret position at its own onset. The destination
-   must be within 0.75 song seconds of the beginning of the open run. A gap over
-   1ms between written durations breaks the run. A sounding fretted note, mixed
-   chord, technique, wide destination, or distant ending retains its context.
+1. Resolve generated hand positions normally, then walk backward from each
+   fretted destination through eligible plain open attacks. The whole pickup
+   adopts the destination position and width at its first onset, without a
+   total-run duration limit. Allow up to one local beat of intervening silence
+   (0.5 s without beats, clamped to 0.1–1 s with beats); longer gaps break the
+   run. A sounding fretted note, mixed chord or technique retains its context.
    Note onset, sustain and scoring data never change.
 2. Share the identical pure generator with FeedForge. New imports carry
-   `open-preparation-v1`; recognize the original unversioned position policy
-   and `chord-local-v1` for upgrades. The game checks original music and guidance
+   `open-preparation-v2`; recognize the original unversioned position policy,
+   `chord-local-v1` and `open-preparation-v1` for upgrades. The game checks original music and guidance
    hashes before generating positions in memory. Authored/edited guidance,
    unknown policies and current imports retain their saved positions. Explicit
    FeedForge regeneration upgrades recognized older guidance, including phrase
@@ -48,6 +49,14 @@ playback rates, mirrored motion and overlapping transition continuity.
 The read-only library audit covered 64 arrangements in 14 songs. All active
 frets remain covered and music/archive hashes are unchanged. Rats now uses
 frets 2–5 at the 205.72s open pickup, matching the next fret-2 note.
+
+The v2 audit also covers Cirice's three opens at 212.3925–213.05375s, which
+now use the upcoming 12–15 position together. A long rest before those opens
+does not break their relationship to the following fretted note. Parent beat
+maps are inherited by difficulty levels for the same detached-pick rule.
+The v2 generator has 121 passing Forge guidance/import checks and 17 passing
+Core compatibility checks; the repeated 14-song/64-arrangement audit preserves
+all active-fret coverage and music/archive hashes.
 
 The complete highway JavaScript pass has 875 passing tests; 111 FeedForge
 guidance/import tests passed. Core loader/arrangement/archive checks have 224
