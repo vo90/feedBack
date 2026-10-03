@@ -56,7 +56,7 @@ def refresh_generated_positions(data):
         pass
     if isinstance(data.get("phrases"), list):
         phrases = []
-        inherited = {k: data[k] for k in ("tuning", "capo", "centOffset", "templates") if k in data}
+        inherited = {k: data[k] for k in ("tuning", "capo", "centOffset", "templates", "beats") if k in data}
         for phrase in data["phrases"]:
             levels = []
             for level in phrase.get("levels", []):

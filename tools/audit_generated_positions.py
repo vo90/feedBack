@@ -65,9 +65,10 @@ def main():
                 results.append({"song":path.name,"arrangement":name,"loadMs":round(elapsed,3),
                     "oldAnchors":len(chart["anchors"]),"newAnchors":len(expected),
                     "changed":chart["anchors"] != expected})
-                if path.stem == "Ghost - Rats" and chart.get("name") == "Hybrid Lead":
-                    (args.out / "rats-before.json").write_text(json.dumps(chart), encoding="utf-8")
-                    (args.out / "rats-after.json").write_text(json.dumps(checked), encoding="utf-8")
+                if path.stem in ("Ghost - Rats", "Ghost - Cirice") and chart.get("name") == "Hybrid Lead":
+                    stem = path.stem.removeprefix("Ghost - ").lower()
+                    (args.out / (stem + "-before.json")).write_text(json.dumps(chart), encoding="utf-8")
+                    (args.out / (stem + "-after.json")).write_text(json.dumps(checked), encoding="utf-8")
         assert sha(path) == before, "Library archive changed"
     (args.out / "audit.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(json.dumps({"songs":len(set(r["song"] for r in results)),"arrangements":len(results),
