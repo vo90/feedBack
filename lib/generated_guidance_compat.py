@@ -7,7 +7,7 @@ import hashlib
 import json
 from bisect import bisect_right
 
-from lib.generated_hand_positions import generate_positions
+from lib.generated_hand_positions import PREVIOUS_POSITION_POLICIES, generate_positions
 
 
 def _digest(value):
@@ -19,7 +19,7 @@ def _anchors(chart):
     proof = chart.get("ext", {}).get("chartGuidance")
     if not isinstance(proof, dict) or proof.get("policy") != "feedforge-chart-guidance-v2":
         return None
-    if proof.get("sourceAuthored") is not False or proof.get("positionPolicy") is not None:
+    if proof.get("sourceAuthored") is not False or proof.get("positionPolicy") not in PREVIOUS_POSITION_POLICIES:
         return None  # Current and unknown future position policies remain intact.
     fields = proof.get("fields")
     if (not isinstance(fields, list) or "anchors" not in fields
