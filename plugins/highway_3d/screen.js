@@ -3698,7 +3698,34 @@
                 if (!legacy || shape.start > legacy.start || (shape.start === legacy.start && shape.end < legacy.end)) legacy = shape;
             }
             if (arpeggioShape) continue;
-            const durationFor = n => legatoEnds.has(n) ? legatoEnds.get(n) - chord.t : Number(n.sus);
+            // The wire rounds ordinary onsets and sustains independently to
+            // milliseconds. Comparing two (onset + sustain) endpoints can
+            // therefore differ by up to 2 ms (four half-ms rounding errors).
+            // Only a verified HO/PO chain may borrow an ordinary held member's
+            // duration for this presentation decision. Keep the original notes,
+            // chain continuity, and ordinary/majority release comparisons exact.
+            const legatoReleaseTolerance = 0.002;
+            const durations = new Map();
+            for (const n of sounding) {
+                let duration = Number(n.sus);
+                if (legatoEnds.has(n)) {
+                    duration = legatoEnds.get(n) - chord.t;
+                    let minMatch = Infinity, maxMatch = -Infinity;
+                    for (const held of suppressedMembers) {
+                        const heldDuration = Number(held.sus);
+                        if (!Number.isFinite(heldDuration) || heldDuration <= 0
+                            || Math.abs(heldDuration - duration) > legatoReleaseTolerance + 1e-9) continue;
+                        minMatch = Math.min(minMatch, heldDuration);
+                        maxMatch = Math.max(maxMatch, heldDuration);
+                    }
+                    // Ambiguous nearby releases stay independent. Match against
+                    // authored held durations, never an already adjusted chain,
+                    // so neither note order nor chain length expands tolerance.
+                    if (minMatch < Infinity && maxMatch - minMatch <= 1e-6) duration = minMatch;
+                }
+                durations.set(n, duration);
+            }
+            const durationFor = n => durations.get(n);
             let duration = durationFor(sounding[0]);
             let shared = Number.isFinite(duration) && duration > 0
                 && sounding.every(n => Number.isFinite(durationFor(n)) && durationFor(n) > 0

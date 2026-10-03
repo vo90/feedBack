@@ -565,6 +565,102 @@ test('Evil in this House shares the tied yellow hold while keeping the blue hamm
     assert.deepEqual(resolve([ch], [], [], [], notes), model, 'seeks rebuild deterministically');
 });
 
+test('Evil in this House playback rounding retains yellow lanes and blue legato cues', () => {
+    // Values from note_to_wire/chord_to_wire, including Python's millisecond
+    // rounding. The original chart has identical yellow/blue final releases.
+    const passages = [
+        [44.12, .865, 5, .216, [[44.336, 7, .649]]],
+        [44.985, .865, 5, .216, [[45.201, 7, .649]]],
+        [45.85, .85, 5, .212, [[46.062, 7, .637]]],
+        [46.7, .85, 7, .212, [[46.913, 8, .212], [47.125, 7, .212], [47.337, 5, .212]]],
+        [143.57, .427, 5, .214, [[143.784, 7, .214]]],
+        [144.425, .427, 5, .214, [[144.639, 7, .214]]],
+        [145.28, .427, 5, .214, [[145.494, 7, .214]]],
+    ];
+    for (const [t, sus, f, firstSus, targets] of passages) for (const reverse of [false, true]) {
+        const yellow = { s: 1, f: 5, sus }, blue = { s: 2, f, sus: firstSus, ln: true };
+        const ch = { t, id: 25, notes: reverse ? [blue, yellow] : [yellow, blue] };
+        const notes = targets.map(([time, fret, duration], i) => ({
+            t: time, s: 2, f: fret, sus: duration,
+            [fret > (i ? targets[i - 1][1] : f) ? 'ho' : 'po']: true,
+            ...(i < targets.length - 1 ? { ln: true } : {}),
+        }));
+        // A following picked chord must remain a separate attack, including
+        // the tiny overlaps caused by rounding the two events independently.
+        const last = targets[targets.length - 1];
+        const next = { t: last[0] + last[2], id: 25, notes: [
+            { s: 1, f: 5, sus: .214 }, { s: 2, f: last[1], sus: .214 },
+        ] };
+        const chords = reverse ? [next, ch] : [ch, next];
+        freezeDeep(chords); freezeDeep(notes);
+        const before = JSON.stringify({ chords, notes });
+        const model = resolve(chords, [], [], [], notes), hold = model.byChord.get(ch);
+        assert.ok(hold, `shared hold at ${t}`);
+        near(hold.end, t + sus);
+        assert.deepEqual([...hold.suppressedMembers], [yellow]);
+        assert.equal(hold.suppressMemberTrails, false);
+        assert.ok(model.byChord.has(next), 'following picked chord retains its hold');
+        assert.deepEqual(resolve(chords, [], [], [], notes), model, 'deterministic after seeking');
+        assert.equal(JSON.stringify({ chords, notes }), before, 'playback/scoring times are untouched');
+    }
+});
+
+test('only verified legato endpoints get the bounded wire-rounding allowance', () => {
+    // Comparing two (onset + duration) releases involves four independently
+    // rounded fields: at most 2 ms total, including half-millisecond ties.
+    for (const t of [0, 10, 16000]) for (const delta of [-.002001, -.002, -.001, 0, .001, .002, .002001]) {
+        for (const reverse of [false, true]) {
+            const held = { s: 0, f: 3, sus: 1 }, moving = { s: 1, f: 5, sus: .25, ln: true };
+            const ch = { t, id: 0, notes: reverse ? [moving, held] : [held, moving] };
+            const notes = [{ t: t + .25, s: 1, f: 7, sus: .75 + delta, ho: true }];
+            freezeDeep(ch); freezeDeep(notes);
+            const hold = resolve([ch], [], [], [], notes).byChord.get(ch);
+            if (Math.abs(delta) <= .002) {
+                assert.ok(hold, `${t}: ${delta}`);
+                near(hold.end, t + 1);
+                assert.deepEqual([...hold.suppressedMembers], [held]);
+            } else assert.equal(hold, undefined, `${t}: real release difference ${delta}`);
+        }
+    }
+    for (const delta of [.000004, .001, .002]) {
+        const ch = chord(10, [3, 5], 1); ch.notes[1].sus += delta;
+        assert.equal(resolve([ch]).holds.length, 0, 'ordinary unequal releases are not rounded together');
+    }
+});
+
+test('legato rounding uses an unambiguous held duration without merging nearby releases', () => {
+    for (const reverse of [false, true]) {
+        const ch = chord(10, [3, 5, 7], 1);
+        ch.notes[1].sus = 1.002; ch.notes[2].sus = .25;
+        const notes = [{ t: 10.25, s: 2, f: 8, sus: .751, ho: true }];
+        if (reverse) ch.notes.reverse();
+        assert.equal(resolve([ch], [], [], [], notes).holds.length, 0,
+            'the moving string cannot pick between two different held releases');
+    }
+    const ch = chord(10, [3, 5, 0, 7], 1);
+    ch.notes[2].sus = .2; ch.notes[3].sus = .25;
+    const notes = [{ t: 10.25, s: 3, f: 8, sus: .751, ho: true }];
+    const hold = resolve([ch], [], [], [], notes).byChord.get(ch);
+    assert.ok(hold, 'a known majority can include a rounded legato endpoint');
+    near(hold.end, 11);
+    assert.deepEqual([...hold.suppressedMembers], ch.notes.slice(0, 2));
+    assert.equal(hold.suppressMemberTrails, false, 'short open note and technique retain their ribbons');
+});
+
+test('release matching never accumulates rounding allowances along a legato chain', () => {
+    const ch = chord(10, [3, 5], 1); ch.notes[1].sus = .1;
+    const notes = Array.from({ length: 8 }, (_, i) => ({
+        t: 10.1 + i * .1, s: 1, f: 6 + i, sus: i === 7 ? .203 : .1, ho: true,
+    }));
+    assert.equal(resolve([ch], [], [], [], notes).holds.length, 0,
+        'a 3 ms final mismatch is not forgiven by walking eight links');
+    notes[7].sus = .201;
+    near(resolve([ch], [], [], [], notes).byChord.get(ch).end, 11);
+    notes[3].t += .002;
+    assert.equal(resolve([ch], [], [], [], notes).holds.length, 0,
+        'the endpoint allowance does not relax same-string continuity');
+});
+
 test('multi-step hammer-ons and pull-offs include open targets, with or without ln', () => {
     for (const ln of [true, false]) for (const frets of [[3, 5, 7], [7, 5, 0], [3, 5, 3]]) {
         const ch = chord(10, [3, frets[0]], 1); Object.assign(ch.notes[1], { sus: .25, ln });

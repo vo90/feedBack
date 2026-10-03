@@ -104,6 +104,23 @@ test('position changes and backward seeks preserve hold geometry until its exact
     assert.equal(renderer.draw(12.1).length, 0);
     assert.equal(renderer.draw(11.9).length, 3);
 });
+test('rounded legato release keeps the actual held lane through impact and backward seeks', () => {
+    const ch = { t: 45.85, id: 0, notes: [
+        { s: 1, f: 5, sus: .85 }, { s: 2, f: 5, sus: .212, ln: true },
+    ] };
+    const bundle = fixture([ch]);
+    bundle.notes = [{ t: 46.062, s: 2, f: 7, sus: .637, ho: true }];
+    const renderer = makeRenderer(bundle);
+    near(renderer.ends.get(ch), 46.7);
+    for (const now of [45, 45.85, 46.062, 46.65, 46.6995, 45.8]) {
+        const meshes = renderer.draw(now);
+        assert.equal(meshes.length, 3, 'two lane borders and release cap');
+        near(drawnEnd(meshes[0], now), 46.7, 'yellow duration controls the lane');
+        near(meshes[0].scaleValue[2], (46.7 - Math.max(now, ch.t)) * 1.725);
+    }
+    assert.equal(renderer.draw(46.7).length, 0, 'no invented linger');
+});
+
 test('short explicit and legacy holds have exact ends without minimum length', () => {
     for (const explicit of [true, false]) {
         const ch = chord(10, explicit ? 0.1 : 0), shapes = explicit ? []
