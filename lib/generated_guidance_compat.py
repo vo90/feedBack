@@ -27,9 +27,10 @@ def _anchors(chart):
             or len(fields) != len(set(fields))):
         return None
     music = {k: chart[k] for k in ("tuning", "capo", "centOffset", "notes", "chords", "templates") if k in chart}
+    slide_policy = "timed-known-slides" if proof.get("positionPolicy") == "slide-follow-v1" else "known-corridor"
     if (proof.get("musicSha256") != _digest(music)
             or proof.get("guidanceSha256") != _digest({k: chart.get(k) for k in fields})
-            or proof.get("slidePolicy") != "known-corridor"
+            or proof.get("slidePolicy") != slide_policy
             or proof.get("legatoPolicy") != "compact-explicit-hopo"
             or proof.get("fingeringAssessed") is not False):
         return None

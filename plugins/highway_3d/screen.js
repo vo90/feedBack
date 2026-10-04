@@ -3027,8 +3027,8 @@
         return n?.mt === true && (isPlayableFret(n.f) || n.f === 127)
             && !(n.sl != null && n.sl >= 0) && !(n.slu != null && n.slu >= 0) && !(n.su != null && n.su >= 0)
             && !n.slide_out && !n.slideOut && !n.slide_out_marks?.length && !n.slide_in_marks?.length
-            && !n.pick_scrape_marks?.length && !n.vibrato_marks?.length && !n.bn && !n.bnv?.length && !n.vb && !n.vibrato && !n.tr
-            && !n.whammy && !n.hm && !n.hp && !n.harmonic_target && !n.harmonic_changes
+            && !n.pick_scrape_marks?.length && !n.vibrato_marks?.length && !n.bn && !n.bnv?.length && !n.bt && !n.vb && !n.vibrato
+            && !n.whammy && !n.hm && !n.hp && !n.hn && !n.harmonic_target && !n.harmonic_changes && !n.harmonic_alias
             && !n.ho && !n.po && !n.ln;
     }
 

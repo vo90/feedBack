@@ -28,6 +28,16 @@ const stops = [{time:0,x:5,minX:3,maxX:7}, {time:4,x:12,minX:10,maxX:14}];
 const plan = (notes = [note(4,12)], chords = [chord()], rate = 1, rows = stops) =>
     prepare(rows, notes, chords, rate);
 
+test('positionless tremolo and whammy keep technique focus after lane preparation', () => {
+    for (const extra of [{tr:true}, {tr:true,mt:true}, {whammy:{version:1}}]) {
+        const held = note(1,0,{sus:3,...extra});
+        assert.equal(plan([held,note(4,12)],[])[1].lead,.6);
+        const c = chord(); c.notes = c.notes.map(n=>({...n,f:0,...extra}));
+        assert.equal(plan([note(4,12)],[c])[1].lead,.6);
+    }
+    assert.equal(plan([note(3.3,0,{mt:true}),note(4,12)],[])[1].lead,.6);
+});
+
 test('plain held chord prepares the next position 1.2 seconds early', () => {
     const original = JSON.stringify(stops), p = plan();
     assert.equal(p[1].lead, 1.2);

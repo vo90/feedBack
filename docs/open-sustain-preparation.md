@@ -133,3 +133,35 @@ stem and both trails to an independently specified destination position/width.
 The unchanged renderer fails that assertion on the reported Cirice passage;
 the corrected renderer passes. Use the wire export, not only the unrounded
 chart export, for end-to-end passage acceptance.
+
+## Positionless playing
+
+`positionless-preparation-v1` extends preparation to attacks that require no
+particular fret: ordinary and palm-muted opens; open fret-hand mute, accents,
+ghost dynamics, tapping, slap/pop and picking marks; plain dead strikes including
+editor placeholder frets; open tremolo and whammy effects; and chords/runs mixing
+these members. A positive fret with only palm or fret-hand mute remains fretted.
+Tremolo on a plain dead strike does not give its hidden editor fret a position.
+
+Slides, scrapes, harmonics/contact targets, bends, finger vibrato and explicit
+linked/HOPO gestures retain context. Link protection checks both adjacent notes,
+including a target without its own link flag and an open/dead source before an
+explicit HOPO target. Effective same-string replacement and active other-string
+holds keep their existing protections. The entire eligible run uses the next
+fretted attack's lane; long intervening silence still breaks the run and no
+destination means no new position. Musical events, technique marks and scoring
+data are unchanged.
+
+This is a placement rule. Tremolo, whammy and muted attacks keep the existing
+camera activity/focus rules; they do not become silence or quiet holds.
+
+The pure generator remains byte-identical in Core and FeedForge. Intact older
+generated guidance, including `slide-follow-v1` with its timed-slide receipt,
+upgrades in memory during loading. Authored/edited guidance and unknown/current
+policies remain untouched. New imports and explicit regeneration record the new
+policy; normal finalization does not silently regenerate an existing receipt.
+
+Validation covers muted groups in Cirice at 186.7125 and 186.880625 seconds,
+actual note/chord wire rounding, hidden dead frets, mixed groups, technique and
+link boundaries, gap limits, other-string holds, old receipt/phrase migration,
+independent active-fret coverage and camera technique focus.
