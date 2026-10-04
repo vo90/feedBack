@@ -53,9 +53,9 @@ __stableAudit(){return {ren,cam,scene,curX,curDist,curLookY,tgtX,tgtDist,tgtLook
  planStops:_stablePlan.stops.map(s=>({time:s.time,x:s.x,lead:s.lead})),
  laneClip:window.__stableLaneClip,
  openCentre(time){const b=anchorLaneBoundsAt(_drawAnchors,time);return b?(xFret(b.dMin)+xFret(b.dMax))/2:null;},
- openExpected(fret,width){
+ openExpected(fret,width,boxed=false){
    const b=laneBoundsFromAnchor({fret,width}),center=(xFret(b.dMin)+xFret(b.dMax))/2;
-   const laneWidth=Math.abs(xFret(b.dMax)-xFret(b.dMin))+2*OPEN_NOTE_PAD_X;
+   const laneWidth=Math.abs(xFret(b.dMax)-xFret(b.dMin))+(boxed?0:2*OPEN_NOTE_PAD_X);
    return {center,width:40*K*Math.max(.22,laneWidth*.96/(40*K))};
  },
  worldX(mesh){
@@ -610,6 +610,34 @@ async function main() {
           &&a.trails.every(t=>t.min>=a.expected.center-a.expected.width/2-1e-7&&t.max<=a.expected.center+a.expected.width/2+1e-7)),
           'preparation-chart: open trails missed destination '+JSON.stringify(alignment));
         results.push({name:'preparation-chart-open-alignment',alignment});
+      }
+      if (option('--preparation-positionless-chords')) {
+        const times=option('--preparation-positionless-chords').split(',').map(Number);
+        const members=times.flatMap(t=>{
+          const c=chart.chords.find(c=>Math.abs(c.t-t)<.000001);
+          assert.ok(c,'Missing requested chord '+t);
+          return c.notes.map(n=>({t,s:n.s}));
+        });
+        const fret=Number(option('--preparation-fret')),width=Number(option('--preparation-width',4));
+        const alignment=await page.evaluate(({members,times,fret,width})=>{
+          const audit=r.__stableAudit(),expected=audit.openExpected(fret,width,true);
+          const bars=members.map(({t,s})=>{
+            const gem=__stableProbe.find(n=>n.kind==='gem'&&Math.abs(n.t-t)<.000001&&n.s===s);
+            return {t,s,actual:gem&&audit.worldX(gem.mesh),visible:gem?.mesh.visible};
+          });
+          const frames=times.map(t=>{
+            const frame=__stableProbe.find(n=>n.kind==='chord'&&Math.abs(n.t-t)<.000001);
+            return {t,actual:frame&&audit.worldX(frame.mesh)};
+          });
+          return {expected,bars,frames};
+        },{members,times,fret,width});
+        check(alignment.bars.every(b=>b.actual&&b.visible
+          &&Math.abs(b.actual.center-alignment.expected.center)<1e-7
+          &&Math.abs(b.actual.width-alignment.expected.width)<1e-7),
+          'preparation-chart: positionless chord members missed destination '+JSON.stringify(alignment));
+        check(alignment.frames.every(f=>f.actual&&Math.abs(f.actual.center-alignment.expected.center)<1e-7),
+          'preparation-chart: positionless chord frame missed destination '+JSON.stringify(alignment));
+        results.push({name:'preparation-chart-positionless-chords',alignment});
       }
       await record('preparation-chart',samples,true);
       await record('preparation-chart-arrival',await steps(capture,1.5));

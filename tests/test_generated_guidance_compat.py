@@ -27,6 +27,70 @@ def seal(chart):
     proof["guidanceSha256"] = digest({k: chart[k] for k in proof["fields"]})
 
 
+@pytest.mark.parametrize('policy', [None, 'chord-local-v1', 'open-preparation-v1',
+                                  'open-preparation-v2', 'slide-follow-v1'])
+def test_positionless_groups_upgrade_old_policies_and_phrase_levels_without_music_edits(policy):
+    chart = {'tuning':[0]*6, 'capo':0, 'templates':[], 'handshapes':[],
+        'notes':[{'t':0,'s':5,'f':2,'sus':.25}, {'t':3,'s':1,'f':15,'sus':.25}],
+        'chords':[{'t':2,'notes':[{'s':0,'f':127,'sus':.5,'mt':True},
+                                 {'s':1,'f':0,'sus':.5,'pm':True}]}],
+        'beats':[{'time':i*.5} for i in range(8)],
+        'anchors':[{'time':0.,'fret':2,'width':4},{'time':3.,'fret':12,'width':4}]}
+    seal(chart)
+    proof = chart['ext']['chartGuidance']
+    proof['positionPolicy'] = policy
+    if policy == 'slide-follow-v1': proof['slidePolicy'] = 'timed-known-slides'
+    level = {k:deepcopy(v) for k,v in chart.items() if k not in ('tuning','capo','templates','beats')}
+    level['ext']['chartGuidance']['window'] = [0,4]
+    chart['phrases'] = [{'levels':[level]}]
+    before = deepcopy(chart)
+    result = refresh_generated_positions(chart)
+    expected = [{'time':0.,'fret':2,'width':4},{'time':2.,'fret':12,'width':4}]
+    assert result['anchors'] == expected
+    assert result['phrases'][0]['levels'][0]['anchors'] == expected
+    assert result['notes'] == before['notes'] and result['chords'] == before['chords']
+    assert chart == before
+    if policy == 'slide-follow-v1':
+        proof['slidePolicy'] = 'known-corridor'
+        assert refresh_generated_positions(chart)['anchors'] == chart['anchors']
+
+
+def test_cirice_muted_chords_survive_real_loading_and_wire_rounding():
+    chart = {'tuning':[0]*6, 'templates':[], 'notes':[], 'handshapes':[],
+        'chords':[{'t':t,'notes':[{'s':s,'f':f,'sus':sus, 'mt':mute} for s,f in enumerate(frets)]}
+            for t,frets,sus,mute in [(186.04,[0,2],.6725,False),
+                (186.7125,[0,0],.168125,True),(186.880625,[0,0],.168125,True),
+                (187.04875,[7,9],.33625,False)]],
+        'anchors':[{'time':0.,'fret':2,'width':4},{'time':187.04875,'fret':7,'width':4}]}
+    seal(chart)
+    chart['ext']['chartGuidance'].update(positionPolicy='slide-follow-v1',slidePolicy='timed-known-slides')
+    before = deepcopy(chart)
+    wire = arrangement_to_wire(arrangement_from_wire(chart))
+    assert wire['anchors'] == [{'time':0.,'fret':2,'width':4},{'time':186.7125,'fret':7,'width':4}]
+    assert [c['t'] for c in wire['chords']] == [186.04,186.713,186.881,187.049]
+    assert all(n['mt'] and n['f']==0 for c in wire['chords'][1:3] for n in c['notes'])
+    assert chart == before
+
+
+@pytest.mark.parametrize('effect', ['tremolo','whammy'])
+def test_open_effects_keep_their_wire_instructions_when_preparing_a_lane(effect):
+    extra = {'tr':True} if effect == 'tremolo' else {'whammy':{
+        'version':1, 'policy':'optional', 'segments':[{'start':0,'end':1,
+            'source_id':'test','group':'bar','curve':[{'t':0,'v':0},{'t':1,'v':-2}]}]}}
+    chart = {'tuning':[0]*6, 'templates':[], 'chords':[], 'handshapes':[],
+        'notes':[{'t':0,'s':0,'f':2,'sus':.25}, {'t':2,'s':0,'f':0,'sus':1,**extra},
+                 {'t':3,'s':0,'f':15,'sus':.25}],
+        'anchors':[{'time':0.,'fret':2,'width':4},{'time':3.,'fret':12,'width':4}]}
+    seal(chart)
+    chart['ext']['chartGuidance'].update(positionPolicy='slide-follow-v1',slidePolicy='timed-known-slides')
+    before = deepcopy(chart)
+    wire = arrangement_to_wire(arrangement_from_wire(chart))
+    assert wire['anchors'][-1] == {'time':2.,'fret':12,'width':4}
+    assert wire['notes'][1]['f']==0 and wire['notes'][1]['sus']==1
+    assert all(wire['notes'][1][k]==v for k,v in extra.items())
+    assert chart == before
+
+
 def rats():
     chart = {"name": "Rats regression", "tuning": [0]*6, "capo": 0,
         "notes": [{"t": 105.5375, "s": 0, "f": 3, "sl": 8, "sus": .24875}],
@@ -61,7 +125,7 @@ def test_edited_authored_and_unknown_guidance_is_preserved(edit):
     if edit == "guidance": chart["anchors"][0]["width"] = 7
     if edit == "authored": proof["sourceAuthored"] = True
     if edit == "unknown": proof["policy"] = "other"
-    if edit == "current": proof["positionPolicy"] = "slide-follow-v1"
+    if edit == "current": proof["positionPolicy"] = "positionless-preparation-v1"
     if edit == "future_position": proof["positionPolicy"] = "future-position-policy"
     if edit == "no_ownership": proof["fields"] = ["handshapes"]
     if edit == "bad_hash": proof["musicSha256"] = "bad"

@@ -134,3 +134,18 @@ test('ordinary dead editor frets use the chord lane, while explicit motion and p
         assert.equal(run.isPlainDeadNote(n),false);
     }
 });
+
+test('tremolo dead strikes keep placeholder frets out of lane and camera bounds', () => {
+    for (const f of [0, 7, 24, 127]) {
+        const dead = Object.freeze({s: 1, f, mt: true, tr: true, sus: 2});
+        assert.equal(run.isPlainDeadNote(dead), true);
+        assert.equal(run.usesUnfrettedPosition(dead), true);
+        assert.equal(run.hwyFirstRelevantFrettedTime([{...dead, t: 1}], [], 0, .2, 6), null);
+        assert.deepEqual(run.frame({t: 1, notes: [dead, {...dead, s: 2}]}, [],
+            [{time: 0, fret: 12, width: 4}]), {shape: [[1, 0], [2, 0]], left: 11, right: 15});
+    }
+    for (const extra of [{bt: 1}, {vibrato_marks: [{}]}, {slideOut: 'down'},
+        {hn: 7}, {harmonic_alias: 'natural'}, {whammy: {version: 1}}]) {
+        assert.equal(run.isPlainDeadNote({f: 7, mt: true, tr: true, ...extra}), false);
+    }
+});
