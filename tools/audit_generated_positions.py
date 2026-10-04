@@ -12,6 +12,7 @@ import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lib.generated_guidance_compat import refresh_generated_positions
 from lib.generated_hand_positions import POSITION_POLICY, generate_positions
+from lib.song import arrangement_from_wire, arrangement_to_wire
 
 
 def sha(path):
@@ -71,6 +72,11 @@ def main():
                     stem = path.stem.removeprefix("Ghost - ").lower()
                     (args.out / (stem + "-before.json")).write_text(json.dumps(chart), encoding="utf-8")
                     (args.out / (stem + "-after.json")).write_text(json.dumps(checked), encoding="utf-8")
+                    # Exercise the same note/chord/anchor serializers as the
+                    # live websocket. Notes may round down ahead of their lane.
+                    wire = arrangement_to_wire(arrangement_from_wire(original))
+                    wire["beats"] = original.get("beats", [])
+                    (args.out / (stem + "-wire.json")).write_text(json.dumps(wire), encoding="utf-8")
         assert sha(path) == before, "Library archive changed"
     (args.out / "audit.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(json.dumps({"songs":len(set(r["song"] for r in results)),"arrangements":len(results),

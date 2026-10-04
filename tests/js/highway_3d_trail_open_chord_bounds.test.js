@@ -45,7 +45,9 @@ const harness = new Function('assert', `
     let openLaneWidth = 40;
     const xFret = fret => fret * 10;
     const openNoteLaneBoxW = () => openLaneWidth;
+    const CHORD_ANCHOR_TIME_EPS = 0.000501;
     ${extractFn(src, 'getChartAnchorAt')}
+    ${extractFn(src, 'getNoteAnchorAt')}
     ${extractFn(src, 'laneBoundsFromAnchor')}
     ${extractFn(src, 'anchorPlayedFretInclusiveSpan')}
     ${extractFn(src, 'playedFretSpanCoversShape')}

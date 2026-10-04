@@ -3125,10 +3125,16 @@
         return lo === 0 ? anchorArr[0] : anchorArr[lo - 1];
     }
 
-    // Chord onsets are rounded to milliseconds by chord_to_wire; anchors keep
+    // Note/chord onsets are rounded to milliseconds on the wire; anchors keep
     // their source precision. Treat the half-millisecond round-trip difference
     // as the same onset, without shifting the chart's actual lane boundaries.
     const CHORD_ANCHOR_TIME_EPS = 0.000501;
+
+    // Event geometry uses the same onset despite wire rounding. Keep the exact
+    // chart-time lookup above for lane slicing, handshapes and continuous time.
+    function getNoteAnchorAt(anchorArr, t) {
+        return getChartAnchorAt(anchorArr, t + CHORD_ANCHOR_TIME_EPS);
+    }
 
     function chordGuideTimedRowAt(rows, t) {
         let lo = 0, hi = rows.length;
@@ -3162,6 +3168,10 @@
     function anchorLaneBoundsAt(anchorArr, t) {
         if (!anchorArr || !anchorArr.length) return null;
         return laneBoundsFromAnchor(getChartAnchorAt(anchorArr, t));
+    }
+
+    function noteAnchorLaneBoundsAt(anchorArr, t) {
+        return laneBoundsFromAnchor(getNoteAnchorAt(anchorArr, t));
     }
 
     /**
@@ -8512,7 +8522,7 @@
         // plus horizontal padding, or the default four-fret window). Kept at
         // factory scope so note rendering and trail/gem matching share it.
         function openNoteLaneBoxW(chartTime, chartAnchors = _drawAnchors) {
-            const bounds = anchorLaneBoundsAt(chartAnchors, chartTime);
+            const bounds = noteAnchorLaneBoundsAt(chartAnchors, chartTime);
             if (bounds) {
                 const xl = fretX(bounds.dMin);
                 const xr = fretX(bounds.dMax);
@@ -16163,7 +16173,7 @@
                     const strumFrame = strumFrames.byNote.get(n);
                     let singleOpenX;
                     if (usesUnfrettedPosition(n)) {
-                        const ab = strumFrame ? strumFrame.bounds : anchorLaneBoundsAt(anchors, n.t);
+                        const ab = strumFrame ? strumFrame.bounds : noteAnchorLaneBoundsAt(anchors, n.t);
                         if (ab) singleOpenX = (xFret(ab.dMin) + xFret(ab.dMax)) / 2;
                     }
                     const singleOpenLaneW = usesUnfrettedPosition(n)
@@ -17458,7 +17468,7 @@
                     const _fwA = Math.max(_fwE.a, _fwE.openA);
                     if (_fwA <= 0) continue;
                     const _fwB = _fwE.bounds || chordShapeLaneBounds(_fwE.minF, _fwE.maxF,
-                        getChartAnchorAt(_drawAnchors, _fwE.t));
+                        getNoteAnchorAt(_drawAnchors, _fwE.t));
                     const _w0 = _fwB.dMin, _w1 = _fwB.dMax;
                     if (_fwA > _fwHitIn[_w0]) _fwHitIn[_w0] = _fwA;
                     if (_fwA > _fwHitIn[_w1]) _fwHitIn[_w1] = _fwA;
@@ -18798,8 +18808,7 @@
 
         /** Same centre and lane width as the actual standalone/open-chord draw. */
         function trailOpenLayoutAt(chartTime, meta, chartAnchors, out) {
-            const anchorDef = getChartAnchorAt(chartAnchors,
-                chartTime + (meta ? CHORD_ANCHOR_TIME_EPS : 0));
+            const anchorDef = getNoteAnchorAt(chartAnchors, chartTime);
             const anchor = laneBoundsFromAnchor(anchorDef);
             let center = anchor ? (xFret(anchor.dMin) + xFret(anchor.dMax)) * 0.5 : curX;
             let width = openNoteLaneBoxW(chartTime, chartAnchors);
@@ -18828,7 +18837,7 @@
                 trailYieldAddTargetXBounds(x, NH * 1.2, bounds);
                 return true;
             }
-            const anchorDef = getChartAnchorAt(_drawAnchors, event.t);
+            const anchorDef = getNoteAnchorAt(_drawAnchors, event.t);
             const anchor = laneBoundsFromAnchor(anchorDef);
             const anchorCX = anchor
                 ? (xFret(anchor.dMin) + xFret(anchor.dMax)) * 0.5
@@ -20466,7 +20475,7 @@
                     // slab's width is derived (openNoteLaneBoxW(n.t)) — so the
                     // flashed wires are the ones the slab is actually drawn
                     // between, even if the lane has since moved.
-                    const _fwB = anchorLaneBoundsAt(_drawAnchors, n.t);
+                    const _fwB = noteAnchorLaneBoundsAt(_drawAnchors, n.t);
                     if (_fwB) {
                         if (_fwA > _fwHitIn[_fwB.dMin]) _fwHitIn[_fwB.dMin] = _fwA;
                         if (_fwA > _fwHitIn[_fwB.dMax]) _fwHitIn[_fwB.dMax] = _fwA;

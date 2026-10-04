@@ -2,11 +2,14 @@
 from copy import deepcopy
 import hashlib
 import json
+from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
 from lib.generated_guidance_compat import refresh_generated_positions
-from lib.song import arrangement_from_wire
+from lib.song import arrangement_from_wire, arrangement_to_wire
 
 
 def digest(value):
@@ -143,3 +146,43 @@ def test_existing_cirice_slide_moves_only_verified_generated_positions(policy):
     assert chart == before
     chart['anchors'][0]['fret'] = 11
     assert refresh_generated_positions(chart) == chart
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='Renderer boundary acceptance requires Node')
+def test_open_lane_survives_the_actual_game_wire_round_trip():
+    chart = {'tuning':[0]*6,'templates':[],'chords':[],'handshapes':[],
+        'notes':[{'t':0,'s':0,'f':1,'sus':.1},
+            {'t':291.04125,'s':0,'f':0,'sus':.32875},
+            {'t':291.37,'s':1,'f':0,'sus':.33625},
+            {'t':291.70625,'s':1,'f':0,'sus':.33625},
+            {'t':292.0425,'s':1,'f':15,'sus':.33625}],
+        'anchors':[{'time':0.,'fret':1,'width':4},{'time':292.0425,'fret':12,'width':4}]}
+    seal(chart)
+    before = deepcopy(chart)
+    wire = arrangement_to_wire(arrangement_from_wire(chart))
+    assert wire['notes'][1]['t'] == 291.041
+    assert wire['anchors'][-1]['time'] == 291.04125
+    script = r'''
+        const fs=require('node:fs'), assert=require('node:assert/strict');
+        const src=fs.readFileSync(process.argv[1],'utf8');
+        function extract(name){
+            const start=src.indexOf('function '+name+'('),open=src.indexOf('{',start);
+            assert.ok(start>=0,name);let depth=0;
+            for(let i=open;i<src.length;i++){
+                if(src[i]==='{')depth++;
+                else if(src[i]==='}'&&--depth===0)return src.slice(start,i+1);
+            }
+            throw Error(name);
+        }
+        const names=['getChartAnchorAt','getNoteAnchorAt','laneBoundsFromAnchor','noteAnchorLaneBoundsAt'];
+        const resolve=new Function('const NFRETS=24;'+src.match(/const CHORD_ANCHOR_TIME_EPS = [^;]+;/)[0]
+            +names.map(extract).join('\n')+'return noteAnchorLaneBoundsAt;')();
+        const wire=JSON.parse(fs.readFileSync(0,'utf8'));
+        for(const note of wire.notes.filter(n=>n.f===0)){
+            assert.deepEqual(resolve(wire.anchors,note.t),{dMin:11,dMax:15});
+        }
+    '''
+    screen = Path(__file__).resolve().parents[1] / 'plugins/highway_3d/screen.js'
+    subprocess.run([shutil.which('node'),'-e',script,str(screen)], input=json.dumps(wire),
+                   text=True, capture_output=True, check=True)
+    assert chart == before

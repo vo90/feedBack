@@ -43,7 +43,7 @@ function harness() {
         const sY=s=>s*S_GAP, fretMid=f=>f*10, xFretMid=fretMid, dZ=t=>-t*10;
         const _drawAnchors=[], curX=0;
         const CHORD_ANCHOR_TIME_EPS=.000501;
-        const getChartAnchorAt=()=>null, laneBoundsFromAnchor=()=>null;
+        const getChartAnchorAt=()=>null, getNoteAnchorAt=()=>null, laneBoundsFromAnchor=()=>null;
         const anchorLaneBoundsAt=()=>null, openNoteLaneBoxW=()=>80;
         const _trailCrossingTargetBases=new Float64Array(4), _trailCrossingTargetWidths=new Float64Array(4);
         const _trailOpenLayoutScratch=new Float64Array(2), _trailYieldMatchContext={};

@@ -17,7 +17,7 @@ function extract(name) {
 }
 const names = [
     'isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
-    'laneBoundsFromAnchor', 'anchorLaneBoundsAt', 'anchorPlayedFretInclusiveSpan',
+    'getNoteAnchorAt', 'laneBoundsFromAnchor', 'anchorLaneBoundsAt', 'noteAnchorLaneBoundsAt', 'anchorPlayedFretInclusiveSpan',
     'playedFretSpanCoversShape', 'chordFallbackLaneBounds', 'chordShapeLaneBounds', 'hwyLinkNextTargetNotes',
     'slideInMarks', 'hwyBuildChordHoldGuidance', 'chordGuideTimedRowAt', 'hwyUncoveredHandPositionGuides',
     'chordMemberTrailSuppressed', 'hwyBuildIndependentTrailOrigins', 'hwyBuildLinkedTrailPaths',
