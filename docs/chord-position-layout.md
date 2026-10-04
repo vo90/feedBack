@@ -1,5 +1,36 @@
 # Chord boxes and generated hand positions
 
+## Timed slide positions
+
+The shared policy is now `slide-follow-v1`. Known slides produce moving
+four-fret positions, widened only when simultaneous notes or the supported
+fret-spacing layouts require it. The generator uses the highway's pitched and
+unpitched easing, preserving the original timebase even if a replacement pick
+ends the old note's guidance. Targetless slide gestures retain their location.
+
+For Cirice at 267.38–272.72s, the fret-13 to fret-0 slide moves the lane from
+12–15 down to 1–4. The existing Stable Straight camera consumes those anchors;
+its short-detour filter retains a sequence moving in one direction. No camera
+controller or renderer change is needed. The ending region remains through
+the rest, until new playable material establishes another position.
+
+Plan: generate timed occupied cells; version the policy and preserve ownership
+guards; copy the canonical FeedForge algorithm into Core; verify the loader,
+archive integrity and actual camera/lane movement. Older generated policies,
+including `open-preparation-v2`, upgrade in memory after their hashes pass.
+Authored and edited guidance and all musical data remain intact.
+
+Verification for this change: 165 targeted FeedForge tests, 21 Core loader tests,
+112 camera/region tests, and a read-only audit of 64 arrangements in 14 songs.
+Six production WebGL runs cover uniform/logarithmic spacing at 0.5×, 1× and 2×.
+They check the real lane bounds, camera movement, geometry visibility and seek
+consistency. Run `tests/browser/highway-stable-camera.cjs --case slide-follow
+--slide-fixture <json> --out <fresh-directory>` with an existing Playwright
+installation. The fixture specifies `bundle`, `start`, `end`, `capture`,
+`startFret`, and `endFret`; private chart fixtures remain outside source control.
+
+The sections below record the earlier chord-position change and its validation.
+
 ## Implementation plan
 
 1. Give fretted chord frames a shared shape-local bound: lowest fretted note,

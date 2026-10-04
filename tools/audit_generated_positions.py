@@ -11,7 +11,7 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lib.generated_guidance_compat import refresh_generated_positions
-from lib.generated_hand_positions import generate_positions
+from lib.generated_hand_positions import POSITION_POLICY, generate_positions
 
 
 def sha(path):
@@ -58,6 +58,8 @@ def main():
                 checked = deepcopy(chart)
                 checked["anchors"] = expected
                 proof = checked["ext"]["chartGuidance"]
+                proof["positionPolicy"] = POSITION_POLICY
+                proof["slidePolicy"] = "timed-known-slides"
                 proof["guidanceSha256"] = digest({k: checked[k] for k in proof["fields"]})
                 proof["wideAnchorCount"] = sum(a["width"] > 4 for a in expected)
                 errors = checker.validate(checked)

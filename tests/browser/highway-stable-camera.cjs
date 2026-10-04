@@ -30,6 +30,8 @@ const once = (value, anchor, replacement) => {
   return value.replace(anchor, replacement);
 };
 let served = source;
+served = once(served, 'hwyLaneFretClipMax = nearB.dMax;',
+  'hwyLaneFretClipMax = nearB.dMax; window.__stableLaneClip=[nearB.dMin,nearB.dMax];');
 for (const [anchor, kind, mesh, meta] of [['const core = pNote.get();', 'gem', 'core', 't:n.t,s:n.s,f:n.f,sus:n.sus||0'], ['const fill = pChordFrameFill.get();', 'chord', 'fill', 't:ch.t'], ['const tr = pSus.get();', 'sustain', 'tr', 't:n.t,s:n.s,f:n.f,sus:n.sus||0'], ['const body = pSusRibbon.get();', 'ribbon', 'body', 't:n.t,s:n.s,f:n.f,sus:n.sus||0']]) served = once(served, anchor, `${anchor} if(window.__stableProbe)window.__stableProbe.push({kind:'${kind}',mesh:${mesh},${meta}});`);
 served = once(served, "contextType: 'webgl2',", `
 __cameraBenchmark(bundle, iterations) {
@@ -48,6 +50,7 @@ __cameraBenchmark(bundle, iterations) {
 },
 __stableAudit(){return {ren,cam,scene,curX,curDist,curLookY,tgtX,tgtDist,tgtLookY,mode:cameraMode,
  planStops:_stablePlan.stops.map(s=>({time:s.time,x:s.x,lead:s.lead})),
+ laneClip:window.__stableLaneClip,
  openCentre(time){const b=anchorLaneBoundsAt(_drawAnchors,time);return b?(xFret(b.dMin)+xFret(b.dMax))/2:null;},
  projectAttack(n){return new T.Vector3(xFretMid(n.f),sY(n.s),dZ(n.t-_frameNow)).project(cam).toArray();},
  state:typeof _stableCam==='undefined'?null:Object.fromEntries(Object.entries(_stableCam).filter(([k,v])=>v===null||['number','string','boolean'].includes(typeof v))),
@@ -329,6 +332,7 @@ async function main() {
           curX: a.curX,
           curDist: a.curDist,
           planStops: a.planStops,
+          laneClip: a.laneClip,
           position: a.cam.position.toArray(),
           quaternion: a.cam.quaternion.toArray(),
           rotation: a.cam.rotation.toArray(),
@@ -386,6 +390,7 @@ async function main() {
           if (typeof setter === 'function') setter(v);
         }
         window.bundle = b;
+        if (extra.fretSpacing) window.h3dSetFretSpacing(extra.fretSpacing);
         window.r = feedBackViz_highway_3d();
         r.init(document.getElementById('highway'), bundle);
         await r.readyPromise;
@@ -419,6 +424,43 @@ async function main() {
       });
     }
     const chosen = name => !option('--case') || option('--case').split(',').some(s => name.includes(s));
+    if (chosen('slide-follow') && option('--slide-fixture')) {
+      const fixture = JSON.parse(fs.readFileSync(option('--slide-fixture'), 'utf8'));
+      for (const fretSpacing of ['uniform', 'logarithmic']) for (const rate of [.5, 1, 2]) {
+        const chart = base({...fixture.bundle, currentTime:fixture.start, playbackRate:rate});
+        const initial = await init(chart, 'straight', {fretSpacing});
+        const samples = await page.evaluate(({start,end,rate}) => {
+          const rows=[], ren=r.__stableAudit().ren, render=ren.render;
+          ren.render=()=>{};
+          try {
+            for(let time=start+rate/30;time<end;time+=rate/30)
+              rows.push(cameraStep(time,1000/30,true));
+            rows.push(cameraStep(end,1000/30,true));
+          } finally {ren.render=render;}
+          return rows;
+        }, {start:fixture.start,end:fixture.end,rate});
+        const last = samples.at(-1), name=`slide-follow-${fretSpacing}-${rate}`;
+        check(initial.laneClip[0]+1===fixture.startFret, name+': initial lane');
+        check(last.laneClip[0]+1===fixture.endFret, name+': destination lane');
+        check(last.state.x<initial.state.x-.1, name+': camera must travel left');
+        check(last.state.targetX<initial.state.targetX-.1, name+': short anchors must not freeze the plan');
+        check(samples.every(p=>p.laneClip[1]-p.laneClip[0]===4), name+': keep four-fret lane');
+        for(let i=1;i<samples.length;i++) {
+          check(samples[i].laneClip[0]<=samples[i-1].laneClip[0], name+': lane reversed');
+          check(samples[i].state.targetX<=samples[i-1].state.targetX+1e-7, name+': planned pan reversed');
+        }
+        for(let i=0;i<samples.length;i+=5) validateFrame(name+'#'+i,samples[i]);
+        // Seeking directly into the slide uses the same lane and camera plan.
+        const time=fixture.capture, playing=samples.reduce((a,b)=>Math.abs(b.time-time)<Math.abs(a.time-time)?b:a);
+        const sought=await init({...chart,currentTime:playing.time},'straight',{fretSpacing});
+        check(JSON.stringify(sought.laneClip)===JSON.stringify(playing.laneClip), name+': seek lane differs');
+        check(Math.abs(sought.state.planX-playing.state.planX)<1e-8, name+': seek plan differs');
+        await page.screenshot({path:path.join(out,name+'.png')});
+        results.push({name,initial,samples,sought});
+        console.log(name+': '+samples.length+' frames');
+      }
+      await page.evaluate(()=>window.h3dSetFretSpacing('uniform'));
+    }
     if (chosen('zoom-continuity')) {
       const fixturePath = option('--camera-fixture');
       const fixture = fixturePath ? JSON.parse(fs.readFileSync(fixturePath, 'utf8')) : null;
