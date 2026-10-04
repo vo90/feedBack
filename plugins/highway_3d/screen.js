@@ -1622,6 +1622,7 @@
                 slu: Number.isFinite(pathNote?.slu) ? pathNote.slu : -1,
                 slide_out_marks: pathNote?.slide_out_marks,
                 slide_in_marks: pathNote?.slide_in_marks,
+                slide_interval: pathNote?.slide_interval,
                 pick_scrape_marks: pathNote?.pick_scrape_marks,
                 mt: pathNote?.mt === true,
                 tr: !!pathNote?.tr,
@@ -1689,6 +1690,7 @@
                     if (!(prev.slu >= 0) && cur.slu >= 0) prev.slu = cur.slu;
                     if (prev.slide_out_marks === undefined) prev.slide_out_marks = cur.slide_out_marks;
                     if (prev.slide_in_marks === undefined) prev.slide_in_marks = cur.slide_in_marks;
+                    if (prev.slide_interval === undefined) prev.slide_interval = cur.slide_interval;
                     prev.trailStart = Math.min(prev.trailStart, cur.trailStart);
                     prev.tr = prev.tr || cur.tr;
                     prev.sus = Math.max(prev.sus, cur.sus);
@@ -4127,11 +4129,29 @@
      * mirrors the pitched/unpitched slide offset convention above.
      * @param {{ endFret: number, unpitched: boolean } | null} [st_] from slideTrailEnd
      */
+    function targetedSlideInterval(n) {
+        const i = n.slide_interval;
+        return i && Number.isInteger(n.sl) && n.sl >= 0 && n.sl <= 48
+            && !(n.slu >= 0) && !n.mt && n.f > 0
+            && Number.isFinite(i.start) && Number.isFinite(i.end)
+            && i.start >= 0 && i.end > i.start && i.end <= n.sus + 0.0000011 ? i : null;
+    }
+    function appendTargetedSlideContourTimes(n, start, end, out) {
+        const interval = targetedSlideInterval(n);
+        if (!interval) return;
+        // Include the authored boundary even when the segment is shorter than
+        // the ordinary ribbon sample spacing. Bounded work, no frame cache.
+        for (let i = 0; i <= 8; i++) {
+            const time = n.t + interval.start + (interval.end - interval.start) * i / 8;
+            if (time > start && time < end) out.push(time);
+        }
+    }
     function slideOffsetWorldX(n, chartTime, st_) {
         const st = st_ || slideTrailEnd(n);
         if (!st || n.f <= 0 || !(n.sus > 0)) return 0;
-        const denom = Math.max(n.sus, 1e-6);
-        const p = Math.max(0, Math.min(1, (chartTime - n.t) / denom));
+        const interval = !st.unpitched && targetedSlideInterval(n);
+        const denom = Math.max(interval ? interval.end - interval.start : n.sus, 1e-6);
+        const p = Math.max(0, Math.min(1, (chartTime - n.t - (interval ? interval.start : 0)) / denom));
         const startX = notePositionX(n);
         const endX = fretMid(st.endFret);
         const w = st.unpitched
@@ -4373,6 +4393,7 @@
         const end = start + duration;
         for (let i = 0; i <= SLIDE_RIBBON_SAMPLES; i++) out.push(start + duration * i / SLIDE_RIBBON_SAMPLES);
         appendSlideOutContourTimes(n, start, end, out);
+        appendTargetedSlideContourTimes(n, start, end, out);
         appendSlideInContourTimes(n, start, end, out);
         appendPickScrapeContourTimes(n, start, end, out);
         appendBarContourTimes(n, start, end, out);
@@ -4384,6 +4405,8 @@
         out.push(start, end);
         appendSlideOutContourTimes(source, start, end, out);
         appendSlideOutContourTimes(target, start, end, out);
+        appendTargetedSlideContourTimes(source, start, end, out);
+        appendTargetedSlideContourTimes(target, start, end, out);
         appendSlideInContourTimes(source, start, end, out);
         appendSlideInContourTimes(target, start, end, out);
         appendPickScrapeContourTimes(source, start, end, out);
@@ -16771,6 +16794,7 @@
                             _scrChordNote.slide_out = cn.slide_out;
                             _scrChordNote.slide_out_marks = cn.slide_out_marks;
                             _scrChordNote.slide_in_marks = cn.slide_in_marks;
+                            _scrChordNote.slide_interval = cn.slide_interval;
                             _scrChordNote.pick_scrape_marks = cn.pick_scrape_marks;
                             _linkedVibratoRuns.set(_scrChordNote, _linkedVibratoRuns.get(cn));
                             const linkedTrail = _linkedTrailPaths.byNote.get(cn);
@@ -19005,6 +19029,7 @@
                 if (member.onset > start) out.push(member.onset);
                 if (member.end > start && member.end < end) out.push(member.end);
                 appendSlideOutContourTimes(member.view, start, end, out);
+                appendTargetedSlideContourTimes(member.view, start, end, out);
                 appendSlideInContourTimes(member.view, start, end, out);
             }
         }

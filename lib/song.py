@@ -80,6 +80,7 @@ class Note:
     # Tied segments may add later endpoints without adding another attack.
     # A present array (including []) is authoritative; no start is inferred.
     slide_in_marks: list | None = None
+    slide_interval: dict | None = None
     # Precise natural harmonic extension: fret remains source tablature;
     # node is the touch position relative to fret wires; pitch is semitones
     # above the (tuned, capo-adjusted) open string. Both must be present.
@@ -286,6 +287,10 @@ def note_to_wire(n: Note) -> dict:
     }
     if n.link_next:
         out["ln"] = True
+    if n.slide_interval is not None:
+        out['t'] = round(n.time, 6)
+        out['sus'] = round(n.sustain, 6)
+        out['slide_interval'] = validate_slide_interval({**out, 'slide_interval': n.slide_interval})
     if n.harmonic and _valid_natural_target(n.harmonic_node, n.harmonic_pitch):
         out.update(hn=n.harmonic_node, hps=n.harmonic_pitch)
     if n.harmonic_target is not None:
@@ -369,7 +374,7 @@ def chord_note_to_wire(cn: Note) -> dict:
 
 def chord_to_wire(c: Chord) -> dict:
     out = {
-        "t": round(c.time, 6 if any(n.vibrato_marks is not None for n in c.notes) else 3),
+        "t": round(c.time, 6 if any(n.vibrato_marks is not None or n.slide_interval is not None for n in c.notes) else 3),
         "id": c.chord_id,
         "hd": c.high_density,
         "notes": [chord_note_to_wire(cn) for cn in c.notes],
@@ -665,6 +670,21 @@ def _validate_pick_scrapes(raw, sustain, muted):
     return clean
 
 
+def validate_slide_interval(note):
+    if 'slide_interval' not in note:
+        return None
+    interval = note['slide_interval']
+    if (not isinstance(interval, dict) or set(interval) != {'start', 'end'}
+            or type(note.get('sl')) is not int or not 0 <= note['sl'] <= 48
+            or type(note.get('f')) is not int or not 0 < note['f'] <= 48
+            or note.get('mt') or note.get('slu', -1) != -1
+            or any(type(v) not in (int, float) or not math.isfinite(v)
+                   for v in (interval.get('start'), interval.get('end'), note.get('sus')))
+            or not 0 <= interval['start'] < interval['end'] <= note['sus'] + .0000011):
+        raise ValueError('Invalid targeted slide interval.')
+    return dict(interval)
+
+
 def note_from_wire(d: dict, time: float | None = None) -> Note:
     precise = d.get("hm") is True and _valid_natural_target(d.get("hn"), d.get("hps"))
     if ("hn" in d or "hps" in d) and not precise:
@@ -676,6 +696,7 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         fret=int(d.get("f", 0)),
         sustain=float(d.get("sus", 0.0)),
         slide_to=int(d.get("sl", -1)),
+        slide_interval=validate_slide_interval(d),
         slide_unpitch_to=int(d.get("slu", -1)),
         ghost=d.get("ghost") is True,
         bend=float(d.get("bn", 0.0)),
