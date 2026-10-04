@@ -33,6 +33,7 @@ let served = source;
 served = once(served, 'hwyLaneFretClipMax = nearB.dMax;',
   'hwyLaneFretClipMax = nearB.dMax; window.__stableLaneClip=[nearB.dMin,nearB.dMax];');
 for (const [anchor, kind, mesh, meta] of [['const core = pNote.get();', 'gem', 'core', 't:n.t,s:n.s,f:n.f,sus:n.sus||0'], ['const fill = pChordFrameFill.get();', 'chord', 'fill', 't:ch.t'], ['const tr = pSus.get();', 'sustain', 'tr', 't:n.t,s:n.s,f:n.f,sus:n.sus||0'], ['const body = pSusRibbon.get();', 'ribbon', 'body', 't:n.t,s:n.s,f:n.f,sus:n.sus||0']]) served = once(served, anchor, `${anchor} if(window.__stableProbe)window.__stableProbe.push({kind:'${kind}',mesh:${mesh},${meta}});`);
+served = once(served, 'const core = pNote.get();', 'const core = pNote.get(); core.userData.auditStem=outline;');
 served = once(served, "contextType: 'webgl2',", `
 __cameraBenchmark(bundle, iterations) {
   for (let i=0;i<30;i++) { window.__cameraWall+=1000/60; camUpdate(bundle); }
@@ -52,6 +53,24 @@ __stableAudit(){return {ren,cam,scene,curX,curDist,curLookY,tgtX,tgtDist,tgtLook
  planStops:_stablePlan.stops.map(s=>({time:s.time,x:s.x,lead:s.lead})),
  laneClip:window.__stableLaneClip,
  openCentre(time){const b=anchorLaneBoundsAt(_drawAnchors,time);return b?(xFret(b.dMin)+xFret(b.dMax))/2:null;},
+ openExpected(fret,width){
+   const b=laneBoundsFromAnchor({fret,width}),center=(xFret(b.dMin)+xFret(b.dMax))/2;
+   const laneWidth=Math.abs(xFret(b.dMax)-xFret(b.dMin))+2*OPEN_NOTE_PAD_X;
+   return {center,width:40*K*Math.max(.22,laneWidth*.96/(40*K))};
+ },
+ worldX(mesh){
+   const g=mesh.geometry,v=new T.Vector3();let min=Infinity,max=-Infinity;
+   mesh.updateWorldMatrix(true,false);
+   const add=()=>{v.applyMatrix4(mesh.matrixWorld);min=Math.min(min,v.x);max=Math.max(max,v.x);};
+   if(Number.isFinite(g.userData.ribbonSlices)){
+     const a=g.attributes.position,count=Math.min(a.count,(g.userData.ribbonSlices+1)*4);
+     for(let i=0;i<count;i++){v.fromBufferAttribute(a,i);add();}
+   }else{
+     if(!g.boundingBox)g.computeBoundingBox();const b=g.boundingBox;
+     for(let i=0;i<8;i++){v.set(i&1?b.max.x:b.min.x,i&2?b.max.y:b.min.y,i&4?b.max.z:b.min.z);add();}
+   }
+   return {min,max,center:(min+max)/2,width:max-min};
+ },
  projectAttack(n){return new T.Vector3(xFretMid(n.f),sY(n.s),dZ(n.t-_frameNow)).project(cam).toArray();},
  state:typeof _stableCam==='undefined'?null:Object.fromEntries(Object.entries(_stableCam).filter(([k,v])=>v===null||['number','string','boolean'].includes(typeof v))),
  labels:Array.from({length:_incomingFloorLabelCount},(_,i)=>{const r=_incomingFloorLabels[i];return {kind:'gold-label',mesh:r.sprite,t:r.time,f:r.fret};}),
@@ -559,7 +578,8 @@ async function main() {
       const capture = Number(option('--preparation-capture',205.15));
       const chart = privateChart(option('--preparation-chart'),start);
       chart.lefty = args.includes('--preparation-lefty');
-      const initial = await init(chart,option('--preparation-preset','straight'));
+      const initial = await init(chart,option('--preparation-preset','straight'),
+        {settings:{notationStyle:option('--preparation-style','rsplus')}});
       const samples = await steps(start,capture-start);
       if (option('--preparation-attack')) {
         const attack=Number(option('--preparation-attack'));
@@ -569,14 +589,27 @@ async function main() {
       if (option('--preparation-opens')) {
         const times=option('--preparation-opens').split(',').map(Number);
         const fret=Number(option('--preparation-fret'));
-        const alignment=await page.evaluate(({times,fret})=>times.map(time=>{
-          const anchor=[...bundle.anchors].reverse().find(a=>a.time<=time);
+        const width=Number(option('--preparation-width',4));
+        const alignment=await page.evaluate(({times,fret,width})=>times.map(time=>{
+          const audit=r.__stableAudit(),expected=audit.openExpected(fret,width);
           const gem=__stableProbe.find(n=>n.kind==='gem'&&Math.abs(n.t-time)<.000001&&n.f===0);
-          return {time,correctLane:anchor?.fret===fret,
-            actual:gem?.mesh.position.x,expected:r.__stableAudit().openCentre(time)};
-        }),{times,fret});
-        check(alignment.every(a=>a.correctLane&&Math.abs(a.actual-a.expected)<1e-8),
+          const actual=gem&&audit.worldX(gem.mesh),stem=gem&&audit.worldX(gem.mesh.userData.auditStem);
+          const trails=gem?__stableProbe.filter(n=>['sustain','ribbon'].includes(n.kind)&&n.mesh.visible
+            &&n.t===gem.t&&n.s===gem.s&&n.f===0).map(n=>audit.worldX(n.mesh)):[];
+          return {time,expected,actual,stem,trails,stemVisible:gem?.mesh.userData.auditStem.visible};
+        }),{times,fret,width});
+        // Compare to the requested destination, independently of production's
+        // anchor lookup. Checking that lookup against itself hid rounding bugs.
+        check(alignment.every(a=>a.actual&&Math.abs(a.actual.center-a.expected.center)<1e-8
+          &&Math.abs(a.actual.width-a.expected.width)<1e-7),
           'preparation-chart: open group missed destination '+JSON.stringify(alignment));
+        check(alignment.every(a=>!a.stemVisible || a.stem.min>=a.expected.center-a.expected.width/2-1e-8
+          &&a.stem.max<=a.expected.center+a.expected.width/2+1e-8),
+          'preparation-chart: open stem missed destination '+JSON.stringify(alignment));
+        check(alignment.every(a=>a.trails.length===2&&Math.abs((a.trails[0].center+a.trails[1].center)/2-a.expected.center)<1e-7
+          &&a.trails.every(t=>t.min>=a.expected.center-a.expected.width/2-1e-7&&t.max<=a.expected.center+a.expected.width/2+1e-7)),
+          'preparation-chart: open trails missed destination '+JSON.stringify(alignment));
+        results.push({name:'preparation-chart-open-alignment',alignment});
       }
       await record('preparation-chart',samples,true);
       await record('preparation-chart-arrival',await steps(capture,1.5));

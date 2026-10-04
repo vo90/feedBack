@@ -110,3 +110,26 @@ vertices rather than unused pooled-buffer capacity when checking clipping.
 Use `--case quiet-preparation` for synthetic cases, or `--case preparation-chart`
 with `--preparation-attack`, `--preparation-opens` and `--preparation-fret` to
 assert anticipation and open-lane alignment in a private audited chart.
+
+## Rounded open-note onsets
+
+Cirice at 291.04125 seconds exposed a separate renderer boundary bug. The game
+serializes its ordinary note onset as 291.041 while retaining the generated
+anchor at 291.04125. Exact chart-time lookup consequently placed the first open
+in the preceding 1–4 lane, despite the generated pickup correctly using 12–15.
+
+Open event geometry now uses the same half-millisecond onset tolerance already
+used for chord onsets. A shared event lookup resolves the bar position/width,
+trail layout and visibility footprints, and hit-wire feedback. The strict
+chart-time lookup remains unchanged for continuous lane boundaries and authored
+handshape times. Note onsets, sustains, scoring and serialized music are unchanged.
+
+Regression coverage includes both rounding directions, the half-millisecond
+edge, genuinely earlier notes, narrow/wide lanes, mirrored geometry and a real
+Python arrangement load/serialize round trip into the JavaScript lane lookup.
+The archive audit also exports `cirice-wire.json` and `rats-wire.json` for the
+production renderer. Its open-alignment assertion compares the actual bar,
+stem and both trails to an independently specified destination position/width.
+The unchanged renderer fails that assertion on the reported Cirice passage;
+the corrected renderer passes. Use the wire export, not only the unrounded
+chart export, for end-to-end passage acceptance.

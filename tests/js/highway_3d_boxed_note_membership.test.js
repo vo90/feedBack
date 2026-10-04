@@ -57,7 +57,7 @@ const dispatch = new Function('n', 'now', 'boxedChordMembers', 'options', `
     'use strict';
     ${fn('_noteKey')}${fn('_noteFretKey')}const NFRETS=24; ${fn('isPlayableFret')}${fn('isPlainDeadNote')}${fn('isUnpitchedMute')}${fn('usesUnfrettedPosition')}
     const _linkNextTargetSet=new Set(options.linked ? [n] : []);
-    const anchors=[], anchorLaneBoundsAt=()=>null, xFret=f=>f, openNoteLaneBoxW=()=>40;
+    const anchors=[], noteAnchorLaneBoundsAt=()=>null, xFret=f=>f, openNoteLaneBoxW=()=>40;
     const bundle={handShapes:[],chordTemplates:[]}, notes=[n], arpGhostHsInfer=[];
     const strumFrames={byNote:new Map(options.strum ? [[n,options.strum]] : [])};
     const arpeggioChordIdForNoteWithInferCache=()=>options.arpeggio ? 7 : null;
