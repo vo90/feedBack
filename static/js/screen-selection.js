@@ -294,15 +294,17 @@ export function selectionLifecycle(doc = document) {
             for (const [name, handler] of listeners) root.addEventListener(name, handler, true);
             schedule();
             return () => {
+                // A stale release must not remove a newer registration's listeners.
+                if (!registrations.delete(ref)) return;
                 for (const [name, handler] of listeners) root.removeEventListener(name, handler, true);
                 shadowRoots.delete(root.host);
-                registrations.delete(ref);
                 schedule();
             };
         },
         // Tests can opt in to aggregate timings. No text or values are emitted.
         setDiagnosticListener(listener) { diagnostic = listener; },
         dispose() {
+            if (disposed) return;
             disposed = true;
             lastComposed = null;
             observer.disconnect();

@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -50,6 +52,19 @@ jobs:
 
       - name: Run pytest
         run: pytest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install selection browser-test dependencies
+        run: |
+          npm ci
+          npx --no-install playwright install --with-deps chromium
+
+      - name: Run selection lifecycle browser and ordering tests
+        run: npm run test:selection
 
       - name: Run JS plugin-API tests
         run: node --test tests/js/*.test.js 'tests/plugins/*/js/*.test.js' 'plugins/*/tests/*.test.js'

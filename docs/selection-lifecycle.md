@@ -52,6 +52,11 @@ selection.prepareToHide(closedRoot.host);
 unregister();
 ```
 
+The unregister callback and the coordinator's `dispose()` method are safe to
+call repeatedly. A stale cleanup call cannot release a newer registration or
+replace the current per-document singleton. Calling unregister after disposing
+its coordinator is also harmless.
+
 Only actual rendering suppression clears selections. Offscreen scrolling,
 opacity, window occlusion and `aria-hidden` alone are not hiding boundaries.
 Unassigned light DOM and slot fallback replaced by assigned content are hidden;
@@ -77,6 +82,12 @@ confined to lifecycle/selection events and physical start boundaries. Measure
 initial-loading and navigation costs separately from steady playback cadence.
 
 ## Verification
+
+Run `npm ci`, `npm run install:playwright`, then `npm run test:selection` for the
+focused browser and screen/playback ordering suite. It uses the Node test runner
+and standalone Chromium; it does not require the application server or Docker.
+The reusable CI workflow runs this command in its existing `test` job, installing
+Chromium and its system dependencies first.
 
 `tests/browser/screen-selection.test.cjs` runs actual DOM, editing, visibility,
 race and browser IME tests using an installed Playwright Chromium. The exported

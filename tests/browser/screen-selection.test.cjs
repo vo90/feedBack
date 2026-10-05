@@ -13,6 +13,73 @@ const url = 'data:text/javascript;base64,' + Buffer.from(source).toString('base6
 let browser;
 before(async () => { browser = await chromium.launch({headless:true}); });
 after(async () => { await browser?.close(); });
+
+test('stale coordinator disposal preserves the replacement singleton', async () => {
+    const page = await browser.newPage();
+    try {
+        await page.setContent('<section id="panel">Settings text</section>');
+        const result = await page.evaluate(async url => {
+            const { selectionLifecycle } = await import(url);
+            const old = selectionLifecycle();
+            old.dispose();
+            const current = selectionLifecycle();
+            old.dispose();
+            const sameInstance = selectionLifecycle() === current;
+            const panel = document.getElementById('panel');
+            getSelection().selectAllChildren(panel);
+            current.prepareToHide(panel);
+            panel.hidden = true;
+            current.finishVisibilityChange();
+            const ranges = getSelection().rangeCount;
+            current.dispose();
+            return { sameInstance, ranges };
+        }, url);
+        assert.deepEqual(result, { sameInstance: true, ranges: 0 });
+    } finally { await page.close(); }
+});
+
+for (const disposeCoordinator of [false, true]) test(
+    'stale shadow release preserves replacement editing: ' + (disposeCoordinator ? 'new coordinator' : 'same coordinator'),
+    async () => {
+        const page = await browser.newPage();
+        try {
+            const result = await page.evaluate(async ({ url, disposeCoordinator }) => {
+                const { selectionLifecycle } = await import(url);
+                const host = document.createElement('div');
+                document.body.append(host);
+                const root = host.attachShadow({ mode: 'closed' });
+                root.innerHTML = '<input value="abcdef">';
+                const input = root.firstChild;
+                const old = selectionLifecycle();
+                const staleRelease = old.registerShadowRoot(root);
+                if (disposeCoordinator) old.dispose();
+                else staleRelease();
+                const current = selectionLifecycle();
+                const release = current.registerShadowRoot(root);
+                staleRelease();
+                input.focus();
+                input.setSelectionRange(2, 4, 'backward');
+                const initiallyFocused = root.activeElement === input;
+                current.prepareToHide(host);
+                const result = {
+                    initiallyFocused,
+                    releasedFocus: root.activeElement !== input,
+                    position: [input.selectionStart, input.selectionEnd, input.selectionDirection],
+                    value: input.value,
+                };
+                release();
+                current.dispose();
+                release();
+                return result;
+            }, { url, disposeCoordinator });
+            assert.deepEqual(result, {
+                initiallyFocused: true, releasedFocus: true,
+                position: [2, 4, 'backward'], value: 'abcdef',
+            });
+        } finally { await page.close(); }
+    },
+);
+
 for (const backward of [false, true]) test('real navigation clears the existing stem-label regression: ' + backward, async () => {
     const page = await browser.newPage();
     try {
