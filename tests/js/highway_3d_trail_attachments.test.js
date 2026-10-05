@@ -19,7 +19,7 @@ function extract(name) {
 const visibility = new Function(`
     const NFRETS = 24;
     let _trailYieldEventsByFret;
-    ${['isUnpitchedMute', 'hwyBuildTrailEventEndIndex', 'hwyBuildTrailYieldEvents',
+    ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'hwyBuildTrailEventEndIndex', 'hwyBuildTrailYieldEvents',
         'trailYieldEventForNote'].map(extract).join('\n')}
     return {
         build(...args) { return _trailYieldEventsByFret = hwyBuildTrailYieldEvents(...args); },
@@ -38,7 +38,7 @@ test('unpitched mutes use open visibility footprints without rewriting authored 
     assert.equal(visibility.find(note), event);
     assert.equal(note.f, 127);
     assert.equal(event.end, 12);
-    assert.equal(event.trailVisible, true);
+    assert.equal(event.trailVisible, false);
 });
 
 test('coincident real open and unpitched events stay distinct but exact chord copies deduplicate', () => {
@@ -75,6 +75,23 @@ test('invalid sentinel notes remain excluded', () => {
     assert.equal(events.flat().length, 0);
 });
 
+test('mixed scrape and unpitched chord members preserve only the playable fretted span', () => {
+    const chord = {t: 10, notes: [
+        {s: 0, f: 127, mt: true},
+        {s: 1, f: 19, mt: true, sus: 1,
+            pick_scrape_marks: [{direction: 'down', start: 0, end: 1}]},
+        {s: 2, f: 5}, {s: 3, f: 7},
+    ]};
+    const original = JSON.stringify(chord);
+    const events = visibility.build([], [chord], 6);
+    const mute = events[0].find(event => event.sourceNote === chord.notes[0]);
+    const scrape = events[0].find(event => event.sourceNote === chord.notes[1]);
+    assert.ok(mute && scrape, 'both visual-only members retain an open visibility footprint');
+    assert.deepEqual(mute.chordMeta, {size: 4, minF: 5, maxF: 7});
+    assert.deepEqual(scrape.chordMeta, mute.chordMeta);
+    assert.equal(JSON.stringify(chord), original, 'visibility must not rewrite authored notes');
+});
+
 test('unpitched visibility preserves linked membership, suppressed heads and chord hold ownership', () => {
     const note = {t: 10, s: 1, f: 127, mt: true, sus: 2};
     const membership = {path: {start: 9, end: 12}};
@@ -82,7 +99,7 @@ test('unpitched visibility preserves linked membership, suppressed heads and cho
     const event = visibility.build([note], [], 6, options)[0]?.[0];
     assert.ok(event);
     assert.equal(event.gemVisible, false);
-    assert.equal(event.trailVisible, true);
+    assert.equal(event.trailVisible, false);
     assert.equal(event.linkedPath, membership);
     const held = visibility.build([], [{t: 10, notes: [note]}], 6, {...options, trailVisible: () => false})[0][0];
     assert.equal(held.trailVisible, false);

@@ -2,6 +2,10 @@
  * Canvas-based note highway renderer.
  * Receives note data via WebSocket, renders on requestAnimationFrame.
  */
+import { whammyApi } from './js/whammy.js';
+window.feedBackWhammy = whammyApi;
+import { harmonicContactsApi } from './js/harmonic-contacts.js';
+window.feedBackHarmonicContacts = harmonicContactsApi;
 import {
     BG,
     CHAIN_GAP_THRESHOLD,
@@ -49,6 +53,7 @@ import {
     fillTextReadable,
     fretX,
 } from './js/highway-state-primitives.js';
+import { createHarmonicContactOverlay } from './js/harmonic-contact-overlay.js';
 import {
     _chordHasTechniqueFlags,
     _computeChordBox,
@@ -687,6 +692,8 @@ function createHighway() {
             // and skip drawing. A future revision will recreate the
             // canvas element on renderer-type swap to avoid this.
             hwState.ctx = canvasEl.getContext('2d');
+            hwState._harmonicContactOverlay?.destroy();
+            hwState._harmonicContactOverlay = createHarmonicContactOverlay(canvasEl);
             if (!hwState.ctx && !this._ctxWarned) {
                 console.error(
                     'Default 2D renderer: canvas.getContext("2d") returned null ' +
@@ -699,12 +706,16 @@ function createHighway() {
         draw(/* bundle */) {
             // Still reads from the factory closure directly — the bundle
             // is shaped for custom renderers, not used here. Keeping the
-            // default renderer's body unchanged from the pre-refactor
-            // draw() preserves pixel-level parity with current main.
-            if (!hwState.canvas || !hwState.ready || !hwState.ctx) return;
+            // geometry at its existing backing resolution preserves its
+            // coordinate system; contact instructions use their own crisp layer.
+            if (!hwState.canvas || !hwState.ready || !hwState.ctx) {
+                hwState._harmonicContactOverlay?.clear();
+                return;
+            }
             try {
                 const W = hwState.canvas.width;
                 const H = hwState.canvas.height;
+                hwState._harmonicContactOverlay?.beginFrame(W, H, hwState._lefty);
                 hwState.ctx.fillStyle = BG;
                 hwState.ctx.fillRect(0, 0, W, H);
 
@@ -741,7 +752,9 @@ function createHighway() {
 
                 // Lyrics: drawn unmirrored so lines stay left-to-right readable (layout is center-symmetric)
                 if (hwState.showLyrics) drawLyrics(hwState, W, H);
+                hwState._harmonicContactOverlay?.flush();
             } catch (e) {
+                hwState._harmonicContactOverlay?.clear();
                 console.error('draw error:', e);
             }
         },
@@ -751,6 +764,8 @@ function createHighway() {
             // need to rebuild here.
         },
         destroy() {
+            hwState._harmonicContactOverlay?.destroy();
+            hwState._harmonicContactOverlay = null;
             // Leave ctx intact. Helper paths like fillTextReadable /
             // api.fillTextUnmirrored may still be called while another
             // renderer is active or after stop() (e.g. a residual draw

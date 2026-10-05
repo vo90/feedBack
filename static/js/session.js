@@ -37,7 +37,7 @@
 import {
     loadSettings,
 } from './settings.js';
-import { clearHiddenScreenCaret } from './screen-selection.js';
+import { selectionLifecycle } from './screen-selection.js';
 import {
     clearLoop,
     loadSavedLoops,
@@ -161,9 +161,13 @@ export async function showScreen(id) {
     //     screen:changing  — before anything happens. "I am leaving `from`." Cancel/teardown here.
     //     screen:changed   — after the DOM and data are settled. "I am on `id`."
     if (window.feedBack) window.feedBack.emit('screen:changing', { id, from: prevScreenId || null });
-    clearHiddenScreenCaret(document.getElementById(id));
+    const selection = selectionLifecycle();
+    document.querySelectorAll('.screen').forEach(s => {
+        if (s.id !== id) selection.prepareToHide(s);
+    });
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.getElementById(id).classList.add('active');
+    selection.finishVisibilityChange();
     // Mark the next render as a screen-entry so it scrolls the
     // restored selection into view exactly once. Routine renders
     // (search / sort / filter typing) won't have this flag set and

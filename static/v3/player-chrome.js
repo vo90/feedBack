@@ -115,7 +115,9 @@
     }
     function closePop() {
         if (!openPop) return;
+        window.feedBack?.selectionLifecycle?.prepareToHide(openPop.pop);
         if (openPop.pop) openPop.pop.classList.add('hidden');
+        window.feedBack?.selectionLifecycle?.finishVisibilityChange();
         if (openPop.btn) {
             openPop.btn.setAttribute('aria-expanded', 'false');
             openPop.btn.classList.remove('is-active');

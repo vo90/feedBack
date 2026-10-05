@@ -127,6 +127,23 @@
         </label>
         <p class="text-[10px] text-gray-500 mt-1 ml-6">Vertical stems beside unboxed open-string and unpitched muted-note bars in RS+ notation. Boxed chords never show stems. Independent of Note-gem stems.</p>
     </div>
+    <div class="mt-3">
+        <label for="h3d-chord-box-top" class="text-xs font-medium text-gray-400 mb-1 block">Chord box top (RS+)</label>
+        <select id="h3d-chord-box-top" aria-describedby="h3d-chord-box-top-description" disabled
+            class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
+            <option value="short-caps">Short caps</option>
+            <option value="full">Full border</option>
+        </select>
+        <p id="h3d-chord-box-top-description" class="text-[10px] text-gray-500 mt-1">Short caps leave the middle open for upcoming notes. Full border restores the closed box. Applies to RS+ inspired and updates immediately.</p>
+        <div class="mt-3 ml-6">
+            <label class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
+                <input type="checkbox" id="h3d-repeat-chord-full-border" disabled class="accent-accent"
+                    aria-describedby="h3d-repeat-chord-full-border-description">
+                Full border on repeated chords
+            </label>
+            <p id="h3d-repeat-chord-full-border-description" class="text-[10px] text-gray-500 mt-1">Keep half-height repeated-chord boxes closed while full-height chords use short caps.</p>
+        </div>
+    </div>
 </div>
 
 <div role="group" aria-labelledby="h3d-bg-heading" class="mt-6">
@@ -1630,6 +1647,32 @@
             const customVideoName    = (typeof storedCustomVideoName === 'string')    ? storedCustomVideoName    : DEFAULTS.customVideoName;
 
             const notationSelect = document.getElementById('h3d-notation-style');
+            const chordTopSelect = document.getElementById('h3d-chord-box-top');
+            const repeatChordBorder = document.getElementById('h3d-repeat-chord-full-border');
+            function refreshRepeatChordBorder() {
+                if (repeatChordBorder) repeatChordBorder.disabled = notationSelect?.value !== 'rsplus'
+                    || chordTopSelect?.value !== 'short-caps';
+            }
+            if (repeatChordBorder) {
+                let saved = null;
+                try { saved = localStorage.getItem('h3d_bg_repeatChordFullBorder'); } catch (_) {}
+                repeatChordBorder.checked = saved === 'true' || saved === '1';
+                repeatChordBorder.addEventListener('change', () => {
+                    if (typeof window.h3dBgSetRepeatChordFullBorder === 'function') window.h3dBgSetRepeatChordFullBorder(repeatChordBorder.checked);
+                    else { try { localStorage.setItem('h3d_bg_repeatChordFullBorder', String(repeatChordBorder.checked)); } catch (_) {} }
+                });
+            }
+            if (chordTopSelect) {
+                let saved = null;
+                try { saved = localStorage.getItem('h3d_bg_chordBoxTop'); } catch (_) {}
+                chordTopSelect.value = saved === 'full' ? 'full' : 'short-caps';
+                chordTopSelect.addEventListener('change', () => {
+                    const value = chordTopSelect.value === 'full' ? 'full' : 'short-caps';
+                    if (typeof window.h3dBgSetChordBoxTop === 'function') window.h3dBgSetChordBoxTop(value);
+                    else { try { localStorage.setItem('h3d_bg_chordBoxTop', value); } catch (_) {} }
+                    refreshRepeatChordBorder();
+                });
+            }
             const notationStemControls = [
                 ['h3d-note-stems-visible', 'noteStemsVisible', 'h3dBgSetNoteStemsVisible'],
                 ['h3d-open-string-stems-visible', 'openStringStemsVisible', 'h3dBgSetOpenStringStemsVisible'],
@@ -1670,6 +1713,8 @@
                 return { element, current: element?.innerHTML, rsplus };
             });
             function showNotationDescription(value) {
+                if (chordTopSelect) chordTopSelect.disabled = value !== 'rsplus';
+                refreshRepeatChordBorder();
                 for (const element of notationStemControls) {
                     if (element) element.disabled = false;
                 }

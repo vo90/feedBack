@@ -1,3 +1,4 @@
+import { selectionLifecycle } from './js/screen-selection.js';
 import {
     bootstrapPluginsAndUi,
     checkPluginUpdates,
@@ -290,7 +291,7 @@ import {
 // The playback transport. These used to BE app.js — they are imported back now, and the
 // four modules that reached for them through the host seam import them directly instead.
 import {
-    setPlayButtonState, jucePlayer, _audioTime, _audioDuration, _songEventPayload,
+    setPlayButtonState, jucePlayer, _audioTime, _audioDuration, _audioElementEnded, _songEventPayload,
     _markPlaybackPaused, _markPlaybackResumed, _emitPlaybackStopped, _emitSongPositionChanged,
     _waitForSongReady, _resetAudioSeekState, _audioSeek, togglePlay, seekBy, audioSeekGen,
     setLoopPlayStartTargetResolver, setLoopRestartHandler, setPlaybackStartOwnerResolver,
@@ -797,6 +798,7 @@ const _feedBackBus = (_feedBackExisting
     ? _feedBackExisting
     : new EventTarget();
 window.feedBack = Object.assign(_feedBackBus, {
+    selectionLifecycle: selectionLifecycle(),
     currentSong: null,
     isPlaying: false,
     _navParams: {},
@@ -1050,7 +1052,7 @@ function _handlePlaybackEnded() {
 audio.addEventListener('ended', () => {
     // An old queued event must not end a new source, or a seek that already
     // returned the current element to loop A. JUCE has its own terminal check.
-    if (!window._juceMode && audio.ended) _handlePlaybackEnded();
+    if (!window._juceMode && _audioElementEnded()) _handlePlaybackEnded();
 });
 audio.addEventListener('timeupdate', () => {
     _emitSongPositionChanged(audio.currentTime, audio.duration || null);
@@ -1071,7 +1073,11 @@ audio.addEventListener('pause', () => {
 });
 
 window.feedBack.on('song:play', _acquireWakeLock);
+// Supplemental completion check; physical starts reconcile in transport first.
+window.feedBack.on('song:play', () => selectionLifecycle().finishVisibilityChange());
+window.feedBack.on('screen:changed', () => selectionLifecycle().finishVisibilityChange());
 window.feedBack.on('song:resume', _acquireWakeLock);
+window.feedBack.on('song:resume', () => selectionLifecycle().finishVisibilityChange());
 window.feedBack.on('song:pause', _releaseWakeLock);
 window.feedBack.on('song:ended', _releaseWakeLock);
 window.feedBack.on('song:stop', _releaseWakeLock);
@@ -1319,7 +1325,10 @@ async function changeArrangement(index, drumPart) {
                         window.feedBack.emit('song:play', payload);
                         window.feedBack.emit('song:resume', payload);
                     }
-                } else audio.play().then(() => { S.isPlaying = true; }).catch(() => {});
+                } else {
+                    selectionLifecycle().reconcileBeforePlayback();
+                    audio.play().then(() => { S.isPlaying = true; }).catch(() => {});
+                }
             }
             clearBusy();
             clearMyCallback();

@@ -51,7 +51,7 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
         const _ndGetNoteState = () => { probes++; return verdict; };
         let _linkedBendStarts = new WeakMap(), _linkedBendEnds = new WeakMap();
         let _linkedVibratoRuns = new WeakMap();
-        ${['validString', 'isPlayableFret', 'isUnpitchedMute', 'isRenderableNote',
+        ${['validString', 'isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote',
             '_firstEventTimeGreaterThan', 'hwyShouldSuppressNoteBody',
             'bnvSampleAt', 'bendCurveStartSemis', 'bendCurveSemisAt',
             'bendSemisAtElapsed', 'bendSemisAtTime', 'bendVisualDirY',

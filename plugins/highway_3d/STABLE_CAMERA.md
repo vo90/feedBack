@@ -6,12 +6,20 @@ Stable with **Straight** and **Follow hand position** enabled.
 
 ## Comparing the views
 
-- **Straight** looks directly along the highway.
-- **RS+-inspired** uses a fixed 14-degree shoulder angle, mirrored in left-handed
-  mode. It is a comparison preset, not a claim of an exact Rocksmith camera match.
-- Both use a 60-degree vertical field of view, 25-degree downward pitch, zero
-  roll, the same neutral distance, and the same following rules. A constant lens
-  shift keeps the play line low in the viewport without an automatic tilt loop.
+- **Straight** uses the saved **Standard straight** framing: distance 0.87×,
+  pitch adjustment +9 and vertical pan +10.
+- **RS+-inspired** uses **Standard angled**: distance 0.90×, pitch adjustment −1,
+  horizontal pan −4 and vertical pan +3, on the 14-degree shoulder angle.
+  Both the shoulder angle and built-in horizontal pan mirror in left-handed mode.
+- These are built-in defaults; leave Free camera off to use them. Both retain
+  a 60-degree vertical field of view, zero roll, constant lens shift and the
+  same following rules. Pitch adjustments use Camera Director's target-height
+  units: the resulting downward angles are approximately 19.86° and 25.57°.
+  Height remains 1× and there is no additional yaw adjustment.
+- The playing-area plan retains its existing centres and timing. A final fit
+  uses each default's actual zoom, tilt and pan and can widen enough to protect
+  visible notes and labels. This also applies on reset, seek and resize, while
+  pause and Follow off continue to hold the view.
 - Change the preset while paused or playing. **Reset to preset** reframes the
   current passage; it does not seek or overwrite Camera Director preferences.
 
@@ -59,11 +67,14 @@ seeks and loop jumps reframe directly rather than flying from the old passage.
 
 The existing per-panel/global Camera Director bridge remains available, without
 changing its saved presets or enabling it automatically. In Stable mode its
-distance, height, yaw, pitch and pan adjustments are applied to the stable base.
+distance, height, yaw, pitch and pan adjustments are applied on top of the
+selected built-in viewpoint.
 Pan translates the view; pitch remains an angular adjustment during dolly changes.
 Deliberate manual zoom/pan can crop notes: the automatic fit is for the neutral
-base and does not undo the user's offsets. Disable Free camera for a fair preset
-comparison. Resetting Stable leaves those external adjustments intact.
+viewpoint and does not undo the user's offsets. Existing saved Free camera
+presets are kept unchanged; loading Standard straight or Standard angled again
+adds those adjustments a second time. Disable Free camera to use the promoted
+defaults. Resetting Stable leaves external adjustments intact.
 
 **Wide ahead** and **Steady & close** retain their previous behaviour. Legacy
 automatic tilt and low-fret lock controls are unavailable in Stable; their saved

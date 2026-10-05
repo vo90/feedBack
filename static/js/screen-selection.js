@@ -1,22 +1,329 @@
-// A collapsed selection can survive after its screen becomes display:none.
-// Chromium then repeatedly walks the hidden subtree to resolve a visible caret
-// during playback. Drop that empty, non-editing caret at the screen boundary;
-// keep real text selections and editor/input carets intact.
-export function clearHiddenScreenCaret(nextScreen, doc = document) {
-    if (!nextScreen) return false;
-    const selection = doc.getSelection?.();
-    if (!selection?.isCollapsed || !selection.anchorNode) return false;
-    const anchor = selection.anchorNode;
-    const element = anchor.nodeType === 1 ? anchor : anchor.parentElement;
-    const screen = element?.closest?.('.screen');
-    if (!screen || screen === nextScreen) return false;
-    if (element.isContentEditable || element.closest('input, textarea')) return false;
-    // Chromium may anchor the document selection at an input's parent. Clearing
-    // it can still reset the focused field's typing position, including in shadow DOM.
-    let active = doc.activeElement;
-    while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
-    if (active?.isContentEditable
-        || active?.matches?.('input, textarea, select, [role="textbox"]')) return false;
-    selection.removeAllRanges();
-    return true;
+// Chromium can keep resolving a native selection inside display:none content
+// on every frame. Own its lifetime at UI boundaries, not in the render loop.
+const coordinators = new WeakMap();
+
+function parent(node) {
+    return node?.assignedSlot || node?.parentNode || node?.host || null;
+}
+
+function contains(root, node) {
+    for (let n = node; n; n = parent(n)) if (n === root) return true;
+    return false;
+}
+
+function editor(node) {
+    let result = null;
+    for (let n = node; n; n = parent(n)) {
+        if (n.nodeType !== 1) continue;
+        if (n.matches('input, textarea')) return n;
+        if (n.isContentEditable) result = n;
+        else if (result) break;
+    }
+    return result;
+}
+
+function fieldPosition(field) {
+    if (!field?.matches('input, textarea') || field.selectionStart == null) return null;
+    return { field, value: field.value, start: field.selectionStart,
+        end: field.selectionEnd, direction: field.selectionDirection };
+}
+
+function restoreField(saved) {
+    if (saved?.field.isConnected && saved.field.value === saved.value) {
+        saved.field.setSelectionRange(saved.start, saved.end, saved.direction);
+    }
+}
+
+export function selectionLifecycle(doc = document) {
+    if (coordinators.has(doc)) return coordinators.get(doc);
+    const win = doc.defaultView;
+    const bookmarks = new WeakMap();
+    const shadowRoots = new WeakMap();
+    const registrations = new Set(); // weak references, with explicit unmount cleanup
+    let observed = new Set(), queued = false, disposed = false, busy = false;
+    let knownEmpty = false;
+    let diagnostic = null;
+    let lastComposed = null;
+
+    function currentSelection() {
+        const native = doc.getSelection();
+        if (!native?.rangeCount) {
+            lastComposed = null;
+            return null;
+        }
+        if (typeof native.getComposedRanges !== 'function') return native;
+        const roots = new Set();
+        for (const ref of registrations) {
+            const root = ref.deref();
+            if (root) roots.add(root);
+            else registrations.delete(ref);
+        }
+        function discover(node, offset) {
+            const ownRoot = node?.getRootNode();
+            if (ownRoot?.host) roots.add(ownRoot);
+            // Native mouse selections can be rescoped to the position before
+            // an open shadow host. Follow only the endpoint, not the DOM tree.
+            const childRoot = node?.childNodes[offset]?.shadowRoot;
+            if (childRoot) roots.add(childRoot);
+        }
+        discover(native.anchorNode, native.anchorOffset);
+        discover(native.focusNode, native.focusOffset);
+        if (!roots.size) return native;
+        let range, count;
+        do {
+            count = roots.size;
+            range = native.getComposedRanges({ shadowRoots: [...roots] })[0];
+            if (!range) return native;
+            discover(range.startContainer, range.startOffset);
+            discover(range.endContainer, range.endOffset);
+        } while (roots.size !== count);
+        // After CSS hides a native shadow range, Chromium can report direction
+        // "none" while retaining its composed endpoints. Reuse the last known
+        // direction only for that exact range; weak references retain no editor.
+        let direction = native.direction;
+        if (direction === 'none' && lastComposed &&
+            lastComposed.start.deref() === range.startContainer && lastComposed.a === range.startOffset &&
+            lastComposed.end.deref() === range.endContainer && lastComposed.b === range.endOffset) {
+            direction = lastComposed.direction;
+        }
+        if (direction === 'forward' || direction === 'backward') {
+            lastComposed = { start: new WeakRef(range.startContainer), a: range.startOffset,
+                end: new WeakRef(range.endContainer), b: range.endOffset, direction };
+        }
+        const backward = direction === 'backward';
+        return {
+            rangeCount: 1,
+            anchorNode: backward ? range.endContainer : range.startContainer,
+            anchorOffset: backward ? range.endOffset : range.startOffset,
+            focusNode: backward ? range.startContainer : range.endContainer,
+            focusOffset: backward ? range.startOffset : range.endOffset,
+            removeAllRanges: () => native.removeAllRanges(),
+        };
+    }
+
+    function focused() {
+        let active = doc.activeElement;
+        for (;;) {
+            const next = (active?.shadowRoot || shadowRoots.get(active))?.activeElement;
+            if (!next) return active;
+            active = next;
+        }
+    }
+
+    function suppressed(node, hiding) {
+        if (!node?.isConnected) return true;
+        if (hiding && contains(hiding, node)) return true;
+        let first = true;
+        for (let n = node; n; n = parent(n)) {
+            if (n === hiding) return true;
+            // Light DOM excluded from its host's slots has no rendered content,
+            // even though getComputedStyle still reports display:inline/block.
+            const host = n.parentNode;
+            if (host && (host.shadowRoot || shadowRoots.has(host)) && !n.assignedSlot) return true;
+            if (n.nodeType !== 1) continue;
+            const style = win.getComputedStyle(n);
+            if (n.tagName === 'SLOT' && n.assignedNodes().length && n.contains(node)) return true;
+            // visibility is inherited but a child can explicitly override it.
+            if (first && (style.visibility === 'hidden' || style.visibility === 'collapse')) return true;
+            if (style.display === 'none' || style.contentVisibility === 'hidden') return true;
+            if (n.tagName === 'DETAILS' && !n.open && n !== node) {
+                const summary = [...n.children].find(child => child.tagName === 'SUMMARY');
+                if (!summary || !contains(summary, node)) return true;
+            }
+            first = false;
+        }
+        return false;
+    }
+
+    function remember(selection) {
+        if (!selection?.rangeCount) return;
+        const owner = editor(selection?.anchorNode);
+        if (!owner?.isContentEditable || !contains(owner, selection.focusNode)) return;
+        bookmarks.set(owner, {
+            anchor: selection.anchorNode, a: selection.anchorOffset,
+            focus: selection.focusNode, f: selection.focusOffset,
+            html: owner.innerHTML,
+        });
+    }
+
+    function watch(selection) {
+        const next = new Set();
+        if (selection?.rangeCount) {
+            for (const node of [selection.anchorNode, selection.focusNode]) {
+                for (let n = node; n; n = parent(n)) next.add(n);
+            }
+        }
+        if (next.size === observed.size && [...next].every(n => observed.has(n))) return;
+        observer.disconnect();
+        for (const n of observed) if (n.host) n.removeEventListener('slotchange', watchSlotChange, true);
+        observed = next;
+        for (const n of next) {
+            if (n.host) n.addEventListener('slotchange', watchSlotChange, true);
+            observer.observe(n, {
+                childList: true,
+                ...(n.nodeType === 1 ? { attributes: true,
+                    attributeFilter: ['class', 'style', 'hidden', 'open', 'slot', 'name'] } : {}),
+            });
+        }
+    }
+
+    function reconcile(trigger = 'visibility', hiding = null) {
+        if (disposed || busy) return false;
+        busy = true;
+        const start = diagnostic ? win.performance.now() : 0;
+        let cleared = false;
+        try {
+            // Visibility changes cannot create a selection. Once empty, rely
+            // on selection/focus events to invalidate that knowledge. Explicit
+            // hide and playback checks still read current state synchronously,
+            // including selections created before selectionchange is delivered.
+            if (trigger === 'visibility' && knownEmpty) return false;
+            let selection = currentSelection();
+            // Avoid endpoint/editor traversal when the selection is empty.
+            // Chromium can flush pending layout even for rangeCount; keep these
+            // reads at lifecycle boundaries, never in a draw/transport loop.
+            // An explicit hide still needs to preserve and blur its editor.
+            knownEmpty = !selection?.rangeCount;
+            if (knownEmpty && !hiding) {
+                watch(null);
+                return false;
+            }
+            const active = focused();
+            const activeEditor = editor(active);
+            if (activeEditor && suppressed(activeEditor, hiding)) {
+                // Let the browser complete composition/blur itself. Capture the
+                // resulting selection after blur; never synthesize IME events.
+                remember(selection);
+                const position = fieldPosition(activeEditor);
+                active.blur();
+                restoreField(position);
+                selection = currentSelection();
+            }
+            const hidden = selection?.rangeCount &&
+                (suppressed(selection.anchorNode, hiding) || suppressed(selection.focusNode, hiding));
+            if (hidden) {
+                remember(selection);
+                // Chromium's document selection can be anchored at a field's
+                // parent. Preserve a different visible field's independent caret.
+                const position = fieldPosition(focused());
+                selection.removeAllRanges();
+                knownEmpty = true;
+                restoreField(position);
+                cleared = true;
+            } else if (trigger === 'event' && selection?.rangeCount) {
+                // A new visible selection, including one set by an editor's
+                // own code, takes precedence over a saved navigation bookmark.
+                const owner = editor(selection.anchorNode);
+                if (owner) bookmarks.delete(owner);
+            }
+            watch(currentSelection());
+        } finally {
+            busy = false;
+            diagnostic?.({ trigger, cleared, watchedNodes: observed.size,
+                registeredRoots: registrations.size,
+                milliseconds: win.performance.now() - start });
+        }
+        return cleared;
+    }
+
+    function schedule() {
+        knownEmpty = false;
+        if (queued || disposed) return;
+        queued = true;
+        win.queueMicrotask(() => {
+            queued = false;
+            reconcile('event');
+        });
+    }
+
+    function watchSlotChange() { schedule(); }
+
+    const observer = new win.MutationObserver(records => {
+        // No subtree observer: HUD/note mutations below unrelated descendants
+        // must not cause selection work. Only owned ancestry/removal matters.
+        if (records.some(r => r.type === 'attributes' ||
+            [...r.removedNodes].some(n => observed.has(n)))) schedule();
+    });
+
+    function onFocus(event) {
+        const target = event.composedPath()[0];
+        const saved = bookmarks.get(target);
+        if (saved && !suppressed(target)) {
+            bookmarks.delete(target);
+            // Replacement content invalidates a bookmark even with valid offsets.
+            if (target.innerHTML === saved.html && contains(target, saved.anchor) && contains(target, saved.focus)) {
+                doc.getSelection().setBaseAndExtent(saved.anchor, saved.a, saved.focus, saved.f);
+            }
+        }
+        schedule();
+    }
+
+    function newIntent(event) {
+        const target = editor(event.composedPath()[0]);
+        if (target) bookmarks.delete(target);
+    }
+
+    const listeners = [
+        ['selectionchange', schedule], ['focusin', onFocus], ['focusout', schedule],
+        ['pointerdown', newIntent], ['beforeinput', newIntent],
+        ['compositionend', schedule], ['toggle', schedule], ['slotchange', schedule],
+    ];
+    for (const [name, handler] of listeners) doc.addEventListener(name, handler, true);
+    win.addEventListener('resize', schedule);
+
+    const service = {
+        prepareToHide(root) {
+            if (!root || disposed) return false;
+            const selection = currentSelection();
+            const endpoints = selection?.rangeCount ? [selection.anchorNode, selection.focusNode] : [];
+            if (![...endpoints, focused()].some(n => contains(root, n))) return false;
+            return reconcile('hide', root);
+        },
+        finishVisibilityChange() { return reconcile('visibility'); },
+        reconcileBeforePlayback() { return reconcile('playback'); },
+        // Closed shadow owners register before editing and unregister on unmount.
+        // Call prepareToHide before opaque visibility changes.
+        registerShadowRoot(root) {
+            if (disposed) throw new Error('Selection coordinator is disposed');
+            if (!root?.host || root.ownerDocument !== doc) throw new TypeError('Expected an owned ShadowRoot');
+            if (shadowRoots.has(root.host)) throw new Error('ShadowRoot already registered');
+            shadowRoots.set(root.host, root);
+            const ref = new WeakRef(root);
+            for (const old of registrations) if (!old.deref()) registrations.delete(old);
+            registrations.add(ref);
+            for (const [name, handler] of listeners) root.addEventListener(name, handler, true);
+            schedule();
+            return () => {
+                // A stale release must not remove a newer registration's listeners.
+                if (!registrations.delete(ref)) return;
+                for (const [name, handler] of listeners) root.removeEventListener(name, handler, true);
+                shadowRoots.delete(root.host);
+                schedule();
+            };
+        },
+        // Tests can opt in to aggregate timings. No text or values are emitted.
+        setDiagnosticListener(listener) { diagnostic = listener; },
+        dispose() {
+            if (disposed) return;
+            disposed = true;
+            lastComposed = null;
+            observer.disconnect();
+            for (const n of observed) if (n.host) n.removeEventListener('slotchange', watchSlotChange, true);
+            observed.clear();
+            for (const [name, handler] of listeners) doc.removeEventListener(name, handler, true);
+            for (const ref of registrations) {
+                const root = ref.deref();
+                if (!root) continue;
+                for (const [name, handler] of listeners) root.removeEventListener(name, handler, true);
+                shadowRoots.delete(root.host);
+            }
+            registrations.clear();
+            win.removeEventListener('resize', schedule);
+            coordinators.delete(doc);
+            diagnostic = null;
+        },
+    };
+    coordinators.set(doc, service);
+    schedule();
+    return service;
 }

@@ -870,7 +870,9 @@ function _closeSectionPracticePopover({ restoreFocus = true } = {}) {
     window.visualViewport?.removeEventListener('scroll', _scheduleSectionPracticePopoverLayout);
     if (bar) {
         const focusWasInside = bar.contains(document.activeElement);
+        window.feedBack?.selectionLifecycle?.prepareToHide(bar);
         bar.classList.remove('section-practice-bar--open');
+        window.feedBack?.selectionLifecycle?.finishVisibilityChange();
         if (restoreFocus && _sectionPracticePopoverTrigger?.isConnected) {
             _sectionPracticePopoverTrigger.focus({ preventScroll: true });
         } else if (focusWasInside) {
@@ -932,7 +934,9 @@ export function _hideSectionPracticeBar() {
         // may have just parked focus) and any bar descendant.
         const ae = document.activeElement;
         if (ae && ctrl.contains(ae) && typeof ae.blur === 'function') ae.blur();
+        window.feedBack?.selectionLifecycle?.prepareToHide(ctrl);
         ctrl.classList.add('section-practice-control--hidden');
+        window.feedBack?.selectionLifecycle?.finishVisibilityChange();
     }
     _sectionPracticeRanges = [];
     _sectionPracticeActiveParent = -1;

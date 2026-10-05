@@ -32,6 +32,13 @@ function instrument(input){
  if(window.__prioritySolves)window.__prioritySolves.push({preferredX,baseDistance,prediction,margin,fixedCentre,interval:{...interval},result:{..._stableFit}});`);
  return once(result,"contextType: 'webgl2',",`__priorityAudit(){return {ren,scene,cam,mode:cameraMode,frameTime:_frameNow,constants:{K,TS,AHEAD},
  state:Object.fromEntries(Object.entries(_stableCam).filter(([k,v])=>v===null||['number','string','boolean'].includes(typeof v))),
+ openingViewFits(distance){
+ const testCamera=cam.clone(),scale=typeof _stableViewBasis==='undefined'?1:_stableViewBasis.distanceMul;
+ testCamera.translateZ((distance-_stableCam.distance)*scale);testCamera.updateMatrixWorld();
+ const point=new T.Vector3();
+ for(let i=0;i<_stableCam.pointCount;i+=3){point.fromArray(_stablePoints,i).project(testCamera);
+ if(!Number.isFinite(point.x)||Math.abs(point.x)>.960001||Math.abs(point.y)>.960001)return false;}
+ return true;},
  projectFret(f,s=2,dt=0){return new T.Vector3(xFretMid(f),sY(s),dZ(dt)).project(cam).toArray();},
  fretWorldX(f){return xFretMid(f);},
  region(bundle){const r=typeof stablePlayingRegion==='function'?stablePlayingRegion(bundle,_frameNow):null;
@@ -147,8 +154,12 @@ function validate(c,run){
  check(Math.abs(run.last.state.x-run.first.state.x)>.1,prefix+'region change ignored without notes');
  }
  if(c.kind==='width'){
- check(samples.every(s=>Math.abs(s.state.distance-run.first.state.distance)<.001),prefix+'same-base extension widened unnecessarily');
+ // A closer default may need room at the expanded edge. Independently project
+ // the collected envelope with Three.js at the opening distance: widening is
+ // justified only when that distance no longer fits the calibrated viewport.
+ check(samples.every(s=>Math.abs(s.state.distance-run.first.state.distance)<.001||s.openingViewFits===false),prefix+'same-base extension widened unnecessarily');
  const after=samples.filter(s=>s.time>=9.1);
+ check(range(after.map(s=>s.state.distance))<.001,prefix+'same-width passage has drifting zoom');
  check(range(after.map(s=>s.state.x))<.001,prefix+'same-base extension did not settle');
  if(c.preset==='straight')check(range(samples.map(s=>s.state.x))<.001,prefix+'readable same-base extension moved the camera');
  else check(Math.abs(run.last.state.x-run.first.state.x)<.04,prefix+'angled extension moved more than the necessary small adjustment');
@@ -231,9 +242,11 @@ async function main(){
  async function load(input){served=instrument(input);await page.goto('http://playing-area.test/');
  await page.evaluate(()=>{
  window.capture=()=>{const a=r.__priorityAudit();a.cam.updateMatrixWorld();a.scene.updateMatrixWorld(true);const now=bundle.currentTime;
+ if(window.__openingDistance===null)window.__openingDistance=a.state.distance;
+ const openingViewFits=window.__checkOpeningDistance?a.openingViewFits(window.__openingDistance):null;
  const upcoming=window.chartEvents.filter(n=>n.t>=now-1e-7),t=upcoming[0]?.t;
  const next=upcoming.filter(n=>Math.abs(n.t-t)<1e-7).map(n=>({t:n.t,dt:n.t-now,f:n.f,s:n.s,screen:a.projectFret(n.f,n.s,n.t-now),playline:a.projectFret(n.f,n.s,0)}));
- return{time:now,frameTime:a.frameTime,mode:a.mode,state:a.state,position:a.cam.position.toArray(),quaternion:a.cam.quaternion.toArray(),fov:a.cam.fov,focusScreen:a.projectFret(window.focusFret||4),focusWorldX:a.fretWorldX(window.focusFret||4),region:a.region(bundle),liveHolds:window.chartEvents.filter(n=>n.sus>0&&n.t<=now&&n.t+n.sus>now&&n.f>0).map(n=>({f:n.f,s:n.s,screen:a.projectFret(n.f,n.s,0)})),heads:a.heads(),next,solves:window.__prioritySolves||[]};};
+ return{time:now,frameTime:a.frameTime,mode:a.mode,state:a.state,openingViewFits,position:a.cam.position.toArray(),quaternion:a.cam.quaternion.toArray(),fov:a.cam.fov,focusScreen:a.projectFret(window.focusFret||4),focusWorldX:a.fretWorldX(window.focusFret||4),region:a.region(bundle),liveHolds:window.chartEvents.filter(n=>n.sus>0&&n.t<=now&&n.t+n.sus>now&&n.f>0).map(n=>({f:n.f,s:n.s,screen:a.projectFret(n.f,n.s,0)})),heads:a.heads(),next,solves:window.__prioritySolves||[]};};
  window.step=(time,ms,playing=true)=>{window.__wall+=ms;bundle.currentTime=time;bundle.isPlaying=playing;window.__prioritySolves=[];r.draw(bundle);return capture();};
  window.renderNow=()=>{const a=r.__priorityAudit();a.ren.info.autoReset=false;a.ren.info.reset();window.__realRender(a.scene,a.cam);return{calls:a.ren.info.render.calls,triangles:a.ren.info.render.triangles,geometry:a.geometry()};};
  });}
@@ -244,6 +257,7 @@ async function main(){
  style:'off',notationStyle:'rsplus',glow:0,cinematic:false,sparks:false,bloom:false,verdictMarks:false,timingFx:false,streakFx:false,hitFx:0,chordDiagramVisible:false};
  for(const[k,v]of Object.entries(settings)){localStorage.setItem('h3d_bg_'+k,String(v));const set=window['h3dBgSet'+k[0].toUpperCase()+k.slice(1)];if(set)set(v);}
  window.bundle={...c.b,currentTime:c.start??c.b.currentTime,...extra.bundle};window.focusFret=c.focus||4;
+ window.__openingDistance=null;window.__checkOpeningDistance=c.kind==='width';
  window.chartEvents=[...bundle.notes,...bundle.chords.flatMap(c=>(c.notes||[]).map(n=>({...n,t:c.t})))].sort((a,b)=>a.t-b.t);
  window.r=feedBackViz_highway_3d();r.init(document.getElementById('highway'),bundle);await r.readyPromise;const a=r.__priorityAudit();window.__realRender=a.ren.render.bind(a.ren);a.ren.render=()=>{};
  return step(bundle.currentTime,0,bundle.isPlaying);

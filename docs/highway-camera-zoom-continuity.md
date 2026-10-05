@@ -50,7 +50,3 @@ browser harness accepts `--camera-fixture` for a local chart export, plus
 `--camera-preset`, `--camera-rate`, `--camera-fps`, and viewport options. Its
 synthetic fixture exercises the same arrival sequence without private chart
 data. Clock monotonicity alone is not sufficient visual acceptance.
-
-The regular dev integration backport retains its pre-calibration viewpoint.
-Its visibility support and arrival reservation use the existing nominal basis;
-the newer preset angles are not introduced by the backport.

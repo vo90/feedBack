@@ -20,7 +20,7 @@ function loadHelpers() {
     const depthEnd = src.indexOf('    /** Labels yield to the actual final order', depthStart);
     assert.notEqual(depthStart, -1, 'render-order helper block start not found');
     assert.notEqual(depthEnd, -1, 'render-order helper block end not found');
-    const block = src.slice(start, end);
+    const block = src.slice(src.indexOf('    function isPlayableFret('), src.indexOf('    function isRenderableNote(')) + src.slice(start, end);
     return vm.runInNewContext(
         'const K = 1; const NFRETS = 24; const MAX_RENDER_STRINGS = 8;\n'
         + src.slice(depthStart, depthEnd)
@@ -39,7 +39,8 @@ function loadSlideOffsetHelpers() {
     assert.notEqual(start, -1);
     assert.notEqual(end, -1);
     return vm.runInNewContext(
-        'const fretMid = f => f * 10;\n'
+        'const fretMid = f => f * 10; const fretX = fretMid;\n'
+        + src.slice(src.indexOf('    function naturalNode('), src.indexOf('    /** World-space width'))
         + src.slice(start, end)
         + '\n({ slideTrailEnd, slideOffsetWorldX })',
     );

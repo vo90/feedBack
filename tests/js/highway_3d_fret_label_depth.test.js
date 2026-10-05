@@ -286,7 +286,7 @@ function registrationHarness() {
         renderOrderForLayerAtZ: () => 700, fretLabelScaleForFret: () => 1,
         AHEAD: 3, K: 1, S_GAP: 4, nStr: 6, _textSizeMul: 1,
     });
-    vm.runInContext(['_setIncomingFloorLabelMap', '_registerFretColumnMarker',
+    vm.runInContext(['naturalNode', 'harmonicLabel', '_setIncomingFloorLabelMap', '_registerFretColumnMarker',
         '_suppressCoincidentFretColumnMarkers'].map(extractFunction).join('\n'), context);
     const updateStart = source.indexOf('function update(');
     const resetStart = source.indexOf('_incomingFloorLabelCount = _incomingLabelOccluderCount = 0;', updateStart);

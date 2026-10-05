@@ -162,16 +162,16 @@ def test_note_time_rounded_to_three_decimals():
 
 
 def test_note_bend_zero_serializes_as_integer_zero():
-    # note_to_wire uses `round(bend, 1) if bend else 0` — the else branch returns int 0.
+    # note_to_wire's zero branch returns integer 0.
     # from_wire then float()s it back. Pin this quirk so a refactor doesn't surprise callers.
     wire = note_to_wire(Note(time=0.0, string=0, fret=0, bend=0.0))
     assert wire["bn"] == 0
     assert isinstance(wire["bn"], int)
 
 
-def test_note_bend_nonzero_rounded_to_one_decimal():
+def test_note_bend_preserves_authored_fractional_semitones():
     n = Note(time=0.0, string=0, fret=0, bend=1.75)
-    assert note_to_wire(n)["bn"] == 1.8
+    assert note_to_wire(n)["bn"] == 1.75
 
 
 # ── Bend shape (bt / bnv, §6.2.1) ────────────────────────────────────────────
@@ -365,13 +365,24 @@ def test_base_open_string_midis_bass_vs_guitar():
     assert base_open_string_midis(4, False)[0] == 40   # 4-string guitar voicing
 
 
-def test_note_bend_values_rounded_on_wire():
-    """`bnv` rounds `t` to 3 and `v` to 1, matching the scalar `bn` precision."""
+def test_note_bend_values_preserve_six_decimal_source_precision():
+    """The game transport must not quantize a source curve to 0.1 semitones."""
     n = Note(
         time=0.0, string=0, fret=0, bend=1.0, bend_intent=1,
         bend_values=[{"t": 0.123456, "v": 1.749}],
     )
-    assert note_to_wire(n)["bnv"] == [{"t": 0.123, "v": 1.7}]
+    assert note_to_wire(n)["bnv"] == [{"t": 0.123456, "v": 1.749}]
+
+
+def test_precise_bend_survives_note_and_chord_json_round_trips():
+    # Includes Paranoid's observed 0.24 control value and two close points
+    # which must not collapse onto one millisecond on the wire.
+    curve = [{'t': 0.021583, 'v': .24}, {'t': .021984, 'v': .26}, {'t': .185, 'v': .5}]
+    note = Note(time=2, string=1, fret=7, sustain=.2, bend=.5, bend_values=curve)
+    assert note_from_wire(json.loads(json.dumps(note_to_wire(note)))) == note
+    chord = Chord(time=2, chord_id=0, notes=[note])
+    restored = chord_from_wire(json.loads(json.dumps(chord_to_wire(chord))))
+    assert restored.notes[0].bend_values == curve
 
 
 def test_note_bend_values_sanitized_from_wire():

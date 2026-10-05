@@ -7,6 +7,10 @@ import json
 import logging
 import math
 import xml.etree.ElementTree as ET
+from lib.harmonic_target import validate_target, validate_alias
+from lib.whammy import validate_whammy
+from lib.finger_vibrato import validate_marks as validate_vibrato_marks
+from lib.harmonic_changes import validate_changes
 
 log = logging.getLogger("feedBack.lib.song")
 
@@ -71,10 +75,25 @@ class Note:
     # []) is authoritative over the older direction-only scalar.
     slide_out: str | None = None
     slide_out_marks: list | None = None
+    pick_scrape_marks: list | None = None
     # A slide-in knows only its destination onset, relative to this attack.
     # Tied segments may add later endpoints without adding another attack.
     # A present array (including []) is authoritative; no start is inferred.
     slide_in_marks: list | None = None
+    slide_interval: dict | None = None
+    # Precise natural harmonic extension: fret remains source tablature;
+    # node is the touch position relative to fret wires; pitch is semitones
+    # above the (tuned, capo-adjusted) open string. Both must be present.
+    harmonic_node: float | None = None
+    harmonic_pitch: int | None = None
+    # Explicit pitch above the held fret, source kind and agreed scoring rule.
+    # This is one note; its contact cue is not another fret/attack.
+    harmonic_target: dict | None = None
+    harmonic_alias: str | None = None
+    whammy: dict | None = None
+    harmonic_changes: dict | None = None
+    # Present array is authoritative; [] suppresses legacy whole-note vibrato.
+    vibrato_marks: list | None = None
 
 
 @dataclass
@@ -259,7 +278,7 @@ def note_to_wire(n: Note) -> dict:
         "t": round(n.time, 3), "s": n.string, "f": n.fret,
         "sus": round(n.sustain, 3),
         "sl": n.slide_to, "slu": n.slide_unpitch_to,
-        "bn": round(n.bend, 1) if n.bend else 0,
+        "bn": round(n.bend, 6) if n.bend else 0,
         "ho": n.hammer_on, "po": n.pull_off,
         "hm": n.harmonic, "hp": n.harmonic_pinch,
         "pm": n.palm_mute, "mt": n.mute,
@@ -268,6 +287,29 @@ def note_to_wire(n: Note) -> dict:
     }
     if n.link_next:
         out["ln"] = True
+    if n.slide_interval is not None:
+        out['t'] = round(n.time, 6)
+        out['sus'] = round(n.sustain, 6)
+        out['slide_interval'] = validate_slide_interval({**out, 'slide_interval': n.slide_interval})
+    if n.harmonic and _valid_natural_target(n.harmonic_node, n.harmonic_pitch):
+        out.update(hn=n.harmonic_node, hps=n.harmonic_pitch)
+    if n.harmonic_target is not None:
+        out["harmonic_target"] = dict(n.harmonic_target)
+    if n.harmonic_changes is not None:
+        out['t'] = round(n.time, 6)
+        out['sus'] = round(n.sustain, 6)
+        out['harmonic_changes'] = validate_changes({**out, 'harmonic_changes':n.harmonic_changes})
+    if n.harmonic_alias is not None:
+        out["harmonic_alias"] = n.harmonic_alias
+    if n.vibrato_marks is not None:
+        out['t'] = round(n.time, 6)
+        out['sus'] = round(n.sustain, 6)
+        out['vibrato_marks'] = validate_vibrato_marks({'sus': out['sus'], 'vibrato_marks': n.vibrato_marks})
+    if n.whammy is not None:
+        # Its owning duration must use the same precision as the expression.
+        out['t'] = round(n.time, 6)
+        out['sus'] = round(n.sustain, 6)
+        out['whammy'] = validate_whammy({'whammy': n.whammy, 'sus': n.sustain})
     if n.ghost is True:
         out["ghost"] = True
     if n.fret_hand_mute:
@@ -289,7 +331,9 @@ def note_to_wire(n: Note) -> dict:
         out["bt"] = int(n.bend_intent)
     if n.bend_values:
         out["bnv"] = [
-            {"t": round(p["t"], 3), "v": round(p["v"], 1)}
+            # Retain authored curve detail, including close control points.
+            # A tenth of a semitone is too coarse for precise imported bends.
+            {"t": round(p["t"], 6), "v": round(p["v"], 6)}
             for p in n.bend_values
         ]
     # Teaching marks (§6.2.2) — default-omitted, mirroring rh/pkd above.
@@ -307,8 +351,17 @@ def note_to_wire(n: Note) -> dict:
         out["slide_out"] = n.slide_out
     if n.slide_out_marks is not None:
         out["slide_out_marks"] = _sanitize_slide_out_marks(n.slide_out_marks, n.sustain)
+    if n.pick_scrape_marks is not None:
+        # Interval endpoints use microsecond precision. Retain the containing
+        # duration too, so the wire's ordinary millisecond rounding cannot
+        # make a valid endpoint fall outside its own event on reload.
+        out["sus"] = round(n.sustain, 6)
+        out["pick_scrape_marks"] = _validate_pick_scrapes(n.pick_scrape_marks, n.sustain, n.mute)
     if n.slide_in_marks is not None:
         out["slide_in_marks"] = _sanitize_slide_in_marks(n.slide_in_marks, n.sustain)
+    validate_target(out)
+    validate_changes(out)
+    validate_alias(out)
     return out
 
 
@@ -321,7 +374,7 @@ def chord_note_to_wire(cn: Note) -> dict:
 
 def chord_to_wire(c: Chord) -> dict:
     out = {
-        "t": round(c.time, 3),
+        "t": round(c.time, 6 if any(n.vibrato_marks is not None or n.slide_interval is not None for n in c.notes) else 3),
         "id": c.chord_id,
         "hd": c.high_density,
         "notes": [chord_note_to_wire(cn) for cn in c.notes],
@@ -593,13 +646,57 @@ def _sanitize_slide_in_marks(raw, sustain: float) -> list:
     return out
 
 
+def _valid_natural_target(node, pitch):
+    return (type(node) in (int, float) and math.isfinite(node) and 0 < node <= 24
+            and type(pitch) is int and 1 <= pitch <= 48)
+
+
+def _validate_pick_scrapes(raw, sustain, muted):
+    """A typed unpitched gesture, never a generic scoring opt-out."""
+    if muted is not True or not isinstance(raw, list) or not raw or not math.isfinite(sustain) or sustain <= 0:
+        raise ValueError("Pick scrapes require a muted note and nonempty intervals")
+    previous = 0.0
+    clean = []
+    for mark in raw:
+        if (not isinstance(mark, dict) or set(mark) != {"direction", "start", "end"}
+                or mark["direction"] not in ("up", "down")
+                or any(type(mark[k]) not in (int, float) or not math.isfinite(mark[k]) for k in ("start", "end"))):
+            raise ValueError("Invalid pick-scrape interval")
+        start, end = mark["start"], mark["end"]
+        if start < previous or end <= start or end > sustain + .0000011:
+            raise ValueError("Pick-scrape intervals must be ordered within the sustain")
+        clean.append(dict(mark))
+        previous = end
+    return clean
+
+
+def validate_slide_interval(note):
+    if 'slide_interval' not in note:
+        return None
+    interval = note['slide_interval']
+    if (not isinstance(interval, dict) or set(interval) != {'start', 'end'}
+            or type(note.get('sl')) is not int or not 0 <= note['sl'] <= 48
+            or type(note.get('f')) is not int or not 0 < note['f'] <= 48
+            or note.get('mt') or note.get('slu', -1) != -1
+            or any(type(v) not in (int, float) or not math.isfinite(v)
+                   for v in (interval.get('start'), interval.get('end'), note.get('sus')))
+            or not 0 <= interval['start'] < interval['end'] <= note['sus'] + .0000011):
+        raise ValueError('Invalid targeted slide interval.')
+    return dict(interval)
+
+
 def note_from_wire(d: dict, time: float | None = None) -> Note:
+    precise = d.get("hm") is True and _valid_natural_target(d.get("hn"), d.get("hps"))
+    if ("hn" in d or "hps" in d) and not precise:
+        raise ValueError("Invalid precise natural harmonic node/pitch pair")
+    target, alias = validate_target(d), validate_alias(d)
     return Note(
         time=float(d.get("t", time if time is not None else 0.0)),
         string=int(d.get("s", 0)),
         fret=int(d.get("f", 0)),
         sustain=float(d.get("sus", 0.0)),
         slide_to=int(d.get("sl", -1)),
+        slide_interval=validate_slide_interval(d),
         slide_unpitch_to=int(d.get("slu", -1)),
         ghost=d.get("ghost") is True,
         bend=float(d.get("bn", 0.0)),
@@ -609,9 +706,16 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         pull_off=bool(d.get("po", False)),
         harmonic=bool(d.get("hm", False)),
         harmonic_pinch=bool(d.get("hp", False)),
+        harmonic_node=d["hn"] if precise else None,
+        harmonic_pitch=d["hps"] if precise else None,
+        harmonic_target=target,
+        harmonic_alias=alias,
+        whammy=validate_whammy(d),
+        harmonic_changes=validate_changes(d),
         palm_mute=bool(d.get("pm", False)),
         mute=bool(d.get("mt", False)),
         vibrato=bool(d.get("vb", d.get("vibrato", False))),
+        vibrato_marks=validate_vibrato_marks(d),
         tremolo=bool(d.get("tr", False)),
         accent=bool(d.get("ac", False)),
         tap=bool(d.get("tp", False)),
@@ -635,6 +739,8 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         slide_out=d.get("slide_out") if d.get("slide_out") in ("up", "down") else None,
         slide_out_marks=(_sanitize_slide_out_marks(d["slide_out_marks"], float(d.get("sus", 0)))
                          if "slide_out_marks" in d else None),
+        pick_scrape_marks=(_validate_pick_scrapes(d["pick_scrape_marks"], float(d.get("sus", 0)), d.get("mt"))
+                           if "pick_scrape_marks" in d else None),
         slide_in_marks=(_sanitize_slide_in_marks(d["slide_in_marks"], float(d.get("sus", 0)))
                         if "slide_in_marks" in d else None),
     )
@@ -844,6 +950,9 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
        "Lead" / "Rhythm" / "Bass" / "Combo" → the matching path. Anything
        outside that set (Vocals, ShowLights, …) → None.
 
+    A lead named "Hybrid Lead" retains that display name. Its role and the
+    numbering of other arrangements are unchanged.
+
     Naming rules per path type (Lead / Rhythm / Bass):
     - Main group (bonusArr=False):
         represent=1 → "Lead" (or "Rhythm" / "Bass") — the canonical
@@ -866,6 +975,7 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
     # override means "leave the dataclass's bonus_arr alone".
     _NAME_FALLBACK: dict[str, tuple[str, bool | None]] = {
         "lead": ("path_lead", None),
+        "hybrid lead": ("path_lead", None),
         "rhythm": ("path_rhythm", None),
         "bass": ("path_bass", None),
         "bass 2": ("path_bass", None),
@@ -958,6 +1068,13 @@ def compute_smart_names(arrangements: list[Arrangement]) -> list[str | None]:
             else:
                 result[i] = f"Bonus {label} {j + 1}"
 
+    # Preserve the derived chart's identity without renumbering the existing
+    # alternates (saved arrangement choices can refer to those names).
+    for i, (path_attr, _) in enumerate(_resolved):
+        name = arrangements[i].name
+        if path_attr == "path_lead" and isinstance(name, str) and name.strip().casefold() == "hybrid lead":
+            result[i] = "Hybrid Lead"
+
     return result
 
 
@@ -1035,6 +1152,8 @@ def arrangement_to_wire(arr: Arrangement) -> dict:
 
 def arrangement_from_wire(d: dict) -> Arrangement:
     """Parse a wire-format arrangement dict back into an Arrangement dataclass."""
+    from lib.generated_guidance_compat import refresh_generated_positions
+    d = refresh_generated_positions(d)
     return Arrangement(
         name=d.get("name", ""),
         tuning=list(d.get("tuning", [0] * 6)),

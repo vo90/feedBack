@@ -15,9 +15,11 @@ function extract(name) {
     }
     return source.slice(start, end);
 }
-const { build, at, rejoin, zoom } = new Function(`
-    ${['hwyBuildCameraStops', 'hwyCameraPlanAt', 'hwyCameraRejoin', 'hwyCameraZoom'].map(extract).join('\n')}
-    return {build:hwyBuildCameraStops,at:hwyCameraPlanAt,rejoin:hwyCameraRejoin,zoom:hwyCameraZoom};
+const { build, prepare, at, rejoin, zoom } = new Function(`
+    const NFRETS = 24;
+    ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote'].map(extract).join('\n')}
+    ${['hwyBuildCameraStops', 'hwyPrepareCameraStops', 'hwyCameraPlanAt', 'hwyCameraRejoin', 'hwyCameraZoom'].map(extract).join('\n')}
+    return {build:hwyBuildCameraStops,prepare:hwyPrepareCameraStops,at:hwyCameraPlanAt,rejoin:hwyCameraRejoin,zoom:hwyCameraZoom};
 `)();
 const row = (time, x, width = 4) => ({ time, x, minX: x - width / 2, maxX: x + width / 2 });
 const fits = () => true;

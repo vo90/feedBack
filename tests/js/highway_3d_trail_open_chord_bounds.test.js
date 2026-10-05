@@ -26,7 +26,7 @@ function extractFn(source, name) {
 // geometry change cannot silently leave the overlap matcher too narrow. In
 // RS+ the outline mesh is a narrow stem inside the open bar's width.
 const sizingStart = src.indexOf('const ndRim =');
-const sizingEnd = src.indexOf('// ── Lateral face fill', sizingStart);
+const sizingEnd = src.indexOf('Lateral face fill', sizingStart);
 assert.ok(sizingStart >= 0 && sizingEnd > sizingStart);
 const openRimSizing = src.slice(sizingStart, sizingEnd);
 const coreSizingStart = src.indexOf('if (n.f === 0)', src.indexOf('const core = pNote.get();'));
@@ -45,11 +45,14 @@ const harness = new Function('assert', `
     let openLaneWidth = 40;
     const xFret = fret => fret * 10;
     const openNoteLaneBoxW = () => openLaneWidth;
+    const CHORD_ANCHOR_TIME_EPS = 0.000501;
     ${extractFn(src, 'getChartAnchorAt')}
+    ${extractFn(src, 'getNoteAnchorAt')}
     ${extractFn(src, 'laneBoundsFromAnchor')}
     ${extractFn(src, 'anchorPlayedFretInclusiveSpan')}
     ${extractFn(src, 'playedFretSpanCoversShape')}
     ${extractFn(src, 'chordFallbackLaneBounds')}
+    ${extractFn(src, 'chordShapeLaneBounds')}
     ${extractFn(src, 'trailYieldAddTargetXBounds')}
     ${extractFn(src, 'trailYieldOpenTargetXBounds')}
     return {
@@ -104,7 +107,7 @@ test('out-of-span open chord footprints use the four-cell fallback wires', () =>
     assert.notDeepEqual(bounds, [21, 69], 'the old anchor-wire footprint must not survive');
 });
 
-test('covered open chord footprints retain the authored anchor wires', () => {
+test('covered open chord footprints use their own full shape', () => {
     assert.deepEqual(resolver({
         t: 1,
         standalone: false,
@@ -155,9 +158,9 @@ test('open ghost footprints use body width plus fixed-size parentheses, includin
             t: 1, standalone: false, accent, ghost: true,
             chordMeta: {size: 2, minF: 3, maxF: 7},
         }, wideAnchor);
-        const actualWidth = 100 * 0.96 * (accent ? 1.2 : 1) + 10 * 0.48 * 1.1;
+        const actualWidth = 50 * 0.96 * (accent ? 1.2 : 1) + 10 * 0.48 * 1.1;
         assert.ok(Math.abs((bounds[1] - bounds[0]) - actualWidth) < 1e-9);
-        assert.equal((bounds[0] + bounds[1]) * 0.5, 70);
+        assert.equal((bounds[0] + bounds[1]) * 0.5, 45);
     }
     const standalone = resolver({t: 1, standalone: true, ghost: true}, []);
     assert.ok(Math.abs(standalone[1] - standalone[0] - (40 * 0.96 + 10 * 0.48 * 1.1)) < 1e-9);
@@ -169,7 +172,7 @@ test('narrow open ghost lanes respect the actual minimum slab scale', () => {
     assert.ok(Math.abs(standalone[1]-standalone[0]-expectedWidth)<1e-9);
     const chord = resolver({t:1, standalone:false, ghost:true,
         chordMeta:{size:2,minF:3,maxF:3}}, [{time:0,fret:3,width:1}]);
-    assert.ok(Math.abs(chord[1]-chord[0]-expectedWidth)<1e-9);
+    assert.ok(Math.abs(chord[1]-chord[0]-(40*.96+10*.48*1.1))<1e-9, 'chord keeps four cells even inside a one-cell lane');
     const ordinary = resolver({t:1, standalone:true}, [], false, 2);
     assert.ok(Math.abs(ordinary[1]-ordinary[0]-2*.96)<1e-9,
         'this ghost fix does not widen unmarked note footprints');
@@ -182,8 +185,8 @@ test('RS+ open ghost bounds include core parentheses while preserving the bar wi
             t: 1, standalone: false, accent, ghost: true,
             chordMeta: { size: 2, minF: 3, maxF: 7 },
         }, wideAnchor, true);
-        const width = 100 * 0.96 + 10 * 0.48 * (accent ? 1.5 : 1);
+        const width = 50 * 0.96 + 10 * 0.48 * (accent ? 1.5 : 1);
         assert.ok(Math.abs(bounds[1] - bounds[0] - width) < 1e-9);
-        assert.equal((bounds[0] + bounds[1]) / 2, 70);
+        assert.equal((bounds[0] + bounds[1]) / 2, 45);
     }
 });

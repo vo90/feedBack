@@ -30,7 +30,10 @@ const once = (value, anchor, replacement) => {
   return value.replace(anchor, replacement);
 };
 let served = source;
+served = once(served, 'hwyLaneFretClipMax = nearB.dMax;',
+  'hwyLaneFretClipMax = nearB.dMax; window.__stableLaneClip=[nearB.dMin,nearB.dMax];');
 for (const [anchor, kind, mesh, meta] of [['const core = pNote.get();', 'gem', 'core', 't:n.t,s:n.s,f:n.f,sus:n.sus||0'], ['const fill = pChordFrameFill.get();', 'chord', 'fill', 't:ch.t'], ['const tr = pSus.get();', 'sustain', 'tr', 't:n.t,s:n.s,f:n.f,sus:n.sus||0'], ['const body = pSusRibbon.get();', 'ribbon', 'body', 't:n.t,s:n.s,f:n.f,sus:n.sus||0']]) served = once(served, anchor, `${anchor} if(window.__stableProbe)window.__stableProbe.push({kind:'${kind}',mesh:${mesh},${meta}});`);
+served = once(served, 'const core = pNote.get();', 'const core = pNote.get(); core.userData.auditStem=outline;');
 served = once(served, "contextType: 'webgl2',", `
 __cameraBenchmark(bundle, iterations) {
   for (let i=0;i<30;i++) { window.__cameraWall+=1000/60; camUpdate(bundle); }
@@ -47,11 +50,49 @@ __cameraBenchmark(bundle, iterations) {
     pointCount:typeof _stableCam==='undefined'?null:_stableCam.pointCount };
 },
 __stableAudit(){return {ren,cam,scene,curX,curDist,curLookY,tgtX,tgtDist,tgtLookY,mode:cameraMode,
+ planStops:_stablePlan.stops.map(s=>({time:s.time,x:s.x,lead:s.lead})),
+ laneClip:window.__stableLaneClip,
+ openCentre(time){const b=anchorLaneBoundsAt(_drawAnchors,time);return b?(xFret(b.dMin)+xFret(b.dMax))/2:null;},
+ openExpected(fret,width,boxed=false){
+   const b=laneBoundsFromAnchor({fret,width}),center=(xFret(b.dMin)+xFret(b.dMax))/2;
+   const laneWidth=Math.abs(xFret(b.dMax)-xFret(b.dMin))+(boxed?0:2*OPEN_NOTE_PAD_X);
+   return {center,width:40*K*Math.max(.22,laneWidth*.96/(40*K))};
+ },
+ worldX(mesh){
+   const g=mesh.geometry,v=new T.Vector3();let min=Infinity,max=-Infinity;
+   mesh.updateWorldMatrix(true,false);
+   const add=()=>{v.applyMatrix4(mesh.matrixWorld);min=Math.min(min,v.x);max=Math.max(max,v.x);};
+   if(Number.isFinite(g.userData.ribbonSlices)){
+     const a=g.attributes.position,count=Math.min(a.count,(g.userData.ribbonSlices+1)*4);
+     for(let i=0;i<count;i++){v.fromBufferAttribute(a,i);add();}
+   }else{
+     if(!g.boundingBox)g.computeBoundingBox();const b=g.boundingBox;
+     for(let i=0;i<8;i++){v.set(i&1?b.max.x:b.min.x,i&2?b.max.y:b.min.y,i&4?b.max.z:b.min.z);add();}
+   }
+   return {min,max,center:(min+max)/2,width:max-min};
+ },
  projectAttack(n){return new T.Vector3(xFretMid(n.f),sY(n.s),dZ(n.t-_frameNow)).project(cam).toArray();},
  state:typeof _stableCam==='undefined'?null:Object.fromEntries(Object.entries(_stableCam).filter(([k,v])=>v===null||['number','string','boolean'].includes(typeof v))),
  labels:Array.from({length:_incomingFloorLabelCount},(_,i)=>{const r=_incomingFloorLabels[i];return {kind:'gold-label',mesh:r.sprite,t:r.time,f:r.fret};}),
  fixedLabels:_incomingFixedFretLabels.map((mesh,f)=>mesh&&mesh.material.opacity>=0.999?{kind:'fixed-gold-label',mesh,t:0,f}:null).filter(Boolean),
- rect(mesh){const r={};return _incomingLabelScreenRect(mesh,r,true)?r:null;}};},contextType:'webgl2',`);
+ rect(mesh){
+   const r={},g=mesh.geometry;
+   // Pooled ribbons retain unused vertices and cached bounding boxes. Measure
+   // only the populated slices, exactly as the production camera collects them.
+   if(g && Number.isFinite(g.userData.ribbonSlices)){
+     mesh.updateWorldMatrix(true,false);
+     const a=g.attributes.position,v=new T.Vector3();
+     const count=Math.min(a.count,(g.userData.ribbonSlices+1)*4);
+     r.minX=r.minY=Infinity;r.maxX=r.maxY=-Infinity;
+     for(let i=0;i<count;i++){
+       v.fromBufferAttribute(a,i).applyMatrix4(mesh.matrixWorld).project(cam);
+       r.minX=Math.min(r.minX,v.x);r.maxX=Math.max(r.maxX,v.x);
+       r.minY=Math.min(r.minY,v.y);r.maxY=Math.max(r.maxY,v.y);
+     }
+     return Number.isFinite(r.minX+r.maxX+r.minY+r.maxY)?r:null;
+   }
+   return _incomingLabelScreenRect(mesh,r,true)?r:null;
+ }};},contextType:'webgl2',`);
 const note = e => ({
   t: 10,
   s: 2,
@@ -230,6 +271,7 @@ async function main() {
   });
   const browser = await chromium.launch({
     headless: true,
+    executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH || undefined,
     args: ['--enable-unsafe-swiftshader']
   });
   try {
@@ -308,6 +350,8 @@ async function main() {
           state: a.state,
           curX: a.curX,
           curDist: a.curDist,
+          planStops: a.planStops,
+          laneClip: a.laneClip,
           position: a.cam.position.toArray(),
           quaternion: a.cam.quaternion.toArray(),
           rotation: a.cam.rotation.toArray(),
@@ -365,6 +409,7 @@ async function main() {
           if (typeof setter === 'function') setter(v);
         }
         window.bundle = b;
+        if (extra.fretSpacing) window.h3dSetFretSpacing(extra.fretSpacing);
         window.r = feedBackViz_highway_3d();
         r.init(document.getElementById('highway'), bundle);
         await r.readyPromise;
@@ -398,6 +443,43 @@ async function main() {
       });
     }
     const chosen = name => !option('--case') || option('--case').split(',').some(s => name.includes(s));
+    if (chosen('slide-follow') && option('--slide-fixture')) {
+      const fixture = JSON.parse(fs.readFileSync(option('--slide-fixture'), 'utf8'));
+      for (const fretSpacing of ['uniform', 'logarithmic']) for (const rate of [.5, 1, 2]) {
+        const chart = base({...fixture.bundle, currentTime:fixture.start, playbackRate:rate});
+        const initial = await init(chart, 'straight', {fretSpacing});
+        const samples = await page.evaluate(({start,end,rate}) => {
+          const rows=[], ren=r.__stableAudit().ren, render=ren.render;
+          ren.render=()=>{};
+          try {
+            for(let time=start+rate/30;time<end;time+=rate/30)
+              rows.push(cameraStep(time,1000/30,true));
+            rows.push(cameraStep(end,1000/30,true));
+          } finally {ren.render=render;}
+          return rows;
+        }, {start:fixture.start,end:fixture.end,rate});
+        const last = samples.at(-1), name=`slide-follow-${fretSpacing}-${rate}`;
+        check(initial.laneClip[0]+1===fixture.startFret, name+': initial lane');
+        check(last.laneClip[0]+1===fixture.endFret, name+': destination lane');
+        check(last.state.x<initial.state.x-.1, name+': camera must travel left');
+        check(last.state.targetX<initial.state.targetX-.1, name+': short anchors must not freeze the plan');
+        check(samples.every(p=>p.laneClip[1]-p.laneClip[0]===4), name+': keep four-fret lane');
+        for(let i=1;i<samples.length;i++) {
+          check(samples[i].laneClip[0]<=samples[i-1].laneClip[0], name+': lane reversed');
+          check(samples[i].state.targetX<=samples[i-1].state.targetX+1e-7, name+': planned pan reversed');
+        }
+        for(let i=0;i<samples.length;i+=5) validateFrame(name+'#'+i,samples[i]);
+        // Seeking directly into the slide uses the same lane and camera plan.
+        const time=fixture.capture, playing=samples.reduce((a,b)=>Math.abs(b.time-time)<Math.abs(a.time-time)?b:a);
+        const sought=await init({...chart,currentTime:playing.time},'straight',{fretSpacing});
+        check(JSON.stringify(sought.laneClip)===JSON.stringify(playing.laneClip), name+': seek lane differs');
+        check(Math.abs(sought.state.planX-playing.state.planX)<1e-8, name+': seek plan differs');
+        await page.screenshot({path:path.join(out,name+'.png')});
+        results.push({name,initial,samples,sought});
+        console.log(name+': '+samples.length+' frames');
+      }
+      await page.evaluate(()=>window.h3dSetFretSpacing('uniform'));
+    }
     if (chosen('zoom-continuity')) {
       const fixturePath = option('--camera-fixture');
       const fixture = fixturePath ? JSON.parse(fs.readFileSync(fixturePath, 'utf8')) : null;
@@ -461,6 +543,124 @@ async function main() {
         path: path.join(out, name + '.png')
       });
       console.log(name + ': ' + samples.length + ' samples');
+    }
+    if (chosen('sustain-preparation')) {
+      for (const preset of option('--preparation-preset','straight,angled').split(','))
+        for (const style of option('--preparation-style','current,rsplus').split(','))
+        for (const rate of option('--preparation-rates','.5,1,2').split(',').map(Number)) {
+          const fixture = base({currentTime:10.5,playbackRate:rate,lefty:args.includes('--preparation-lefty'),
+            chords:[{t:10,id:0,notes:[5,7,7].map((f,s)=>note({t:10,f,s,sus:3}))}],
+            notes:[note({t:13,f:0,s:0,sus:.25}),note({t:13.25,f:2,s:0,sus:.25})],
+            chordTemplates:[{name:'Hold',frets:[5,7,7,-1,-1,-1]}],
+            anchors:[{time:0,fret:5,width:4},{time:13,fret:2,width:4}]});
+          const initial = await init(fixture,preset,{settings:{notationStyle:style}});
+          check(initial.planStops.some(s=>s.time===13 && s.lead>1), 'sustain-preparation: early plan missing');
+          const earlyTime = 13 - .9*rate;
+          const samples = await steps(10.5,(earlyTime-10.5)/rate,30,rate);
+          const early = samples.at(-1);
+          check(Math.abs(early.state.targetX-initial.state.targetX)>.00001, 'sustain-preparation: no early camera travel');
+          const alignment = await page.evaluate(()=>{
+            const n=__stableProbe.find(n=>n.kind==='gem'&&n.t===13&&n.f===0);
+            return n ? {actual:n.mesh.position.x,expected:r.__stableAudit().openCentre(13)} : null;
+          });
+          check(alignment && Math.abs(alignment.actual-alignment.expected)<1e-8,'sustain-preparation: rendered open bar missed the destination lane');
+          const name=`sustain-preparation-${preset}-${style}-${rate}`;
+          await record(name,samples,true);
+          await record(name+'-arrival',await steps(early.time,(13.6-early.time)/rate,30,rate));
+          const busy=structuredClone(fixture);
+          busy.chords[0].notes[0].vibrato_marks=[{start:0,end:3,intensity:'slight'}];
+          const normal=await init(busy,preset,{settings:{notationStyle:style}});
+          check(normal.planStops.every(s=>s.lead===.6),'sustain-preparation: timed vibrato must keep normal lead');
+        }
+    }
+    if (chosen('preparation-chart') && option('--preparation-chart')) {
+      const start = Number(option('--preparation-start',203.8));
+      const capture = Number(option('--preparation-capture',205.15));
+      const chart = privateChart(option('--preparation-chart'),start);
+      chart.lefty = args.includes('--preparation-lefty');
+      const initial = await init(chart,option('--preparation-preset','straight'),
+        {settings:{notationStyle:option('--preparation-style','rsplus')}});
+      const samples = await steps(start,capture-start);
+      if (option('--preparation-attack')) {
+        const attack=Number(option('--preparation-attack'));
+        check(initial.planStops.some(s=>Math.abs(s.time-attack)<.001 && s.lead>1), 'preparation-chart: early plan missing');
+        check(Math.abs(samples.at(-1).state.targetX-initial.state.targetX)>.00001,'preparation-chart: no early camera travel');
+      }
+      if (option('--preparation-opens')) {
+        const times=option('--preparation-opens').split(',').map(Number);
+        const fret=Number(option('--preparation-fret'));
+        const width=Number(option('--preparation-width',4));
+        const alignment=await page.evaluate(({times,fret,width})=>times.map(time=>{
+          const audit=r.__stableAudit(),expected=audit.openExpected(fret,width);
+          const gem=__stableProbe.find(n=>n.kind==='gem'&&Math.abs(n.t-time)<.000001&&n.f===0);
+          const actual=gem&&audit.worldX(gem.mesh),stem=gem&&audit.worldX(gem.mesh.userData.auditStem);
+          const trails=gem?__stableProbe.filter(n=>['sustain','ribbon'].includes(n.kind)&&n.mesh.visible
+            &&n.t===gem.t&&n.s===gem.s&&n.f===0).map(n=>audit.worldX(n.mesh)):[];
+          return {time,expected,actual,stem,trails,stemVisible:gem?.mesh.userData.auditStem.visible};
+        }),{times,fret,width});
+        // Compare to the requested destination, independently of production's
+        // anchor lookup. Checking that lookup against itself hid rounding bugs.
+        check(alignment.every(a=>a.actual&&Math.abs(a.actual.center-a.expected.center)<1e-8
+          &&Math.abs(a.actual.width-a.expected.width)<1e-7),
+          'preparation-chart: open group missed destination '+JSON.stringify(alignment));
+        check(alignment.every(a=>!a.stemVisible || a.stem.min>=a.expected.center-a.expected.width/2-1e-8
+          &&a.stem.max<=a.expected.center+a.expected.width/2+1e-8),
+          'preparation-chart: open stem missed destination '+JSON.stringify(alignment));
+        check(alignment.every(a=>a.trails.length===2&&Math.abs((a.trails[0].center+a.trails[1].center)/2-a.expected.center)<1e-7
+          &&a.trails.every(t=>t.min>=a.expected.center-a.expected.width/2-1e-7&&t.max<=a.expected.center+a.expected.width/2+1e-7)),
+          'preparation-chart: open trails missed destination '+JSON.stringify(alignment));
+        results.push({name:'preparation-chart-open-alignment',alignment});
+      }
+      if (option('--preparation-positionless-chords')) {
+        const times=option('--preparation-positionless-chords').split(',').map(Number);
+        const members=times.flatMap(t=>{
+          const c=chart.chords.find(c=>Math.abs(c.t-t)<.000001);
+          assert.ok(c,'Missing requested chord '+t);
+          return c.notes.map(n=>({t,s:n.s}));
+        });
+        const fret=Number(option('--preparation-fret')),width=Number(option('--preparation-width',4));
+        const alignment=await page.evaluate(({members,times,fret,width})=>{
+          const audit=r.__stableAudit(),expected=audit.openExpected(fret,width,true);
+          const bars=members.map(({t,s})=>{
+            const gem=__stableProbe.find(n=>n.kind==='gem'&&Math.abs(n.t-t)<.000001&&n.s===s);
+            return {t,s,actual:gem&&audit.worldX(gem.mesh),visible:gem?.mesh.visible};
+          });
+          const frames=times.map(t=>{
+            const frame=__stableProbe.find(n=>n.kind==='chord'&&Math.abs(n.t-t)<.000001);
+            return {t,actual:frame&&audit.worldX(frame.mesh)};
+          });
+          return {expected,bars,frames};
+        },{members,times,fret,width});
+        check(alignment.bars.every(b=>b.actual&&b.visible
+          &&Math.abs(b.actual.center-alignment.expected.center)<1e-7
+          &&Math.abs(b.actual.width-alignment.expected.width)<1e-7),
+          'preparation-chart: positionless chord members missed destination '+JSON.stringify(alignment));
+        check(alignment.frames.every(f=>f.actual&&Math.abs(f.actual.center-alignment.expected.center)<1e-7),
+          'preparation-chart: positionless chord frame missed destination '+JSON.stringify(alignment));
+        results.push({name:'preparation-chart-positionless-chords',alignment});
+      }
+      await record('preparation-chart',samples,true);
+      await record('preparation-chart-arrival',await steps(capture,1.5));
+    }
+    if (chosen('quiet-preparation')) {
+      for (const kind of option('--quiet-kind','single,overlap,silence').split(',')) {
+        const rate=Number(option('--preparation-rates',1));
+        const trails=kind==='silence' ? [note({t:10,f:19,s:5,sus:.1})]
+          : [note({t:10,f:19,s:5,sus:3,slide_out:'down',
+              slide_out_marks:[{start:2.5,end:3,direction:'down'}]}),
+            ...(kind==='overlap'?[note({t:10.3,f:17,s:4,sus:2.7})]:[])];
+        const fixture=base({currentTime:10.5,playbackRate:rate,lefty:args.includes('--preparation-lefty'),
+          notes:[...trails,note({t:13,f:0,sus:.35}),note({t:13.35,f:2,sus:.3})],
+          anchors:[{time:0,fret:17,width:4},{time:13,fret:2,width:4}]});
+        const initial=await init(fixture,option('--preparation-preset','straight'),
+          {settings:{notationStyle:option('--preparation-style','rsplus')}});
+        check(initial.planStops.some(s=>s.time===13 && s.lead>1),'quiet-preparation: early stop missing '+kind);
+        const earlyTime=13-.9*rate;
+        const samples=await steps(10.5,(earlyTime-10.5)/rate,30,rate);
+        check(Math.abs(samples.at(-1).state.targetX-initial.state.targetX)>.00001,'quiet-preparation: no early pan '+kind);
+        await record('quiet-preparation-'+kind,samples,true);
+        await record('quiet-preparation-'+kind+'-arrival',await steps(earlyTime,(13.65-earlyTime)/rate,30,rate));
+      }
     }
     if (chosen('clock-continuity')) {
       await init({...low(), transport: {epoch: 1, state: 'playing', position: 9,

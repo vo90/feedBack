@@ -51,8 +51,9 @@ function harness() {
         const gNote = {name:'box'}, gRsNote = {name:'rounded'}, gRsNoteHalo = {name:'halo'};
         const gNoteGrad = activePalette.map(() => ({name:'current-gradient'}));
         const gRsNoteGrad = activePalette.map(() => ({name:'rs-gradient'}));
+        ${fn('naturalNode')}
         ${fn('pool')}
-        ${fn('isUnpitchedMute')}
+        const NFRETS=24; ${fn('isPlayableFret')}${fn('isPlainDeadNote')}${fn('isUnpitchedMute')}
         ${fn('usesUnfrettedPosition')}
         ${fn('noteStemVisible')}
         const groups = {};
@@ -364,10 +365,10 @@ test('boxed open bars never restore stems during toggle and verdict changes', ()
 });
 
 test('unpitched mute sentinels use the open preference before drawing normalization', () => {
-    const visible = new Function(`${fn('isUnpitchedMute')}\n${fn('usesUnfrettedPosition')}\n${fn('noteStemVisible')}\nreturn noteStemVisible;`)();
+    const visible = new Function(`const NFRETS=24; ${fn('isPlayableFret')}${fn('isPlainDeadNote')}${fn('isUnpitchedMute')}\n${fn('usesUnfrettedPosition')}\n${fn('noteStemVisible')}\nreturn noteStemVisible;`)();
     for (const boxed of [false,true]) for (const notes of [false,true]) for (const open of [false,true]) {
         assert.equal(visible({f:127,mt:true},boxed,notes,open),!boxed && open);
         assert.equal(visible({f:0},boxed,notes,open),!boxed && open);
-        assert.equal(visible({f:5,mt:true},boxed,notes,open),!boxed && notes);
+        assert.equal(visible({f:5,mt:true},boxed,notes,open),!boxed && open);
     }
 });

@@ -216,3 +216,30 @@ test('2D and 3D agree on authoritative interval validation', () => {
         assert.deepEqual(validate({...note,slide_out_marks:marks}), h.slideOutMarks({...note,slide_out_marks:marks}));
     }
 });
+
+
+test('muted slide ribbon has bounded directional geometry without a sentinel fret', () => {
+    for (const direction of ['up','down']) for (const lefty of [false,true]) {
+        const raw = {t:10,s:2,f:127,mt:true,ghost:true,sus:1,
+            slide_out_marks:[{direction,start:0,end:1}]};
+        const n = {...raw,f:0,_unpitchedSlide:true};
+        const r = ribbon(n,{lefty});
+        const tip = ring(r.body,r.body.userData.ribbonSlices);
+        const sign=(direction==='up'?1:-1)*(lefty?-1:1);
+        assert.ok(Math.abs(tip.x-(190+8*sign))<1e-4);
+        assert.equal(tip.alpha,0);
+        assert.ok(tip.width>0 && tip.width<4);
+        assert.equal(r.h.slideOutOffsetWorldX(raw,11),direction==='up'?8:-8);
+        assert.deepEqual(raw,{t:10,s:2,f:127,mt:true,ghost:true,sus:1,
+            slide_out_marks:[{direction,start:0,end:1}]});
+    }
+});
+
+test('muted cue follows the same visibility taper under crossing notes', () => {
+    const n={t:10,s:2,f:0,mt:true,_unpitchedSlide:true,sus:1.75,
+        slide_out_marks:[{direction:'down',start:1.25,end:1.75}]};
+    const plain=ribbon(n),yielded=ribbon(n,{yielding:true});
+    for(const r of [plain,yielded]) for(const v of r.body.attributes.position.array)assert.ok(Number.isFinite(v));
+    assert.ok(ring(yielded.body,yielded.body.userData.ribbonSlices-1).width
+        <= ring(plain.body,plain.body.userData.ribbonSlices-1).width);
+});

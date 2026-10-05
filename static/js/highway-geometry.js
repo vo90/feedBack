@@ -56,6 +56,7 @@ export function bendToneLabel(semitones) {
 export function maxNoteFretInWindow(notes, chords, templates, time, ahead) {
     let max = 0;
     const collect = (note, onset) => {
+        if (note?.mt === true && Array.isArray(note.pick_scrape_marks) && note.pick_scrape_marks.length > 0) return;
         if (onset + (Number(note.sus) || 0) < time - 2) return;
         for (const fret of [note.f, note.sl, note.slu]) {
             // 127 is an imported unpitched mute sentinel, not a fret to frame.
@@ -85,6 +86,9 @@ export function teachingFingerLabel(fg) {
 // A ghost is still a pitched attack unless the source separately marks it dead.
 // Ties, fret labels and truthy non-boolean metadata never imply a ghost.
 export function noteFretLabel(fret, note) {
+    if (note?.hm === true && Number.isFinite(note.hn) && note.hn > 0 && note.hn <= 24
+            && Number.isInteger(note.hps) && note.hps > 0 && note.hps <= 48)
+        fret = Number(note.hn.toFixed(3));
     if (note?.ghost !== true) return String(fret);
     return '(' + (note.mt || note.fhm ? 'X' : String(fret)) + ')';
 }
