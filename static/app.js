@@ -1,3 +1,4 @@
+import { selectionLifecycle } from './js/screen-selection.js';
 import {
     bootstrapPluginsAndUi,
     checkPluginUpdates,
@@ -797,6 +798,7 @@ const _feedBackBus = (_feedBackExisting
     ? _feedBackExisting
     : new EventTarget();
 window.feedBack = Object.assign(_feedBackBus, {
+    selectionLifecycle: selectionLifecycle(),
     currentSong: null,
     isPlaying: false,
     _navParams: {},
@@ -1071,7 +1073,11 @@ audio.addEventListener('pause', () => {
 });
 
 window.feedBack.on('song:play', _acquireWakeLock);
+// Supplemental completion check; physical starts reconcile in transport first.
+window.feedBack.on('song:play', () => selectionLifecycle().finishVisibilityChange());
+window.feedBack.on('screen:changed', () => selectionLifecycle().finishVisibilityChange());
 window.feedBack.on('song:resume', _acquireWakeLock);
+window.feedBack.on('song:resume', () => selectionLifecycle().finishVisibilityChange());
 window.feedBack.on('song:pause', _releaseWakeLock);
 window.feedBack.on('song:ended', _releaseWakeLock);
 window.feedBack.on('song:stop', _releaseWakeLock);
@@ -1319,7 +1325,10 @@ async function changeArrangement(index, drumPart) {
                         window.feedBack.emit('song:play', payload);
                         window.feedBack.emit('song:resume', payload);
                     }
-                } else audio.play().then(() => { S.isPlaying = true; }).catch(() => {});
+                } else {
+                    selectionLifecycle().reconcileBeforePlayback();
+                    audio.play().then(() => { S.isPlaying = true; }).catch(() => {});
+                }
             }
             clearBusy();
             clearMyCallback();

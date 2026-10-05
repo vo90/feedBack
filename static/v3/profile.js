@@ -118,8 +118,10 @@
             b.classList.toggle('active', b.dataset.tab === tab);
         });
         root.querySelectorAll('.fb-tabpanel').forEach(function (p) {
+            if (p.dataset.tab !== tab) window.feedBack?.selectionLifecycle?.prepareToHide(p);
             p.classList.toggle('active', p.dataset.tab === tab);
         });
+        window.feedBack?.selectionLifecycle?.finishVisibilityChange();
         try { localStorage.setItem(PROFILE_TAB_KEY, tab); } catch (_) { /* private mode */ }
     }
 

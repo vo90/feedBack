@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const src = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
-const block = src.slice(src.indexOf('    function hwyFootprintsOverlap1D('), src.indexOf('    /** Fixed pre-impact ramp window'));
+const block = src.slice(src.indexOf('    function isPlayableFret('), src.indexOf('    function isRenderableNote(')) + src.slice(src.indexOf('    function hwyFootprintsOverlap1D('), src.indexOf('    /** Fixed pre-impact ramp window'));
 const h = vm.runInNewContext('const NFRETS=24,MAX_RENDER_STRINGS=8;\n' + block + `
 ({hwyBuildTrailYieldEvents,hwyBuildTrailAttackIndex,hwyNextTrailAttack,hwySameStringTrailYieldAmountAt,
   hwyAppendSameStringContourTimes,hwyTrailYieldAmountAt,TRAIL_YIELD_DEFAULTS})`);

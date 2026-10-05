@@ -65,6 +65,42 @@ function harness(nStr = 6, inverted = false) {
 }
 const note = (values = {}) => ({ t: 1, s: 5, f: 22, sus: .458, vb: true, ...values });
 const end = n => n.t + n.sus;
+const mark = (start,end,intensity='slight') => ({start,end,intensity});
+
+test('timed bend-vibrato-slide begins only at its source interval and leaves scoring data unchanged', () => {
+    const n=note({t:10,sus:2,bn:2,bnv:[{t:0,v:0},{t:.5,v:2}],
+        slide_out_marks:[{start:1,end:2,direction:'down'}],vibrato_marks:[mark(.5,2)]});
+    const h=harness(), before=JSON.stringify(n);
+    for (const t of [10,10.04,10.49,12,15,9]) close(h.at(n,t),0);
+    close(h.bend(n,10.25),1);
+    assert.ok(Math.abs(h.at(n,10.62))>.99);
+    close(h.at(n,10.62),h.at(n,10.62),'seek determinism');
+    assert.equal(JSON.stringify(n),before);
+    close(harness(6,true).y(n,10.62),-h.y(n,10.62),'string inversion');
+});
+
+test('timed slight/wide changes preserve phase, respect gaps and fade within tiny intervals', () => {
+    const h=harness();
+    const n=note({t:0,sus:2,vibrato_marks:[mark(.2,.7),mark(.7,1,'wide'),mark(1.3,1.6)]});
+    assert.ok(Math.abs(h.at(n,.699999)-h.at(n,.700001))<.001);
+    close(h.at(n,.8),Math.sin(.6*Math.PI/.08)*1.5);
+    for(const t of [0,.19,1.01,1.2,1.6,2])close(h.at(n,t),0);
+    for(const duration of [.000001,.001,.02]) {
+        const tiny=note({t:0,sus:1,vibrato_marks:[mark(.2,.2+duration,'wide')]});
+        for(const f of [0,.1,.5,.9,1]) assert.ok(Number.isFinite(h.at(tiny,.2+duration*f)));
+        close(h.at(tiny,.2+duration),0);
+    }
+});
+
+test('authoritative empty intervals suppress the legacy flag and do not contaminate linked notes or scratch reuse', () => {
+    const h=harness(), timed=note({vibrato_marks:[],ln:true}), legacy=note({t:1.458});
+    h.link([timed,legacy]);close(h.at(timed,1.1),0);
+    const scratch=h.chordView({...timed,vibrato_marks:[mark(.1,.3)]},5);
+    assert.ok(Math.abs(h.at(scratch,5.22))>.9);
+    Object.assign(scratch,{vibrato_marks:undefined});
+    close(h.at(scratch,5.04),1);
+    assert.ok(src.includes('_scrChordNote.vibrato_marks = cn.vibrato_marks;'));
+});
 function close(actual, expected, message = '') {
     assert.ok(Number.isFinite(actual) && Math.abs(actual - expected) < 1e-9,
         `${message}: expected ${expected}, received ${actual}`);

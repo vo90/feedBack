@@ -141,7 +141,9 @@ export function openEditModal(songData, openerEl) {
     modal.addEventListener('click', (e) => {
         if (!_editModalShouldClose(e.target, modal, _downOnBackdrop)) return;
         const opener = modal._opener;
+        window.feedBack?.selectionLifecycle?.prepareToHide(modal);
         modal.remove();
+        window.feedBack?.selectionLifecycle?.finishVisibilityChange();
         const focusTarget = (opener && document.body.contains(opener)) ? opener
             : (_lastLibSelected && document.body.contains(_lastLibSelected) ? _lastLibSelected : null);
         if (focusTarget) focusTarget.focus({ preventScroll: true });
@@ -192,7 +194,11 @@ export async function saveEditModal(encodedFilename) {
 
     const modal = document.getElementById('edit-modal');
     const opener = modal ? modal._opener : null;
-    if (modal) modal.remove();
+    if (modal) {
+        window.feedBack?.selectionLifecycle?.prepareToHide(modal);
+        modal.remove();
+        window.feedBack?.selectionLifecycle?.finishVisibilityChange();
+    }
     // Restore focus to the entry the modal was opened from so subsequent
     // keyboard navigation resumes correctly (same as Esc / Cancel paths).
     const focusTarget = (opener && document.body.contains(opener)) ? opener
@@ -229,7 +235,11 @@ export async function deleteSongFromModal(filename) {
         return;
     }
     const modal = document.getElementById('edit-modal');
-    if (modal) modal.remove();
+    if (modal) {
+        window.feedBack?.selectionLifecycle?.prepareToHide(modal);
+        modal.remove();
+        window.feedBack?.selectionLifecycle?.finishVisibilityChange();
+    }
     L.treeStats = null;
     L.favTreeStats = null;
     L.tuningNames = null;

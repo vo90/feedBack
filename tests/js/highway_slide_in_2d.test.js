@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../../static/js/highway-draw.js'), 'utf8');
+const whammy = fs.readFileSync(path.join(__dirname, '../../static/js/whammy.js'), 'utf8').replace(/export /g,'');
 
 function fn(name) {
     const start = source.indexOf('function ' + name + '(');
@@ -17,12 +18,14 @@ function fn(name) {
 }
 
 const helpers = new Function(`
+    ${whammy}
+    const isPickScrape = n => n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0;
     const VISIBLE_SECONDS = 3;
     const project = dt => dt < -.05000001 || dt > VISIBLE_SECONDS ? null : { y: dt, scale: 1 };
     const fretX = (state, f) => f * 10;
-    ${['slideInMarks2D', 'slideOutMarks2D', 'drawSlideInRibbon2D', 'drawSlideOutRibbon2D',
+    ${['harmonicContactLabel', 'playingFret2D', 'slideInMarks2D', 'slideOutMarks2D', 'drawSlideInRibbon2D', 'drawSlideOutRibbon2D',
         'drawSustains', '_noteHasTechniqueFlags', '_chordHasTechniqueFlags'].map(fn).join('\n')}
-    return {slideInMarks2D, drawSlideInRibbon2D, drawSustains, _chordHasTechniqueFlags};
+    return {slideInMarks2D, drawSlideInRibbon2D, drawSlideOutRibbon2D, drawSustains, _chordHasTechniqueFlags};
 `)();
 
 function state(now = 9.5) {
@@ -169,4 +172,19 @@ test('open fret keeps metadata without drawing an invented fretted approach', ()
     const open = {...note,f:0};
     assert.equal(draw(open).length,0);
     assert.deepEqual(helpers.slideInMarks2D(open),note.slide_in_marks);
+});
+
+
+test('muted slide-out is drawn from the neutral lane with no fabricated fret',()=>{
+    for(const direction of ['up','down']) {
+        const st=state(10), n={t:10,s:0,f:127,mt:true,sus:1,
+            slide_out_marks:[{direction,start:0,end:1}]};
+        helpers.drawSlideOutRibbon2D(st,1000,600,n);
+        assert.ok(st.strokes.length>0);
+        const first=st.strokes[0].points[0],last=st.strokes.at(-1).points.at(-1);
+        assert.equal(first[0],500);
+        assert.equal(last[0],direction==='up'?508:492);
+        assert.equal(st.strokes.at(-1).alpha,0);
+        assert.equal(n.f,127);
+    }
 });

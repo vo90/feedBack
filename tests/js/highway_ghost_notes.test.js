@@ -20,7 +20,7 @@ function extract(src, name) {
     }
     throw Error('Unbalanced function ' + name);
 }
-function load(src, name) { return new Function(extract(src, name) + '; return ' + name)(); }
+function load(src, name) { return new Function((src === draw && name !== 'harmonicContactLabel' ? extract(draw, 'harmonicContactLabel') : '') + extract(src, name) + '; return ' + name)(); }
 
 test('actual Three geometry brackets the gem without a label or additional mesh', async () => {
     const T = await import(pathToFileURL(path.join(root, 'static/vendor/three/three.module.min.js')).href);
@@ -74,7 +74,7 @@ test('2D actual note path writes pitched and dead ghost labels without inferring
         return () => {};
     } });
     const drawNote = new Function('noteFretLabel', 'roundRect', 'fillTextReadable', '_paintGemGlow',
-        extract(draw, 'drawNote') + '; return drawNote;')(
+        extract(draw, 'harmonicContactLabel') + extract(draw, 'drawNote') + '; return drawNote;')(
         label, () => {}, (_state, text) => rendered.push(text), () => {});
     const state = {ctx, STRING_COLORS: ['#f00'], STRING_DIM: ['#300'], STRING_BRIGHT: ['#fff']};
     // Small glyphs exercise the real shape/text path without unrelated teaching labels.
@@ -231,7 +231,8 @@ test('rotated ghost bounds enter the actual upcoming-gem ordering index', () => 
 });
 
 test('the chart footprint index retains a ghost on either coincident source', () => {
-    const build = new Function('const NFRETS=24;' + extract(screen, 'hwyBuildTrailEventEndIndex')
+    const build = new Function('const NFRETS=24;' + ['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute']
+        .map(name => extract(screen, name)).join('\n') + extract(screen, 'hwyBuildTrailEventEndIndex')
         + extract(screen, 'hwyBuildTrailYieldEvents')
         + '; return hwyBuildTrailYieldEvents;')();
     const a = build([{t: 1, s: 0, f: 7}], [{t: 1, notes: [{s: 0, f: 7, ghost: true}]}], 6);

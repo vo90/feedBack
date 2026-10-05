@@ -31,10 +31,11 @@ const dispatch = new Function('chordNotes', 'options', `
     ${fn('chordMuteKind')}
     ${fn('repeatChordMaySuppressGems')}
     ${fn('hwyPostHitTailFadeMul')}
-    ${fn('isUnpitchedMute')}
+    const NFRETS=24; ${fn('isPlayableFret')}${fn('chordMemberTrailSuppressed')}${fn('isPlainDeadNote')}${fn('isUnpitchedMute')}
     ${fn('usesUnfrettedPosition')}
     ${fn('noteStemVisible')}
     ${fn('chordHasFrameShape')}
+    ${fn('hwyChordHasNewAttack')}
     const isRepeat = options.repeat !== false;
     const chordLinksSlide = !!options.slide;
     const deferChordGems = !!options.defer;
@@ -50,6 +51,7 @@ const dispatch = new Function('chordNotes', 'options', `
     const now = 186, chDtEarly = options.dt ?? .460999;
     const ch = { t: now + chDtEarly, id: 1 };
     const chordCX = 0, chordTailHoldS = 0.75, laneWForOpenStrings = 40;
+    const chordFrameBounds = {dMin:2,dMax:6};
     const chordTailFadeS = .15, chordNextSoon = false, AHEAD = 3;
     const _chNextEventT = options.nextEvent ?? Infinity;
     const chShape = new Map(chordNotes.map(n => [n.s,n.f]));
@@ -68,7 +70,7 @@ const dispatch = new Function('chordNotes', 'options', `
     }
     ${between('const chDt = chDtEarly;', 'const suppressRepeatGems = repeatChordMaySuppressGems(')}
     ${between('const suppressRepeatGems = repeatChordMaySuppressGems(', '// ── Arpeggio note brackets')}
-    return { retainsChordGems, drawn, isRepeat, drawCalls, chordFrameEligible, belongsToBoxedChord };
+    return { retainsChordGems, drawn, isRepeat, drawCalls, chordFrameEligible, belongsToBoxedChord, suppressRepeatGems };
 `);
 const frameGeometry = new Function('isRepeat', 'retainsChordGems', 'inverted', `
     'use strict';
@@ -82,6 +84,7 @@ const frameGeometry = new Function('isRepeat', 'retainsChordGems', 'inverted', `
 const frameSymbols = new Function('chordNotes', 'compactRepeatFrame', `
     'use strict';
     ${fn('chordMuteKind')}
+    const NFRETS=24; ${fn('isPlayableFret')}${fn('isPlainDeadNote')}
     const fills = [], lines = [];
     function pool(kind, output) {
         return { get() {
@@ -160,6 +163,123 @@ function assertEnclosed(result) {
     }
 }
 
+// Use the production hold resolver, including overlap and source-cue exclusions.
+// A fabricated boolean alone would miss the boundary between shared and
+// independent sustains which caused the Songsterr/PSARC discrepancy.
+const resolveHold = new Function(
+    'const NFRETS = 24;\n' +
+    ['CHORD_ANCHOR_TIME_EPS', 'NEXT_ON_STRING_T_EPS', 'BEND_LINK_TIME_EPS', 'TRAIL_BOUNDARY_OVERLAP_TOLERANCE_S']
+        .map(name => src.match(new RegExp('const ' + name + ' = [^;]+;'))[0]).join('\n') +
+    '\nconst _slideInMarkCache = new WeakMap(), SLIDE_OUT_EMPTY_MARKS = Object.freeze([]);\n' +
+    ['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote', 'getChartAnchorAt',
+        'laneBoundsFromAnchor', 'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape',
+        'chordFallbackLaneBounds', 'chordShapeLaneBounds', 'hwyLinkNextTargetNotes', 'slideInMarks',
+        'hwyTrailBoundaryOverlapIsNegligible', 'hwyBuildChordHoldGuidance'].map(fn).join('\n') +
+    '\nreturn hwyBuildChordHoldGuidance;'
+)();
+const sharedMembers = (sus = .164) => [
+    {s:2,f:0,sus}, {s:3,f:2,sus}, {s:4,f:3,sus},
+];
+function resolvedRepeat(notes, options = {}, previous = []) {
+    const chord = {t:186.461,id:1,notes};
+    const model = resolveHold([...previous, chord], [], [], [], 6, []);
+    return {model, result:render(notes, {...options,sharedChordHold:model.byChord.get(chord)})};
+}
+
+test('ordinary shared holds use half-height repeats on approach and full first chords', () => {
+    for (const notes of [sharedMembers(), [{s:0,f:0,sus:.164},{s:1,f:0,sus:.164}]]) {
+        for (const inverted of [false,true]) {
+            const before = JSON.stringify(notes);
+            const {model,result} = resolvedRepeat(notes,{inverted});
+            assert.equal(model.byChord.size,1);
+            assert.equal(result.frame.compactRepeatFrame,true);
+            assert.equal(result.drawn.length,0);
+            assertEnclosed(resolvedRepeat(notes,{repeat:false,inverted}).result);
+            assert.equal(JSON.stringify(notes),before,'source durations and notes are untouched');
+        }
+    }
+});
+
+test('shared sustain heads are enclosed on the play line, after it, and after rewinding', () => {
+    for (const dt of [.460999,.000001,0,-.001,-.1,.460999]) {
+        const {result} = resolvedRepeat(sharedMembers(),{dt});
+        if (dt > 0) {
+            assert.equal(result.drawn.length,0);
+            assert.equal(result.frame.compactRepeatFrame,true);
+        } else assertEnclosed(result);
+    }
+});
+
+test('unequal, partial and overlapping holds retain all individual note cues including open strings', () => {
+    for (const notes of [
+        [{s:0,f:0,sus:.4},{s:1,f:0,sus:.164}],
+        [{s:0,f:0,sus:.4},{s:1,f:2,sus:.164}],
+        [{s:0,f:0,sus:.4},{s:1,f:2}],
+        [{s:1,f:3,sus:.4},{s:2,f:5,sus:.164}],
+    ]) {
+        const {model,result} = resolvedRepeat(notes);
+        assert.equal(model.byChord.size,0);
+        assertEnclosed(result);
+    }
+    for (const [start,duration] of [[186.2,1],[186.46,.3]]) {
+        const previous = {t:start,id:1,notes:sharedMembers(duration)};
+        const {model,result} = resolvedRepeat(sharedMembers(),{},[previous]);
+        assert.equal(model.byChord.size,0,'conflicting releases need individual holds');
+        assertEnclosed(result);
+    }
+});
+
+test('tiny boundary overlap keeps compact shared repeats without shifting either release', () => {
+    const previous = {t:186.3,id:1,notes:sharedMembers(.162)};
+    const before = JSON.stringify(previous);
+    const {model,result} = resolvedRepeat(sharedMembers(),{},[previous]);
+    assert.equal(model.byChord.size,2);
+    assert.equal(model.byChord.get(previous).end,186.3+.162);
+    assert.equal(result.frame.compactRepeatFrame,true);
+    assert.equal(JSON.stringify(previous),before);
+});
+
+test('shared-hold eligibility never hides note-level technique or teaching instructions', () => {
+    const cues = ['ghost','hm','hp','ho','po','tp','ac','slp','plk'].map(key=>({[key]:true}));
+    cues.push({bn:1},{vb:true},{tr:true},{sl:5},{slide_out:'up'});
+    // The standalone renderer fix also runs on integration baselines which
+    // do not yet implement these Songsterr gestures.
+    if (src.includes('n.whammy?.version')) cues.push({whammy:{version:1}});
+    if (src.includes('n.harmonic_changes?.version')) cues.push({harmonic_changes:{version:1}});
+    for (const key of ['fg','sd','rh','pkd','sg']) cues.push({[key]:0});
+    for (const cue of cues) {
+        const notes = sharedMembers(); Object.assign(notes[1],cue);
+        assertEnclosed(resolvedRepeat(notes).result);
+    }
+});
+
+test('palm-muted repeats share holds and retain the compact frame mute symbol', () => {
+    const { result, model } = resolvedRepeat(sharedMembers().map(n => ({ ...n, pm: true })));
+    assert.ok(model.holds.length > 0);
+    assert.equal(result.frame.compactRepeatFrame, true);
+    assert.equal(result.drawn.length, 0);
+    assert.equal(result.frameSymbols.fills.length, 1);
+    const mixed = sharedMembers(); mixed[1].pm = true;
+    const individual = resolvedRepeat(mixed).result;
+    assertEnclosed(individual);
+    assert.ok(individual.noteSymbols.some(symbols => symbols.includes('palm')));
+});
+
+test('other muted repeats keep their existing symbols and sustained members remain explicit', () => {
+    for (const flags of [{mt:true},{fhm:true}]) {
+        assertEnclosed(resolvedRepeat(sharedMembers().map(n=>({...n,...flags}))).result);
+        const ordinary = render(sharedMembers(0).map(n=>({...n,...flags})));
+        assert.equal(ordinary.frame.compactRepeatFrame,true);
+        assert.equal(ordinary.frameSymbols.fills.length,1);
+    }
+});
+
+test('arpeggio fallback, missing frames and slide links cannot claim compact shared approach', () => {
+    for (const options of [{arpeggio:true},{width:null},{slide:true},{defer:true,fallback:true}]) {
+        assertEnclosed(resolvedRepeat(sharedMembers(),options).result);
+    }
+});
+
 test('Free Fallin accented Bbsus2 repeat encloses every retained gem in both string orientations', () => {
     for (const inverted of [false, true]) {
         const notes = bbSus2();
@@ -197,11 +317,10 @@ test('a first strum remains full-height even when deferred to an arpeggio note s
     assert.equal(result.frame.withTopFrame, true);
 });
 
-test('deferred, synthesized and fully linked repeats stay compact when no approach gem remains', () => {
-    for (const options of [{ defer: true }, { synth: true }, { allLinked: true }]) {
+test('deferred and synthesized repeats stay compact when no approach gem remains', () => {
+    for (const options of [{ defer: true }, { synth: true }]) {
         const notes = bbSus2();
         notes[0].ac = true;
-        if (options.allLinked) options.linked = notes;
         const result = render(notes, options);
         assert.equal(result.drawn.length, 0);
         assert.equal(result.frame.height, result.frame.fullChordBoxH / 2);
@@ -276,6 +395,25 @@ test('boxed high-density, repeat and fallback dispatch never permits member stem
     }
 });
 
+test('continuation-only chord dispatch removes the attack frame while retaining note and trail dispatch', () => {
+    const notes=[{s:3,f:9,sus:.5},{s:4,f:9,sus:.5}];
+    for (const repeat of [false,true]) for (const inverted of [false,true]) {
+        for (const dt of [.3,.001,0,-.001,-.3]) {
+            const result=dispatch(notes,{repeat,inverted,dt,linked:notes});
+            assert.equal(result.chordFrameEligible,false);
+            assert.equal(result.drawn.length,0,'no new attack gems');
+            assert.equal(result.drawCalls.length,2,'both continuations still reach drawNote for their trails/guidance');
+            assert.ok(result.drawCalls.every(call=>call.linked && call.belongsToBoxedChord && !call.stemVisible));
+        }
+    }
+    const mixed=dispatch(notes,{repeat:false,linked:[notes[0]]});
+    assert.equal(mixed.chordFrameEligible,true,'one fresh attack preserves the frame');
+    assert.equal(mixed.drawn.length,1);
+    const arp=dispatch(notes,{repeat:false,linked:notes,arpeggio:true,markedArpeggio:true});
+    assert.equal(arp.chordFrameEligible,true,'arpeggio position guidance is not a strum box');
+    assert.equal(arp.drawn.length,0,'retaining a position guide must not invent attacks');
+});
+
 test('full frame sides, corners and halo geometry use the same compact decision', () => {
     const edges = between('const withTopFrame =', 'const chordName =');
     assert.doesNotMatch(edges, /\bisRepeat\b/);
@@ -313,7 +451,6 @@ test('uniform gemless repeats have exactly one mute symbol with matching fill an
 test('mixed mute instructions retain the entire chord and each member own symbol', () => {
     for (const [flags, expected] of [
         [[{ pm: true }, {}], [['palm'], []]],
-        [[{}, { mt: true }], [[], ['fretHand']]],
         [[{ pm: true }, { fhm: true }], [['palm'], ['fretHand']]],
         [[{ pm: true }, { pm: true, mt: true }], [['palm'], ['fretHand']]],
     ]) {
@@ -348,4 +485,86 @@ test('mixed muting does not invent attacks for linked continuations or arpeggio 
     const partial = render(notes, { linked: notes.slice(1) });
     assert.deepEqual(partial.drawn.map(n => n.s), [1]);
     assert.deepEqual(partial.frameSymbols, { fills: [], lines: [] });
+});
+
+
+test('repeated ringing chords with dead strings use plain half boxes', () => {
+    for (const f of [0, 7, 127]) for (const inverted of [false, true]) {
+        const notes = [3,f,0,0,3,3].map((f,s)=>({s,f,sus:.46125,mt:s===1}));
+        notes[1].sus = 3; // hidden editor duration must not block the repeat
+        const before=JSON.stringify(notes);
+        const result=resolvedRepeat(notes,{inverted}).result;
+        assert.equal(result.frame.compactRepeatFrame,true);
+        assert.equal(result.frame.height,result.frame.fullChordBoxH/2);
+        assert.equal(result.drawn.length,0);
+        assert.deepEqual(result.frameSymbols,{fills:[],lines:[]});
+        assert.ok(result.drawCalls.every(n=>!n.stemVisible));
+        assert.equal(JSON.stringify(notes),before);
+        const first=resolvedRepeat(notes,{repeat:false,inverted}).result;
+        assertEnclosed(first);
+        assert.equal(first.drawn.length,6);
+        assert.deepEqual(first.noteSymbols,[[],['fretHand'],[],[],[],[]]);
+    }
+});
+
+test('multiple dead strings need no repeated per-string reminders', () => {
+    const notes=[{s:0,f:3},{s:1,f:7,mt:true},{s:3,f:127,mt:true},{s:4,f:3}];
+    const result=render(notes);
+    assert.equal(result.frame.compactRepeatFrame,true);
+    assert.deepEqual(result.frameSymbols,{fills:[],lines:[]});
+    const first=render(notes,{repeat:false});
+    assertEnclosed(first);
+    assert.deepEqual(first.noteSymbols,[[],['fretHand'],['fretHand'],[]]);
+});
+
+test('mixed dead repeats retain full frames for independent trails and musical cues', () => {
+    const notes=[{s:0,f:3,sus:1},{s:1,f:7,mt:true,sus:1},{s:4,f:3,sus:1}];
+    assertEnclosed(render(notes)); // no shared hold available
+    for(const flag of [{vb:true},{sl:5},{ho:true},{ghost:true},{pm:true}]) {
+        const changed=notes.map(n=>({...n}));Object.assign(changed[0],flag);
+        assertEnclosed(resolvedRepeat(changed).result);
+    }
+});
+
+// Execute the production signature and repeat condition before dispatching the
+// frame, so a changed mute pattern cannot silently inherit a half-box.
+const sameChordRepeat = new Function('previous', 'ch', `
+    const NFRETS=24, nStr=6;
+    const _chordSigCache=new WeakMap(), _filterValidNotesCache=new WeakMap();
+    ${['isPlayableFret','isPlainDeadNote','isUnpitchedMute','isRenderableNote',
+        'validString','filterValidNotes','chordShapeSignature'].map(fn).join('\n')}
+    const prevChordSig=chordShapeSignature(previous), prevChordTime=previous.t;
+    const runSig=chordShapeSignature(ch);
+    ${src.match(/const isRepeat = !ch\.h3dStrum[^;]+;/)[0]}
+    return isRepeat;
+`);
+
+test('dead-string and fret changes restore full chord instructions before another plain repeat', () => {
+    const original=[3,7,0,0,3,3].map((f,s)=>({s,f,mt:s===1}));
+    const variants=[
+        original.map(n=>({...n,mt:false})), // remove the dead string
+        original.map(n=>({...n,mt:n.s===1||n.s===3})), // add one
+        original.map(n=>({...n,mt:n.s===3})), // move it
+        original.map(n=>({...n,f:n.s===0?5:n.f})), // change a sounding fret
+    ];
+    for (const notes of variants) for (const inverted of [false,true]) {
+        const previous={t:10,notes:original}, changed={t:10.2,notes};
+        const before=JSON.stringify([previous,changed]);
+        const repeat=sameChordRepeat(previous,changed);
+        assert.equal(repeat,false);
+        const full=render(notes,{repeat,inverted});
+        assertEnclosed(full);
+        assert.deepEqual(full.noteSymbols,notes.map(n=>n.mt?['fretHand']:[]));
+        const next={t:10.4,notes:notes.map(n=>({...n}))};
+        const compact=render(next.notes,{repeat:sameChordRepeat(changed,next),inverted});
+        assert.equal(compact.frame.compactRepeatFrame,true);
+        assert.equal(compact.drawn.length,0);
+        assert.deepEqual(compact.frameSymbols,{fills:[],lines:[]});
+        assert.equal(JSON.stringify([previous,changed]),before);
+    }
+    for (const f of [0,7,127]) {
+        const notes=original.map(n=>({...n,f:n.mt?f:n.f}));
+        assert.equal(sameChordRepeat({t:10,notes:original},{t:10.2,notes}),true,
+            'hidden dead-string fret is not a changed playing instruction');
+    }
 });

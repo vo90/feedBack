@@ -18,10 +18,10 @@ function fn(name) {
     throw new Error('Unclosed function ' + name);
 }
 
-const helpers = ['isPlayableFret', 'isUnpitchedMute', 'isRenderableNote',
+const helpers = ['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote',
     'usesUnfrettedPosition', 'filterValidNotes', 'mergeChordShape',
     'chordNotesFromTemplate', 'getChartAnchorAt', 'laneBoundsFromAnchor',
-    'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape', 'chordFallbackLaneBounds',
+    'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape', 'chordFallbackLaneBounds', 'chordShapeLaneBounds',
     'hwyFirstRelevantFrettedTime', 'lookaheadComputeFretBounds'];
 const frameStart = src.indexOf('let chordFrameXL = null');
 const frameEnd = src.indexOf('const laneWForOpenStrings', frameStart);
@@ -37,7 +37,8 @@ const run = new Function(`
         ${helpers.join(',')},
         frame(ch, templates, anchors) {
             const chShape = mergeChordShape(ch, filterValidNotes(ch.notes), templates);
-            const chAncB = laneBoundsFromAnchor(getChartAnchorAt(anchors, ch.t));
+            const chAnc = getChartAnchorAt(anchors, ch.t);
+            const chAncB = laneBoundsFromAnchor(chAnc);
             const chAncPlayed = anchorPlayedFretInclusiveSpan(getChartAnchorAt(anchors, ch.t));
             let chordCX = chAncB ? (chAncB.dMin + chAncB.dMax) / 2 : 3;
             ${src.slice(frameStart, frameEnd)}
@@ -109,8 +110,8 @@ test('standalone muted arpeggio brackets use the same width as the unfretted sla
     const end = src.indexOf('drawArpBrackets(', start);
     assert.ok(start > 0 && end > start);
     const width = new Function('n', '_arpBrktAncB', 'singleOpenLaneW',
-        'const NW = 1, K = 1, xFret = f => f;'
-        + fn('isUnpitchedMute') + fn('usesUnfrettedPosition')
+        'const NFRETS = 24, NW = 1, K = 1, xFret = f => f;'
+        + fn('isPlayableFret') + fn('isPlainDeadNote') + fn('isUnpitchedMute') + fn('usesUnfrettedPosition')
         + src.slice(start, end) + ';return _openHalfW;');
     for (const anchor of [{ dMin: 2, dMax: 6 }, null]) {
         const expected = width({ f: 0 }, anchor, 12);
@@ -118,5 +119,33 @@ test('standalone muted arpeggio brackets use the same width as the unfretted sla
         assert.equal(width({ f: 127, mt: true }, anchor, 12), expected);
         assert.equal(width({ f: 7 }, anchor, 12), null);
         assert.equal(width({ f: 127 }, anchor, 12), null);
+    }
+});
+
+
+test('ordinary dead editor frets use the chord lane, while explicit motion and palm mutes keep frets', () => {
+    for (const f of [0,1,7,24,127]) {
+        const dead=Object.freeze({s:1,f,mt:true,sus:2});
+        assert.equal(run.usesUnfrettedPosition(dead),true);
+        assert.equal(run.hwyFirstRelevantFrettedTime([{...dead,t:1}],[],0,.2,6),null);
+    }
+    for (const flags of [{pm:true},{fhm:true},{mt:true,sl:9},{mt:true,ln:true},{mt:true,pick_scrape_marks:[{}]}]) {
+        const n={s:1,f:7,...flags};
+        assert.equal(run.isPlainDeadNote(n),false);
+    }
+});
+
+test('tremolo dead strikes keep placeholder frets out of lane and camera bounds', () => {
+    for (const f of [0, 7, 24, 127]) {
+        const dead = Object.freeze({s: 1, f, mt: true, tr: true, sus: 2});
+        assert.equal(run.isPlainDeadNote(dead), true);
+        assert.equal(run.usesUnfrettedPosition(dead), true);
+        assert.equal(run.hwyFirstRelevantFrettedTime([{...dead, t: 1}], [], 0, .2, 6), null);
+        assert.deepEqual(run.frame({t: 1, notes: [dead, {...dead, s: 2}]}, [],
+            [{time: 0, fret: 12, width: 4}]), {shape: [[1, 0], [2, 0]], left: 11, right: 15});
+    }
+    for (const extra of [{bt: 1}, {vibrato_marks: [{}]}, {slideOut: 'down'},
+        {hn: 7}, {harmonic_alias: 'natural'}, {whammy: {version: 1}}]) {
+        assert.equal(run.isPlainDeadNote({f: 7, mt: true, tr: true, ...extra}), false);
     }
 });

@@ -32,7 +32,7 @@ function membershipHarness() {
         let _chordShapeCache=new WeakMap(), _chordSigCache=new WeakMap();
         let _coincidentRepeatNoteSet, _coincidentRepeatNotesRef, _coincidentRepeatChordsRef, _mergeCacheResult;
         const trailVisibilityReleaseChartReferences=()=>{};
-        ${['validString', 'isPlayableFret', 'isUnpitchedMute', 'isRenderableNote',
+        ${['validString', 'isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote',
             'usesUnfrettedPosition', '_noteKey', '_noteFretKey', 'lowerBoundT',
             'filterValidNotes', 'mergeChordShape', 'truthyChartFlag', 'hsStart', 'hsEnd',
             'hsChordIdNorm', 'chordTemplateMarkedArpeggio', 'handShapeMarkedArpeggio',
@@ -55,10 +55,11 @@ function membershipHarness() {
 const dispatchStart = src.indexOf('const _isLinkNextTgt =', src.indexOf('const _noteRenderLo ='));
 const dispatch = new Function('n', 'now', 'boxedChordMembers', 'options', `
     'use strict';
-    ${fn('_noteKey')}${fn('_noteFretKey')}${fn('isUnpitchedMute')}${fn('usesUnfrettedPosition')}
+    ${fn('_noteKey')}${fn('_noteFretKey')}const NFRETS=24; ${fn('isPlayableFret')}${fn('isPlainDeadNote')}${fn('isUnpitchedMute')}${fn('usesUnfrettedPosition')}
     const _linkNextTargetSet=new Set(options.linked ? [n] : []);
-    const anchors=[], anchorLaneBoundsAt=()=>null, xFret=f=>f, openNoteLaneBoxW=()=>40;
+    const anchors=[], noteAnchorLaneBoundsAt=()=>null, xFret=f=>f, openNoteLaneBoxW=()=>40;
     const bundle={handShapes:[],chordTemplates:[]}, notes=[n], arpGhostHsInfer=[];
+    const strumFrames={byNote:new Map(options.strum ? [[n,options.strum]] : [])};
     const arpeggioChordIdForNoteWithInferCache=()=>options.arpeggio ? 7 : null;
     const arpHsBoundsForNote=()=>options.arpeggio ? {start:n.t,end:n.t+1} : null;
     const _ghostPrevBuf=new Map(), GHOST_HOLD_AFTER_ONSET=.1;
@@ -80,8 +81,9 @@ function meshPool() {
 const drawParameters=src.match(/function drawNote\(([^)]*)\)/)[1];
 const draw = new Function('meshPool', 'args', 'options', `
     'use strict';
-    ${fn('isUnpitchedMute')}${fn('usesUnfrettedPosition')}${fn('noteStemVisible')}
+    const NFRETS=24; ${fn('isPlayableFret')}${fn('isPlainDeadNote')}${fn('isUnpitchedMute')}${fn('usesUnfrettedPosition')}${fn('noteStemVisible')}
     ${fn('teachingFingerLabel')}${fn('teachingDegreeLabel')}${fn('hwyShouldSuppressNoteBody')}
+    ${fn('naturalNode')}${fn('harmonicLabel')}
     function drawNote(${drawParameters}) {
         const original=n;
         if(isUnpitchedMute(n)) n={...n,f:0};
@@ -93,7 +95,8 @@ const draw = new Function('meshPool', 'args', 'options', `
         const x=30,y=sY(s),techniqueYNow=0,noteZ=-10*dt, _leftyCached=!!options.lefty;
         const activePalette=[1,2,3,4,5,6,7,8], renderOrderForLayerAtZ=()=>4;
         const pConnectorLine=meshPool(),pDropLine=meshPool(),pNoteFretLabel=meshPool(),pTeachMarkLbl=meshPool();
-        const txtMat=(text)=>({text}), _setIncomingFloorLabelMap=(mesh,map)=>{mesh.text=map.text;};
+        const txtMat=(text)=>({text,map:{image:{width:64,height:64}}});
+        const _setIncomingFloorLabelMap=(mesh,map)=>{mesh.text=map.text;};
         const FRET_LABEL_GOLD_HEX='#ffaa00',_textSizeMul=1,fretLabelScaleForFret=()=>1;
         const _showFingerHints=true,_drawTeachingMarks=true;
         const _fretLabelAllowed=new Set([Math.round(n.t*25)*100+n.f]),_frameLabeledKeys=new Set();
@@ -121,6 +124,18 @@ function render(h, n, chords, options={}) {
 }
 const chord=(t=10)=>({t,id:1,notes:[{s:0,f:3},{s:1,f:5}]});
 
+test('staggered brush dispatch preserves attack identity, suppresses stems, and centres open members on shared bounds',()=>{
+    const h=membershipHarness();
+    for(const style of ['current','rsplus'])for(const n of [{t:10.02,s:1,f:0},{t:10.04,s:2,f:5}]){
+        const options={style,strum:{bounds:{dMin:2,dMax:6}}};
+        const args=dispatch(n,9,new Set(),options);
+        assert.equal(args[0],n);
+        if(n.f===0){assert.equal(args[2],4);assert.equal(args[6],4);}
+        const result=render(h,n,[],options);
+        assert.equal(result.connectors,0);assert.equal(result.drops,0);assert.equal(result.openStem,false);
+    }
+});
+
 test('Wrathchild note-stream overlaps lose stems while retaining fret and finger hints in both styles',()=>{
     for(const [t,s,f,id] of [[131.537994,1,2,3],[141.966995,0,3,1]]) {
         for(const style of ['rsplus','current']) {
@@ -144,6 +159,19 @@ test('first and high-density repeat chords preserve all unique metadata on coinc
         const r=render(membershipHarness(),n,[first,repeat]);
         assert.equal(r.connectors+r.drops,0);
         assert.deepEqual(r.hints,['1','7']);
+        assert.deepEqual(n,snapshot);
+    }
+});
+
+test('Songsterr harmonic overlaps retain precise touch labels without stems',()=>{
+    const n={t:10,s:0,f:7,hm:true,hn:7.2,hps:5,fg:1};
+    const ch={t:10,id:1,notes:[{s:0,f:7},{s:1,f:9}]};
+    const snapshot=structuredClone(n);
+    for(const style of ['rsplus','current']) {
+        const r=render(membershipHarness(),n,[ch],{style});
+        assert.equal(r.connectors+r.drops,0);
+        assert.deepEqual(r.frets,['7.2']);
+        assert.deepEqual(r.hints,['1']);
         assert.deepEqual(n,snapshot);
     }
 });
@@ -174,8 +202,7 @@ test('open, unpitched mute and fretted mute overlaps obey box membership and ind
             assert.equal(boxed.connectors+boxed.drops,0);
             assert.equal(boxed.openStem,false);
             const free=render(membershipHarness(),{...n,t:10.1},[ch],options);
-            if(member.f===3) assert.equal(free.connectors,Number(noteStems));
-            else assert.equal(free.openStem,style==='rsplus' && openStems);
+            assert.equal(free.openStem,style==='rsplus' && openStems);
         }
     }
 });

@@ -135,7 +135,11 @@
         // Show the song search only on the library screen. Everywhere else the
         // box is irrelevant (and would silently no-op against v3Songs.search).
         const searchWrap = document.getElementById('v3-search-wrap');
-        if (searchWrap) searchWrap.classList.toggle('hidden', screenId !== 'v3-songs');
+        if (searchWrap) {
+            if (screenId !== 'v3-songs') window.feedBack?.selectionLifecycle?.prepareToHide(searchWrap);
+            searchWrap.classList.toggle('hidden', screenId !== 'v3-songs');
+            window.feedBack?.selectionLifecycle?.finishVisibilityChange();
+        }
         // NOTE: we deliberately do NOT reflect the screen into location.hash on
         // every navigation. app.js's audio 'error' handler suppresses empty-src
         // errors only when `audio.src === window.location.href`; a `#/...`

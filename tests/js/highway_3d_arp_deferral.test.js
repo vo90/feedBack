@@ -46,7 +46,8 @@ function inferenceHarness() {
         ${INFER_CONSTANTS.map(constDeclaration).join('\n')}
         ${constDeclaration('NFRETS')}
         ${extractFunction(SRC, 'function isPlayableFret')}
-        ${extractFunction(SRC, 'function isUnpitchedMute')}
+        ${extractFunction(SRC, 'function isPlainDeadNote')}
+${extractFunction(SRC, 'function isUnpitchedMute')}
         ${extractFunction(SRC, 'function isRenderableNote')}
         ${extractFunction(SRC, 'function lowerBoundT')}
         ${extractFunction(SRC, 'function hitTimesQualifyArpeggioSpread')}

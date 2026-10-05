@@ -48,22 +48,55 @@ test('chord frame accepts frets inside the playable anchor span', () => {
     assert.equal(covers({ f0: 2, f1: 5 }, 2, 6), false);
 });
 
-test('chord rendering checks the playable span from the same selected anchor', () => {
-    assert.match(screenSrc, /const chAnc = getChartAnchorAt\(anchors, _chAnchorT\);/);
-    assert.match(screenSrc, /const chAncB = laneBoundsFromAnchor\(chAnc\);/);
-    assert.match(screenSrc, /const chAncPlayed = anchorPlayedFretInclusiveSpan\(chAnc\);/);
-    assert.match(screenSrc, /playedFretSpanCoversShape\(chAncPlayed, fMinCh, fMaxCh\)/);
+
+const shapeBounds = new Function('const NFRETS = 24;' +
+    ['laneBoundsFromAnchor', 'chordFallbackLaneBounds', 'chordShapeLaneBounds'].map(n => extractFn(screenSrc, n)).join('\n') +
+    '\nreturn chordShapeLaneBounds;')();
+
+test('each chord starts at its lowest fret with at least four cells regardless of surrounding lane', () => {
+    for (const anchor of [null, { fret: 1, width: 24 }, { fret: 3, width: 6 }, { fret: 20, width: 4 }]) {
+        for (const [lo, hi, expected] of [[5, 7, [4, 8]], [7, 8, [6, 10]],
+            [3, 5, [2, 6]], [7, 10, [6, 10]], [5, 10, [4, 10]], [22, 24, [20, 24]]]) {
+            const bounds = shapeBounds(lo, hi, anchor);
+            assert.deepEqual([bounds.dMin, bounds.dMax], expected);
+        }
+    }
 });
 
-test('fallback frame uses four wire-aligned fret cells', () => {
-    assert.deepEqual(fallbackBounds(2, 2), { dMin: 1, dMax: 5 });
-    assert.deepEqual(fallbackBounds(5, 10), { dMin: 4, dMax: 10 });
-    assert.deepEqual(fallbackBounds(22, 22), { dMin: 21, dMax: 24 });
+test('wide and ordinary chord sequence has no inherited geometry', () => {
+    const anchor = { fret: 3, width: 10 };
+    assert.deepEqual([[3, 12], [7, 8], [3, 5], [5, 7]].map(([lo, hi]) => shapeBounds(lo, hi, anchor)),
+        [{ dMin: 2, dMax: 12 }, { dMin: 6, dMax: 10 }, { dMin: 2, dMax: 6 }, { dMin: 4, dMax: 8 }]);
 });
 
-test('fallback frame recentres open strings on those exact bounds', () => {
-    assert.match(
-        screenSrc,
-        /else if \(anyFretted\) \{[\s\S]*?const fallbackB = chordFallbackLaneBounds\(fMinCh, fMaxCh\);[\s\S]*?chordFrameXL = xFret\(fallbackB\.dMin\);[\s\S]*?chordFrameXR = xFret\(fallbackB\.dMax\);[\s\S]*?chordFrameAnchorMatched = true;[\s\S]*?chordCX = \(chordFrameXL \+ chordFrameXR\) \* 0\.5;/,
-    );
+test('open-only chords use four cells at a contextual position, including the neck boundary', () => {
+    assert.deepEqual(shapeBounds(Infinity, -Infinity, { fret: 3, width: 12 }), { dMin: 2, dMax: 6 });
+    assert.deepEqual(shapeBounds(Infinity, -Infinity, null), { dMin: 0, dMax: 4 });
+    assert.deepEqual(shapeBounds(Infinity, -Infinity, { fret: 24, width: 1 }), { dMin: 20, dMax: 24 });
+});
+
+test('a partial chord hit flashes the complete frame, even when only its upper note was hit', () => {
+    const start = screenSrc.indexOf('if (fromChord) {', screenSrc.indexOf('// ── Fret-wire hit flash'));
+    const end = screenSrc.indexOf('} else if (n.f > 0', start);
+    assert.ok(start >= 0 && end > start);
+    const accumulate = new Function('n', 'chordFrameBounds', '_fwChordAcc', `
+        const fromChord=true, chordId=1, NFRETS=24, _fwA=1;
+        ${screenSrc.slice(start, end)}}
+    `);
+    const acc = new Map();
+    const bounds = shapeBounds(5, 7, {fret:3,width:12});
+    accumulate({t:10,f:7}, bounds, acc);
+    const entry = acc.get(1);
+    assert.equal(entry.minF, 7, 'only the upper member received a hit verdict');
+    assert.deepEqual(entry.bounds, {dMin:4,dMax:8}, 'feedback retains the full chord frame');
+    const flashStart = screenSrc.indexOf('for (const _fwE of _fwChordAcc.values())');
+    const flashEnd = screenSrc.indexOf('if (_fwA > _fwHitIn[_w1])', flashStart);
+    const flash = new Function('_fwChordAcc', '_fwHitIn', `
+        ${screenSrc.slice(flashStart, flashEnd)}
+        if (_fwA > _fwHitIn[_w1]) _fwHitIn[_w1] = _fwA;
+        }
+    `);
+    const hit = new Float64Array(25);
+    flash(acc, hit);
+    assert.deepEqual(Array.from(hit.keys()).filter(i => hit[i] > 0), [4,8]);
 });

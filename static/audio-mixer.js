@@ -555,7 +555,9 @@ function closeMixer(restoreFocus) {
         clearTimeout(_openTimer);
         _openTimer = null;
     }
+    window.feedBack?.selectionLifecycle?.prepareToHide(_popoverEl);
     _popoverEl.classList.add('hidden');
+    window.feedBack?.selectionLifecycle?.finishVisibilityChange();
     if (_btnEl) _btnEl.setAttribute('aria-expanded', 'false');
     _open = false;
     document.removeEventListener('click', _onDocClick, true);

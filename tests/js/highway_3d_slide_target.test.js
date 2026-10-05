@@ -50,6 +50,54 @@ const hwyShouldSuppressNoteBody = new Function(
     + '\nreturn hwyShouldSuppressNoteBody;',
 )();
 
+const hwyChordHasNewAttack = new Function(
+    '"use strict";' + extractFn(src, 'hwyChordHasNewAttack') + '\nreturn hwyChordHasNewAttack;',
+)();
+
+test('Cemetery Gates chord slide destination has no new attack, without changing its source data', () => {
+    // Acoustic arrangement, 55.60 -> 55.85 s: G/B strings slide 7 -> 9
+    // while the source chord also strikes the open high E string.
+    const chords = [
+        {t:55.6, notes:[{s:3,f:7,sus:.25,sl:9,ln:true}, {s:4,f:7,sus:.25,sl:9,ln:true}, {s:5,f:0,sus:.25}]},
+        {t:55.85, notes:[{s:3,f:9,sus:.5}, {s:4,f:9,sus:.5}]},
+    ];
+    const before = JSON.stringify(chords);
+    const targets = hwyLinkNextTargetNotes([], chords);
+    assert.equal(hwyChordHasNewAttack(chords[0].notes, targets), true);
+    assert.equal(hwyChordHasNewAttack(chords[1].notes, targets), false);
+    assert.equal(targets.size, 2);
+    assert.equal(JSON.stringify(chords), before, 'render policy must not alter notes, links or timing');
+});
+
+test('only fully resolved incoming links remove a chord attack, independent of source representation', () => {
+    for (const fret of [0,5]) for (const standalone of [false,true]) {
+        const source = [0,1].map(s => ({t:10,s,f:fret,sus:.25,ln:true}));
+        const destination = {t:10.25, notes:[0,1].map(s => ({s,f:fret,sus:1}))};
+        const chords = standalone ? [destination] : [{t:10,notes:source},destination];
+        const targets = hwyLinkNextTargetNotes(standalone ? source : [], chords);
+        assert.equal(hwyChordHasNewAttack(destination.notes, targets), false);
+        destination.notes.push({s:2,f:7,sus:1});
+        assert.equal(hwyChordHasNewAttack(destination.notes, targets), true, 'one new string still needs an attack cue');
+    }
+});
+
+test('shift slides, broken links, outgoing links and repeated shapes retain chord attacks', () => {
+    for (const variant of ['shift','partial','expired','wrong-fret','other-string','repeat','outgoing-only']) {
+        const a={t:10,notes:[0,1].map(s=>({s,f:5,sus:.25,sl:7,ln:true}))};
+        const b={t:10.25,notes:[0,1].map(s=>({s,f:7,sus:.5}))};
+        if (variant==='shift') a.notes.forEach(n=>delete n.ln);
+        if (variant==='partial') delete a.notes[1].ln;
+        if (variant==='expired') b.t=11;
+        if (variant==='wrong-fret') b.notes[1].f=8;
+        if (variant==='other-string') b.notes[1].s=2;
+        if (variant==='repeat') { a.notes.forEach(n=>{delete n.ln;delete n.sl;});b.notes.forEach(n=>n.f=5); }
+        if (variant==='outgoing-only') { a.notes.forEach(n=>delete n.ln);b.notes.forEach(n=>n.ln=true); }
+        assert.equal(hwyChordHasNewAttack(b.notes,hwyLinkNextTargetNotes([],[a,b])),true,variant);
+    }
+    assert.equal(hwyChordHasNewAttack([],new Set()),true,'empty data cannot prove a continuation');
+    assert.equal(hwyChordHasNewAttack([{s:0,f:5}],null),true,'missing link evidence keeps the attack');
+});
+
 test('partial-chord LinkNext hides only the held same-fret continuation', () => {
     const linkedOrange = { s: 3, f: 1, sus: 0.207, ln: true };
     const linkedYellow = { s: 1, f: 0, sus: 0.207, ln: true };
@@ -247,7 +295,7 @@ test('standalone and chord render paths pass explicit target membership separate
 
     const chord = sourceBetween('if (!deferChordGems', 'lastFretForString[cn.s] = cn.f;');
     assert.match(chord, /_linkNextTargetSet\.has\(cn\)/);
-    assert.match(chord, /chordWireHighDensity\(ch\),[\s\S]*?_isLinkNextTgt,\s*!!sharedChordHold\?\.suppressMemberTrails,\s*belongsToBoxedChord,\s*\);/);
+    assert.match(chord, /chordWireHighDensity\(ch\),[\s\S]*?_isLinkNextTgt,\s*chordMemberTrailSuppressed\(sharedChordHold, cn\),\s*belongsToBoxedChord,\s*chordFrameBounds,\s*\);/);
 });
 
 test('explicit suppression skips attack/drop-line but leaves the continuation trail', () => {

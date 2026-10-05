@@ -80,6 +80,14 @@ def _pick_smart_arrangement(
         key=lambda x: _arr_smart_sort_key({"smart_name": x[1]}),
     )
 
+    # Hybrid Lead is an explicit preference, independent of the naming mode.
+    # If absent, follow the existing Lead -> alternatives -> bonus fallback.
+    if pref == "Hybrid Lead":
+        for i, sn in sorted_pairs:
+            if sn == "Hybrid Lead":
+                return i
+        pref = "Lead"
+
     alt_prefix = f"Alt. {pref}"
     bonus_prefix = f"Bonus {pref}"
 
@@ -301,7 +309,7 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
             # User's default arrangement preference (only when instrument routing did not
             # already resolve a part — i.e. guitar, or a bass player with no bass part).
             if best < 0 and pref:
-                if naming_mode == "smart":
+                if naming_mode == "smart" or pref == "Hybrid Lead":
                     best = _pick_smart_arrangement(song.arrangements, smart_names, pref)
                 else:
                     for i, a in enumerate(song.arrangements):

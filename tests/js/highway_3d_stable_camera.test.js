@@ -26,7 +26,8 @@ function harness() {
     const stateEnd = source.indexOf('function stableAddPoint(', stateStart);
     assert.ok(stateStart >= 0 && stateEnd > stateStart);
     return new Function(`
-        const K = 1, TS = 230, AHEAD = 3, CAM_LOCK_CENTER_FRET = 6;
+        const K = 1, TS = 230, AHEAD = 3, CAM_LOCK_CENTER_FRET = 6, NFRETS = 24;
+        ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote'].map(extractFunction).join('\n')}
         const rawPoints = [];
         ${constants}
         ${source.slice(stateStart, stateEnd).replace('function stableSupportReset() {', 'function stableSupportReset() { rawPoints.length = 0;')}
@@ -58,7 +59,7 @@ function harness() {
         ${extractFunction('stableConstrain')}
         ${extractFunction('stableIntervalAt')}
         ${extractFunction('stableSolve')}
-        ${['hwyBuildCameraStops','hwyCameraPlanAt','hwyCameraRejoin','hwyCameraZoom','stableRegionFitDistance','stableRegionFootprint','stableRegionFraming','stableRegionViewDistance','stableCameraPlan','stableCamUpdate'].map(extractFunction).join('\n')}
+        ${['hwyBuildCameraStops','hwyPrepareCameraStops','hwyCameraPlanAt','hwyCameraRejoin','hwyCameraZoom','stableRegionFitDistance','stableRegionFootprint','stableRegionFraming','stableRegionViewDistance','stableCameraPlan','stableCamUpdate'].map(extractFunction).join('\n')}
         ${extractFunction('stableCollectGeometry').replace('function stableCollectGeometry(', 'function collectRealRegionGeometry(')}
         function stableCollectGeometry() {
             stableSupportReset();
