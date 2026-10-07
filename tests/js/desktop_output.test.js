@@ -8,9 +8,12 @@ const source = fs.readFileSync(path.join(__dirname, '../../static/js/desktop-out
 
 function harness({ browserOnly = false } = {}) {
     const h = { running: true, enabled: false, time: 0, captures: [], contexts: [], taps: [],
-        muted: [], bus: [], pushed: [], events: {}, timers: [], intervals: [],
+        muted: [], bus: [], pushed: [], ports: new Map(), events: {}, timers: [], intervals: [],
         device: { outputType: 'Windows Audio', output: 'Selected speakers', sampleRate: 48000, outputBlockSize: 480 } };
     const api = {
+        rendererAudioPortVersion: 1,
+        hasRendererAudioPort: async id => h.ports.has(id),
+        closeRendererAudioPort: async id => h.ports.delete(id),
         setPageMuted: async value => { h.muted.push(value); return value; },
         isAudioRunning: async () => h.running,
         getCurrentDevice: async () => ({ ...h.device }),
@@ -41,11 +44,21 @@ function harness({ browserOnly = false } = {}) {
     }
     const document = { body: { appendChild() {} }, hidden: false, addEventListener: (name, fn) => { h.events[name] = fn; },
         createElement: () => ({ style: {}, setAttribute() {} }) };
-    const window = { addEventListener: (name, fn) => { h.events[name] = fn; } };
+    let portNumber = 0;
+    const window = {
+        location: { origin: 'http://localhost:8000' },
+        addEventListener: (name, fn) => { h.events[name] = fn; },
+        removeEventListener: (name, fn) => { if (h.events[name] === fn) delete h.events[name]; },
+        postMessage(data, origin, ports) {
+            assert.equal(data.type, 'feedback-renderer-audio-port');
+            h.ports.set(data.id, ports[0]);
+            h.events.message({ source: window, origin, data: { type: 'feedback-renderer-audio-port-ready', id: data.id, ok: true } });
+        },
+    };
     if (!browserOnly) window.feedBackDesktop = { audio: api };
     vm.runInNewContext(source, { window, document, navigator: { mediaDevices: {
         getDisplayMedia: options => h.capture(options), addEventListener: (name, fn) => { h.events[name] = fn; } } },
-        AudioContext: Context, AudioWorkletNode: Worklet, Float32Array, Blob: class {},
+        AudioContext: Context, AudioWorkletNode: Worklet, Float32Array, crypto: { randomUUID: () => `port-${++portNumber}` }, Blob: class { constructor(parts) { h.workletSource = parts.join(''); } },
         URL: { createObjectURL: () => 'blob:worklet', revokeObjectURL() {} },
         setInterval: fn => { h.intervals.push(fn); return 1; }, clearInterval() {},
         setTimeout: fn => { h.timers.push(fn); return 1; }, clearTimeout() {},
@@ -70,13 +83,48 @@ for (const outputType of ['Windows Audio', 'Windows Audio (Exclusive Mode)', 'Wi
         for (const flag of ['echoCancellation', 'noiseSuppression', 'autoGainControl']) assert.equal(h.options.audio[flag], false);
     });
 }
-test('stereo PCM reaches bus once with capture sample rate', async () => {
+test('worklet batches stereo PCM directly and clocks silence without UI callbacks', async () => {
     const h = harness(); await h.tick();
-    const pcm = Float32Array.from({ length: 256 }, (_, i) => i % 2 ? -0.25 : 0.125);
-    h.taps[0].port.onmessage({ data: pcm }); h.taps[0].port.onmessage({ data: pcm });
-    assert.equal(h.pushed.length, 1); assert.equal(h.pushed[0].rate, 48000);
-    assert.deepEqual(h.pushed[0].pcm, [...pcm, ...pcm]);
+    assert.equal(h.ports.size, 1);
+    assert.equal([...h.ports.values()][0], h.taps[0].port);
+    assert.equal(h.taps[0].port.onmessage, null, 'no renderer forwarding callback');
+    let Processor; const packets = [];
+    vm.runInNewContext(h.workletSource, {
+        sampleRate: 48000, Float32Array,
+        AudioWorkletProcessor: class { constructor() { this.port = { postMessage: packet => packets.push(packet) }; } },
+        registerProcessor: (_name, processor) => { Processor = processor; },
+    });
+    const tap = new Processor(), left = new Float32Array(128).fill(.125), right = new Float32Array(128).fill(-.25);
+    tap.process([[left, right]], []); tap.process([[left, right]], []);
+    assert.equal(packets.length, 1); assert.equal(packets[0].sampleRate, 48000);
+    assert.deepEqual([...packets[0].pcm], Array.from({length:512}, (_,i)=>i%2?-.25:.125));
+    tap.process([], []); tap.process([], []);
+    assert.ok(packets[1].pcm.every(x => x === 0));
+    assert.equal(h.pushed.length, 0);
 });
+
+test('closed direct audio port recreates capture instead of silently losing sound', async () => {
+    const h = harness(); await h.tick(); h.ports.clear(); await h.tick();
+    assert.equal(h.captures.length, 2); assert.equal(h.state().state, 'active');
+    assert.equal(h.captures[0].track.readyState, 'ended'); assert.equal(h.ports.size, 1);
+});
+
+test('missing direct audio port capability fails visibly without output fallback', async () => {
+    const h = harness(); h.api.rendererAudioPortVersion = 0; await h.tick();
+    assert.equal(h.state().state, 'error'); assert.equal(h.enabled, false);
+    assert.match(h.state().error, /streaming update/); assert.deepEqual(h.muted, [true]);
+});
+
+test('audio port handshake timeout releases capture and stays muted', async () => {
+    const h = harness(); let transferred = false;
+    h.window.postMessage = () => { transferred = true; };
+    const running = h.tick(); while (!transferred) await Promise.resolve();
+    h.timers.at(-1)(); await running;
+    assert.equal(h.state().state, 'error'); assert.match(h.state().error, /port timed out/);
+    assert.equal(h.contexts[0].state, 'closed'); assert.equal(h.captures[0].track.readyState, 'ended');
+    assert.equal(h.enabled, false); assert.deepEqual(h.muted, [true]);
+});
+
 test('ASIO/shared/named device/rate changes reuse capture and flush old output tail', async () => {
     const h = harness(); await h.tick();
     for (const [outputType, output, sampleRate] of [['ASIO','Interface',48000],['Windows Audio','TV',44100],['Windows Audio','Other',48000]]) {
@@ -137,7 +185,7 @@ test('timed out capture cleans up a late successful stream', async () => {
     assert.equal(stream.track.readyState, 'ended'); assert.equal(stream.video.stopped, true);
 });
 test('page teardown releases capture and bus without unmuting', async () => {
-    const h = harness(); await h.tick(); h.events.pagehide(); await Promise.resolve(); await Promise.resolve();
+    const h = harness(); await h.tick(); h.events.pagehide(); for(let i=0;i<6;i++) await Promise.resolve();
     assert.equal(h.enabled, false); assert.equal(h.captures[0].track.readyState, 'ended');
     assert.equal(h.contexts[0].state, 'closed'); assert.deepEqual(h.muted, [true]);
 });
