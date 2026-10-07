@@ -69,7 +69,10 @@ export function installDesktopOutput() {
             audio: {
                 suppressLocalAudioPlayback: true,
                 echoCancellation: false, noiseSuppression: false, autoGainControl: false,
-                channelCount: 2, sampleRate: 48000, latency: 0,
+                // Let Chromium choose the capture rate. Forcing 48 kHz makes
+                // its frame capturer ignore the low-latency request on Windows.
+                // The context and native bus already handle rate conversion.
+                channelCount: 2, latency: 0,
             },
         }).then(stream => {
             if (expired || disposed) {
