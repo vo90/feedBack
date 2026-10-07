@@ -39,7 +39,8 @@ function harness({ browserOnly = false } = {}) {
         async close() { this.state = 'closed'; }
     }
     class Worklet {
-        constructor() { this.port = { onmessage: null, close() {} }; h.taps.push(this); }
+        constructor() { this.port = { onmessage: null, close() {} }; this.events = {}; h.taps.push(this); }
+        addEventListener(name, fn) { this.events[name] = fn; }
         connect() {} disconnect() {}
     }
     const document = { body: { appendChild() {} }, hidden: false, addEventListener: (name, fn) => { h.events[name] = fn; },
@@ -91,7 +92,9 @@ test('worklet batches stereo PCM directly and clocks silence without UI callback
     let Processor; const packets = [];
     vm.runInNewContext(h.workletSource, {
         sampleRate: 48000, Float32Array,
-        AudioWorkletProcessor: class { constructor() { this.port = { postMessage: packet => packets.push(packet) }; } },
+        AudioWorkletProcessor: class { constructor() { this.port = { postMessage: (packet, transfer) => {
+            assert.equal(transfer, undefined, 'Electron cannot decode transferred PCM ArrayBuffers'); packets.push(packet);
+        } }; } },
         registerProcessor: (_name, processor) => { Processor = processor; },
     });
     const tap = new Processor(), left = new Float32Array(128).fill(.125), right = new Float32Array(128).fill(-.25);
@@ -105,6 +108,7 @@ test('worklet batches stereo PCM directly and clocks silence without UI callback
 
 test('closed direct audio port recreates capture instead of silently losing sound', async () => {
     const h = harness(); await h.tick(); h.ports.clear(); await h.tick();
+    assert.equal(h.state().state, 'error'); h.time = 1001; await h.tick();
     assert.equal(h.captures.length, 2); assert.equal(h.state().state, 'active');
     assert.equal(h.captures[0].track.readyState, 'ended'); assert.equal(h.ports.size, 1);
 });
@@ -113,6 +117,13 @@ test('missing direct audio port capability fails visibly without output fallback
     const h = harness(); h.api.rendererAudioPortVersion = 0; await h.tick();
     assert.equal(h.state().state, 'error'); assert.equal(h.enabled, false);
     assert.match(h.state().error, /streaming update/); assert.deepEqual(h.muted, [true]);
+});
+
+test('worklet processor failure is visible and recovers with a fresh capture', async () => {
+    const h = harness(); await h.tick(); h.taps[0].events.processorerror(); await h.tick();
+    assert.equal(h.state().state, 'error'); assert.equal(h.enabled, false);
+    assert.equal(h.contexts[0].state, 'closed');
+    h.time = 1001; await h.tick(); assert.equal(h.state().state, 'active'); assert.equal(h.captures.length, 2);
 });
 
 test('audio port handshake timeout releases capture and stays muted', async () => {

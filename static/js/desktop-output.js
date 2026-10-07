@@ -22,7 +22,10 @@ export function installDesktopOutput() {
                 this.pcm[this.frames*2] = l?.[i] || 0;
                 this.pcm[this.frames*2+1] = r?.[i] || 0;
                 if (++this.frames === this.size) {
-                    this.port.postMessage({ pcm: this.pcm, sampleRate }, [this.pcm.buffer]);
+                    // Electron MessagePortMain does not decode transferred
+                    // ArrayBuffer payloads here (data arrives null). Structured
+                    // clone the small PCM packet; only the PORT is transferred.
+                    this.port.postMessage({ pcm: this.pcm, sampleRate });
                     this.pcm = new Float32Array(this.size * 2);
                     this.frames = 0;
                 }
@@ -131,6 +134,7 @@ export function installDesktopOutput() {
             if (ctx.sinkId?.type !== 'none') throw new Error('Silent audio capture sink unavailable');
             await ctx.audioWorklet.addModule(moduleUrl);
             session.tap = new AudioWorkletNode(ctx, 'feedback-output-tap', { numberOfInputs: 1, channelCount: 2 });
+            session.tap.addEventListener('processorerror', () => { session.failed = true; retryAt = 0; void reevaluate(); });
             const source = ctx.createMediaStreamSource(stream);
             source.connect(session.tap);
             // Explicit silent connection makes processing independent of
@@ -164,8 +168,9 @@ export function installDesktopOutput() {
             const device = await api.getCurrentDevice();
             if (!device?.output) throw new Error('The selected audio output is unavailable');
             const key = JSON.stringify([device.outputType || device.type, device.output, device.sampleRate, device.outputBlockSize]);
-            if (capture && (capture.track.readyState === 'ended' || capture.context.state === 'closed'
-                || !await api.hasRendererAudioPort(capture.portId))) await stop();
+            if (capture && (capture.failed || !await api.hasRendererAudioPort(capture.portId)))
+                throw new Error('Audio stream lost its native connection');
+            if (capture && (capture.track.readyState === 'ended' || capture.context.state === 'closed')) await stop();
             if (!capture && Date.now() < retryAt) return;
             if (!capture) capture = await openCapture();
             // Opening capture is asynchronous: an Apply/Stop during that wait
