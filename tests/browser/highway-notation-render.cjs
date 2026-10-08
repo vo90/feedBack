@@ -492,13 +492,16 @@ async function main() {
       await captureOpen('open-standalone',single,modern,{visible:true});
       const boxedArpeggioPolicy=source.includes('const belongsToBoxedArpeggio =');
       await captureOpen('open-chord-arpeggio',openChord({arpeggio:true}),modern,{visible:!boxedArpeggioPolicy,arpeggio:true});
-      // A real enclosing box must exist for the passage. Its member stems stay
-      // hidden after its arrival, including individual plucks and direct seeks.
+      // Only attacks on the enclosing box lose stems. Later plucks keep
+      // their stems while approaching behind the box and after it arrives.
       for(const lefty of [false,true])for(const inverted of [false,true]){
         const arp=openChord({arpeggio:true,lefty});arp.inverted=inverted;
         arp.notes=[member({t:onset,s:1,f:0,sus:1}),member({t:onset+.3,s:2,f:2}),member({t:onset+.6,s:3,f:2})];
         const proof=await captureOpen(`arp-stream-${lefty}-${inverted}`,arp,modern,{visible:!boxedArpeggioPolicy,arpeggio:true});
-        if(boxedArpeggioPolicy)check(proof.stems.every(s=>!s.mesh.visible),'Boxed arpeggio plucks retained drop lines');
+        if(boxedArpeggioPolicy){
+          check(proof.stems.filter(s=>s.note.t===onset).every(s=>!s.mesh.visible),'Boxed onset retained drop lines');
+          for(const t of [onset+.3,onset+.6])check(proof.stems.some(s=>s.note.t===t&&s.mesh.visible),'Separate arpeggio pluck lost its stem');
+        }
         const synthetic={...arp,chords:[]};
         await captureOpen(`arp-synth-box-${lefty}-${inverted}`,synthetic,modern,{visible:!boxedArpeggioPolicy,arpeggio:true});
         const unboxed={...arp,chords:[],notes:[arp.notes[0]],
@@ -517,7 +520,7 @@ async function main() {
       sparseArp.notes=[member({t:onset,s:1,f:0,sus:1}),member({t:onset+.3,s:2,f:2}),member({t:onset+.5,s:3,f:7})];
       const sparseProof=await captureOpen('arp-sparse-metadata',sparseArp,modern,{visible:!boxedArpeggioPolicy,arpeggio:true});
       if(boxedArpeggioPolicy){
-        check(sparseProof.stems.filter(s=>s.note.s===2).every(s=>!s.mesh.visible),'Sparse arpeggio retained its fretted stem');
+        check(sparseProof.stems.some(s=>s.note.s===2&&s.note.t>onset&&s.mesh.visible),'Separate sparse arpeggio note lost its stem');
         check(sparseProof.stems.some(s=>s.note.s===3&&s.mesh.visible),'Unrelated note lost its stem');
       }
       const liveArp=openChord({arpeggio:true});liveArp.chords[0].notes.forEach(n=>n.sus=1);
@@ -533,22 +536,24 @@ async function main() {
       results.push({name:'arpeggio-live-stem-reuse',passes:arpPasses});
       const rolling=openChord({arpeggio:true});
       rolling.notes=[member({t:onset,s:1,f:0,sus:3}),member({t:onset+.65,s:2,f:2}),
-        member({t:onset+1.6,s:3,f:2}),member({t:onset+2.4,s:2,f:2})];
+        member({t:onset+1.6,s:3,f:2}),member({t:onset+1.8,s:1,f:0}),member({t:onset+2.4,s:2,f:2})];
       await init(rolling,modern);
       const rollingPasses=[];
       for(const time of [onset-.01,onset,onset+.01,onset+.4,onset+1.3,onset+2.2,onset-.01]){
         const proof=await page.evaluate(time=>{bundle.currentTime=time;for(let i=0;i<4;i++)r.draw(bundle);
           return __captureNotation();},time);
         if(boxedArpeggioPolicy){
-          check(proof.stems.filter(s=>s.note.t<=onset+2).every(s=>!s.mesh.visible),`Arpeggio stems popped at ${time}`);
-          check(proof.notes.filter(n=>n.note.f===0).every(n=>!n.outline.visible),`Open stem popped at ${time}`);
+          check(proof.stems.filter(s=>s.note.t===onset).every(s=>!s.mesh.visible),`Box-member stem popped at ${time}`);
+          check(proof.stems.filter(s=>s.note.t>onset&&s.note.t>=time).every(s=>s.mesh.visible),`Separate arpeggio stem missing at ${time}`);
+          check(proof.notes.filter(n=>n.note.f===0&&n.note.t===onset).every(n=>!n.outline.visible),`Boxed open stem popped at ${time}`);
+          check(proof.notes.filter(n=>n.note.f===0&&n.note.t>onset).every(n=>n.outline.visible),`Separate open stem missing at ${time}`);
           if(time>=onset)check(proof.frames.every(f=>!f.isArpeggioFrame),`Leading box should have ended at ${time}`);
         }
         check(proof.stems.some(s=>s.note.t>onset+2&&s.mesh.visible),`Following standalone note lost its stem at ${time}`);
         rollingPasses.push(proof);
       }
       const seekProof=await captureOpen('arpeggio-direct-seek',{...rolling,currentTime:onset+.4},modern,{visible:!boxedArpeggioPolicy});
-      if(boxedArpeggioPolicy)check(seekProof.stems.filter(s=>s.note.t<=onset+2).every(s=>!s.mesh.visible),'Direct seek restored arpeggio stems');
+      if(boxedArpeggioPolicy)check(seekProof.stems.filter(s=>s.note.t>onset).every(s=>s.mesh.visible),'Direct seek hid separate arpeggio stems');
       results.push({name:'arpeggio-stem-continuity',passes:rollingPasses});
       // Reproduce the reported pattern: standalone PM opens associated with a
       // hand shape, interleaved with actual open/fretted power-chord strikes.

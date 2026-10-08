@@ -13727,19 +13727,11 @@
                 const suppressed = suppressSynthChordForNotes(ch, shape, notes);
                 if (!chordHasFrameShape(ch, shape, suppressed, templates)) continue;
                 if (!ch.h3dStrum && chordUsesArpeggioFrame(ch, hint)) {
-                    // The leading box represents the whole authored occurrence.
-                    // Membership survives its arrival, culling and direct seeks;
-                    // inferred/unboxed hand shapes never enter this set.
+                    // Only attacks on the leading box share its stem policy.
+                    // Later plucks keep stems throughout their approach, even
+                    // when they reuse the same string/fret within the handshape.
+                    // Onset membership stays stable across arrival and seeks.
                     for (const cn of members) arpeggioKeys.add(_noteFretKey(ch.t, cn.s, cn.f));
-                    const start = hsStart(hint.hs), end = hsEnd(hint.hs);
-                    for (let i = lowerBoundT(notes, start - 1e-4); i < notes.length; i++) {
-                        const n = notes[i];
-                        if (n.t > end + 1e-4) break;
-                        if (validString(n.s) && isRenderableNote(n)
-                            && shape.get(n.s) === (usesUnfrettedPosition(n) ? 0 : n.f)) {
-                            arpeggioKeys.add(_noteFretKey(n.t, n.s, n.f));
-                        }
-                    }
                     continue;
                 }
                 // Only actual members qualify. Template-only positions and later
