@@ -17,7 +17,6 @@ function nativeHarness() {
         seekBacking: async p => { calls.push(['seek', p]); },
         setGain: async (bus, gain) => { calls.push(['gain', gain]); },
         setBackingSpeed: async rate => { calls.push(['rate', rate]); },
-        setBackingPreservePitch: async value => { calls.push(['pitch', value]); },
     };
     const ctx = vm.createContext({ console, performance: { now: () => 0 },
         window: { feedBackDesktop: { audio: api } }, audioSeekGen: () => 0,
