@@ -11,6 +11,8 @@ export async function openGuidedAv() {
     const previousFocus = document.activeElement;
     const dialog = document.createElement('dialog');
     dialog.className = 'guided-av-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
     dialog.setAttribute('aria-labelledby', 'gav-title');
     dialog.innerHTML = `<style>
     .guided-av-dialog{color:#e6edf7;background:#121c2d;border:1px solid #34445c;border-radius:22px;padding:0;width:min(760px,92vw);max-height:92vh;box-shadow:0 30px 100px #0008;font-family:inherit}
@@ -58,7 +60,7 @@ export async function openGuidedAv() {
             if (save) {closing = false; cancelled = false; setError('Could not save. Your previous calibration is kept. Retry Save or choose Keep previous.'); return;}
             console.warn('[calibration] cleanup:', error);
         }
-        clearInterval(heartbeat); removeEventListener('visibilitychange', hidden);
+        clearInterval(heartbeat); document.removeEventListener('visibilitychange', hidden);
         window.removeEventListener('pagehide', hidden);
         window.removeEventListener('keydown', keys, true);
         dialog.close(); dialog.remove();
@@ -67,10 +69,9 @@ export async function openGuidedAv() {
     }
     function hidden() {if (document.hidden || !dialog.isConnected) void close();}
     function keys(event) {
-        if (!dialog.contains(event.target)) {event.stopImmediatePropagation();return;}
         // Keep game-wide shortcuts from playing a song or changing saved AV.
         if (event.key === 'Escape') {event.preventDefault();event.stopImmediatePropagation();void close();}
-        else if (['[',']',' '].includes(event.key) && event.target.tagName !== 'BUTTON' && event.target.tagName !== 'INPUT') event.stopImmediatePropagation();
+        else if (!event.ctrlKey && !event.altKey && !event.metaKey) event.stopImmediatePropagation();
     }
     function renderMode() {
         for (const name of ['prepare','compare','review']) $(name).classList.toggle('gav-hidden', name !== mode);
@@ -153,7 +154,7 @@ export async function openGuidedAv() {
     $('old').onclick = () => void trial(lease.profile.output.offsetMs);
     $('new').onclick = () => void trial(model.result.offsetMs);
     $('save').onclick = () => void close(true);
-    addEventListener('visibilitychange', hidden); window.addEventListener('pagehide', hidden);
+    document.addEventListener('visibilitychange', hidden); window.addEventListener('pagehide', hidden);
     window.addEventListener('keydown', keys, true);
     $('test').disabled = $('start').disabled = true;
     try {
