@@ -13,19 +13,27 @@ export function installDesktopOutput() {
             this.size = Math.ceil(sampleRate / 200 / 128) * 128;
             this.pcm = new Float32Array(this.size * 2);
             this.frames = 0;
+            this.sequence = 0;
+            this.firstFrame = 0;
         }
         process(inputs, outputs) {
             const channels = inputs[0];
             const l = channels?.[0], r = channels?.[1] || l;
             const count = l?.length || outputs[0]?.[0]?.length || 128;
             for (let i = 0; i < count; ++i) {
+                if (this.frames === 0) this.firstFrame = currentFrame + i;
                 this.pcm[this.frames*2] = l?.[i] || 0;
                 this.pcm[this.frames*2+1] = r?.[i] || 0;
                 if (++this.frames === this.size) {
                     // Electron MessagePortMain does not decode transferred
                     // ArrayBuffer payloads here (data arrives null). Structured
                     // clone the small PCM packet; only the PORT is transferred.
-                    this.port.postMessage({ pcm: this.pcm, sampleRate });
+                    // Frame positions belong to this AudioContext, not the
+                    // main-process clock or the device presentation clock.
+                    this.port.postMessage({ pcm: this.pcm, sampleRate, timing: {
+                        version: 1, sequence: this.sequence++,
+                        firstFrame: this.firstFrame, endFrame: currentFrame + i + 1,
+                    } });
                     this.pcm = new Float32Array(this.size * 2);
                     this.frames = 0;
                 }
@@ -36,9 +44,10 @@ export function installDesktopOutput() {
     const moduleUrl = URL.createObjectURL(new Blob([TAP], { type: 'application/javascript' }));
     let capture = null, pending = null, disposed = false, muted = false;
     let outputKey = '', retryAt = 0, retryDelay = 1000, banner = null;
+    let routeEpoch = 0;
 
     function status(state, message = '', detail = {}) {
-        window._rendererOutputRoute = { state, message, ...detail };
+        window._rendererOutputRoute = { state, message, schemaVersion: 1, routeEpoch, ...detail };
         if (!banner && message && document.body) {
             banner = document.createElement('div');
             banner.id = 'desktop-output-status';
@@ -186,10 +195,12 @@ export function installDesktopOutput() {
                 const enabled = await api.getRendererBusMetrics();
                 if (!enabled?.enabled) throw new Error('Native audio output bridge unavailable');
                 outputKey = key;
+                routeEpoch++;
             }
             retryDelay = 1000; retryAt = 0;
             status('active', '', { output: device.output, outputType: device.outputType || device.type,
-                captureSettings: capture.track.getSettings(), sampleRate: capture.context.sampleRate, transport: 'worklet-port' });
+                captureSettings: capture.track.getSettings(), sampleRate: capture.context.sampleRate,
+                captureId: capture.portId, transport: 'worklet-port' });
         } catch (error) {
             await stop().catch(() => {});
             if (disposed) return;

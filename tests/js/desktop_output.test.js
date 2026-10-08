@@ -90,19 +90,22 @@ test('worklet batches stereo PCM directly and clocks silence without UI callback
     assert.equal([...h.ports.values()][0], h.taps[0].port);
     assert.equal(h.taps[0].port.onmessage, null, 'no renderer forwarding callback');
     let Processor; const packets = [];
-    vm.runInNewContext(h.workletSource, {
-        sampleRate: 48000, Float32Array,
+    const worklet = {
+        sampleRate: 48000, currentFrame: 4096, Float32Array,
         AudioWorkletProcessor: class { constructor() { this.port = { postMessage: (packet, transfer) => {
             assert.equal(transfer, undefined, 'Electron cannot decode transferred PCM ArrayBuffers'); packets.push(packet);
         } }; } },
         registerProcessor: (_name, processor) => { Processor = processor; },
-    });
+    };
+    vm.runInNewContext(h.workletSource, worklet);
     const tap = new Processor(), left = new Float32Array(128).fill(.125), right = new Float32Array(128).fill(-.25);
-    tap.process([[left, right]], []); tap.process([[left, right]], []);
+    tap.process([[left, right]], []); worklet.currentFrame += 128; tap.process([[left, right]], []);
     assert.equal(packets.length, 1); assert.equal(packets[0].sampleRate, 48000);
     assert.deepEqual([...packets[0].pcm], Array.from({length:512}, (_,i)=>i%2?-.25:.125));
-    tap.process([], []); tap.process([], []);
+    assert.deepEqual(JSON.parse(JSON.stringify(packets[0].timing)), { version: 1, sequence: 0, firstFrame: 4096, endFrame: 4352 });
+    worklet.currentFrame += 128; tap.process([], []); worklet.currentFrame += 128; tap.process([], []);
     assert.ok(packets[1].pcm.every(x => x === 0));
+    assert.deepEqual(JSON.parse(JSON.stringify(packets[1].timing)), { version: 1, sequence: 1, firstFrame: 4352, endFrame: 4608 });
     assert.equal(h.pushed.length, 0);
 });
 
@@ -138,9 +141,13 @@ test('audio port handshake timeout releases capture and stays muted', async () =
 
 test('ASIO/shared/named device/rate changes reuse capture and flush old output tail', async () => {
     const h = harness(); await h.tick();
+    let epoch = h.state().routeEpoch;
+    const captureId = h.state().captureId;
+    await h.tick(); assert.equal(h.state().routeEpoch, epoch, 'steady polling does not change epoch');
     for (const [outputType, output, sampleRate] of [['ASIO','Interface',48000],['Windows Audio','TV',44100],['Windows Audio','Other',48000]]) {
         h.device = { ...h.device, outputType, output, sampleRate }; await h.tick();
         assert.equal(h.state().output, output); assert.deepEqual(h.bus.slice(-2), [[false, 0], [true, 1]]);
+        assert.equal(h.state().routeEpoch, ++epoch); assert.equal(h.state().captureId, captureId);
     }
     assert.equal(h.captures.length, 1); assert.deepEqual(h.muted, [true]);
 });
