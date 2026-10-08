@@ -14866,9 +14866,31 @@
         function _suppressCoincidentFretColumnMarkers(record) {
             // Called only for a gold label that will render (or hand off to the
             // fixed row). A missing gold label never removes a reference number.
+            if (!Number.isInteger(record.fret) || record.fret <= 0 || !Number.isFinite(record.time)) return;
+            let goldInk = null;
             for (let i = 0; i < _incomingFretColumnMarkerCount; i++) {
                 const marker = _incomingFretColumnMarkers[i];
+                if (marker.fret !== record.fret || !Number.isFinite(marker.time)
+                    || !marker.sprite.visible || marker.sprite.material.opacity <= 0) continue;
                 if (hwySameFretLabelBeat(record.fret, record.time, marker.fret, marker.time)) {
+                    marker.sprite.visible = false;
+                    continue;
+                }
+                // Authored beat/chord offsets can exceed the 1 ms identity
+                // tolerance while their digits still overlap. Rounded depth
+                // buckets then alternate which colour paints last. Gold owns
+                // the overlapping digit; keep distinct gold event identities
+                // and all gem/trail priorities unchanged.
+                if (!goldInk) {
+                    goldInk = record.inkRect || (record.inkRect = _newLabelRect());
+                    if (!_incomingLabelScreenRect(record.sprite, goldInk, true)) return;
+                }
+                if (marker.inkFrame !== _incomingLabelLayoutFrame) {
+                    marker.inkFrame = _incomingLabelLayoutFrame;
+                    marker.inkRect ||= _newLabelRect();
+                    marker.inkValid = _incomingLabelScreenRect(marker.sprite, marker.inkRect, true);
+                }
+                if (marker.inkValid && hwyScreenRectsOverlap(goldInk, marker.inkRect)) {
                     marker.sprite.visible = false;
                 }
             }
