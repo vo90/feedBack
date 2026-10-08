@@ -33,6 +33,10 @@ function harness(msg, { running = true, accepts = true } = {}) {
     };
     sb.window = sb;
     vm.createContext(sb);
+    const transportSource = fs.readFileSync(path.join(__dirname, '../../static/js/transport.js'), 'utf8');
+    vm.runInContext(transportSource.slice(transportSource.indexOf('let _backingCommandChain'),
+        transportSource.indexOf('export const jucePlayer')).replace(/export function/g, 'function'), sb);
+
     vm.runInContext(policy + '\n' + classification, sb);
     return { sb, calls, run: () => vm.runInContext(initial, sb) };
 }
@@ -55,6 +59,15 @@ test('every listed stem retains its plugin transport, including a single full-mi
         { ...pack, has_stems: false, stems: ['full'] }, // inconsistent metadata must not bypass the mixer
     ]) {
         const h = harness(msg);
+        assert.equal(vm.runInContext('shouldUseNativeBacking(window._currentSongAudio, true)', h.sb), false);
+    }
+});
+
+test('only a single stem without a separate pristine mix can request an owned native lease', () => {
+    const url = '/api/sloppak/song/file/stems/full.ogg';
+    for (const has_full_mix of [false, true]) {
+        const h = harness({ ...pack, has_full_mix, has_stems: true, stems: [{ id: 'full', url }] });
+        assert.equal(h.sb._currentSongAudio.singleStemUrl, has_full_mix ? null : url);
         assert.equal(vm.runInContext('shouldUseNativeBacking(window._currentSongAudio, true)', h.sb), false);
     }
 });

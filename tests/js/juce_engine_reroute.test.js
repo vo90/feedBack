@@ -113,8 +113,12 @@ function makeSandbox({ isAudioRunning, loadBackingTrack, outputType = 'Windows A
         showScreen: (...a) => (sandbox.showScreen ? sandbox.showScreen(...a) : undefined),
     };
     vm.createContext(sandbox);
+    const transportSource = fs.readFileSync(path.join(__dirname, '../../static/js/transport.js'), 'utf8');
+    vm.runInContext(transportSource.slice(transportSource.indexOf('let _backingCommandChain'),
+        transportSource.indexOf('export const jucePlayer')).replace(/export function/g, 'function'), sandbox);
+
     vm.runInContext(fs.readFileSync(path.join(path.dirname(APP_JS), 'native-backing-route.js'), 'utf8')
-        .replace('export function', 'function'), sandbox);
+        .replace(/export function/g, 'function'), sandbox);
     vm.runInContext(iife, sandbox);
     return sandbox;
 }

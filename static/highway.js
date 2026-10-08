@@ -4,6 +4,7 @@
  */
 import { whammyApi } from './js/whammy.js';
 import { shouldUseNativeBacking } from './js/native-backing-route.js';
+import { loadCoreBackingTrack } from './js/transport.js';
 window.feedBackWhammy = whammyApi;
 import { harmonicContactsApi } from './js/harmonic-contacts.js';
 window.feedBackHarmonicContacts = harmonicContactsApi;
@@ -2143,6 +2144,9 @@ function createHighway() {
                                         url: msg.audio_url,
                                         juceEligible: isAudioUrl,
                                         feedpakFullMix: isFeedpakFullMix,
+                                        // Eligibility for a plugin-owned native lease, never an
+                                        // automatic core takeover of the stem's controls.
+                                        singleStemUrl: !msg.has_full_mix && (msg.stems || []).length === 1 ? msg.stems[0].url : null,
                                     };
                                     const alreadyLoaded = window._juceMode
                                         ? window._juceAudioUrl === msg.audio_url
@@ -2220,7 +2224,7 @@ function createHighway() {
                                                         if (!res.ok) throw new Error('HTTP ' + res.status);
                                                         const { path } = await res.json();
                                                         pathLabel = (typeof path === 'string' && path.split(/[\\/]/).pop()) || '<missing>';
-                                                        const ok = await juceApi.loadBackingTrack(path);
+                                                        const ok = await loadCoreBackingTrack(juceApi, path, () => gen === hwState._wsGen);
                                                         console.log('[highway] JUCE loadBackingTrack file=', pathLabel, 'ok=', ok);
                                                         if (ok === false) throw new Error('JUCE rejected backing track: ' + pathLabel);
                                                         if (gen !== hwState._wsGen) return; // stale

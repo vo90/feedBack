@@ -1,14 +1,29 @@
 import { installDesktopOutput } from './desktop-output.js';
 import { shouldUseNativeBacking } from './native-backing-route.js';
+import { createNativeBackingOwner } from './native-backing-owner.js';
 import { selectionLifecycle } from './screen-selection.js';
 // Desktop integration: migrate eligible songs between native and browser
 // transports, route the complete browser mix through the selected output,
 // and mirror media-element controls while the native transport owns a song.
 // Installation runs before the app host is wired, so host calls stay deferred.
 import { audio } from './audio-el.js';
-import { _audioSeek, _songEventPayload, jucePlayer, setPlayButtonState, resumePlayback, pausePlayback, cancelPlaybackStart } from './transport.js';
+import { _audioSeek, _songEventPayload, jucePlayer, setPlayButtonState, resumePlayback, pausePlayback, cancelPlaybackStart, _queueBackingCommand, loadCoreBackingTrack } from './transport.js';
 import { setSpeed } from './player-controls.js';
 import { S } from './player-state.js';
+
+if (window.feedBack?.audioSession && window.feedBackDesktop?.audio) {
+    window.feedBack.audioSession.nativeBacking = createNativeBackingOwner({
+        api: window.feedBackDesktop.audio, player: jucePlayer, queue: _queueBackingCommand,
+        getSong: () => window._currentSongAudio, isCoreNative: () => !!window._juceMode,
+        fetchPath: async url => {
+            const res = await fetch(`/api/audio-local-path?url=${encodeURIComponent(url)}`);
+            if (!res.ok) throw new Error('Backing path unavailable');
+            const { path } = await res.json();
+            if (typeof path !== 'string' || !path) throw new Error('Backing path unavailable');
+            return path;
+        },
+    });
+}
 
 (function _installJuceEngineRoutingWatcher() {
     const juceApi = window.feedBackDesktop?.audio;
@@ -93,7 +108,7 @@ import { S } from './player-state.js';
             const { path } = await res.json();
             console.log('[feedpak-route] audio-local-path resolved:', (typeof path === 'string' && path.split(/[\\/]/).pop()) || '<missing>');
             if (_isStale(songAudio)) return 'stale';   // song changed mid-fetch
-            const ok = await juceApi.loadBackingTrack(path);
+            const ok = await loadCoreBackingTrack(juceApi, path, () => !_isStale(songAudio));
             if (ok === false) {
                 // JUCE rejected the track — stay on HTML5, resume if needed.
                 console.warn('[juce-reroute] loadBackingTrack rejected; staying on HTML5');
@@ -389,6 +404,7 @@ import { S } from './player-state.js';
     // window) — engine toggles there will be reconciled on the first poll
     // after the tab is visible again.
     setInterval(() => {
+        void window.feedBack?.audioSession?.nativeBacking?.check();
         if (document.hidden) return;
         if (window._currentSongAudio) void _reevaluateJuceRouting();
     }, 350);
