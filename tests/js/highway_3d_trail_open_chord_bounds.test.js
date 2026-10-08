@@ -70,6 +70,7 @@ const harness = new Function('assert', `
             const n = { f: 0, ac: accent };
             const stemVisible = !belongsToBoxedChord && openStringStemsVisible;
             const sourceNote = n;
+            const chordId = 0, registerArpeggioStem = () => {};
             const x = 0, y = 0, noteZ = 0, techniqueYNow = 0;
             const fromChord = true, _leftyCached = false, rsMiss = false, rsHit = false;
             const sY = s => s * S_GAP, gNote = {}, mRsOpenStem = {};

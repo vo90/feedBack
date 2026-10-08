@@ -86,6 +86,7 @@ const draw = new Function('meshPool', 'args', 'options', `
     ${fn('naturalNode')}${fn('harmonicLabel')}
     function drawNote(${drawParameters}) {
         const original=n;
+        const sourceNote=n, registerArpeggioStem=()=>{};
         if(isUnpitchedMute(n)) n={...n,f:0};
         const noteStemsVisible=options.noteStems!==false, openStringStemsVisible=options.openStems!==false;
         const stemVisible=noteStemVisible(n,belongsToBoxedChord,noteStemsVisible,openStringStemsVisible);

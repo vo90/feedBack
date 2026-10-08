@@ -100,6 +100,7 @@ if(readabilityOnly){
 served = once(served, "contextType: 'webgl2',", `__notationAudit() { return {
   scene, cam, ren, noteG, pNote, pTechPlane, projMeshArr, composer:_composer, bloom:_bloom,
   openStemFloor:Math.min(sY(0),sY(nStr-1))-S_GAP*.55, noteHeight:NH,
+  arpeggioBoxes:typeof _visibleArpeggioBoxes==='undefined'?[]:_visibleArpeggioBoxes.slice(0,_visibleArpeggioBoxCount).map(b=>({...b,shape:Array.from(b.shape)})),
   style:typeof rsPlusNotation === 'undefined' ? 'current' : rsPlusNotation ? 'rsplus' : 'current',
   settings:{glow:glowMul,vibrancy,cinematic:_cinematic,hitFx:_hitFx,bloom:_bloom,
     ${readabilityOnly?'trailYield:{...trailYieldSettings},sustainStroke:rsPlusNotation?RSPLUS_SUSTAIN_STROKE_SCALE:1,':''}},
@@ -225,6 +226,7 @@ async function main() {
           markers:p.markers.map(({mesh,...rest})=>{const v=mesh.getWorldPosition(mesh.position.clone()).project(a.cam);return {...rest,mesh:__probeMesh(mesh),texture:['bend','face'].includes(rest.kind)?__probeBendTexture(mesh):undefined,screen:[(v.x+1)*innerWidth/2,(1-v.y)*innerHeight/2]};}),
           trails:p.trails.map(__probeTrail),
           stems:p.stems.map(({mesh,...rest})=>({...rest,mesh:__probeMesh(mesh)})),
+          arpeggioBoxes:a.arpeggioBoxes,
           ghosts:(a.projMeshArr||[]).flat().filter(m=>m.visible).map(__probeMesh)};
       };
     });
@@ -490,8 +492,47 @@ async function main() {
       check(postOnsetProof.frames.length===0,'Ordinary chord frame survived after onset');
       const single=baseBundle();single.notes=[member({t:onset,s:0,f:0})];single.currentTime=onset-.3;
       await captureOpen('open-standalone',single,modern,{visible:true});
-      await captureOpen('open-chord-arpeggio',openChord({arpeggio:true}),modern,{visible:true,arpeggio:true});
+      const visibleArpeggioPolicy=source.includes('function registerVisibleArpeggioBox(');
+      await captureOpen('open-chord-arpeggio',openChord({arpeggio:true}),modern,{visible:!visibleArpeggioPolicy,arpeggio:true});
+      // The box must really be on the highway. Handshape association alone is
+      // insufficient; test individual plucks as well as fallback chord members.
+      for(const lefty of [false,true])for(const inverted of [false,true]){
+        const arp=openChord({arpeggio:true,lefty});arp.inverted=inverted;
+        arp.notes=[member({t:onset,s:1,f:0,sus:1}),member({t:onset+.3,s:2,f:2}),member({t:onset+.6,s:3,f:2})];
+        const proof=await captureOpen(`arp-stream-${lefty}-${inverted}`,arp,modern,{visible:!visibleArpeggioPolicy,arpeggio:true});
+        if(visibleArpeggioPolicy)check(proof.stems.every(s=>!s.mesh.visible),'Boxed arpeggio plucks retained drop lines');
+        const synthetic={...arp,chords:[]};
+        await captureOpen(`arp-synth-box-${lefty}-${inverted}`,synthetic,modern,{visible:!visibleArpeggioPolicy,arpeggio:true});
+        const unboxed={...arp,chords:[],notes:[arp.notes[0]],
+          chordTemplates:[{...arp.chordTemplates[0],frets:[-1,0,-1,-1,-1,-1]}]};
+        const unboxedProof=await captureOpen(`arp-no-box-${lefty}-${inverted}`,unboxed,modern,{visible:true});
+        check(unboxedProof.frames.length===0,'Single-member arpeggio unexpectedly drew an enclosing box');
+        const landed={...arp,currentTime:onset};
+        await captureOpen(`arp-box-ended-${lefty}-${inverted}`,landed,modern,{visible:true});
+        const inferred=openChord({lefty});inferred.inverted=inverted;inferred.chords=[];inferred.notes=arp.notes;
+        await captureOpen(`arp-inferred-unboxed-${lefty}-${inverted}`,inferred,modern,{visible:true});
+      }
       await captureOpen('open-chord-current',openChord(),{notationStyle:'current',glow:0,bloom:false},{visible:true,frame:true});
+      const sparseArp=openChord({arpeggio:true});
+      sparseArp.chordTemplates[0].frets=[-1,0,2,-1,-1,-1];
+      sparseArp.chords[0].notes=sparseArp.chords[0].notes.slice(0,2);
+      sparseArp.notes=[member({t:onset,s:1,f:0,sus:1}),member({t:onset+.3,s:2,f:2}),member({t:onset+.5,s:3,f:7})];
+      const sparseProof=await captureOpen('arp-sparse-metadata',sparseArp,modern,{visible:!visibleArpeggioPolicy,arpeggio:true});
+      if(visibleArpeggioPolicy){
+        check(sparseProof.stems.filter(s=>s.note.s===2).every(s=>!s.mesh.visible),'Sparse arpeggio retained its fretted stem');
+        check(sparseProof.stems.some(s=>s.note.s===3&&s.mesh.visible),'Unrelated note lost its stem');
+      }
+      const liveArp=openChord({arpeggio:true});liveArp.chords[0].notes.forEach(n=>n.sus=1);
+      await init(liveArp,modern);
+      const arpPasses=[];
+      for(const [style,time,visible] of [['rsplus',onset-.3,!visibleArpeggioPolicy],
+        ['rsplus',onset,true],['rsplus',onset+.03,true],['rsplus',onset-.3,!visibleArpeggioPolicy],
+        ['current',onset-.3,true],['rsplus',onset-.3,!visibleArpeggioPolicy]]){
+        const proof=await page.evaluate(({style,time})=>{h3dBgSetNotationStyle(style);bundle.currentTime=time;
+          for(let i=0;i<4;i++)r.draw(bundle);return __captureNotation();},{style,time});
+        assertOpen(proof,`arpeggio live ${style}/${time}`,{visible});arpPasses.push(proof);
+      }
+      results.push({name:'arpeggio-live-stem-reuse',passes:arpPasses});
       // Reproduce the reported pattern: standalone PM opens associated with a
       // hand shape, interleaved with actual open/fretted power-chord strikes.
       // The shared fromChord flag must still be exercised without shortening
@@ -541,7 +582,10 @@ async function main() {
             check(!proof.stems.some(s=>s.mesh.visible&&boxed.some(n=>n.note.t===s.note.t&&n.note.s===s.note.s&&n.note.f===s.note.f)),`${name}: a boxed chord has a fretted stem`);
             if(!enabled)check(!proof.stems.some(s=>s.mesh.visible),`${name}: a fretted stem ignored the off setting`);
             if(style==='rsplus')for(const n of proof.notes.filter(n=>n.note.f===0)){
-              check(n.outline.visible===(!n.boxed&&enabled),`${name}: open stem ignored box membership or its setting`);
+              const arpBoxed=proof.arpeggioBoxes.some(box=>
+                (Math.abs(n.note.t-box.onset)<=1e-4||(n.note.t>=box.start-1e-4&&n.note.t<=box.end+1e-4))
+                &&box.shape.some(([s,f])=>s===n.note.s&&f===n.sourceFret));
+              check(n.outline.visible===(!n.boxed&&!arpBoxed&&enabled),`${name}: open stem ignored box membership or its setting`);
             }
           }
         }
