@@ -3,8 +3,8 @@
 // synchronous; its physical stop stays queued ahead of the next owner's load.
 export function createNativeBackingOwner({ api, player, queue, getSong, isCoreNative, fetchPath }) {
     let active = null, generation = 0, checking = false;
-    const required = ['isAudioRunning', 'loadBackingTrack', 'stopBacking', 'getBackingDuration',
-        'setGain', 'setBackingSpeed', 'setBackingPreservePitch'];
+    const required = ['isAudioRunning', 'loadBackingTrack', 'stopBacking', 'startBacking',
+        'seekBacking', 'getBackingDuration', 'setGain', 'setBackingSpeed'];
     const live = s => active === s && getSong()?.singleStemUrl === s.url && !isCoreNative() && s.isCurrent();
 
     function release(s, reason = 'released') {
@@ -86,9 +86,12 @@ export function createNativeBackingOwner({ api, player, queue, getSong, isCoreNa
                 setRate(rate) {
                     if (!Number.isFinite(rate) || rate <= 0) return Promise.resolve(false);
                     return command(s, async () => {
-                        await api.setBackingSpeed(rate);
+                        if (await api.setBackingSpeed(rate) === false) throw new Error('Native speed unavailable');
                         if (!live(s)) return;
-                        await api.setBackingPreservePitch(true);
+                        // Desktop's native stretcher preserves pitch inherently.
+                        // Some hosts additionally expose a switch; it is optional,
+                        // as it is for Core's ordinary native backing transport.
+                        await api.setBackingPreservePitch?.(true);
                         if (live(s)) player.setRate(rate);
                     });
                 },

@@ -17,11 +17,25 @@ test('a matching single-stem owner prepares silently and controls the actual nat
 
 test('unsupported host, stopped engine, unmatched/multistem and core-owned sources stay browser-owned', async () => {
     for (const setup of [h => h.setRunning(false), h => h.setCoreNative(true),
-        h => h.setSong({}), h => { delete h.api.setBackingPreservePitch; }]) {
+        h => h.setSong({}), h => { delete h.api.setBackingSpeed; }]) {
         const h = nativeHarness(); setup(h);
         assert.equal(await h.acquire(), null); assert.equal(h.calls.some(c => c[0] === 'load'), false);
         assert.equal(h.host.snapshot(), null);
     }
+});
+
+test('the Desktop API needs no pitch toggle; an optional host toggle is honored and rejected speed is surfaced', async () => {
+    const h = nativeHarness();
+    assert.equal(h.api.setBackingPreservePitch, undefined, 'match the actual Desktop preload surface');
+    const lease = await h.acquire();
+    assert.ok(lease);
+    assert.equal(await lease.setRate(.8), true);
+    h.api.setBackingPreservePitch = async value => h.calls.push(['pitch', value]);
+    assert.equal(await lease.setRate(.7), true);
+    assert.deepEqual(h.calls.at(-1), ['pitch', true]);
+    h.api.setBackingSpeed = async () => false;
+    await assert.rejects(lease.setRate(.5), /Native speed unavailable/);
+    assert.equal(h.player._speed, .7);
 });
 
 test('codec rejection releases ownership without starting native playback', async () => {
