@@ -113,6 +113,8 @@ function makeSandbox({ isAudioRunning, loadBackingTrack, outputType = 'Windows A
         showScreen: (...a) => (sandbox.showScreen ? sandbox.showScreen(...a) : undefined),
     };
     vm.createContext(sandbox);
+    vm.runInContext(fs.readFileSync(path.join(path.dirname(APP_JS), 'native-backing-route.js'), 'utf8')
+        .replace('export function', 'function'), sandbox);
     vm.runInContext(iife, sandbox);
     return sandbox;
 }
@@ -206,7 +208,7 @@ test('feedpak full-mix + ASIO output → migrates to JUCE', async () => {
     assert.equal(sb.window._juceMode, true, 'ASIO is exclusive-style; feedpak rides the engine');
 });
 
-test('feedpak full-mix + shared output → stays on HTML5 (stem mixer untouched)', async () => {
+test('feedpak full-mix + shared output → uses native transport', async () => {
     for (const shared of ['Windows Audio', 'Windows Audio (Low Latency Mode)', 'DirectSound']) {
         const sb = makeSandbox({
             isAudioRunning: () => true,
@@ -222,12 +224,12 @@ test('feedpak full-mix + shared output → stays on HTML5 (stem mixer untouched)
 
         await sb.window._reevaluateJuceRouting();
 
-        assert.equal(sb.window._juceMode, false, `stays on HTML5 for shared type "${shared}"`);
-        assert.equal(sb.__calls.loadBackingTrack.length, 0);
+        assert.equal(sb.window._juceMode, true, `uses native transport for shared type "${shared}"`);
+        assert.equal(sb.__calls.loadBackingTrack.length, 1);
     }
 });
 
-test('feedpak on JUCE + output leaves exclusive mode → migrates back to HTML5', async () => {
+test('feedpak on JUCE + output leaves exclusive mode → retains native transport', async () => {
     let type = 'Windows Audio (Exclusive Mode)';
     const sb = makeSandbox({
         isAudioRunning: () => true,
@@ -243,11 +245,13 @@ test('feedpak on JUCE + output leaves exclusive mode → migrates back to HTML5'
     await sb.window._reevaluateJuceRouting();
     assert.equal(sb.window._juceMode, true, 'consistent while exclusive');
 
-    // Device switched to shared mid-song: must return to HTML5.
+    // Device switched to shared mid-song: keep position and transport.
     type = 'Windows Audio';
     await sb.window._reevaluateJuceRouting();
-    assert.equal(sb.window._juceMode, false, 'returned to HTML5 after leaving exclusive mode');
-    assert.equal(sb.audio.src, url, 'HTML5 element re-pointed at the song');
+    assert.equal(sb.window._juceMode, true, 'native transport survives the backend change');
+    assert.equal(sb.__calls.loadBackingTrack.length, 0, 'no reload or seek');
+    assert.equal(sb.__calls.audioPlay, 0);
+    assert.equal(sb.__calls.jucePause, 0);
 });
 
 test('JUCE hard-reject is memoised → not retried on the next poll', async () => {

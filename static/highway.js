@@ -3,6 +3,7 @@
  * Receives note data via WebSocket, renders on requestAnimationFrame.
  */
 import { whammyApi } from './js/whammy.js';
+import { shouldUseNativeBacking } from './js/native-backing-route.js';
 window.feedBackWhammy = whammyApi;
 import { harmonicContactsApi } from './js/harmonic-contacts.js';
 window.feedBackHarmonicContacts = harmonicContactsApi;
@@ -2122,31 +2123,17 @@ function createHighway() {
                                 if (msg.audio_url) {
                                     const audio = document.getElementById('audio');
                                     const audioFilename = msg.audio_url.split('/').pop();
-                                    // /audio/ URLs are always JUCE-routable. A feedpak full-mix
-                                    // (single-mix pack: original audio, no stems) is routable too,
-                                    // but ONLY under an exclusive-style output — the actual
-                                    // exclusive check happens at routing time (app.js watcher /
-                                    // the async block below), not here, because the share mode
-                                    // can change while the song is loaded. Sloppak stem URLs are
-                                    // never routable.
+                                    // Single backing files can use any native output backend.
+                                    // Multitrack packs retain their browser mixer.
                                     const isAudioUrl = msg.audio_url.startsWith('/audio/');
-                                    // "Full mix" covers BOTH single-mix pack shapes:
-                                    //  - single-stem packs (stems: [full.ogg] only) — the pack's
-                                    //    one stem IS its mixdown, so the server leaves it in the
-                                    //    stems list, has_full_mix is false, and audio_url points
-                                    //    at that one stem; and
-                                    //  - legacy stem-less packs, whose mixdown sits outside stems
-                                    //    behind the deprecated original_audio: key, so has_stems
-                                    //    is false and audio_url == full_mix_url.
-                                    // Either way there is one audible source and no per-stem mix
-                                    // to preserve, so routing it natively loses nothing. A pack
-                                    // that retains its `full` stem ALONGSIDE separated stems is
-                                    // multi-stem (has_full_mix && has_stems) and stays out until
-                                    // Phase 2 — routing it natively would drop the mixer.
+                                    // Every listed stem (even a sole full-mix stem) belongs to
+                                    // the stems plugin's transport and mixer. Only a full mix
+                                    // outside that list can use native playback without a
+                                    // coordinated ownership handoff to the plugin.
                                     const isFeedpakFullMix = !isAudioUrl
                                         && msg.audio_url.startsWith('/api/sloppak/')
-                                        && ((!!msg.has_full_mix && !msg.has_stems)
-                                            || (msg.stems || []).length === 1);
+                                        && !!msg.has_full_mix && !msg.has_stems
+                                        && (msg.stems || []).length === 0;
                                     // Record the loaded song's audio so app.js can re-route it
                                     // between the HTML5 and JUCE paths if the audio engine is
                                     // started/stopped after the song is already loaded. Set this
@@ -2161,9 +2148,8 @@ function createHighway() {
                                         ? window._juceAudioUrl === msg.audio_url
                                         : (audio.src && audio.src.includes(audioFilename));
                                     // [feedpak-route] diagnostics: every eligibility input in one
-                                    // line — shows up in the exported diagnostics bundle. If
-                                    // has_stems is true the pack is multi-stem and Phase 1
-                                    // deliberately does not route it (Phase 2 work).
+                                    // line — shows up in the exported diagnostics bundle. Listed
+                                    // stems retain their plugin-owned browser transport.
                                     console.log('[feedpak-route] song-load:',
                                         'url=', msg.audio_url,
                                         'isAudioUrl=', isAudioUrl,
@@ -2219,23 +2205,15 @@ function createHighway() {
                                                         clearTimeout(barrierTimer);
                                                         if (gen !== hwState._wsGen) return; // navigated away during the wait
                                                     }
-                                                    // Feedpak full-mix rides the engine ONLY under an
-                                                    // exclusive-style output (shared mode falls through to
-                                                    // the HTML5 fallback below, keeping the WebAudio path
-                                                    // fully working). /audio/ songs route whenever the
-                                                    // engine runs, as before. If the share mode changes
-                                                    // later, the app.js watcher re-evaluates and migrates.
-                                                    let routeToJuce = await juceApi.isAudioRunning();
-                                                    console.log('[feedpak-route] initial-load: engineRunning=', routeToJuce);
-                                                    if (routeToJuce) {
-                                                        if (gen !== hwState._wsGen) return; // stale
-                                                        if (isFeedpakFullMix) {
-                                                            const exclFn = window._juceOutputIsExclusive;
-                                                            routeToJuce = !!(await exclFn?.());
-                                                            console.log('[feedpak-route] initial-load: feedpak exclusive check →',
-                                                                routeToJuce, '(predicate installed=', typeof exclFn === 'function', ')');
-                                                        }
-                                                    }
+                                                    // Share the watcher's policy: single backing files use
+                                                    // the selected native output, including shared Windows.
+                                                    const engineRunning = await juceApi.isAudioRunning();
+                                                    if (gen !== hwState._wsGen) return; // stale
+                                                    const routeToJuce = shouldUseNativeBacking({
+                                                        juceEligible: isAudioUrl, feedpakFullMix: isFeedpakFullMix,
+                                                    }, engineRunning);
+                                                    console.log('[feedpak-route] initial-load: engineRunning=', engineRunning,
+                                                        'native=', routeToJuce);
                                                     if (routeToJuce) {
                                                         if (gen !== hwState._wsGen) return; // stale
                                                         const res = await fetch(`/api/audio-local-path?url=${encodeURIComponent(audioUrl)}`);
