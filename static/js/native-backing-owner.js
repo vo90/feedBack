@@ -1,7 +1,7 @@
 // A plugin may own the controls while borrowing the one native backing player.
 // All native mutations share the core transport's command queue. Revocation is
 // synchronous; its physical stop stays queued ahead of the next owner's load.
-export function createNativeBackingOwner({ api, player, queue, getSong, isCoreNative, fetchPath, getAnalyser, isPresentationComplete = () => true }) {
+export function createNativeBackingOwner({ api, player, queue, getSong, isCoreNative, fetchPath, getAnalyser, isPresentationComplete = () => true, isSuspended = () => false }) {
     let active = null, generation = 0, checking = false, unsafeNative = false;
     const required = ['isAudioRunning', 'loadBackingTrack', 'stopBacking', 'startBacking',
         'seekBacking', 'getBackingDuration', 'setGain', 'setBackingSpeed'];
@@ -148,6 +148,7 @@ export function createNativeBackingOwner({ api, player, queue, getSong, isCoreNa
             });
         },
         async check() {
+            if (isSuspended()) return;
             if (checking || !active?.ready) return;
             const s = active;
             checking = true;

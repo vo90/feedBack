@@ -691,6 +691,11 @@ async function setRememberOutputCalibration(enabled) {
 window.addEventListener('change', event => {
     if (event.target?.id === 'ae-av-remember') void setRememberOutputCalibration(event.target.checked);
 });
+window.addEventListener('click', event => {
+    if (event.target?.closest?.('#ae-av-guide')) {
+        void import('./guided-av.js').then(module => module.openGuidedAv()).catch(error => console.warn('[calibration]', error));
+    }
+});
 window.addEventListener('feedback:audio-route-changed', () => { void refreshOutputCalibration(); });
 
 export let _avSaveDebounce = null;
