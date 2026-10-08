@@ -15,7 +15,7 @@ export async function openGuidedAv() {
     dialog.setAttribute('aria-modal', 'true');
     dialog.setAttribute('aria-labelledby', 'gav-title');
     dialog.innerHTML = `<style>
-    .guided-av-dialog{color:#e6edf7;background:#121c2d;border:1px solid #34445c;border-radius:22px;padding:0;width:min(760px,92vw);max-height:92vh;box-shadow:0 30px 100px #0008;font-family:inherit}
+    .guided-av-dialog{color:#e6edf7;background:#121c2d;border:1px solid #34445c;border-radius:22px;padding:0;margin:auto;width:min(760px,92vw);max-height:92vh;box-shadow:0 30px 100px #0008;font-family:inherit}
     .guided-av-dialog::backdrop{background:#030817c9;backdrop-filter:blur(5px)}
     .gav-wrap{padding:32px}.gav-top{display:flex;justify-content:space-between;gap:16px;align-items:start}.gav-eyebrow{font-size:12px;color:#71ddc5;letter-spacing:.12em;text-transform:uppercase}.gav-title{font-size:28px;font-weight:650;margin:8px 0}.gav-muted{color:#a6b7cc;font-size:14px;line-height:1.6}.gav-device{background:#1b2940;border-radius:12px;padding:12px 16px;margin:20px 0;font-size:13px;color:#b8c9df;overflow-wrap:anywhere}
     .gav-stage{margin:24px 0;background:#0a1322;border:1px solid #26364d;border-radius:16px;overflow:hidden}.gav-track{position:relative;height:150px;margin:0 32px}.gav-line{position:absolute;left:50%;top:32px;bottom:32px;width:3px;background:#526c89;border-radius:4px}.gav-marker{position:absolute;left:50%;top:63px;width:24px;height:24px;border-radius:50%;background:#69e1c5;transform:translateX(-50%);opacity:0;box-shadow:0 0 20px #69e1c540}.gav-caption{text-align:center;min-height:28px;padding:0 16px 14px;color:#9eb1ca;font-size:13px}.gav-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}.guided-av-dialog button{border-radius:10px;padding:11px 17px;font-size:14px;font-weight:600;border:1px solid #344760;background:#223149;color:#e6edf7;cursor:pointer}.guided-av-dialog button:hover{background:#30435d}.guided-av-dialog button:focus-visible{outline:3px solid #72e3cc;outline-offset:3px}.guided-av-dialog button:disabled{opacity:.4;cursor:default}.guided-av-dialog .gav-primary{background:#64dbc0;color:#09241e;border-color:#64dbc0}.guided-av-dialog .gav-close{padding:4px 10px;background:transparent;border:0;font-size:25px}.gav-choices{display:grid;grid-template-columns:1fr 1fr;gap:10px}.gav-value{font-size:38px;font-weight:650;margin:10px 0}.gav-error{color:#ffd2a0;min-height:24px;font-size:14px;margin-top:12px}.gav-footer{display:flex;justify-content:space-between;align-items:center;margin-top:20px;gap:12px}.gav-volume{display:flex;align-items:center;gap:12px;margin:16px 0;font-size:13px;color:#a6b7cc}.gav-volume input{accent-color:#69e1c5;width:130px}.gav-hidden{display:none!important}@media(max-width:540px){.gav-wrap{padding:20px}.gav-title{font-size:23px}.gav-choices{grid-template-columns:1fr}.gav-actions button{flex:1}}
@@ -57,7 +57,7 @@ export async function openGuidedAv() {
                 }
             }
         } catch (error) {
-            if (save) {closing = false; cancelled = false; setError('Could not save. Your previous calibration is kept. Retry Save or choose Keep previous.'); return;}
+            if (save) {closing = false; cancelled = false; setError('Could not complete calibration. Close this guide and check your current correction before trying again.'); return;}
             console.warn('[calibration] cleanup:', error);
         }
         clearInterval(heartbeat); document.removeEventListener('visibilitychange', hidden);
