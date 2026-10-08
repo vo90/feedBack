@@ -1596,7 +1596,7 @@
             if (!Number.isFinite(t) || !Number.isInteger(s) || s < 0 || s >= stringCount) return;
             // Match drawNote's local open-bar view, retaining the authored
             // identity for lookup/dedup and all scoring/linked-path consumers.
-            const sourceFret = f;
+            const sourceFret = pathNote?.f ?? f;
             if (pathNote && isUnpitchedMute(pathNote)) f = 0;
             if (!Number.isInteger(f) || f < 0 || f > NFRETS) return;
             const duration = Number.isFinite(sustain) ? Math.max(0, sustain) : 0;
@@ -1610,6 +1610,7 @@
                 standaloneTrailVisible: trailVisible && chordMeta === null,
                 chordTrailMeta: trailVisible ? chordMeta : null,
                 sourceNote: pathNote,
+                sourceChord,
                 linkedPath: options?.linkedPaths?.byNote.get(pathNote) || null,
                 trailStart,
                 accent: !!accent,
@@ -1673,7 +1674,7 @@
             let write = 1;
             for (let read = 1; read < events.length; read++) {
                 const prev = events[write - 1], cur = events[read];
-                if (Math.abs(cur.t - prev.t) < 1e-6
+                if (!options?.separateRepresentations && Math.abs(cur.t - prev.t) < 1e-6
                     && cur.s === prev.s && cur.sourceFret === prev.sourceFret) {
                     prev.end = Math.max(prev.end, cur.end);
                     prev.accent = prev.accent || cur.accent;
@@ -2262,6 +2263,11 @@
             if (events[mid].t <= sourceStart + 1e-6) lo = mid + 1;
             else hi = mid;
         }
+        // The structural index retains potential attacks; drawing resolves
+        // approach/hold visibility each frame. Never skip a visible attack
+        // just because its fret differs from the source.
+        while (lo < events.length && events[lo].gemVisible === false
+            && events[lo].t <= sourceEnd + settings.sameStringMaxGap + 1e-9) lo++;
         const event = events[lo];
         return event && event.t <= sourceEnd + settings.sameStringMaxGap + 1e-9 ? event : null;
     }
@@ -2787,6 +2793,27 @@
     // at and after the hit line as well.
     function hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, dt) {
         return explicitLinkTarget === true || (skipBody === true && dt > 0);
+    }
+
+    /** One lifetime decision for the draw queue and its overlap candidates. */
+    function hwyNoteVisualParts(n, now, ahead, linger, nextT, visualStart,
+        suppressHead, suppressTrail, out) {
+        out = out || {};
+        const hasSus = n.sus > 0 && !isPlainDeadNote(n);
+        const end = n.t + (n.sus || 0);
+        const extra = hasSus ? Math.max(0, linger - n.sus) : linger;
+        const deadline = hasSus
+            ? (extra > 0 ? Math.min(end + extra, nextT) : end)
+            : Math.min(n.t + linger, nextT);
+        out.deadline = deadline;
+        out.overLinger = now > deadline;
+        out.head = !suppressHead && !out.overLinger && n.t <= now + ahead;
+        const start = Math.max(visualStart, now);
+        const duration = Math.min(end - start, ahead, now + ahead - start);
+        out.trail = !suppressTrail && !out.overLinger
+            && (hasSus || visualStart < n.t)
+            && duration > (visualStart < n.t ? 1e-6 : 0.01);
+        return out;
     }
 
     // Binary lower-bound: returns the first index i in arr where arr[i].t >= t.
@@ -7640,6 +7667,15 @@
         // order converge before Three.js draws, without chart scans or frame
         // allocations. Non-qualifying gems never enter this path.
         let _trailYieldFrameId = 0;
+        // Collect the calls that survive the note/chord rendering policies
+        // before any ribbon queries another note's visibility. Reuse records
+        // and chord views; the frame pass never scans the complete chart.
+        const _noteDrawQueue = [];
+        let _noteDrawCount = 0;
+        let _collectNoteDraws = false;
+        let _noteDrawParts = null;
+        let _noteDrawEvent = null;
+        const _visibleTrailEvents = [];
         const TRAIL_VISIBILITY_MIN_SCRATCH_CAPACITY = MAX_RENDER_STRINGS * 16;
         let _trailVisibilityScratchCapacity = TRAIL_VISIBILITY_MIN_SCRATCH_CAPACITY;
         let _trailYieldStartsScratch = new Float64Array(_trailVisibilityScratchCapacity);
@@ -7755,6 +7791,11 @@
          * fixed scratch buffers without allocating or clearing them.
          */
         function trailVisibilityReleaseChartReferences() {
+            _visibleTrailEvents.length = 0;
+            _noteDrawQueue.length = 0;
+            _noteDrawCount = 0;
+            _collectNoteDraws = false;
+            _noteDrawParts = _noteDrawEvent = null;
             _trailYieldEventsByFret = [];
             _trailOcclusionEventsByString = [];
             _trailAttacksByString = [];
@@ -15176,6 +15217,11 @@
         function update(bundle) {
             pbBeg(0);
             _trailYieldFrameId++;
+            for (const event of _visibleTrailEvents) {
+                event.gemVisible = false;
+                event.trailVisible = false;
+            }
+            _visibleTrailEvents.length = 0;
             _trailPathCacheCount = 0;
             _trailVisibilityFrontMask = hwyTrailVisibilityFrontMask(
                 trailYieldSettings.enabled,
@@ -15474,6 +15520,9 @@
                 _trailYieldEventsByFret = hwyBuildTrailYieldEvents(notes, chords, nStr, {
                     suppressedAttacks: _linkNextTargetSet,
                     linkedPaths: _linkedTrailPaths,
+                    // A hidden representation must not donate its duration,
+                    // path or head to a coincident visible representation.
+                    separateRepresentations: true,
                     trailVisible: (note, meta, chord) => !chordMemberTrailSuppressed(
                         chord && _chordGuideCache.model.byChord.get(chord), note),
                     visualStartForNote: slideInVisualStart,
@@ -15494,6 +15543,15 @@
                 _trailYieldNotesRef = notes;
                 _trailYieldChordsRef = chords;
                 _trailYieldNStr = nStr;
+                // The indexes above use conservative potential lifetimes.
+                // Frame visibility only removes candidates, so their search
+                // bounds remain valid without rebuilding chart indexes.
+                for (const events of _trailYieldEventsByFret) {
+                    for (const event of events || []) {
+                        event.gemVisible = false;
+                        event.trailVisible = false;
+                    }
+                }
             }
 
             /** Arpeggio lane purple rails — authored-marker cache + bounds cache. */
@@ -16169,6 +16227,8 @@
             }
 
             pbBeg(4);
+            _noteDrawCount = 0;
+            _collectNoteDraws = true;
             // ── Single notes ──────────────────────────────────────────────
             // Reset the per-frame fret-label dedup set so stacked labels from
             // multiple strings at the same onset/fret (arpeggio, synth chord) don't repeat.
@@ -16853,6 +16913,7 @@
                                 chordMemberTrailSuppressed(sharedChordHold, cn),
                                 belongsToBoxedChord,
                                 chordFrameBounds,
+                                cn,
                             );
                             // Frame height follows the gems this path actually retains,
                             // including arpeggio deferral and linked continuation skips.
@@ -17494,6 +17555,7 @@
                 }
             }
 
+            flushNoteDraws();
             drawChordHoldGuides(now, _chordGuideCache.model);
             drawHandPositionGuides(now, _chordGuideCache.model);
 
@@ -19158,8 +19220,9 @@
         }
 
         /** Find the indexed event represented by a drawNote call. */
-        function trailYieldEventForNote(n) {
-            const fret = isUnpitchedMute(n) ? 0 : n.f;
+        function trailYieldEventForNote(n, sourceIdentity = n) {
+            const fret = isUnpitchedMute(n) || (n.mt === true && n.pick_scrape_marks?.length)
+                ? 0 : n.f;
             const events = _trailYieldEventsByFret[fret];
             if (!events || events.length === 0) return null;
             let lo = 0, hi = events.length;
@@ -19171,12 +19234,13 @@
             for (let i = lo; i < events.length; i++) {
                 const event = events[i];
                 if (event.t > n.t + 1e-6) break;
-                if (event.s === n.s && event.sourceFret === n.f) return event;
+                if (event.s === n.s && event.sourceFret === n.f
+                    && event.sourceNote === sourceIdentity) return event;
             }
             return null;
         }
 
-        /** Cache the chart-static mode-3 depth extent for each orientation. */
+        /** Cache this frame's mode-3 depth extent after visibility resolves. */
         function trailVisibilityMode3PriorityTime(event, sourceEnd) {
             if (!event || !Number.isFinite(sourceEnd)) return -Infinity;
             const endKey = _invertedCached
@@ -19185,7 +19249,8 @@
             const timeKey = _invertedCached
                 ? '_trailVisibilityPriorityTimeInverted'
                 : '_trailVisibilityPriorityTimeNormal';
-            if (event[endKey] !== sourceEnd) {
+            if (event[endKey] !== sourceEnd || event._visibilityPriorityFrame !== _trailYieldFrameId) {
+                event._visibilityPriorityFrame = _trailYieldFrameId;
                 event[endKey] = sourceEnd;
                 event[timeKey] = hwyTrailOcclusionFarthestTargetTime(
                     _trailOcclusionEventsByString,
@@ -20193,10 +20258,64 @@
                 const linkedTrail = _linkedTrailPaths.byNote.get(n);
                 if (linkedTrail) _linkedTrailPaths.byNote.set(view, linkedTrail);
             }
-            drawNote(view, now, undefined, true, true);
+            drawNote(view, now, undefined, true, true, 0.10, undefined, false,
+                undefined, false, null, -Infinity, false, false, false, false, null, n);
         }
 
-        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, belongsToBoxedChord = false, chordFrameBounds = null) {
+        function flushNoteDraws() {
+            _collectNoteDraws = false;
+            try {
+                for (let i = 0; i < _noteDrawCount; i++) {
+                    const record = _noteDrawQueue[i];
+                    _noteDrawParts = record.parts;
+                    _noteDrawEvent = record.event;
+                    drawNote.apply(null, record.args);
+                    record.args.fill(undefined);
+                    record.event = null;
+                }
+            } finally {
+                _noteDrawParts = null;
+                _noteDrawEvent = null;
+            }
+        }
+
+        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, belongsToBoxedChord = false, chordFrameBounds = null, sourceIdentity = n) {
+            if (_collectNoteDraws) {
+                if (!validString(n.s) || !isRenderableNote(n)) return;
+                const scrape = n.mt === true && n.pick_scrape_marks?.length > 0;
+                if (scrape && now > n.t + n.sus) return;
+                const slot = _noteDrawCount++;
+                const record = _noteDrawQueue[slot] || (_noteDrawQueue[slot] = {
+                    args: [], view: {}, parts: {}, event: null,
+                });
+                record.args.length = arguments.length;
+                for (let i = 0; i < arguments.length; i++) record.args[i] = arguments[i];
+                // Chord members use a shared scratch object in their caller.
+                // Retain an independent pooled view until the queue is drawn.
+                if (n === _scrChordNote) {
+                    const view = record.view;
+                    for (const key in view) if (!(key in n)) delete view[key];
+                    Object.assign(view, n);
+                    _linkedBendStarts.set(view, _linkedBendStarts.get(n) || 0);
+                    _linkedBendEnds.set(view, _linkedBendEnds.get(n));
+                    _linkedVibratoRuns.set(view, _linkedVibratoRuns.get(n));
+                    const linked = _linkedTrailPaths.byNote.get(n);
+                    if (linked) _linkedTrailPaths.byNote.set(view, linked);
+                    else _linkedTrailPaths.byNote.delete(view);
+                    record.args[0] = view;
+                }
+                hwyNoteVisualParts(n, now, AHEAD, linger,
+                    _firstEventTimeGreaterThan(n.t + 1e-6), slideInVisualStart(n),
+                    scrape || hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, n.t - now),
+                    sharedChordHold, record.parts);
+                const event = record.event = trailYieldEventForNote(n, sourceIdentity);
+                if (event && (record.parts.head || record.parts.trail)) {
+                    if (!event.gemVisible && !event.trailVisible) _visibleTrailEvents.push(event);
+                    event.gemVisible ||= record.parts.head;
+                    event.trailVisible ||= record.parts.trail;
+                }
+                return;
+            }
             _stableNoteRelevant = n.t + Math.max(0.03, n.sus || 0) >= now;
             const s = n.s;
             // Belt + suspenders: callers already gate via validString(),
@@ -20228,35 +20347,12 @@
             const hasSus = n.sus > 0 && !isPlainDeadNote(sourceNote);
             const visualTrailStart = slideInVisualStart(n);
             const hasLeadIn = visualTrailStart < n.t;
-            // Nearest event time across ALL strings strictly after this note —
-            // sourced from the sorted union of next/recent event times built
-            // once per frame in update() (see _scrEventTimes). _drawRecentByString
-            // is folded in so that once an event passes `now` (and leaves
-            // _drawNextByString) the deadline still holds: without this the
-            // next future event would reset _nextAnyT and old gems would
-            // linger after the new chord/note is already playing.
-            const _nextAnyT = _firstEventTimeGreaterThan(n.t + 1e-6);
-            // Deadline: absolute time after which the gem is culled.
-            //   Sustain long (sus >= linger): die immediately at susEnd — no tail.
-            //   Sustain short (sus < linger):  tail = linger - sus after susEnd,
-            //     capped by gap to next note (any string) so the gem disappears
-            //     when the next note arrives if it comes before the tail runs out.
-            //   No sustain: linger from onset, same gap-cap rule.
-            let _lingerDeadline;
-            if (hasSus) {
-                const extraLinger = Math.max(0, linger - (n.sus || 0));
-                // _nextAnyT cap only applies to the post-sustain linger tail.
-                // For long sustains (extraLinger = 0) the deadline is exactly
-                // susEnd — notes on other strings must not cut the held sustain
-                // short, which would hide the gem and trail mid-play.
-                _lingerDeadline = extraLinger > 0
-                    ? Math.min(susEnd + extraLinger, _nextAnyT)
-                    : susEnd;
-            } else {
-                const _gap = _nextAnyT - n.t;
-                _lingerDeadline = n.t + (_gap < linger ? _gap : linger);
-            }
-            const _overLinger = now > _lingerDeadline;
+            // Reuse the lifetime already resolved for overlap eligibility.
+            // Short-head linger is capped by the next event on any string;
+            // a long held sustain keeps its complete authored duration.
+            const visualParts = _noteDrawParts;
+            const _overLinger = visualParts.overLinger;
+            const _lingerDeadline = visualParts.deadline;
             // For arp-persisted notes past their time: bypass the early exit so
             // the board projection (fretboard ghost + fret labels) keeps rendering
             // until arpBounds.end. The gem/sustain blocks are gated by arpGhostOnlyMode.
@@ -20549,10 +20645,10 @@
             const trailYieldIncludeTrails = !!(
                 _trailVisibilityFrontMask & TRAIL_OCCLUSION_TRAIL
             );
-            const trailYieldTargetEvent = trailYieldEventForNote(sourceNote);
+            const trailYieldTargetEvent = _noteDrawEvent;
             let trailYieldGemRecord = null;
 
-            if (!effSkipBody && !arpGhostOnlyMode && !_overLinger) {
+            if (visualParts.head) {
 
                 // ── Outline (slightly larger, bright emissive) ────────────
                 // Notedetect feedback (#9): if a recent hit/miss event
@@ -20849,7 +20945,7 @@
             // A uniform, ordinary chord uses its shared hold cue. Otherwise
             // every member retains its own timing, including open strings.
             // Body lifetime and technique geometry still use the true sustain.
-            if ((hasSus || hasLeadIn) && !_overLinger && !sharedChordHold) {
+            if (visualParts.trail) {
                     const susStart = Math.max(visualTrailStart, now);
                     const remSus = susEnd - susStart;
                     const sliceDur = Math.min(remSus, AHEAD, now + AHEAD - susStart);
