@@ -7595,6 +7595,59 @@
         // Event membership, not drawing lifetime: standalone notes can carry
         // unique annotations while sharing a boxed chord member's attack.
         let _boxedChordMembership = null;
+        // Resolve after both note streams and the actual frame geometry pass.
+        // Reuse records; never retain a mutable chord-note scratch object.
+        const _arpeggioStems = [], _visibleArpeggioBoxes = [];
+        let _arpeggioStemCount = 0, _visibleArpeggioBoxCount = 0;
+
+        function registerArpeggioStem(mesh, n, chordId, openStem = false) {
+            if (!rsPlusNotation || !mesh.visible) return;
+            const record = _arpeggioStems[_arpeggioStemCount] || (_arpeggioStems[_arpeggioStemCount] = {});
+            _arpeggioStemCount++;
+            record.mesh = mesh;
+            record.t = n.t; record.s = n.s; record.f = n.f;
+            record.chordId = chordId == null ? null : String(chordId);
+            record.openStem = openStem;
+        }
+
+        function registerVisibleArpeggioBox(ch, hs, shape, opacity) {
+            if (!rsPlusNotation || !hs || !(opacity > 0)) return;
+            const record = _visibleArpeggioBoxes[_visibleArpeggioBoxCount]
+                || (_visibleArpeggioBoxes[_visibleArpeggioBoxCount] = {});
+            _visibleArpeggioBoxCount++;
+            record.chordId = String(ch.id);
+            record.onset = ch.t;
+            record.start = hsStart(hs); record.end = hsEnd(hs);
+            record.shape = shape;
+        }
+
+        function applyVisibleArpeggioStemPolicy() {
+            let openStemHidden = false;
+            for (let i = 0; i < _arpeggioStemCount; i++) {
+                const stem = _arpeggioStems[i];
+                for (let j = 0; j < _visibleArpeggioBoxCount; j++) {
+                    const box = _visibleArpeggioBoxes[j];
+                    if (stem.chordId != null && stem.chordId !== box.chordId) continue;
+                    const atOnset = Math.abs(stem.t - box.onset) <= 1e-4;
+                    if ((!atOnset && (stem.t < box.start - 1e-4 || stem.t > box.end + 1e-4))
+                        || box.shape.get(stem.s) !== stem.f) continue;
+                    stem.mesh.visible = false;
+                    openStemHidden ||= stem.openStem;
+                    break;
+                }
+            }
+            if (openStemHidden) {
+                // Open stems share the outline mesh. Rebuild its dependent
+                // footprints before trail ordering, using the now-visible core.
+                const count = _trailOrderGemCount;
+                _trailOrderGemCount = 0;
+                _trailOrderGemBucketCounts.fill(0);
+                for (let i = 0; i < count; i++) {
+                    const gem = _trailOrderGems[i];
+                    trailOrderRegisterUpcomingGem(gem, 1, gem.event, gem.outline, gem.core);
+                }
+            }
+        }
 
         // Cache of measure-start times (beats with measure !== -1), rebuilt when
         // the beats array changes. Drives the camera lookahead window
@@ -15177,6 +15230,8 @@
             );
             _trailOcclusionSourceCount = 0;
             _trailOrderGemCount = 0;
+            _arpeggioStemCount = 0;
+            _visibleArpeggioBoxCount = 0;
             _trailOrderStrandCount = 0;
             _trailOrderGemBucketCounts.fill(0);
             // [verdict glow] Apply the level-driven verdict brightness captured
@@ -17112,6 +17167,7 @@
                         if (chDt > 0) { // framebox only on highway, not on the fretboard
                         const repDim = !rsPlusNotation && isRepeat ? 0.78 : 1;
                         const edgeOp = fade * chordTailMul;
+                        if (isArpeggioFrame) registerVisibleArpeggioBox(ch, hsHintFrame.hs, chShape, edgeOp);
                         const thickZ = Math.max(CHORD_FRAME_RIM_Z_MIN * K, ft * CHORD_FRAME_RIM_Z_SCAL);
                         // Per-depth layer stack: chord frames, gems, technique markers,
                         // and fret labels all derive from RENDER_ORDER_LAYER_STACK so new layers
@@ -18269,6 +18325,7 @@
             // All pooled note/trail meshes are now registered. Resolve the
             // cross-fret physical hierarchy before Three.js consumes their
             // final renderOrder values.
+            applyVisibleArpeggioStemPolicy();
             trailOcclusionFinalizeFrame();
 
             // ── Finalise InstancedMesh batches ────────────────────────────────
@@ -19561,6 +19618,9 @@
                 _trailOrderGems[_trailOrderGemCount] = gem;
             }
             _trailOrderGemCount++;
+            // Scalar snapshot also supports same-frame footprint rebuilding
+            // after visible arpeggio boxes suppress an open outline stem.
+            gem.f = n.f; gem.s = n.s; gem.ghost = n.ghost;
 
             // Union visible meshes without Box3/Vector churn: an open core
             // is wider than its outline, and a hit punch can also expand it.
@@ -20740,6 +20800,7 @@
                         (stemTop + stemBottom) * 0.5, noteZ);
                     outline.scale.set(stemW / NW, Math.max(stemW, stemTop - stemBottom) / NH, 0.6);
                     outline.visible = stemVisible;
+                    registerArpeggioStem(outline, sourceNote, chordId, true);
                 } else if (n.f === 0) {
                     outline.scale.set(
                         (35 * K / NW) * ndRim * rimXY * openWScale,
@@ -21558,6 +21619,7 @@
                                 : 'CONNECTOR_LINE'
                         );
                         line.material.opacity = alpha * 0.8;
+                        registerArpeggioStem(line, sourceNote, chordId);
                     }
 
                     // Regular chord notes (fromChord=true, arpBounds=null) never show
@@ -21670,6 +21732,7 @@
                 dl.renderOrder = renderOrderForLayerAtZ(noteZ, 'CONNECTOR_LINE');
                 dl.material.depthTest = false;
                 dl.material.opacity = _alpha * 0.8;
+                registerArpeggioStem(dl, sourceNote, chordId);
             }
 
             // ── Board ghost: filled rim at Z=0 (up to 3 slots/string) ────
@@ -23366,6 +23429,8 @@
             _coincidentRepeatChordsRef = null;
             _boxedChordMembership = null;
             prevLowFretBonus = 0;
+            _arpeggioStems.length = 0; _visibleArpeggioBoxes.length = 0;
+            _arpeggioStemCount = 0; _visibleArpeggioBoxCount = 0;
             prevLockActive = false;
             _camSnapped = false;
             _camPreScanned = false;

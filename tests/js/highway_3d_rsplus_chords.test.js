@@ -69,6 +69,8 @@ function frameHarness() {
             pools.forEach(p => p.reset());
             const chDt = options.dt ?? .5, AHEAD = 3, K = 1;
             const chordTailMul = options.tail ?? 1;
+            const ch = {}, hsHintFrame = {}, chShape = new Map();
+            const registerVisibleArpeggioBox = () => {};
             const isRepeat = !!options.repeat;
             const compactRepeatFrame = isRepeat && !options.retained;
             const fullChordBoxH = 24, height = compactRepeatFrame ? 12 : 24;
