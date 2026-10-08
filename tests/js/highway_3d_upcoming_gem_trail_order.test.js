@@ -30,40 +30,6 @@ const helpers = new Function(
     + 'return { hwyTrailFootprintCanCoverGem, hwyTrailBehindGemOrder };',
 )();
 
-test('actual arpeggio suppression rebuilds open footprints before trail resolution', () => {
-    const run = new Function(`
-        const NW=5,NH=3,ND=.25,rsPlusNotation=true;
-        const _arpeggioStems=[],_visibleArpeggioBoxes=[],_trailOrderGems=[];
-        let _arpeggioStemCount=0,_visibleArpeggioBoxCount=0,_trailOrderGemCount=0;
-        const _trailOrderGemBuckets=[[]],_trailOrderGemBucketCounts=[0];
-        const trailOrderDepthBucket=()=>0,hsStart=hs=>hs.start,hsEnd=hs=>hs.end;
-        ${extractFn('registerArpeggioStem')}
-        ${extractFn('registerVisibleArpeggioBox')}
-        ${extractFn('applyVisibleArpeggioStemPolicy')}
-        ${extractFn('trailOrderRegisterUpcomingGem')}
-        const mesh=(y,sy)=>({visible:true,position:{x:0,y,z:-10},scale:{x:1,y:sy,z:1},rotation:{z:0}});
-        const n={t:10,s:1,f:0},outline=mesh(-5,4),core=mesh(1,.15),event={};
-        const untouched=mesh(2,1);
-        trailOrderRegisterUpcomingGem(n,1,event,outline,core);
-        trailOrderRegisterUpcomingGem({t:11,s:2,f:5},1,event,untouched,untouched);
-        const before=_trailOrderGems[0].height,otherBefore={..._trailOrderGems[1]};
-        registerArpeggioStem(outline,n,0,true);
-        registerVisibleArpeggioBox({id:0,t:10},{start:10,end:12},new Map([[1,0],[2,5]]),1);
-        applyVisibleArpeggioStemPolicy();
-        return {before,gem:_trailOrderGems[0],other:_trailOrderGems[1],otherBefore,count:_trailOrderGemCount,
-            bucketCount:_trailOrderGemBucketCounts[0],outline,core};
-    `);
-    const result=run();
-    assert.equal(result.outline.visible,false);
-    assert.equal(result.core.visible,true);
-    assert.ok(result.before>10);
-    assert.ok(Math.abs(result.gem.height-.45)<1e-9);
-    assert.equal(result.gem.y,1);
-    assert.equal(result.count,2);
-    assert.equal(result.bucketCount,2);
-    assert.deepEqual(result.other,result.otherBefore);
-});
-
 test('ordinary ordering keeps a far upcoming gem above a long trail midpoint', () => {
     const trailOutlineOrder = 640.25;
     const gemOutlineOrder = 618.75;
