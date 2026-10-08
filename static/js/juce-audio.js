@@ -1,6 +1,7 @@
 import { installDesktopOutput } from './desktop-output.js';
 import { shouldUseNativeBacking } from './native-backing-route.js';
 import { createNativeBackingOwner } from './native-backing-owner.js';
+import { createNativeBackingAnalyser } from './native-backing-analyser.js';
 import { selectionLifecycle } from './screen-selection.js';
 // Desktop integration: migrate eligible songs between native and browser
 // transports, route the complete browser mix through the selected output,
@@ -12,9 +13,13 @@ import { setSpeed } from './player-controls.js';
 import { S } from './player-state.js';
 
 if (window.feedBack?.audioSession && window.feedBackDesktop?.audio) {
+    const analysis = createNativeBackingAnalyser(window.feedBackDesktop.audio,
+        () => jucePlayer._polling && jucePlayer._sourcePlaying);
     window.feedBack.audioSession.nativeBacking = createNativeBackingOwner({
         api: window.feedBackDesktop.audio, player: jucePlayer, queue: _queueBackingCommand,
         getSong: () => window._currentSongAudio, isCoreNative: () => !!window._juceMode,
+        isPresentationComplete: () => window.highway?.isPresentationComplete?.() !== false,
+        getAnalyser: () => window._juceMode || window.feedBack.audioSession.nativeBacking?.snapshot()?.state === 'ready' ? analysis : null,
         fetchPath: async url => {
             const res = await fetch(`/api/audio-local-path?url=${encodeURIComponent(url)}`);
             if (!res.ok) throw new Error('Backing path unavailable');
@@ -243,7 +248,7 @@ if (window.feedBack?.audioSession && window.feedBackDesktop?.audio) {
         };
         let _resumeScheduled = false;
         try {
-            await jucePlayer.pause().catch(() => {});
+            if (await jucePlayer.pause() === false) throw new Error('Native backing could not stop safely');
             if (_isStale(songAudio)) return;           // song changed mid-pause
             window._juceMode = false;
             window._juceAudioUrl = null;
@@ -325,8 +330,8 @@ if (window.feedBack?.audioSession && window.feedBackDesktop?.audio) {
     async function _reevaluateJuceRouting() {
         if (_rerouteInFlight) return;
         const songAudio = window._currentSongAudio;
-        // Only a single backing file can ride this transport. Multitrack
-        // packs retain their browser mixer regardless of output backend.
+        // Core owns single-file playback; the Stems plugin owns multitrack
+        // sessions through the same native player.
         if (!shouldUseNativeBacking(songAudio, true)) return;
         // Don't race window.highway.js's own initial song-load routing: it owns
         // _juceMode until _juceRoutingPromise settles. Re-running our switch
@@ -345,6 +350,11 @@ if (window.feedBack?.audioSession && window.feedBackDesktop?.audio) {
             try { running = await juceApi.isAudioRunning(); }
             catch (_) { return; }
             if (_isStale(songAudio)) return;               // song changed during IPC
+            if (window._juceMode && jucePlayer._sourceFailed) {
+                await _switchJuceToHtml5(songAudio);
+                _rerouteRejectedUrl = songAudio.url;
+                return;
+            }
             const eligible = shouldUseNativeBacking(songAudio, true);
             const wantJuce = shouldUseNativeBacking(songAudio, running);
             // [feedpak-route] diagnostics: one line per decision change (the

@@ -159,14 +159,10 @@ function createHighway() {
             session.recordBridgeHit({ bridgeId, domain, legacySurface, participantId: 'core.highway', outcome: outcome || 'handled', reason: reason || '' });
         } catch (_) { /* audio-session diagnostics are best-effort */ }
     }
-    // Two notions of "now" — kept deliberately separate:
-    //   chartTime — audio-aligned clock. What getTime() exposes to plugins
-    //               (scoring, note detection, etc.) and what setTime() receives.
-    //   currentTime — rendering clock. Equal to chartTime + avOffsetSec, so the
-    //                 draw code can shift visual notes forward to compensate
-    //                 for audio-output pipeline latency without plugins having
-    //                 to care about the offset.
-    // avOffsetSec is set by setAvOffset(ms); default 0 means old behavior.
+    // chartTime/getTime retain the raw transport + song offset for seek/loop
+    // control. currentTime/getPresentationTime align cues and judgments with
+    // output presentation plus rate-scaled residual A/V correction. Detection
+    // subtracts its independent input age from that shared reference.
     hwState.chartTime = 0;
     hwState.currentTime = 0;
     hwState.avOffsetSec = 0;
@@ -564,7 +560,7 @@ function createHighway() {
         // cost reasons.
         const b = _bundleReused;
         // Timing
-        b.currentTime = hwState.currentTime;
+        b.currentTime = api.getPresentationTime();
         b.playbackRate = hwState._playbackRate;
         b.songInfo = hwState.songInfo;
         b.isReady = hwState.ready;
@@ -585,7 +581,7 @@ function createHighway() {
         b.transport = null;
         if (hwState._playbackState) {
             const t = hwState._transportBundle, n = hwState._nativeClock;
-            const offset = hwState.songOffset + hwState.avOffsetSec;
+            const offset = hwState.songOffset + hwState.avOffsetSec * (hwState._playbackRate || 1);
             t.epoch = hwState._presentationEpoch;
             t.state = hwState._playbackState;
             t.position = n ? n.position + offset : hwState.currentTime;
@@ -594,6 +590,14 @@ function createHighway() {
             t.rate = n ? n.rate : hwState._playbackRate;
             const duration = n ? n.duration : Number(hwState.songInfo.duration);
             t.endTime = duration > 0 ? duration + offset : Infinity;
+            if (n?.timingVersion === 2 && Number.isFinite(n.maxPosition)) t.endTime = Math.min(t.endTime, n.maxPosition + offset);
+            if (n?.timingVersion === 2 && n.ended) {
+                // Downstream A/V correction can outlast native EOF. The last
+                // callback remains a bounded reference until that tail ends.
+                t.position = api.getPresentationTime();
+                t.sampledAt = t.freshAt = performance.now();
+                t.endTime = duration + hwState.songOffset;
+            }
             t.sequence = n ? n.sequence : 0;
             t.generation = n ? n.generation : 0;
             b.transport = t;
@@ -1323,7 +1327,8 @@ function createHighway() {
         let _paused = false;
         if (!Number.isNaN(hwState._chartAnchorPerfNow)) {
             const _nowP = performance.now();
-            if (_nowP - hwState._chartLastAdvanceAt > _CHART_MAX_INTERP_MS) {
+            if (_nowP - hwState._chartLastAdvanceAt > _CHART_MAX_INTERP_MS
+                && !(hwState._nativeClock?.ended && hwState._playbackState === 'playing')) {
                 _paused = true;
                 // ...unless the renderer says its picture is NOT static while
                 // paused. The throttle assumes a paused chart is a still frame,
@@ -1337,6 +1342,9 @@ function createHighway() {
                 hwState._lastPausedDrawAt = _nowP;
             }
         }
+        // Both renderers use the output presentation clock, including the
+        // default renderer which reads this closure rather than the bundle.
+        hwState.currentTime = api.getPresentationTime();
         // Skip bundle allocation when the default renderer is active —
         // it reads closure state directly and ignores the bundle.
         // _makeBundle at 60fps was a steady GC churn for the common
@@ -2147,6 +2155,8 @@ function createHighway() {
                                         // Eligibility for a plugin-owned native lease, never an
                                         // automatic core takeover of the stem's controls.
                                         singleStemUrl: !msg.has_full_mix && (msg.stems || []).length === 1 ? msg.stems[0].url : null,
+                                        stemUrls: (msg.stems || []).map(stem => stem.url),
+                                        fullMixUrl: msg.has_full_mix ? msg.full_mix_url : null,
                                     };
                                     const alreadyLoaded = window._juceMode
                                         ? window._juceAudioUrl === msg.audio_url
@@ -2520,12 +2530,20 @@ function createHighway() {
         },
         setPlaybackSample(clock, playing) {
             if (hwState._playbackState === 'seeking' || hwState._playbackState === 'rewind') return;
+            const previous = hwState._nativeClock;
+            if (!playing && previous?.ended && hwState._playbackState !== 'paused')
+                hwState._heldOutputTail = api.getPresentationTime();
+            if (playing || !clock?.ended) hwState._heldOutputTail = null;
+            if (clock && previous && (clock.generation !== previous.generation || clock.routeGeneration !== previous.routeGeneration))
+                api.resetPresentation('native-session');
             hwState._nativeClock = clock ? Object.assign(hwState._nativeClock || {}, clock) : null;
-            hwState._playbackState = playing ? (clock && !clock.playing ? 'ended' : 'playing') : 'paused';
+            const outputPlaying = clock?.ended ? !api.isPresentationComplete() : clock?.playing;
+            hwState._playbackState = playing ? (clock && !outputPlaying ? (clock.ended ? 'ended' : 'buffering') : 'playing') : 'paused';
         },
         resetPresentation(reason) {
             hwState._presentationEpoch++;
             hwState._nativeClock = null;
+            hwState._heldOutputTail = null;
             hwState._presentationReason = reason;
         },
         setClockDiagnostics(enabled) { hwState._renderer?.setClockDiagnostics?.(enabled); },
@@ -2535,7 +2553,7 @@ function createHighway() {
             // per-song offset in here so plugins (scoring, note detect,
             // etc.) see the same chart-aligned clock the renderer does.
             hwState.chartTime = t + hwState.songOffset;
-            hwState.currentTime = hwState.chartTime + hwState.avOffsetSec;
+            hwState.currentTime = hwState.chartTime + hwState.avOffsetSec * (hwState._playbackRate || 1);
             // Only re-anchor on a genuinely new audio time. Repeated
             // calls with the same `t` (audio.currentTime hasn't updated
             // yet) keep the anchor's perfNow fixed so interpolation
@@ -2585,7 +2603,7 @@ function createHighway() {
             api.resetPresentation('count-in');
             hwState._playbackState = 'count-in';
             hwState.chartTime = t + hwState.songOffset;
-            hwState.currentTime = hwState.chartTime + hwState.avOffsetSec;
+            hwState.currentTime = hwState.chartTime + hwState.avOffsetSec * (hwState._playbackRate || 1);
             hwState._chartAnchorAudioT = t;
             hwState._chartAnchorPerfNow = NaN;
             hwState._chartLastAdvanceAt = 0;
@@ -2595,9 +2613,36 @@ function createHighway() {
             const offset = (Number(ms) || 0) / 1000;
             if (offset !== hwState.avOffsetSec) api.resetPresentation('av-offset');
             hwState.avOffsetSec = offset;
-            hwState.currentTime = hwState.chartTime + hwState.avOffsetSec;
+            hwState.currentTime = hwState.chartTime + hwState.avOffsetSec * (hwState._playbackRate || 1);
         },
         getAvOffset() { return hwState.avOffsetSec * 1000; },
+        // A/V and input ages are physical milliseconds, scaled once by song
+        // speed. This clock is for cues and judgments; getTime remains the
+        // transport/chart clock used for seeking and loop boundaries.
+        getPresentationTime(inputAgeMs = 0, eventAtMs = performance.now()) {
+            const n = hwState._nativeClock;
+            const rate = n?.rate || hwState._playbackRate || 1;
+            const age = Number.isFinite(inputAgeMs) ? Math.max(0, inputAgeMs) : 0;
+            if (Number.isFinite(hwState._heldOutputTail)) return hwState._heldOutputTail - age * rate / 1000;
+            let position;
+            if (n?.timingVersion === 2) {
+                const elapsed = n.playing || n.ended ? Math.max(0, (n.ended ? eventAtMs : Math.min(eventAtMs, n.freshAt + 250)) - n.sampledAt) / 1000 : 0;
+                const maximum = n.ended ? n.duration - Math.min(0, hwState.avOffsetSec * rate) : n.maxPosition;
+                position = Math.min(maximum, n.position + elapsed * rate) + hwState.songOffset;
+            } else position = api.getTime();
+            return position + (hwState.avOffsetSec - age / 1000) * rate;
+        },
+        getTimingRate() { return hwState._nativeClock?.rate || hwState._playbackRate || 1; },
+        isPresentationComplete() {
+            const n = hwState._nativeClock;
+            return !n || n.timingVersion !== 2 || (n.ended && api.getPresentationTime() >= n.duration + hwState.songOffset - 1e-6);
+        },
+        getJudgmentTiming(inputAgeMs = 0) {
+            const n = hwState._nativeClock;
+            if (n?.timingVersion !== 2) return null;
+            return { version: 2, generation: n.generation, routeGeneration: n.routeGeneration,
+                songOffset: hwState.songOffset, avOffsetMs: hwState.avOffsetSec * 1000, inputAgeMs };
+        },
 
         getBPM(t) {
             // Calculate BPM from beat intervals near time t

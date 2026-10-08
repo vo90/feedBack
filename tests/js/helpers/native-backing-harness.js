@@ -29,9 +29,9 @@ function nativeHarness() {
     vm.runInContext(fs.readFileSync(path.join(root, 'native-backing-owner.js'), 'utf8').replace('export function', 'function'), ctx);
     const { player, queue, create, loadCore } = vm.runInContext('({ player: jucePlayer, queue: _queueBackingCommand, create: createNativeBackingOwner, loadCore: loadCoreBackingTrack })', ctx);
     const host = create({ api, player, queue, getSong: () => song, isCoreNative: () => coreNative,
-        fetchPath: async value => { assertUrl(value); return '/local/full.ogg'; } });
+        fetchPath: async value => { assertUrl(value); return value === url ? '/local/full.ogg' : '/local/' + value.split('/').pop(); } });
     ctx.window.feedBack = { audioSession: { nativeBacking: host } };
-    function assertUrl(value) { if (value !== url) throw Error('unexpected source'); }
+    function assertUrl(value) { if (value !== url && !song?.stemUrls?.includes(value) && song?.fullMixUrl !== value) throw Error('unexpected source'); }
     return { api, player, queue, host, calls, url, loadCore: (path, guard = () => true) => loadCore(api, path, guard),
         acquire: (options = {}) => host.acquire({ ownerId: 'stems', url, isCurrent: () => current, ...options }),
         setSong: value => { song = value; }, setRunning: value => { running = value; },
