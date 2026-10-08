@@ -220,17 +220,18 @@ test('arpeggio onset and later ordinary strums use the same classification as ch
     }
 });
 
-test('boxed arpeggio member stems never pop in when the leading box disappears or is skipped by a seek',()=>{
-    const notes=[{t:10,s:0,f:0,sus:5},{t:10.5,s:1,f:5},{t:11.5,s:0,f:0}];
+test('only leading-box attacks hide stems; later arpeggio notes retain stems across arrival and seeks',()=>{
+    const notes=[{t:10,s:0,f:0,sus:5},{t:10,s:1,f:5},{t:10.5,s:1,f:5},{t:11.5,s:0,f:0}];
     const chords=[{t:10,id:1,notes:[{s:0,f:0},{s:1,f:5}]}];
     const handShapes=[{chord_id:1,start_time:10,end_time:12,arp:true}];
     const h=membershipHarness();
     // Start in the middle, then rewind, cross onset, and outlive the handshape.
     for(const now of [11,9.9,10,10.001,10.4,11.6,13,9.9])for(const n of notes){
         const r=render(h,n,chords,{notes,handShapes,now});
-        assert.equal(r.belongsToBoxedArpeggio,true);
-        assert.equal(r.connectors+r.drops,0);
-        assert.equal(r.openStem,false);
+        const onBox=n.t===10;
+        assert.equal(r.belongsToBoxedArpeggio,onBox);
+        assert.equal(r.connectors+r.drops,!onBox && n.f>0 ? 1 : 0);
+        assert.equal(r.openStem,!onBox && n.f===0);
     }
     const current=render(h,notes[0],chords,{notes,handShapes,style:'current'});
     assert.equal(current.belongsToBoxedArpeggio,false,'RS+ behavior must not leak into Current');
@@ -239,7 +240,7 @@ test('boxed arpeggio member stems never pop in when the leading box disappears o
 });
 
 test('arpeggio membership requires a renderable box and exact occurrence members',()=>{
-    const n={t:10.5,s:0,f:0},later={t:12.5,s:0,f:0},wrong={t:11,s:1,f:7};
+    const n={t:10,s:0,f:0},later={t:12.5,s:0,f:0},wrong={t:11,s:1,f:7};
     const ch={t:10,id:1,notes:[{s:0,f:0},{s:1,f:5}]};
     const hs={chord_id:1,start_time:10,end_time:12,arp:true};
     for(const chords of [[],[{...ch,notes:[{s:0,f:0}]}],[{...ch,h3dSynth:true}]]) {
@@ -253,14 +254,14 @@ test('arpeggio membership requires a renderable box and exact occurrence members
     }
     const inferred=render(membershipHarness(),n,[ch],{handShapes:[{...hs,arp:false}]});
     assert.equal(inferred.belongsToBoxedArpeggio,false);
-    const muted={t:10.5,s:0,f:127,mt:true};
+    const muted={t:10,s:0,f:127,mt:true};
     const r=render(membershipHarness(),muted,[{...ch,notes:[{s:0,f:127,mt:true},{s:1,f:5}]}],{handShapes:[hs]});
     assert.equal(r.belongsToBoxedArpeggio,true,'use original muted fret before normalizing the slab');
     assert.equal(r.openStem,false);
 });
 
 test('arpeggio membership is invalidated by chart and string-count changes',()=>{
-    const h=membershipHarness(),n={t:10.5,s:5,f:5};
+    const h=membershipHarness(),n={t:10,s:5,f:5};
     const ch={t:10,id:1,notes:[{s:0,f:0},{s:5,f:5}]};
     const hs=[{chord_id:1,start_time:10,end_time:12,arp:true}];
     assert.equal(render(h,n,[ch],{handShapes:hs}).belongsToBoxedArpeggio,true);
