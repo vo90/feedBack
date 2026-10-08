@@ -583,15 +583,44 @@ export function handleSliderInput(el) {
 
 // A/V sync calibration. Positive = audio runs ahead of visuals; we
 // add this to audio.currentTime when driving the highway so the
-// visuals catch up. Persisted via /api/settings as av_offset_ms.
+// visuals catch up. Native output profiles (or one shared native value) live
+// in Desktop; browser compatibility keeps /api/settings av_offset_ms.
 // Live-tunable from the player screen via [ / ] keys (Shift for
-// ±50 ms) and from the Settings slider; both auto-save with the
-// same debounced POST. loadSettings() seeds the value via
+// ±50 ms) and from the Settings/Audio sliders; all use the active save target.
+// loadSettings() seeds the value via
 // setAvOffsetMs without saving (skipPersist=true) to avoid an
 // echo-back round-trip.
 export let _avOffsetMs = 0;
 let _legacyAvOffsetMs = 0, _activeOutputCalibration = null, _calibrationPoll = null, _calibrationBusy = false;
 let _resolvedOutputCalibration = null;
+let _rememberOutputSetup = true, _calibrationModeBusy = false, _calibrationRequest = 0;
+let _calibrationError = '';
+
+function updateCalibrationControls(profile) {
+    const text = profile ? !_rememberOutputSetup
+        ? 'Shared AV calibration. The same value is used across native outputs; saved device values are kept.'
+        : profile.persistent === false
+            ? 'Duplicate device names: this calibration applies only while this route stays open.'
+            : profile.checked ? 'Saved for this output setup.' : 'New output setup: check its AV calibration.'
+        : _resolvedOutputCalibration ? 'Browser playback calibration (separate from native output profiles).'
+            : 'Waiting for an active output.';
+    for (const [id, value] of [
+        ['av-calibration-profile', profile ? `Output calibration: ${profile.label}. ${text}` : text],
+        ['ae-av-route', _resolvedOutputCalibration ? `Active output: ${_resolvedOutputCalibration.label}` : 'Start audio and apply a device to view its calibration.'],
+        ['ae-av-status', _calibrationModeBusy ? 'Saving calibration preference…' : _calibrationError || text],
+        ['ae-av-value', `${Math.round(_avOffsetMs)} ms`],
+    ]) {
+        const element = document.getElementById(id);
+        if (element && element.textContent !== value) element.textContent = value;
+    }
+    const toggle = document.getElementById('ae-av-remember');
+    if (toggle) {
+        toggle.checked = _rememberOutputSetup;
+        toggle.disabled = _calibrationModeBusy || !profile || !window.feedBackDesktop?.audio?.setCalibrationMode;
+    }
+    const slider = document.getElementById('ae-av-offset');
+    if (slider) { slider.value = _avOffsetMs; slider.disabled = _calibrationModeBusy || !profile; }
+}
 
 export function syncOutputCalibration() {
     const owner = window.feedBack?.audioSession?.nativeBacking?.snapshot();
@@ -601,25 +630,20 @@ export function syncOutputCalibration() {
         _activeOutputCalibration = profile;
         setAvOffsetMs(profile?.offsetMs ?? _legacyAvOffsetMs, true);
     }
-    const label = document.getElementById('av-calibration-profile');
-    if (label) {
-        const text = profile ? `Output calibration: ${profile.label}. ${profile.persistent === false
-            ? 'Duplicate device names: this calibration applies only while this route stays open.' : profile.checked
-            ? 'Saved for this setup.' : 'Needs calibration; the old global value has been preserved separately.'}`
-            : 'Browser playback calibration (separate from native output profiles).';
-        if (label.textContent !== text) label.textContent = text;
-    }
+    updateCalibrationControls(profile);
 }
 
 async function refreshOutputCalibration() {
-    if (_calibrationBusy) return;
+    if (_calibrationBusy || _calibrationModeBusy) return;
     _calibrationBusy = true;
+    const request = ++_calibrationRequest;
     try {
         const profile = await window.feedBackDesktop.audio.getCalibration(_legacyAvOffsetMs);
+        if (request !== _calibrationRequest) return;
         // Form edits do not select a profile: only an actually opened endpoint
         // can change the resolved route. Keep the previous route while stopped.
         if (!profile?.output) return;
-        if (_resolvedOutputCalibration?.key !== profile.output.key) _resolvedOutputCalibration = profile.output;
+        acceptOutputCalibration(profile);
         let label = document.getElementById('av-calibration-profile');
         const slider = document.getElementById('setting-av-offset');
         if (!label && slider) {
@@ -632,11 +656,47 @@ async function refreshOutputCalibration() {
     finally { _calibrationBusy = false; }
 }
 
+function acceptOutputCalibration(profile) {
+    _rememberOutputSetup = profile.perOutputSetup !== false;
+    if (_resolvedOutputCalibration?.key !== profile.output.key) _resolvedOutputCalibration = profile.output;
+    else {
+        // A shared value keeps its identity across routes. Update its actual
+        // device label without rolling back an in-flight slider save.
+        _resolvedOutputCalibration.label = profile.output.label;
+        _resolvedOutputCalibration.routeKey = profile.output.routeKey;
+    }
+}
+
+async function setRememberOutputCalibration(enabled) {
+    if (_calibrationModeBusy || !_activeOutputCalibration || !window.feedBackDesktop?.audio?.setCalibrationMode) return;
+    _calibrationModeBusy = true;
+    ++_calibrationRequest; // An older poll must not undo a completed mode change.
+    _calibrationError = '';
+    updateCalibrationControls(_activeOutputCalibration);
+    try {
+        const profile = await window.feedBackDesktop.audio.setCalibrationMode(enabled, _avOffsetMs);
+        if (!profile?.output) throw new Error('Start audio and apply an output device before changing this setting.');
+        acceptOutputCalibration(profile);
+        syncOutputCalibration();
+        window.dispatchEvent(new CustomEvent('feedback:calibration-profile', { detail: profile }));
+    } catch (error) {
+        _calibrationError = 'Could not save the calibration preference. Your previous setting is still active.';
+        console.warn('[audio] Calibration preference save failed:', error);
+    } finally {
+        _calibrationModeBusy = false;
+        updateCalibrationControls(_activeOutputCalibration);
+    }
+}
+
+window.addEventListener('change', event => {
+    if (event.target?.id === 'ae-av-remember') void setRememberOutputCalibration(event.target.checked);
+});
 window.addEventListener('feedback:audio-route-changed', () => { void refreshOutputCalibration(); });
 
 export let _avSaveDebounce = null;
 
 export function setAvOffsetMs(ms, skipPersist) {
+    if (!skipPersist && _calibrationModeBusy) return;
     // Clamp to the same bounds the Settings/player-bar sliders enforce
     // (-1000..1000 ms). Defends against bad values from /api/settings
     // landing as `value` on <input type=range>.
@@ -672,6 +732,7 @@ export function setAvOffsetMs(ms, skipPersist) {
         hud.textContent = `A/V ${_avOffsetMs >= 0 ? '+' : ''}${Math.round(_avOffsetMs)} ms`;
         hud.classList.toggle('hidden', _avOffsetMs === 0);
     }
+    updateCalibrationControls(_activeOutputCalibration);
     if (!skipPersist) _persistAvOffset();
 }
 
@@ -683,7 +744,13 @@ export function _persistAvOffset() {
         void window.feedBackDesktop.audio.saveCalibration('output', profile.key, _avOffsetMs).then(ok => {
             if (!ok) throw new Error('Output calibration was not saved');
             profile.checked = true;
-        }).catch(error => console.warn('[audio] Calibration save failed:', error));
+            _calibrationError = '';
+            updateCalibrationControls(_activeOutputCalibration);
+        }).catch(error => {
+            _calibrationError = 'AV correction is active, but could not be saved. Try adjusting it again.';
+            updateCalibrationControls(_activeOutputCalibration);
+            console.warn('[audio] Calibration save failed:', error);
+        });
         return;
     }
     _legacyAvOffsetMs = _avOffsetMs;
