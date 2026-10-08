@@ -225,14 +225,65 @@ function columnMarker(fret = 9, time = 12.345) {
     return { fret, time, sprite: visual({ minX: -0.2, maxX: 0.2, minY: -0.9, maxY: -0.7 }) };
 }
 
-test('a visible gold label replaces only its coincident grey fret reference', () => {
+test('a visible gold label replaces its coincident grey reference but keeps separated references', () => {
     const matching = columnMarker(), otherFret = columnMarker(7), nextBeat = columnMarker(9, 12.595);
     const nearButDistinct = columnMarker(9, 12.365);
+    for (const marker of [nextBeat, nearButDistinct]) {
+        marker.sprite.rect = marker.sprite.inkRect = { minX: -0.2, maxX: 0.2, minY: -0.5, maxY: -0.3 };
+    }
     const markers = [matching, otherFret, nextBeat, nearButDistinct];
     const label = runHandoff(null, 9, { time: 12.345, markers });
     assert.equal(label.visible, true);
     assert.equal(matching.sprite.visible, false);
     for (const marker of [otherFret, nextBeat, nearButDistinct]) assert.equal(marker.sprite.visible, true);
+});
+
+test('Acacia 3 ms beat/chord offset keeps gold visible across rounded-depth order flips', () => {
+    const context = vm.createContext({ K: 0.015 });
+    vm.runInContext(source.slice(source.indexOf('    const RENDER_ORDER_LAYER_STACK ='),
+        source.indexOf('    /** Labels yield')), context);
+    const beat = 23.707001, chord = 23.709999;
+    assert.equal(sameFretBeat(7, beat, 7, chord), false);
+    const oldWinners = new Set();
+    const marker = columnMarker(7, beat);
+    for (let frame = 0; frame < 240; frame++) {
+        const now = 21 + frame / 120;
+        const greyOrder = context.renderOrderForLayerAtZ(-230 * 0.015 * (beat - now), 'FRET_COLUMN');
+        const goldOrder = context.renderOrderForLayerAtZ(-230 * 0.015 * (chord - now), 'CHORD_FRET_LABEL');
+        oldWinners.add(greyOrder > goldOrder ? 'grey' : 'gold');
+        marker.sprite.visible = true; // pooled marker is restored every frame
+        marker.sprite.renderOrder = greyOrder;
+        const gold = runHandoff(null, 7, { time: chord, markers: [marker], layoutFrame: frame,
+            gold: { renderOrder: goldOrder } });
+        assert.equal(gold.visible, true);
+        assert.equal(marker.sprite.visible, false, 'grey must not return at frame ' + frame);
+        assert.equal(gold.renderOrder, goldOrder, 'global depth ordering is unchanged');
+    }
+    assert.equal(oldWinners.size, 2, 'fixture must reproduce both old colour winners');
+});
+
+test('overlapping grey references yield to gold for either timing direction and only matching frets', () => {
+    for (const delta of [-0.003, 0.003, -0.02, 0.02]) {
+        const marker = columnMarker(9, 12.345 + delta), other = columnMarker(7, marker.time);
+        runHandoff(null, 9, { time: 12.345, markers: [marker, other] });
+        assert.equal(marker.sprite.visible, false);
+        assert.equal(other.sprite.visible, true);
+    }
+});
+
+test('transparent padding does not hide separated grey ink and reused bounds refresh each frame', () => {
+    const marker = columnMarker(9, 12.348);
+    marker.sprite.inkRect = { minX: -0.1, maxX: 0.1, minY: -0.79, maxY: -0.71 };
+    const gold = { inkRect: { minX: -0.1, maxX: 0.1, minY: -1.05, maxY: -0.85 } };
+    runHandoff(null, 9, { time: 12.345, markers: [marker], gold, layoutFrame: 0 });
+    assert.equal(marker.sprite.visible, true, 'only canvas padding overlaps');
+    marker.sprite.inkRect = { ...gold.inkRect };
+    runHandoff(null, 9, { time: 12.345, markers: [marker], gold, layoutFrame: 1 });
+    assert.equal(marker.sprite.visible, false, 'updated ink overlaps');
+    marker.sprite.visible = true;
+    marker.sprite.inkRect = { minX: -0.1, maxX: 0.1, minY: -0.79, maxY: -0.71 };
+    runHandoff(null, 9, { time: 12.345, markers: [marker], gold, layoutFrame: 2 });
+    assert.equal(marker.sprite.visible, true, 'reference reappears after separation');
 });
 
 test('invisible, transparent, unprojectable and teaching gold entries cannot remove grey references', () => {
