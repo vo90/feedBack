@@ -68,26 +68,16 @@ function harness() {
         const hwyTrailYieldGemLayer = (a,b,layer) => layer;
         const renderOrderForLayerAtZ = () => 4;
         const trailYieldRegisterGem = () => {}, trailOrderRegisterUpcomingGem = () => {};
-        const _arpeggioStems = [], _visibleArpeggioBoxes = [], _trailOrderGems = [];
-        let _arpeggioStemCount = 0, _visibleArpeggioBoxCount = 0, _trailOrderGemCount = 0;
-        const _trailOrderGemBucketCounts = [];
-        let rsPlusNotation;
-        const hsStart = hs => hs.start, hsEnd = hs => hs.end;
-        ${fn('registerArpeggioStem')}
-        ${fn('registerVisibleArpeggioBox')}
-        ${fn('applyVisibleArpeggioStemPolicy')}
         return function draw(options = {}) {
             pools.forEach(p => p.reset());
-            _arpeggioStemCount = 0; _visibleArpeggioBoxCount = 0;
             const registrations = [];
             const _registerIncomingLabelOccluder = (mesh, z, outline) => registrations.push({mesh,z,outline});
-            rsPlusNotation = options.style !== 'current';
+            const rsPlusNotation = options.style !== 'current';
             const noteStemsVisible = options.noteStems !== false;
             const openStringStemsVisible = options.openStems !== false;
             const nStr = options.strings ?? 6, s = options.string ?? 0;
             const sY = index => (options.inverted ? nStr-1-index : index) * S_GAP;
-            const n = {t:options.time ?? 10, f:options.fret ?? 0, ac:!!options.accent, s};
-            const chordId = options.chord || options.arpeggio ? (options.chordId ?? 0) : null;
+            const n = {f:options.fret ?? 0, ac:!!options.accent, s};
             const sourceNote = {...n, f:options.sourceFret ?? n.f};
             const x = 30, y = sY(s), techniqueYNow = options.offset ?? 0;
             const dt = options.dt ?? .1, noteZ = -10 * dt;
@@ -114,10 +104,6 @@ function harness() {
             const explicitLinkTarget = !!options.linked;
             const arpBounds = options.arpeggio ? {} : null;
             ${between('const _wantDropLine =', '// ── Board ghost:')}
-            for (const box of options.boxes || []) {
-                registerVisibleArpeggioBox({id:box.id ?? 0,t:box.onset ?? box.start}, box, new Map(box.shape), box.opacity ?? 1);
-            }
-            applyVisibleArpeggioStemPolicy();
             return {outline, core, halo:noteHaloMesh, edges:noteFaceMesh, registrations,
                 connectors:groups.connectors.meshes.filter(m => m.visible),
                 drops:groups.drops.meshes.filter(m => m.visible),
@@ -385,56 +371,4 @@ test('unpitched mute sentinels use the open preference before drawing normalizat
         assert.equal(visible({f:0},boxed,notes,open),!boxed && open);
         assert.equal(visible({f:5,mt:true},boxed,notes,open),!boxed && open);
     }
-});
-
-test('visible RS+ arpeggio boxes suppress open stems and fretted drops across both note paths', () => {
-    const draw = harness();
-    const boxes = [{start:10,end:12,shape:[[0,0],[1,5],[2,127]]}];
-    for (const chord of [false,true]) for (const lefty of [false,true]) {
-        for (const inverted of [false,true]) for (const verdict of [null,'hit','miss']) {
-            const options = {chord,arpeggio:true,lefty,inverted,verdict,accent:true,boxes};
-            const open = draw({...options,fret:0});
-            assert.equal(open.outline.visible,false);
-            assert.equal(open.core.visible,true);
-            const fretted = draw({...options,fret:5,string:1});
-            assert.equal(fretted.drops.length+fretted.connectors.length,0);
-            assert.equal(fretted.core.visible,true);
-            assert.equal(fretted.outline.visible,true,'preserve the gem rim');
-            const mute = draw({...options,fret:0,sourceFret:127,string:2});
-            assert.equal(mute.outline.visible,false,'match source fret before mute normalization');
-        }
-    }
-});
-
-test('arpeggio metadata without a matching visible box keeps normal stems', () => {
-    const draw = harness();
-    const box = {start:10,end:12,shape:[[0,0],[1,5]]};
-    for (const boxes of [[],[{...box,opacity:0}],[{...box,id:1}],
-        [{...box,start:11}],[{...box,start:8,end:9}],[{...box,shape:[[0,3],[1,7]]}]]) {
-        assert.equal(draw({arpeggio:true,boxes}).outline.visible,true);
-        assert.equal(draw({chord:true,arpeggio:true,boxes,fret:5,string:1}).drops.length,1);
-    }
-    assert.equal(draw({arpeggio:true,boxes:[box],time:12.1}).outline.visible,true);
-    assert.equal(draw({arpeggio:true,boxes:[box],chordId:'0'}).outline.visible,false);
-    assert.equal(draw({boxes:[box]}).outline.visible,false,'actual box membership does not require inferred ghost metadata');
-    assert.equal(draw({arpeggio:true,boxes:[{...box,start:10.05,onset:10}]}).outline.visible,false,
-        'a slightly earlier initiating chord still owns its members');
-});
-
-test('visible arpeggio suppression resets on seek, style changes and pooled reuse', () => {
-    const draw = harness();
-    const boxes = [{start:10,end:12,shape:[[0,0],[1,5]]}];
-    const open = draw({arpeggio:true,boxes}).outline;
-    for (const options of [
-        {arpeggio:true}, {arpeggio:true,boxes,style:'current'}, {},
-        {arpeggio:true,boxes,time:13}, {arpeggio:true,boxes,chordId:1},
-    ]) {
-        const result = draw(options);
-        assert.equal(result.outline,open);
-        assert.equal(result.outline.visible,true);
-        assert.equal(draw({arpeggio:true,boxes}).outline.visible,false);
-    }
-    assert.equal(draw({arpeggio:true,openStems:false}).outline.visible,false);
-    assert.equal(draw({arpeggio:true,chord:true,boxes,style:'current',fret:5,string:1}).drops.length,1);
-    assert.equal(draw({arpeggio:true,chord:true,noteStems:false,fret:5,string:1}).drops.length,0);
 });

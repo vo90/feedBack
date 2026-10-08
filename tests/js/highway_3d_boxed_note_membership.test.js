@@ -47,6 +47,7 @@ function membershipHarness() {
                 return boxedChordMembers;
             },
             strings(count) { nStr=count; _resetStringDependentCaches(); },
+            membership() { return _boxedChordMembership; },
             release() { _boxedChordMembership=null; }
         };
     `)();
@@ -83,15 +84,15 @@ const draw = new Function('meshPool', 'args', 'options', `
     'use strict';
     const NFRETS=24; ${fn('isPlayableFret')}${fn('isPlainDeadNote')}${fn('isUnpitchedMute')}${fn('usesUnfrettedPosition')}${fn('noteStemVisible')}
     ${fn('teachingFingerLabel')}${fn('teachingDegreeLabel')}${fn('hwyShouldSuppressNoteBody')}
-    ${fn('naturalNode')}${fn('harmonicLabel')}
+    ${fn('naturalNode')}${fn('harmonicLabel')}${fn('_noteKey')}${fn('_noteFretKey')}
     function drawNote(${drawParameters}) {
         const original=n;
-        const sourceNote=n, registerArpeggioStem=()=>{};
+        const sourceNote=n, _boxedChordMembership=options.membership;
         if(isUnpitchedMute(n)) n={...n,f:0};
         const noteStemsVisible=options.noteStems!==false, openStringStemsVisible=options.openStems!==false;
-        const stemVisible=noteStemVisible(n,belongsToBoxedChord,noteStemsVisible,openStringStemsVisible);
         const NW=5,NH=3,K=1,S_GAP=4,AHEAD=3,nStr=options.strings||6;
         const rsPlusNotation=options.style!=='current',s=n.s,dt=n.t-now;
+        ${between('const belongsToBoxedArpeggio =', '// Per-note Z-based renderOrder:')}
         const sY=i=>(options.inverted ? nStr-1-i : i)*S_GAP;
         const x=30,y=sY(s),techniqueYNow=0,noteZ=-10*dt, _leftyCached=!!options.lefty;
         const activePalette=[1,2,3,4,5,6,7,8], renderOrderForLayerAtZ=()=>4;
@@ -108,7 +109,7 @@ const draw = new Function('meshPool', 'args', 'options', `
             ${block('if (n.f > 0 && !skipLabel) {')}
         }
         ${between('const _wantDropLine =', '// ── Board ghost:')}
-        return {original,belongsToBoxedChord,fromChord,sharedChordHold,explicitLinkTarget,
+        return {original,belongsToBoxedChord,belongsToBoxedArpeggio,fromChord,sharedChordHold,explicitLinkTarget,
             connectors:pConnectorLine.meshes.length,drops:pDropLine.meshes.length,
             openStem:rsPlusNotation && n.f===0 && outline.visible && !explicitLinkTarget,
             frets:pNoteFretLabel.meshes.map(m=>m.text),hints:pTeachMarkLbl.meshes.map(m=>m.text)};
@@ -121,7 +122,7 @@ function render(h, n, chords, options={}) {
     const keys=h.ensure(notes,chords,options.handShapes || [],options.templates || []);
     const args=dispatch(n,options.now ?? n.t-1,keys,options);
     assert.equal(args[0],n,'dispatch retains the authored note and scoring identity');
-    return draw(meshPool,args,options);
+    return draw(meshPool,args,{...options,membership:h.membership()});
 }
 const chord=(t=10)=>({t,id:1,notes:[{s:0,f:3},{s:1,f:5}]});
 
@@ -215,8 +216,59 @@ test('arpeggio onset and later ordinary strums use the same classification as ch
         const r=render(membershipHarness(),n,[first,later],{handShapes,arpeggio:true});
         assert.equal(r.belongsToBoxedChord,boxed);
         assert.equal(r.fromChord,true,'existing arpeggio association remains independent');
-        assert.equal(r.drops,Number(!boxed));
+        assert.equal(r.drops,0);
     }
+});
+
+test('boxed arpeggio member stems never pop in when the leading box disappears or is skipped by a seek',()=>{
+    const notes=[{t:10,s:0,f:0,sus:5},{t:10.5,s:1,f:5},{t:11.5,s:0,f:0}];
+    const chords=[{t:10,id:1,notes:[{s:0,f:0},{s:1,f:5}]}];
+    const handShapes=[{chord_id:1,start_time:10,end_time:12,arp:true}];
+    const h=membershipHarness();
+    // Start in the middle, then rewind, cross onset, and outlive the handshape.
+    for(const now of [11,9.9,10,10.001,10.4,11.6,13,9.9])for(const n of notes){
+        const r=render(h,n,chords,{notes,handShapes,now});
+        assert.equal(r.belongsToBoxedArpeggio,true);
+        assert.equal(r.connectors+r.drops,0);
+        assert.equal(r.openStem,false);
+    }
+    const current=render(h,notes[0],chords,{notes,handShapes,style:'current'});
+    assert.equal(current.belongsToBoxedArpeggio,false,'RS+ behavior must not leak into Current');
+    const ordinary={t:12.1,s:0,f:0};
+    assert.equal(render(h,ordinary,chords,{notes:[...notes,ordinary],handShapes}).openStem,true);
+});
+
+test('arpeggio membership requires a renderable box and exact occurrence members',()=>{
+    const n={t:10.5,s:0,f:0},later={t:12.5,s:0,f:0},wrong={t:11,s:1,f:7};
+    const ch={t:10,id:1,notes:[{s:0,f:0},{s:1,f:5}]};
+    const hs={chord_id:1,start_time:10,end_time:12,arp:true};
+    for(const chords of [[],[{...ch,notes:[{s:0,f:0}]}],[{...ch,h3dSynth:true}]]) {
+        const r=render(membershipHarness(),n,chords,{notes:[{...n,t:10},n],handShapes:[hs]});
+        assert.equal(r.belongsToBoxedArpeggio,false);
+        assert.equal(r.openStem,true);
+    }
+    for(const note of [later,wrong]) {
+        const r=render(membershipHarness(),note,[ch],{handShapes:[hs]});
+        assert.equal(r.belongsToBoxedArpeggio,false);
+    }
+    const inferred=render(membershipHarness(),n,[ch],{handShapes:[{...hs,arp:false}]});
+    assert.equal(inferred.belongsToBoxedArpeggio,false);
+    const muted={t:10.5,s:0,f:127,mt:true};
+    const r=render(membershipHarness(),muted,[{...ch,notes:[{s:0,f:127,mt:true},{s:1,f:5}]}],{handShapes:[hs]});
+    assert.equal(r.belongsToBoxedArpeggio,true,'use original muted fret before normalizing the slab');
+    assert.equal(r.openStem,false);
+});
+
+test('arpeggio membership is invalidated by chart and string-count changes',()=>{
+    const h=membershipHarness(),n={t:10.5,s:5,f:5};
+    const ch={t:10,id:1,notes:[{s:0,f:0},{s:5,f:5}]};
+    const hs=[{chord_id:1,start_time:10,end_time:12,arp:true}];
+    assert.equal(render(h,n,[ch],{handShapes:hs}).belongsToBoxedArpeggio,true);
+    assert.equal(render(h,n,[],{handShapes:hs}).belongsToBoxedArpeggio,false);
+    h.strings(4);
+    assert.equal(render(h,n,[ch],{handShapes:hs}).belongsToBoxedArpeggio,false);
+    h.strings(6);
+    assert.equal(render(h,n,[ch],{handShapes:hs}).belongsToBoxedArpeggio,true);
 });
 
 test('suppressed synthetic frames and single-string shapes do not hide standalone stems',()=>{
