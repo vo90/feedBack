@@ -142,7 +142,12 @@ export async function loadSettings() {
     // render clock, the Settings slider, the HUD readout, and the
     // module variable all pick it up consistently. Pass skipPersist
     // so we don't echo the loaded value back to the server.
-    setAvOffsetMs(Number(data.av_offset_ms) || 0, /* skipPersist */ true);
+    _legacyAvOffsetMs = Number(data.av_offset_ms) || 0;
+    setAvOffsetMs(_activeOutputCalibration?.offsetMs ?? _legacyAvOffsetMs, /* skipPersist */ true);
+    if (window.feedBackDesktop?.audio?.getCalibration) {
+        await refreshOutputCalibration();
+        if (!_calibrationPoll) _calibrationPoll = setInterval(refreshOutputCalibration, 1000);
+    }
     // Arrangement naming mode is localStorage-only (client preference).
     const namingModeEl = document.getElementById('arrangement-naming-mode');
     if (namingModeEl) namingModeEl.value = _getArrangementNamingMode();
@@ -585,6 +590,49 @@ export function handleSliderInput(el) {
 // setAvOffsetMs without saving (skipPersist=true) to avoid an
 // echo-back round-trip.
 export let _avOffsetMs = 0;
+let _legacyAvOffsetMs = 0, _activeOutputCalibration = null, _calibrationPoll = null, _calibrationBusy = false;
+let _resolvedOutputCalibration = null;
+
+export function syncOutputCalibration() {
+    const owner = window.feedBack?.audioSession?.nativeBacking?.snapshot();
+    const browser = window._currentSongAudio && !window._juceMode && !owner && !window._highwayJuceRoutingPending;
+    const profile = browser ? null : _resolvedOutputCalibration;
+    if (_activeOutputCalibration?.key !== profile?.key) {
+        _activeOutputCalibration = profile;
+        setAvOffsetMs(profile?.offsetMs ?? _legacyAvOffsetMs, true);
+    }
+    const label = document.getElementById('av-calibration-profile');
+    if (label) {
+        const text = profile ? `Output calibration: ${profile.label}. ${profile.persistent === false
+            ? 'Duplicate device names: this calibration applies only while this route stays open.' : profile.checked
+            ? 'Saved for this setup.' : 'Needs calibration; the old global value has been preserved separately.'}`
+            : 'Browser playback calibration (separate from native output profiles).';
+        if (label.textContent !== text) label.textContent = text;
+    }
+}
+
+async function refreshOutputCalibration() {
+    if (_calibrationBusy) return;
+    _calibrationBusy = true;
+    try {
+        const profile = await window.feedBackDesktop.audio.getCalibration(_legacyAvOffsetMs);
+        // Form edits do not select a profile: only an actually opened endpoint
+        // can change the resolved route. Keep the previous route while stopped.
+        if (!profile?.output) return;
+        if (_resolvedOutputCalibration?.key !== profile.output.key) _resolvedOutputCalibration = profile.output;
+        let label = document.getElementById('av-calibration-profile');
+        const slider = document.getElementById('setting-av-offset');
+        if (!label && slider) {
+            label = document.createElement('p'); label.id = 'av-calibration-profile';
+            label.className = 'text-xs text-gray-400 mt-2'; slider.insertAdjacentElement('afterend', label);
+        }
+        syncOutputCalibration();
+        window.dispatchEvent(new CustomEvent('feedback:calibration-profile', { detail: profile }));
+    } catch (error) { console.warn('[audio] Output calibration unavailable:', error); }
+    finally { _calibrationBusy = false; }
+}
+
+window.addEventListener('feedback:audio-route-changed', () => { void refreshOutputCalibration(); });
 
 export let _avSaveDebounce = null;
 
@@ -594,10 +642,8 @@ export function setAvOffsetMs(ms, skipPersist) {
     // landing as `value` on <input type=range>.
     const n = Number(ms);
     _avOffsetMs = Math.max(-1000, Math.min(1000, Number.isFinite(n) ? n : 0));
-    // Drive the highway's render-time shift. getTime() still returns
-    // the audio-aligned chart time so plugins (note detection, etc.)
-    // keep scoring against the real chart clock regardless of visual
-    // calibration.
+    // Align the output presentation reference used by visuals and judgments.
+    // Capture/detection correction is separate and does not delay acquisition.
     if (window.highway?.setAvOffset) window.highway.setAvOffset(_avOffsetMs);
     // Sync any visible Settings slider
     const avSlider = document.getElementById('setting-av-offset');
@@ -630,6 +676,17 @@ export function setAvOffsetMs(ms, skipPersist) {
 }
 
 export function _persistAvOffset() {
+    if (_activeOutputCalibration) {
+        const profile = _activeOutputCalibration;
+        profile.offsetMs = _avOffsetMs;
+        if (profile.persistent === false) return;
+        void window.feedBackDesktop.audio.saveCalibration('output', profile.key, _avOffsetMs).then(ok => {
+            if (!ok) throw new Error('Output calibration was not saved');
+            profile.checked = true;
+        }).catch(error => console.warn('[audio] Calibration save failed:', error));
+        return;
+    }
+    _legacyAvOffsetMs = _avOffsetMs;
     // Debounced persist — POST only the one field; the server merges.
     if (_avSaveDebounce) clearTimeout(_avSaveDebounce);
     _avSaveDebounce = setTimeout(async () => {
@@ -638,7 +695,7 @@ export function _persistAvOffset() {
             await fetch('/api/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ av_offset_ms: _avOffsetMs }),
+                body: JSON.stringify({ av_offset_ms: _legacyAvOffsetMs }),
             });
         } catch (e) {
             console.warn('A/V offset save failed:', e);
@@ -659,7 +716,7 @@ export async function saveSettings() {
             dlc_dir: document.getElementById('dlc-path').value.trim(),
             default_arrangement: defaultArrangement,
             demucs_server_url: document.getElementById('demucs-server-url').value.trim(),
-            av_offset_ms: _avOffsetMs,
+            av_offset_ms: _legacyAvOffsetMs,
         }),
     });
     const data = await resp.json();
