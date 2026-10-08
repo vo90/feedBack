@@ -54,6 +54,17 @@ The file is laid out top-to-bottom as:
    - `canvasSize()` — resilient canvas-dimension lookup
    - **Returned API** — `init / draw / resize / destroy` (setRenderer contract)
 
+Trail visibility uses the queued `drawNote` calls that survive the existing
+standalone/chord policies. `hwyNoteVisualParts` resolves head and trail lifetimes
+once, before `flushNoteDraws` emits geometry; narrowing and all ordering modes
+consume those same per-frame flags. Chart indexes retain conservative potential
+lifetimes, with separate origin records for coincident representations: a hidden
+copy cannot donate its duration or revive another copy's head. Never set an
+obstacle visible merely because a chart record exists. Keep guide projections,
+visible previews and real repeated attacks; hidden continuation heads can still
+have visible trails. Clear frame visibility on every draw (including paused
+settings changes and seeks), and release queue references with chart indexes.
+
 ## Incoming fret-label layout
 
 `_setIncomingFloorLabelMap` top-anchors the three gold incoming-label paths and
@@ -294,12 +305,13 @@ when seeking backward or when the path's original attack is off screen.
 Visibility samples each piece through the existing `sustainTrailCenterXAt` model,
 and only the path's final endpoint is terminal. Body and outline must use the same
 visibility envelope at joins. The local query includes taper/recovery margins;
-mode-3 future depth priority remains independently cached per original event.
+mode-3 depth priority is cached per original event and frame, so a visibility
+change or seek cannot retain the depth of a hidden target.
 
 Obstacle indexes distinguish visible attack heads from emitted trails. Hidden
 continuations contribute no phantom gem, while an emitted continuation trail may
-still overlap another trail. The trail-eligibility callback is the extension point
-for renderers that suppress member trails or emit open chord-member trails.
+still overlap another trail. The trail-eligibility callback bounds potential
+lifetimes; queued draw decisions supply the actual per-frame visibility.
 Fret and string indexes use max-end trees to skip expired ranges, including those
 behind an old long-running target. Keep these indexes chart-static, retain bounded
 visible-window queries, and avoid scanning complete linked chains each frame.
