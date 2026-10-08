@@ -73,10 +73,18 @@ export function _emitSongPositionChanged(time, duration) {
 // Native commands finish asynchronously. Keep stop behind an in-flight start
 // so cancellation cannot be undone by a late physical startBacking completion.
 let _backingCommandChain = Promise.resolve();
-function _queueBackingCommand(command) {
+export function _queueBackingCommand(command) {
     const result = _backingCommandChain.then(command);
     _backingCommandChain = result.catch(() => {});
     return result;
+}
+
+export function loadCoreBackingTrack(api, path, isCurrent) {
+    if (!isCurrent()) return Promise.resolve(false);
+    // Even a metadata-driven takeover (without a new song session) must revoke
+    // a plugin lease before its old cleanup can stop the new backing file.
+    void window.feedBack?.audioSession?.nativeBacking?.releaseCurrent('core-takeover');
+    return _queueBackingCommand(() => isCurrent() ? api.loadBackingTrack(path) : false);
 }
 
 export const jucePlayer = {
@@ -480,6 +488,8 @@ async function _restartLoopFromOutside(requestedTime, targetTime, trigger, guard
 }
 
 export function _resetAudioSeekState() {
+    // Invalidate plugin commands before any new song can load the shared player.
+    void window.feedBack?.audioSession?.nativeBacking?.releaseCurrent('song-change');
     // Bump the generation — in-flight chain callbacks see the mismatch on
     // their next guard check and short-circuit (no emit, no further state
     // mutation by us). Don't reset the chain head: new seeks must still

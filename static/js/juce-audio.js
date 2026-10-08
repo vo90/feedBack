@@ -1,19 +1,35 @@
 import { installDesktopOutput } from './desktop-output.js';
+import { shouldUseNativeBacking } from './native-backing-route.js';
+import { createNativeBackingOwner } from './native-backing-owner.js';
 import { selectionLifecycle } from './screen-selection.js';
 // Desktop integration: migrate eligible songs between native and browser
 // transports, route the complete browser mix through the selected output,
 // and mirror media-element controls while the native transport owns a song.
 // Installation runs before the app host is wired, so host calls stay deferred.
 import { audio } from './audio-el.js';
-import { _audioSeek, _songEventPayload, jucePlayer, setPlayButtonState, resumePlayback, pausePlayback, cancelPlaybackStart } from './transport.js';
+import { _audioSeek, _songEventPayload, jucePlayer, setPlayButtonState, resumePlayback, pausePlayback, cancelPlaybackStart, _queueBackingCommand, loadCoreBackingTrack } from './transport.js';
 import { setSpeed } from './player-controls.js';
 import { S } from './player-state.js';
+
+if (window.feedBack?.audioSession && window.feedBackDesktop?.audio) {
+    window.feedBack.audioSession.nativeBacking = createNativeBackingOwner({
+        api: window.feedBackDesktop.audio, player: jucePlayer, queue: _queueBackingCommand,
+        getSong: () => window._currentSongAudio, isCoreNative: () => !!window._juceMode,
+        fetchPath: async url => {
+            const res = await fetch(`/api/audio-local-path?url=${encodeURIComponent(url)}`);
+            if (!res.ok) throw new Error('Backing path unavailable');
+            const { path } = await res.json();
+            if (typeof path !== 'string' || !path) throw new Error('Backing path unavailable');
+            return path;
+        },
+    });
+}
 
 (function _installJuceEngineRoutingWatcher() {
     const juceApi = window.feedBackDesktop?.audio;
     if (!juceApi || typeof juceApi.isAudioRunning !== 'function') {
         // Desktop bridge present but audio API incomplete — the whole
-        // exclusive reroute chain is dead and this line is the only witness.
+        // native reroute chain is dead and this line is the only witness.
         // (Docker sphere has no bridge at all: stay silent, nothing to
         // diagnose there and no debug flag to gate on.)
         if (window.feedBackDesktop) {
@@ -30,19 +46,6 @@ import { S } from './player-state.js';
     // (a network blip on /api/audio-local-path, an isAudioRunning() race
     // during a device restart) are deliberately NOT memoised so they retry.
     let _rerouteRejectedUrl = null;
-    // Exclusive-style output backends silence every other client on the
-    // endpoint — including our own <audio> element. The share mode IS the
-    // JUCE output device type: "Windows Audio (Exclusive Mode)" is a
-    // hardcoded, unlocalised JUCE type name; ASIO drivers typically hold
-    // the endpoint exclusively too. "Windows Audio (Low Latency Mode)" is
-    // shared and must NOT match.
-    function _isExclusiveOutputType(t) {
-        return t === 'Windows Audio (Exclusive Mode)' || t === 'ASIO';
-    }
-    // [feedpak-route] diagnostics: log the raw outputType string once per
-    // value change (this runs on a 350ms poll — logging every tick would
-    // flood the diagnostics buffer).
-    let _loggedOutputType;
     // [asio-diag] verbose diagnostics, gated on --debug (preload exposes
     // audio.debugEnabled). Resolved once at install; until it resolves the
     // flag stays false and verbose lines are skipped. Shared with the
@@ -58,43 +61,6 @@ import { S } from './player-state.js';
         }).catch(() => {});
     }
     window._asioDiagEnabled = () => _asioDiag;
-    async function _outputIsExclusive() {
-        if (typeof juceApi.getCurrentDevice !== 'function') {
-            if (_loggedOutputType !== '<no-getCurrentDevice>') {
-                _loggedOutputType = '<no-getCurrentDevice>';
-                console.warn('[feedpak-route] juceApi.getCurrentDevice missing — cannot detect exclusive output');
-            }
-            return false;
-        }
-        try {
-            const dev = await juceApi.getCurrentDevice();
-            const t = dev?.outputType || dev?.type || '';
-            const excl = _isExclusiveOutputType(t);
-            if (t !== _loggedOutputType) {
-                _loggedOutputType = t;
-                console.log('[feedpak-route] outputType=', JSON.stringify(t), '→ exclusive=', excl);
-                // [asio-diag] full device object on every type change — shows
-                // the exact strings the predicate saw (inputType vs outputType,
-                // device names, duplex), so a driver reporting a non-'ASIO'
-                // type name is visible in tester logs.
-                if (_asioDiag) {
-                    try {
-                        console.log('[asio-diag] getCurrentDevice=', JSON.stringify(dev));
-                    } catch (_) { /* circular/hostile object — skip */ }
-                }
-            }
-            return excl;
-        } catch (e) {
-            if (_loggedOutputType !== '<getCurrentDevice-failed>') {
-                _loggedOutputType = '<getCurrentDevice-failed>';
-                console.warn('[feedpak-route] getCurrentDevice failed:', e);
-            }
-            return false;
-        }
-    }
-    // window.highway.js's initial song-load routing consults this for the same
-    // feedpak-under-exclusive decision the watcher makes below.
-    window._juceOutputIsExclusive = _outputIsExclusive;
     // Returns true when window._currentSongAudio no longer references the exact
     // snapshot object captured at reroute entry — i.e. the song was swapped (or
     // cleared) mid-flight. Staleness is detected by object-reference identity,
@@ -142,7 +108,7 @@ import { S } from './player-state.js';
             const { path } = await res.json();
             console.log('[feedpak-route] audio-local-path resolved:', (typeof path === 'string' && path.split(/[\\/]/).pop()) || '<missing>');
             if (_isStale(songAudio)) return 'stale';   // song changed mid-fetch
-            const ok = await juceApi.loadBackingTrack(path);
+            const ok = await loadCoreBackingTrack(juceApi, path, () => !_isStale(songAudio));
             if (ok === false) {
                 // JUCE rejected the track — stay on HTML5, resume if needed.
                 console.warn('[juce-reroute] loadBackingTrack rejected; staying on HTML5');
@@ -359,12 +325,9 @@ import { S } from './player-state.js';
     async function _reevaluateJuceRouting() {
         if (_rerouteInFlight) return;
         const songAudio = window._currentSongAudio;
-        // /audio/ songs are always JUCE-routable. A feedpak full-mix
-        // (single-mix pack, no stems) is routable ONLY under an
-        // exclusive-style output — in shared mode it must stay on HTML5 so
-        // the stem mixer / WebAudio path keeps working. Sloppak stem URLs
-        // are never routable (per-stem mix can't ride a single transport).
-        if (!songAudio || (!songAudio.juceEligible && !songAudio.feedpakFullMix)) return;
+        // Only a single backing file can ride this transport. Multitrack
+        // packs retain their browser mixer regardless of output backend.
+        if (!shouldUseNativeBacking(songAudio, true)) return;
         // Don't race window.highway.js's own initial song-load routing: it owns
         // _juceMode until _juceRoutingPromise settles. Re-running our switch
         // concurrently would double-call loadBackingTrack for the same URL.
@@ -382,16 +345,8 @@ import { S } from './player-state.js';
             try { running = await juceApi.isAudioRunning(); }
             catch (_) { return; }
             if (_isStale(songAudio)) return;               // song changed during IPC
-            // Eligibility is evaluated per tick, not snapshotted at song load:
-            // the output share mode can change mid-song (device switch in the
-            // Audio Engine panel), and a feedpak full-mix must follow it —
-            // exclusive → ride the engine; back to shared → return to HTML5.
-            let eligible = !!songAudio.juceEligible;
-            if (!eligible && songAudio.feedpakFullMix && running) {
-                eligible = await _outputIsExclusive();
-                if (_isStale(songAudio)) return;           // song changed during IPC
-            }
-            const wantJuce = !!(running && eligible);
+            const eligible = shouldUseNativeBacking(songAudio, true);
+            const wantJuce = shouldUseNativeBacking(songAudio, running);
             // [feedpak-route] diagnostics: one line per decision change (the
             // watcher polls at 350ms; steady state must not spam the buffer).
             const _decision = 'running=' + running + ' eligible=' + eligible
@@ -420,9 +375,8 @@ import { S } from './player-state.js';
                 // outcome === 'stale': leave _rerouteRejectedUrl as-is.
             } else {
                 await _switchJuceToHtml5(songAudio);
-                // The engine stopped (or a feedpak's output left exclusive
-                // mode). Clear any hard-reject memo so a later engine restart
-                // or mode change re-evaluates the track at least once — the
+                // The engine stopped. Clear any hard-reject memo so a later
+                // engine restart re-evaluates the track at least once — the
                 // rejection may have been a transient device/decoder state.
                 _rerouteRejectedUrl = null;
             }
@@ -450,6 +404,7 @@ import { S } from './player-state.js';
     // window) — engine toggles there will be reconciled on the first poll
     // after the tab is visible again.
     setInterval(() => {
+        void window.feedBack?.audioSession?.nativeBacking?.check();
         if (document.hidden) return;
         if (window._currentSongAudio) void _reevaluateJuceRouting();
     }, 350);
