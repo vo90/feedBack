@@ -35,6 +35,7 @@ assert.ok(coreSizingStart >= 0 && coreSizingEnd > coreSizingStart);
 const openCoreSizing = src.slice(coreSizingStart, coreSizingEnd);
 
 const harness = new Function('assert', `
+    const _followChordLane = false;
     const NFRETS = 24;
     const ACCENT_RIM_XY_SCALE_MUL = 1.2;
     const NW = 10;

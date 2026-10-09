@@ -28,6 +28,7 @@ const constants = ['CHORD_ANCHOR_TIME_EPS', 'BEND_LINK_TIME_EPS']
 const eventStart = source.indexOf('    function hwyFootprintsOverlap1D(');
 const eventEnd = source.indexOf('    /** Fixed pre-impact ramp window', eventStart);
 const h = new Function(`
+    const _followChordLane = false;
     const NFRETS=24, MAX_RENDER_STRINGS=8, K=1, NW=5, OPEN_NOTE_PAD_X=2;
     const fretX=f=>f*10, xFret=fretX, xFretMid=f=>(f-.5)*10;
     const curX=80, _drawAnchors=[];

@@ -233,6 +233,9 @@ class Arrangement:
     # follows the song-level tempo; when present a Reader uses it for this
     # chart and ignores the song-level tempo.
     tempos: list | None = None
+    # Playback-only geometry policy. Unknown/generated sources retain the
+    # chord-local layout; positively identified authored archive lanes opt in.
+    chord_frame_layout: str = "shape"
 
 
 @dataclass
@@ -1154,8 +1157,13 @@ def arrangement_from_wire(d: dict) -> Arrangement:
     """Parse a wire-format arrangement dict back into an Arrangement dataclass."""
     from lib.generated_guidance_compat import refresh_generated_positions
     d = refresh_generated_positions(d)
+    ext = d.get("ext") if isinstance(d.get("ext"), dict) else {}
+    source = ext.get("source") if isinstance(ext.get("source"), dict) else {}
+    authored_lane = (source.get("format") == "psarc-manifest2014"
+                     and "chartGuidance" not in ext)
     return Arrangement(
         name=d.get("name", ""),
+        chord_frame_layout="lane" if authored_lane else "shape",
         tuning=list(d.get("tuning", [0] * 6)),
         capo=int(d.get("capo", 0)),
         cent_offset=_finite_float(d.get("centOffset", 0.0)),

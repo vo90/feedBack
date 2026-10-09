@@ -24,17 +24,34 @@ const functions = ['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRe
     'chordGuideTimedRowAt', 'hwyUncoveredHandPositionGuides', '_ensureChordGuideEnds', 'firstVisibleChordGuide'];
 function makeHelpers() {
     return new Function(`
-        const NFRETS = 24;
+        let _followChordLane = false;
+    const NFRETS = 24;
         let nStr = 6, _chordGuideCache = null;
         ${constants}
         ${functions.map(fn).join('\n')}
         return { ensure: _ensureChordGuideEnds, firstVisible: firstVisibleChordGuide,
-            model() { return _chordGuideCache.model; }, setStringCount(v) { nStr = v; } };
+            model() { return _chordGuideCache.model; }, setStringCount(v) { nStr = v; },
+            setLanePolicy(v) { _followChordLane = v; } };
     `)();
 }
 function near(actual, expected) {
     assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
 }
+
+test('switching chart policy rebuilds cached holds without changing release timing', () => {
+    const b = fixture(), h = makeHelpers();
+    b.chords = [chord(10, 0, [3, 3], 1)];
+    b.handShapes = [];
+    b.anchors = [{ time: 0, fret: 2, width: 4 }];
+    h.ensure(b.chords, b);
+    assert.deepEqual(h.model().holds.map(r => [r.dMin, r.dMax, r.end]), [[2, 6, 11]]);
+    h.setLanePolicy(true);
+    h.ensure(b.chords, b);
+    assert.deepEqual(h.model().holds.map(r => [r.dMin, r.dMax, r.end]), [[1, 5, 11]]);
+    h.setLanePolicy(false);
+    h.ensure(b.chords, b);
+    assert.deepEqual(h.model().holds.map(r => [r.dMin, r.dMax, r.end]), [[2, 6, 11]]);
+});
 function chord(t, id, frets = [5, 7], sus = 0) {
     return { t, id, notes: frets.map((f, s) => ({ s, f, sus })) };
 }

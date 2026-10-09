@@ -25,6 +25,7 @@ const yieldDefaultsDeclaration = src.match(/const TRAIL_YIELD_DEFAULTS = Object\
 
 function harness() {
     return new Function(`
+        const _followChordLane = false;
         const K=1, NW=5, NH=3, S_GAP=6, nStr=6;
         const CHORD_FRAME_RIM_MIN=.055, CHORD_FRAME_RIM_FRAC_H=.028;
         const BEND_HALFSTEP_WORLD_Y=S_GAP*.8, BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.3;

@@ -2891,7 +2891,7 @@
     // Explicit note `ch` IDs describe one brush gesture, never a timing guess.
     // These frames are presentation-only: source events, camera, holds and scoring
     // continue to consume the original note/chord arrays at their own attack times.
-    function hwyBuildAuthoredStrumFrames(notes, chords, anchors, stringCount = 6) {
+    function hwyBuildAuthoredStrumFrames(notes, chords, anchors, stringCount = 6, followLane = false) {
         const groups = new Map(), byNote = new Map(), frames = [];
         const realMembers = new Set();
         const key = (t, s, f) => Math.round(t * 1e6) + ':' + s + ':' + f;
@@ -2914,7 +2914,7 @@
             if (end <= start) continue; // already simultaneous chords have their own box
             const anchor = getChartAnchorAt(anchors, start + CHORD_ANCHOR_TIME_EPS);
             const frets = members.filter(n => n.f > 0 && !isUnpitchedMute(n)).map(n => n.f);
-            const bounds = chordShapeLaneBounds(Math.min(...frets), Math.max(...frets), anchor);
+            const bounds = chordShapeLaneBounds(Math.min(...frets), Math.max(...frets), anchor, followLane);
             const frame = { t: start, id: -1, notes: members, h3dStrum: true, lastAttack: end, bounds };
             frames.push(frame);
             for (const n of members) byNote.set(n, frame);
@@ -3211,12 +3211,24 @@
     // One shape-local rule for frames, holds, open members and trail footprints.
     // An unrelated lane may be wider or begin below the chord; its spare space
     // must not become part of this chord. All-open shapes retain a local context.
-    function chordShapeLaneBounds(fMin, fMax, anchor) {
+    function chordShapeLaneBounds(fMin, fMax, anchor, followLane = false) {
+        // Only positively identified authored charts opt in. Generated/imported
+        // positions keep the shape-local rule (including wide slide corridors).
+        // Reject invalid/full-neck placeholders and lanes that exclude a gem.
+        const fret = Number(anchor?.fret), width = Number(anchor?.width ?? 4);
+        const first = Math.max(1, fret), last = first + width - 1;
+        const hasFrets = Number.isFinite(fMin) && Number.isFinite(fMax) && fMin > 0 && fMax >= fMin;
+        if (followLane && anchor && anchor.fret != null && Number.isInteger(fret) && fret >= 0
+            && Number.isInteger(width) && width >= 1 && last <= NFRETS
+            && !(first === 1 && width === NFRETS)
+            && (!hasFrets || (fMin >= first && fMax <= last))) {
+            return laneBoundsFromAnchor(anchor);
+        }
         if (Number.isFinite(fMin) && Number.isFinite(fMax) && fMin > 0 && fMax >= fMin) {
             return chordFallbackLaneBounds(fMin, fMax);
         }
-        const fret = Math.max(1, Math.min(NFRETS, Math.round(Number(anchor?.fret)) || 1));
-        return chordFallbackLaneBounds(fret, fret);
+        const contextFret = Math.max(1, Math.min(NFRETS, Math.round(Number(anchor?.fret)) || 1));
+        return chordFallbackLaneBounds(contextFret, contextFret);
     }
 
     function anchorPlayedFretSpanAt(anchorArr, t) {
@@ -3595,7 +3607,7 @@
      * or a synthesized preview. byChord preserves every attack's own interval;
      * holds coalesces identical geometry so overlapping cues do not brighten it.
      */
-    function hwyBuildChordHoldGuidance(chords, handShapes, templates, anchors, stringCount = 6, notes = []) {
+    function hwyBuildChordHoldGuidance(chords, handShapes, templates, anchors, stringCount = 6, notes = [], followLane = false) {
         const eps = CHORD_ANCHOR_TIME_EPS;
         const count = Number.isInteger(stringCount) && stringCount > 0 ? stringCount : 6;
         const flag = v => v === true || v === 1 || v === '1'
@@ -3623,7 +3635,7 @@
             const fretted = members.filter(n => n.f > 0 && !isUnpitchedMute(n));
             const anchor = getChartAnchorAt(positionAnchors, t + eps);
             return chordShapeLaneBounds(
-                Math.min(...fretted.map(n => n.f)), Math.max(...fretted.map(n => n.f)), anchor);
+                Math.min(...fretted.map(n => n.f)), Math.max(...fretted.map(n => n.f)), anchor, followLane);
         };
         const realChords = (chords || []).filter(ch => ch && !ch.h3dSynth && Number.isFinite(ch.t))
             .slice().sort((a, b) => a.t - b.t);
@@ -7411,6 +7423,7 @@
          * wires for an open note's hit flash (an open note has no fret of its
          * own; its slab spans the lane, so the lane edges are what bracket it). */
         let _drawAnchors = null;
+        let _followChordLane = false;
         /** Teaching marks sd/ch overlay pref (§6.2.2), mirrored from the 2D
          * highway's `teachingMarksVisible` bundle flag. */
         let _drawTeachingMarks = false;
@@ -13830,9 +13843,9 @@
             const old = _chordGuideCache;
             if (old && old.chords === chords && old.notes === notes && old.handShapes === handShapes
                 && old.chordTemplates === chordTemplates && old.anchors === anchors
-                && old.stringCount === nStr) return old.ends;
+                && old.stringCount === nStr && old.followLane === _followChordLane) return old.ends;
             const model = hwyBuildChordHoldGuidance(
-                chords, handShapes, chordTemplates, anchors, nStr, notes,
+                chords, handShapes, chordTemplates, anchors, nStr, notes, _followChordLane,
             );
             model.guides = hwyUncoveredHandPositionGuides(model.guides, anchors);
             const ends = new WeakMap();
@@ -13849,7 +13862,7 @@
                 }
                 model[key + 'PrefixEnds'] = prefix;
             }
-            _chordGuideCache = { chords, notes, handShapes, chordTemplates, anchors, stringCount: nStr, ends, model };
+            _chordGuideCache = { chords, notes, handShapes, chordTemplates, anchors, stringCount: nStr, followLane: _followChordLane, ends, model };
             return ends;
         }
 
@@ -15314,6 +15327,7 @@
             _chordVerdictsLastNow = now;
 
             const notes = bundle.notes;
+            _followChordLane = bundle.songInfo?.chordFrameLayout === 'lane';
             // Skip the merge when inputs are identity-equal to the last
             // frame's; mergeHandShapeSynthChords is chart-static.
             let chords;
@@ -15338,9 +15352,9 @@
             const chordGuideEnds = _ensureChordGuideEnds(chords, bundle);
             if (!_authoredStrumCache || _authoredStrumCache.notes !== notes
                 || _authoredStrumCache.chords !== chords || _authoredStrumCache.anchors !== bundle.anchors
-                || _authoredStrumCache.stringCount !== nStr) {
-                const model = hwyBuildAuthoredStrumFrames(notes, chords, bundle.anchors, nStr);
-                _authoredStrumCache = { notes, chords, anchors: bundle.anchors, stringCount: nStr, ...model,
+                || _authoredStrumCache.stringCount !== nStr || _authoredStrumCache.followLane !== _followChordLane) {
+                const model = hwyBuildAuthoredStrumFrames(notes, chords, bundle.anchors, nStr, _followChordLane);
+                _authoredStrumCache = { notes, chords, anchors: bundle.anchors, stringCount: nStr, followLane: _followChordLane, ...model,
                     displayChords: model.frames.length
                         ? [...chords, ...model.frames].sort((a, b) => a.t - b.t) : chords };
             }
@@ -16465,7 +16479,7 @@
                         for (const [, f] of chShape) {
                             if (f > 0) { fMinCh = Math.min(fMinCh, f); fMaxCh = Math.max(fMaxCh, f); }
                         }
-                        const frameBounds = chordShapeLaneBounds(fMinCh, fMaxCh, chAnc);
+                        const frameBounds = chordShapeLaneBounds(fMinCh, fMaxCh, chAnc, _followChordLane);
                         chordFrameBounds = frameBounds;
                         chordFrameXL = xFret(frameBounds.dMin);
                         chordFrameXR = xFret(frameBounds.dMax);
@@ -17492,7 +17506,7 @@
                     const _fwA = Math.max(_fwE.a, _fwE.openA);
                     if (_fwA <= 0) continue;
                     const _fwB = _fwE.bounds || chordShapeLaneBounds(_fwE.minF, _fwE.maxF,
-                        getNoteAnchorAt(_drawAnchors, _fwE.t));
+                        getNoteAnchorAt(_drawAnchors, _fwE.t), _followChordLane);
                     const _w0 = _fwB.dMin, _w1 = _fwB.dMax;
                     if (_fwA > _fwHitIn[_w0]) _fwHitIn[_w0] = _fwA;
                     if (_fwA > _fwHitIn[_w1]) _fwHitIn[_w1] = _fwA;
@@ -18837,7 +18851,7 @@
             let center = anchor ? (xFret(anchor.dMin) + xFret(anchor.dMax)) * 0.5 : curX;
             let width = openNoteLaneBoxW(chartTime, chartAnchors);
             if (meta?.size > 1) {
-                const bounds = chordShapeLaneBounds(meta.minF, meta.maxF, anchorDef);
+                const bounds = chordShapeLaneBounds(meta.minF, meta.maxF, anchorDef, _followChordLane);
                 center = (xFret(bounds.dMin) + xFret(bounds.dMax)) * 0.5;
                 width = Math.abs(xFret(bounds.dMax) - xFret(bounds.dMin));
             }
@@ -18890,7 +18904,7 @@
                 let chordCX = anchorCX;
                 let laneW = openNoteLaneBoxW(event.t);
                 if (meta.size > 1) {
-                    const bounds = chordShapeLaneBounds(meta.minF, meta.maxF, anchorDef);
+                    const bounds = chordShapeLaneBounds(meta.minF, meta.maxF, anchorDef, _followChordLane);
                     chordCX = (xFret(bounds.dMin) + xFret(bounds.dMax)) * 0.5;
                     laneW = Math.abs(xFret(bounds.dMax) - xFret(bounds.dMin));
                 }

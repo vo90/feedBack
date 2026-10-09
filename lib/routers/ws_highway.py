@@ -518,6 +518,7 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
             "arrangement_type": arr.type,
             "arrangement_smart_name": smart_names[best],
             "arrangement_index": best,
+            "chordFrameLayout": arr.chord_frame_layout,
             # Echo the resolved naming mode so highway.js doesn't have to
             # re-read localStorage (which can be unavailable / disagree with
             # app.js's in-memory cache when storage writes fail).

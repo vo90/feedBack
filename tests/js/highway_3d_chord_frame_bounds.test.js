@@ -53,6 +53,28 @@ const shapeBounds = new Function('const NFRETS = 24;' +
     ['laneBoundsFromAnchor', 'chordFallbackLaneBounds', 'chordShapeLaneBounds'].map(n => extractFn(screenSrc, n)).join('\n') +
     '\nreturn chordShapeLaneBounds;')();
 
+test('authored G5 repeats follow the 2–5 lane while generated charts retain 3–6', () => {
+    const anchor = Object.freeze({ fret: 2, width: 4 });
+    assert.deepEqual(shapeBounds(3, 3, anchor, true), { dMin: 1, dMax: 5 });
+    assert.deepEqual(shapeBounds(3, 3, anchor, false), { dMin: 2, dMax: 6 });
+    assert.deepEqual(shapeBounds(3, 3, anchor), { dMin: 2, dMax: 6 });
+});
+
+test('authored wide and open-only frames use the lane, without changing generated geometry', () => {
+    const anchor = { fret: 3, width: 6 };
+    assert.deepEqual(shapeBounds(5, 7, anchor, true), { dMin: 2, dMax: 8 });
+    assert.deepEqual(shapeBounds(Infinity, -Infinity, anchor, true), { dMin: 2, dMax: 8 });
+    assert.deepEqual(shapeBounds(5, 7, anchor, false), { dMin: 4, dMax: 8 });
+});
+
+test('lane following cannot exclude gems or accept invalid/full-neck placeholders', () => {
+    for (const anchor of [null, { fret: 4, width: 4 }, { fret: 2, width: 1 },
+        { fret: 1, width: 24 }, { fret: 22, width: 4 }, { fret: null, width: 4 },
+        { fret: 2.5, width: 4 }, { fret: 2, width: -1 }]) {
+        assert.deepEqual(shapeBounds(3, 3, anchor, true), { dMin: 2, dMax: 6 });
+    }
+});
+
 test('each chord starts at its lowest fret with at least four cells regardless of surrounding lane', () => {
     for (const anchor of [null, { fret: 1, width: 24 }, { fret: 3, width: 6 }, { fret: 20, width: 4 }]) {
         for (const [lo, hi, expected] of [[5, 7, [4, 8]], [7, 8, [6, 10]],

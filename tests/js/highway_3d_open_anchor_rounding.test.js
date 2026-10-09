@@ -20,6 +20,7 @@ const names = ['getChartAnchorAt', 'getNoteAnchorAt', 'laneBoundsFromAnchor',
     'anchorPlayedFretInclusiveSpan', 'playedFretSpanCoversShape', 'chordFallbackLaneBounds',
     'chordShapeLaneBounds', 'trailOpenLayoutAt', 'trailYieldAddTargetXBounds', 'trailYieldOpenTargetXBounds'];
 const harness = new Function(`
+    const _followChordLane = false;
     const NFRETS=24, NW=5, K=1, OPEN_NOTE_PAD_X=2, curX=99;
     const ACCENT_RIM_XY_SCALE_MUL=1.09;
     ${source.match(/const CHORD_ANCHOR_TIME_EPS = [^;]+;/)[0]}

@@ -178,6 +178,20 @@ def _drain(client, path, *, stop_type="anchors", limit=200):
     return frames
 
 
+def test_authored_chart_lane_policy_reaches_highway(make_client):
+    server = make_client()
+    pak = _write_sloppak(server._get_dlc_dir(), notation=False)
+    chart_path = pak / "arrangements" / "keys.json"
+    chart = json.loads(chart_path.read_text())
+    chart["ext"] = {"source": {"format": "psarc-manifest2014"}}
+    chart["anchors"] = [{"time": 0, "fret": 2, "width": 4}]
+    chart_path.write_text(json.dumps(chart))
+    with TestClient(server.app) as client:
+        frames = _drain(client, "/ws/highway/wstest.sloppak?arrangement=0")
+    assert frames[0]["chordFrameLayout"] == "lane"
+    assert next(f for f in frames if f["type"] == "anchors")["data"] == chart["anchors"]
+
+
 def test_notation_streams_in_ws_order_b(make_client):
     server = make_client()
     _write_sloppak(server._get_dlc_dir(), notation=True)
@@ -186,6 +200,7 @@ def test_notation_streams_in_ws_order_b(make_client):
 
     order = [f["type"] for f in frames]
     assert order[0] == "song_info"
+    assert frames[0]["chordFrameLayout"] == "shape"
     assert frames[0]["has_notation"] is True
 
     i_sections = order.index("sections")

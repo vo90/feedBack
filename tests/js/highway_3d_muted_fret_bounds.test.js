@@ -26,6 +26,7 @@ const helpers = ['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRend
 const frameStart = src.indexOf('let chordFrameXL = null');
 const frameEnd = src.indexOf('const laneWForOpenStrings', frameStart);
 const run = new Function(`
+    const _followChordLane = false;
     const NFRETS = 24, NW = 1;
     const validString = s => Number.isInteger(s) && s >= 0 && s < 6;
     const _filterValidNotesCache = new WeakMap(), _chordShapeCache = new WeakMap();

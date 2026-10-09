@@ -30,7 +30,8 @@ const selectAnchor = new Function('anchors', 'ch', 'now', 'maxSus', '_chGuideEnd
     constants + fn('getChartAnchorAt') + src.slice(anchorStart, anchorEnd) + 'return chAnc;');
 function makeRenderer(bundle) {
     return new Function('bundle', `
-        const NFRETS = 24, K = 1, AHEAD = 5, TS = 1.725, S_GAP = 1;
+        const _followChordLane = false;
+    const NFRETS = 24, K = 1, AHEAD = 5, TS = 1.725, S_GAP = 1;
         let nStr = 6, _chordGuideCache = null, drawn = [];
         const sY = s => s, xFret = f => f * 10, dZ = dt => -dt * TS;
         const pSusRail = { get() {

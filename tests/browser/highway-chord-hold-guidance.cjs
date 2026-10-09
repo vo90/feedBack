@@ -31,9 +31,9 @@ function once(value, anchor, replacement) {
   return value.replace(anchor, replacement);
 }
 let served = source;
-if(served.includes('function hwyBuildChordHoldGuidance(chords, handShapes, templates, anchors, stringCount = 6, notes = []) {'))
-  served=once(served,'function hwyBuildChordHoldGuidance(chords, handShapes, templates, anchors, stringCount = 6, notes = []) {',
-    'function hwyBuildChordHoldGuidance(chords, handShapes, templates, anchors, stringCount = 6, notes = []) { if(window.__holdBuilds!==undefined)window.__holdBuilds++;');
+if(served.includes('function hwyBuildChordHoldGuidance(chords, handShapes, templates, anchors, stringCount = 6, notes = [], followLane = false) {'))
+  served=once(served,'function hwyBuildChordHoldGuidance(chords, handShapes, templates, anchors, stringCount = 6, notes = [], followLane = false) {',
+    'function hwyBuildChordHoldGuidance(chords, handShapes, templates, anchors, stringCount = 6, notes = [], followLane = false) { if(window.__holdBuilds!==undefined)window.__holdBuilds++;');
 served = once(served, 'const core = pNote.get();', `const core = pNote.get();
  if(window.__holdProbe)window.__holdProbe.notes.push({note:{...n},fromChord,mesh:core});`);
 served = once(served, 'const fill = pChordFrameFill.get();', `const fill = pChordFrameFill.get();
@@ -112,6 +112,19 @@ add('overlap-explicit-different-chords',base({chords:[chord(10,2),chord(11,2,{id
 add('overlap-explicit-shorter-repeat',base({chords:[chord(10,2),chord(11,.5)]}),[],{image:true,wantTrailOnsets:[10,11]});
 for(const [name,extra] of [['left-handed',{lefty:true}],['inverted',{inverted:true}],['bass',{stringCount:4,tuning:[0,0,0,0]}],['eight-string',{stringCount:8,tuning:Array(8).fill(0)}],['no-anchor',{anchors:[]}]])
   add(name,base({...extra,chords:[chord(10,1)],handShapes:[shape()]}),[[10,11]],{image:false,noTrails:true});
+// Identical G5 chart in both provenance modes: repeat bodies and open members
+// must agree with the selected frame span, including mirrored/stable views.
+for (const cameraMode of ['lookahead','stable']) for (const lefty of [false,true])
+for (const layout of ['lane','shape']) {
+  const g5={name:'G5',frets:[3,-1,0,0,3,3],fingers:[2,-1,-1,-1,3,4]};
+  const members=g5.frets.flatMap((f,s)=>f<0?[]:[note({s,f})]);
+  const b=base({cameraMode,lefty,songInfo:{arrangement:'Lead',chordFrameLayout:layout},
+    anchors:[{time:0,fret:2,width:4}],chordTemplates:[g5],
+    chords:[10,10.47,10.94].map(t=>({t,id:0,notes:members})),handShapes:[shape(10,11.4)]});
+  const lo=layout==='lane'?1:2,hi=layout==='lane'?5:6;
+  add('authored-lane-'+cameraMode+'-'+lefty+'-'+layout,b,[[10,11.4]],
+    {image:true,wantFrames:3,noTrails:true,frameBounds:[10,10.47,10.94].map(t=>[t,lo,hi])});
+}
 const realRoot=option('--real-root');
 if(option('--evil-chart')) {
   const raw=JSON.parse(fs.readFileSync(option('--evil-chart'),'utf8'));

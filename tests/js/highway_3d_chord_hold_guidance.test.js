@@ -53,6 +53,17 @@ function freezeDeep(value) {
     return value;
 }
 
+test('authored lane policy aligns holds and handshape guides without inventing duration', () => {
+    const ch = chord(10, [3, 3], 0.4);
+    const anchors = [{ time: 0, fret: 2, width: 4 }];
+    const result = build([ch], [hs()], [template(ch)], anchors, 6, [], true);
+    const hold = result.byChord.get(ch);
+    assert.deepEqual([hold.dMin, hold.dMax, hold.end], [1, 5, 10.4]);
+    assert.deepEqual([result.guides[0].dMin, result.guides[0].dMax], [1, 5]);
+    const unknown = chord(10, [3, 3]);
+    assert.equal(build([unknown], [hs()], [{ frets: [-1, 0, 2, 2, -1, -1] }], anchors, 6, [], true).holds.length, 0);
+});
+
 test('exact shared durations need no hand shape and have no minimum hold', () => {
     for (const duration of [0.05, 0.2, 0.738, 2]) {
         const ch = chord(10, [3, 5], duration);
