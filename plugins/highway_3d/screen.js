@@ -74,6 +74,35 @@
         });
     }
 
+    // CPU-only optical measurements survive renderer teardown; GPU materials
+    // remain owned and disposed by their renderer. Colour does not change ink.
+    const hwyGlyphCenters = new Map();
+    function hwyGhostInkCenter(doc, font, str, w, h) {
+        const key = JSON.stringify([font, str, w, h]);
+        if (hwyGlyphCenters.has(key)) return hwyGlyphCenters.get(key);
+        const canvas = doc.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        // This canvas exists only for pixel analysis. A GPU-backed context
+        // forces a synchronous readback for every label/colour during loading.
+        const ctx = canvas.getContext('2d', {willReadFrequently: true});
+        ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#ffffff'; ctx.fillText(str, w / 2, h / 2);
+        const pixels = ctx.getImageData(0, 0, w, h).data;
+        let sumX = 0, sumY = 0, sumA = 0;
+        for (let py = 0; py < h; py++) for (let px = 0; px < w; px++) {
+            const alpha = pixels[(py * w + px) * 4 + 3];
+            if (alpha > 4) { sumX += px * alpha; sumY += py * alpha; sumA += alpha; }
+        }
+        const result = sumA > 0
+            ? {x: w / 2 + (w / 2 - sumX / sumA) + w * .08, y: h / 2 + (h / 2 - sumY / sumA)}
+            : {x: w / 2, y: h / 2};
+        // Bound memory for unusual labels and style changes. No canvas or GPU
+        // resource is retained, only a key and two coordinates.
+        if (hwyGlyphCenters.size >= 256) hwyGlyphCenters.delete(hwyGlyphCenters.keys().next().value);
+        hwyGlyphCenters.set(key, result);
+        return result;
+    }
+
     // Explicit transport epochs separate genuine repositioning from clock
     // measurement corrections. This clock is visual only; scoring reads audio.
     function createPresentationClock() {
@@ -9045,36 +9074,8 @@
                 x.textAlign = 'center';
                 x.textBaseline = 'middle';
                 try {
-                    const tmpC = document.createElement('canvas');
-                    tmpC.width = w; tmpC.height = h;
-                    const tc = tmpC.getContext('2d');
-                    tc.font = font;
-                    tc.textAlign = 'center';
-                    tc.textBaseline = 'middle';
-                    // Deliberately NO shadow and NO stroke — shadow spreads isotropically
-                    // and muddles the centroid; fill alone gives the cleanest reading.
-                    tc.fillStyle = '#ffffff';
-                    tc.fillText(str, w / 2, h / 2);
-                    const id = tc.getImageData(0, 0, w, h).data;
-                    // Alpha-weighted centroid — heavier ink pixels (thick vertical stem
-                    // of "1") outweigh thin/sparse pixels (diagonal flag), producing the
-                    // correct perceptual centre rather than the geometric bbox midpoint.
-                    let sumX = 0, sumY = 0, sumA = 0;
-                    for (let py = 0; py < h; py++) {
-                        for (let px = 0; px < w; px++) {
-                            const a = id[(py * w + px) * 4 + 3];
-                            if (a > 4) { sumX += px * a; sumY += py * a; sumA += a; }
-                        }
-                    }
-                    if (sumA > 0) {
-                        // shift pen so centroid → canvas centre, then add a small
-                        // extra rightward nudge (8 %) so the vertical stroke of
-                        // narrow digits like "1" sits visually at gem centre rather
-                        // than the advance-width centre (which may be slightly left
-                        // of the dominant ink mass for Arial Black numerals).
-                        drawX = w / 2 + (w / 2 - sumX / sumA) + w * 0.08;
-                        drawY = h / 2 + (h / 2 - sumY / sumA);
-                    }
+                    const center = hwyGhostInkCenter(document, font, str, w, h);
+                    drawX = center.x; drawY = center.y;
                 } catch (_) { /* fallback: draw at (w/2, h/2) */ }
                 // x (real canvas) still has textAlign='center'; textBaseline='middle'
             } else {
@@ -23408,12 +23409,20 @@
         }
 
         /* ── Resize helper ───────────────────────────────────────────────── */
+        let lastSizedRenderer = null, lastSizeW = 0, lastSizeH = 0, lastSizeDpr = 0;
         function applySize(w, h) {
             if (!ren || !cam || !wrap) return;
             if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
             const baseDPR = _ssActive() ? Math.min(devicePixelRatio, 1.25) : Math.min(devicePixelRatio, 2);
-            ren.setPixelRatio(_renderScale * baseDPR);
-            ren.setSize(w, h);
+            const dpr = _renderScale * baseDPR;
+            if (ren !== lastSizedRenderer || w !== lastSizeW || h !== lastSizeH || dpr !== lastSizeDpr) {
+                // setPixelRatio followed by setSize reallocates the surface twice.
+                // Apply dimensions and DPR together, only when they change.
+                ren.setDrawingBufferSize(w, h, dpr);
+                ren.domElement.style.width = w + 'px';
+                ren.domElement.style.height = h + 'px';
+                lastSizedRenderer = ren; lastSizeW = w; lastSizeH = h; lastSizeDpr = dpr;
+            }
             // Pin the overlay to #highway's exact box so it fully covers the
             // canvas. The wrap is anchored to top:0/left:0/right:0 of its
             // offset parent, which only lines up with #highway when the
@@ -23654,6 +23663,7 @@
             txtCache = {};
             if (_sparkPts) { try { _sparkPts.geometry.dispose(); _sparkPts.material.dispose(); } catch (e) {} _sparkPts = null; }
             if (_composer) { try { _composer.dispose(); if (_bloomPass && _bloomPass.dispose) _bloomPass.dispose(); } catch (e) {} _composer = null; _bloomPass = null; }
+            lastSizedRenderer = null;
             if (ren) { ren.dispose(); ren = null; }
             scene = cam = noteG = beatG = lblG = fretG = tuningLblG = null;
             ambLight = dirLight = null;
