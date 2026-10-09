@@ -1941,7 +1941,7 @@ function createHighway() {
             hwState._connectOpts = opts;
             // Bump generation so async handlers from the previous connection
             // can detect they are stale and skip state mutations.
-            hwState._wsGen += 1;
+            const connectionGen = ++hwState._wsGen;
             // Fresh routing promise for this connection's song_info load.
             hwState._juceRoutingPromise = Promise.resolve();
             // Clear any stale "initial routing in-flight" flag from a prior
@@ -2004,7 +2004,7 @@ function createHighway() {
                 const data = ev.data;
                 // Capture generation synchronously before any async work so
                 // stale completions from a prior WebSocket can be detected.
-                const gen = hwState._wsGen;
+                const gen = connectionGen;
                 hwState._msgChain = hwState._msgChain.then(async () => {
                     // Bail out if a reconnect happened while this step was queued.
                     if (gen !== hwState._wsGen) return;
@@ -3010,6 +3010,12 @@ function createHighway() {
             // removes it when the flag flips off) is about to stop, so leaving
             // it would strand the overlay in the DOM until a page reload.
             if (hwState._perfHud) { hwState._perfHud.remove(); hwState._perfHud = null; }
+            // Invalidate queued and late socket work immediately, including
+            // the interval before the next connection has been created.
+            hwState._wsGen += 1;
+            hwState._msgChain = Promise.resolve();
+            hwState._juceRoutingPromise = Promise.resolve();
+            window._highwayJuceRoutingPending = false;
             // Reset per-session adaptive-scale + HUD accumulators so a quick
             // stop→init can't inherit stale performance.now() anchors (which
             // would skip the next paused session's first draw or defer a
