@@ -1650,6 +1650,7 @@
                 pick_scrape_marks: pathNote?.pick_scrape_marks,
                 mt: pathNote?.mt === true,
                 tr: !!pathNote?.tr,
+                tremolo_marks: pathNote?.tremolo_marks,
                 sus: duration,
             });
         };
@@ -1717,6 +1718,7 @@
                     if (prev.slide_interval === undefined) prev.slide_interval = cur.slide_interval;
                     prev.trailStart = Math.min(prev.trailStart, cur.trailStart);
                     prev.tr = prev.tr || cur.tr;
+                    if (prev.tremolo_marks === undefined) prev.tremolo_marks = cur.tremolo_marks;
                     prev.sus = Math.max(prev.sus, cur.sus);
                     continue;
                 }
@@ -16788,6 +16790,7 @@
                             _scrChordNote.vb  = !!cn.vb;
                             _scrChordNote.vibrato_marks = cn.vibrato_marks;
                             _scrChordNote.tr  = !!cn.tr;
+                            _scrChordNote.tremolo_marks = cn.tremolo_marks;
                             _scrChordNote.ac  = !!cn.ac;
                             _scrChordNote.tp  = !!cn.tp;
                             _scrChordNote.ln  = !!cn.ln;
@@ -18811,9 +18814,47 @@
         function tremoloOffsetWorldX(n, chartTime, trailW) {
             if (!(n?.tr) || !(n?.sus > 0)) return 0;
             const elapsed = Math.max(0, chartTime - n.t);
-            const phase = (elapsed % TREMOLO_BUMP_S) / TREMOLO_BUMP_S;
+            let phase = (elapsed % TREMOLO_BUMP_S) / TREMOLO_BUMP_S;
+            let envelope = 1;
+            if (Array.isArray(n.tremolo_marks)) {
+                const intervals = tremoloVisualIntervals(n.tremolo_marks);
+                // Binary search keeps sampling independent of chart/interval length.
+                let lo = 0, hi = intervals.length;
+                while (lo < hi) {
+                    const mid = (lo + hi) >>> 1;
+                    if (intervals[mid].start <= elapsed) lo = mid + 1; else hi = mid;
+                }
+                const m = intervals[lo - 1];
+                if (!m || elapsed >= m.end) return 0;
+                phase = (m.phase + (elapsed - m.start) / m.period) % 1;
+                // Join the plain trail smoothly only at actual active-span ends.
+                envelope = Math.max(0, Math.min(1, (elapsed-m.spanStart)/0.03, (m.spanEnd-elapsed)/0.03));
+            }
             const tri = (Math.abs(phase - 0.5) - 0.25) * 3;
-            return sustainMotionWidth(trailW) * 0.5 * tri;
+            return sustainMotionWidth(trailW) * 0.5 * tri * envelope;
+        }
+
+        const tremoloIntervalCache = new WeakMap();
+        function tremoloVisualIntervals(marks) {
+            let result = tremoloIntervalCache.get(marks);
+            if (result) return result;
+            result = [];
+            for (const m of marks) {
+                // Never draw tighter than the existing generic tremolo pattern.
+                // This is visual only; the unmodified source rate stays in the chart.
+                const period = m.mode === 'specified' && Number.isFinite(m.period) && m.period > 0
+                    ? Math.max(TREMOLO_BUMP_S, m.period) : TREMOLO_BUMP_S;
+                const prev = result[result.length-1];
+                const joined = prev && Math.abs(prev.end-m.start) < 0.000002;
+                const phase = joined ? (prev.phase+(prev.end-prev.start)/prev.period)%1 : m.phase || 0;
+                result.push({start:m.start, end:m.end, period, phase,
+                    spanStart:joined ? prev.spanStart : m.start, spanEnd:m.end});
+            }
+            for (let i=result.length-2; i>=0; i--) {
+                if (Math.abs(result[i].end-result[i+1].start)<0.000002) result[i].spanEnd=result[i+1].spanEnd;
+            }
+            tremoloIntervalCache.set(marks,result);
+            return result;
         }
 
         /** Rendered X centre of one sustain strand at a chart time. */

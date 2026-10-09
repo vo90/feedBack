@@ -11,6 +11,7 @@ from lib.harmonic_target import validate_target, validate_alias
 from lib.whammy import validate_whammy
 from lib.finger_vibrato import validate_marks as validate_vibrato_marks
 from lib.harmonic_changes import validate_changes
+from lib.tremolo import validate as validate_tremolo_marks
 
 log = logging.getLogger("feedBack.lib.song")
 
@@ -96,6 +97,9 @@ class Note:
     vibrato_marks: list | None = None
     let_ring: bool = False
     let_ring_sustain: float | None = None
+    # Visual picking intervals, separate from attacks and scoring. None keeps
+    # the legacy whole-sustain cue; [] explicitly has no active interval.
+    tremolo_marks: list | None = None
 
 
 @dataclass
@@ -311,6 +315,10 @@ def note_to_wire(n: Note) -> dict:
         out['t'] = round(n.time, 6)
         out['sus'] = round(n.sustain, 6)
         out['vibrato_marks'] = validate_vibrato_marks({'sus': out['sus'], 'vibrato_marks': n.vibrato_marks})
+    if n.tremolo_marks is not None:
+        out['t'] = round(n.time, 6)
+        out['sus'] = round(n.sustain, 6)
+        out['tremolo_marks'] = validate_tremolo_marks(n.tremolo_marks, out['sus'])
     if n.whammy is not None:
         # Its owning duration must use the same precision as the expression.
         out['t'] = round(n.time, 6)
@@ -729,6 +737,7 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         vibrato=bool(d.get("vb", d.get("vibrato", False))),
         vibrato_marks=validate_vibrato_marks(d),
         tremolo=bool(d.get("tr", False)),
+        tremolo_marks=validate_tremolo_marks(d['tremolo_marks'], float(d.get('sus', 0))) if 'tremolo_marks' in d else None,
         accent=bool(d.get("ac", False)),
         tap=bool(d.get("tp", False)),
         link_next=bool(d.get("ln", False)),
