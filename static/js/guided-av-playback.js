@@ -8,10 +8,14 @@ export function calibrationOutputAdvancing(s) {
 
 export async function startCalibrationPlayback({api, lease, volume, active,
     onLease, recover, status, wait = ms => new Promise(r => setTimeout(r, ms))}) {
-    const original = lease.profile;
-    const sameSetup = p => p?.output?.persistent
+    // The lease describes output ownership; older Desktop leases omit the
+    // selected input channel. Read input identity from the public profile API.
+    const original = await api.getCalibration();
+    const sameOutput = p => p?.output?.persistent && original?.output
         && p.output.key === original.output.key && p.output.routeKey === original.output.routeKey
-        && p.input?.key === original.input?.key && p.perOutputSetup === original.perOutputSetup;
+        && p.perOutputSetup === original.perOutputSetup;
+    const sameSetup = p => sameOutput(p) && p.input?.key === original.input?.key;
+    if (!sameOutput(lease.profile)) throw new Error('The output changed. Close calibration and start again.');
     async function started() {
         await api.playCalibrationTrial(lease.token, volume);
         // Bounded wait; no main-thread sleeping and no guess from isAudioRunning.
@@ -47,7 +51,8 @@ export async function startCalibrationPlayback({api, lease, volume, active,
     lease = await api.beginGuidedCalibration();
     if (!active()) {await api.finishGuidedCalibration(lease.token);return false;}
     onLease(lease);
-    if (!sameSetup(lease.profile)) throw new Error('The output changed. Close calibration and start again.');
+    if (!sameOutput(lease.profile) || !sameSetup(await api.getCalibration()))
+        throw new Error('The output changed. Close calibration and start again.');
     if (!await started()) {
         if (!active()) return false;
         throw new Error('The selected output is still not playing audio. Close calibration and check that the device is connected and available.');

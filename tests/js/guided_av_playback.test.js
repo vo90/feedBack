@@ -26,7 +26,7 @@ test('stale output observations do not count as successful playback',()=>{
 });
 test('recovery refuses a route changed by the user',async()=>{
     const f=fixture();f.a.getCalibration=async()=>({...f.profile,output:{...f.profile.output,key:'other'}});
-    await assert.rejects(ctx.startCalibrationPlayback(f.options),/not playing/);assert.equal(f.calls.some(x=>x[0]==='device'),false);
+    await assert.rejects(ctx.startCalibrationPlayback(f.options),/output changed/);assert.equal(f.calls.some(x=>x[0]==='device'),false);
 });
 test('a stopped engine is not restarted against user intent',async()=>{
     const f=fixture();f.a.isAudioRunning=async()=>false;
@@ -47,4 +47,9 @@ test('cancellation while acquiring a replacement lease releases it',async()=>{
 test('failed reconfiguration cannot become a successful comparison',async()=>{
     const f=fixture();f.a.setDevice=async()=>({ok:false});
     await assert.rejects(ctx.startCalibrationPlayback(f.options),/Could not reconnect/);assert.equal(f.current(),null);
+});
+test('lease input channel metadata may differ from the public input profile',async()=>{
+    const f=fixture();f.options.lease={token:'old',profile:{...f.profile,input:{key:'legacy-unspecified-channel'}}};
+    f.a.beginGuidedCalibration=async()=>({token:'new',profile:f.options.lease.profile});
+    assert.equal(await ctx.startCalibrationPlayback(f.options),true);assert.equal(f.current().token,'new');
 });
