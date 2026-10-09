@@ -31,6 +31,9 @@ function once(value, anchor, replacement) {
   return value.replace(anchor, replacement);
 }
 let served = source;
+if (served.includes('function hwyResolveGuidanceAnchors(notes, chords, anchors) {'))
+  served=once(served,'function hwyResolveGuidanceAnchors(notes, chords, anchors) {',
+    'function hwyResolveGuidanceAnchors(notes, chords, anchors) { window.__guidanceBuilds=(window.__guidanceBuilds||0)+1;');
 if(served.includes('function hwyBuildChordHoldGuidance(chords, handShapes, templates, anchors, stringCount = 6, notes = []) {'))
   served=once(served,'function hwyBuildChordHoldGuidance(chords, handShapes, templates, anchors, stringCount = 6, notes = []) {',
     'function hwyBuildChordHoldGuidance(chords, handShapes, templates, anchors, stringCount = 6, notes = []) { if(window.__holdBuilds!==undefined)window.__holdBuilds++;');
@@ -70,6 +73,24 @@ function base(extra={}) {
 }
 const scenarios=[];
 function add(name,b,expected,extra={}) { scenarios.push({name,b,expected,...extra}); }
+for (const origin of ['source', 'user', 'generated', 'unknown']) {
+  for (const cameraMode of ['lookahead', 'stable']) for (const lefty of [false, true]) {
+    const authored = origin === 'source' || origin === 'user';
+    const lo = authored ? 1 : 2, hi = authored ? 5 : 6;
+    add(`provenance-${origin}-${cameraMode}-${lefty}`, base({cameraMode,lefty,
+      anchors:[{time:0,fret:2,width:4,guidanceOrigin:origin}],
+      chords:[chord(10,0),chord(10.6,0,{hd:true})],handShapes:[shape(10,12)]}),[[10,12]],
+      {image:true,wantFrames:2,frameBounds:[[10,lo,hi],[10.6,lo,hi]]});
+  }
+}
+for (const cameraMode of ['lookahead', 'stable']) {
+  add('provenance-invalid-lane-'+cameraMode, base({cameraMode,
+    anchors:[{time:0,fret:5,width:4,guidanceOrigin:'source'}], chords:[chord(10,1)]}),[[10,11]],
+    {image:true,frameBounds:[[10,2,8]]});
+  add('provenance-wrong-handshape-'+cameraMode, base({cameraMode,
+    anchors:[{time:0,fret:2,width:4,guidanceOrigin:'source'}], chords:[chord(10)],
+    handShapes:[shape(10,12,99)]}),[], {image:true,frameBounds:[[10,1,5]]});
+}
 for(const now of [9.7,10,10.4,10.99,11,11.01,12.5]) add('known-one-second-'+now,
   base({currentTime:now,chords:[chord(10,1)],handShapes:[shape()]}),now<11?[[10,11]]:[],{image:[9.7,10.4,11.01].includes(now),noTrails:true});
 for(const now of [9.7,10.05,10.11]) add('short-known-'+now,
@@ -256,14 +277,17 @@ async function main() {
       if(!reference)for(const p of seek){check(p.rails.length===(p.time<11?2:0),`seek to ${p.time}: stale/missing rails`);check(p.modelBuilds===1,`seek to ${p.time}: rebuilt model unnecessarily`);}
     }
     if(args.includes('--perf')) {
-      const bundles=[['dense',dense()]];
+      const authoredDense=dense(); authoredDense.anchors=authoredDense.anchors.map(a=>({...a,guidanceOrigin:'source'}));
+      const bundles=[['dense',dense()],['dense-authored',authoredDense]];
       const real=scenarios.find(s=>s.name==='bon-jovi-39');if(real)bundles.push(['bon-jovi',real.b]);
       for(const [name,b] of bundles){await init(b);const measured=await page.evaluate(()=>{
         const a=r.__holdAudit(),gl=a.ren.getContext(),extension=gl.getExtension('WEBGL_debug_renderer_info');
-        for(let i=0;i<15;i++)r.draw(bundle);gl.finish();const cpu=[],finish=[];
-        for(let round=0;round<3;round++){let t=performance.now();for(let i=0;i<15;i++)r.draw(bundle);cpu.push((performance.now()-t)/15);t=performance.now();gl.finish();finish.push(performance.now()-t);}
-        return {cpuMsPerDraw:cpu,finishWaitMs:finish,gpu:extension?gl.getParameter(extension.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER),proof:__capture()};
-      });results.push({name:'performance-'+name,...measured});console.log('Performance '+name+': '+JSON.stringify(measured.cpuMsPerDraw));}
+        for(let i=0;i<100;i++)r.draw(bundle);gl.finish();const cpu=[],finish=[],buildsBefore=window.__guidanceBuilds||0;
+        for(let round=0;round<5;round++){let t=performance.now();for(let i=0;i<100;i++)r.draw(bundle);cpu.push((performance.now()-t)/100);t=performance.now();gl.finish();finish.push(performance.now()-t);}
+        return {cpuMsPerDraw:cpu,finishWaitMs:finish,guidanceBuildsDuringFrames:(window.__guidanceBuilds||0)-buildsBefore,
+          gpu:extension?gl.getParameter(extension.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER),proof:__capture()};
+      });check(measured.guidanceBuildsDuringFrames===0,name+': guidance rebuilt during unchanged frames');
+      results.push({name:'performance-'+name,...measured});console.log('Performance '+name+': '+JSON.stringify(measured.cpuMsPerDraw));}
     }
     check(errors.length===0,'Browser errors: '+errors.join('\n'));
   }finally{await browser.close();}

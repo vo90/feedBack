@@ -53,6 +53,39 @@ const shapeBounds = new Function('const NFRETS = 24;' +
     ['laneBoundsFromAnchor', 'chordFallbackLaneBounds', 'chordShapeLaneBounds'].map(n => extractFn(screenSrc, n)).join('\n') +
     '\nreturn chordShapeLaneBounds;')();
 
+test('authored lane controls repeat geometry while generated and unknown keep their policy', () => {
+    for (const guidanceOrigin of ['source', 'user']) {
+        assert.deepEqual(shapeBounds(3, 3, { fret: 2, width: 4, guidanceOrigin }), { dMin: 1, dMax: 5 });
+        assert.deepEqual(shapeBounds(Infinity, -Infinity, { fret: 2, width: 5, guidanceOrigin }), { dMin: 1, dMax: 6 });
+    }
+    for (const guidanceOrigin of ['generated', 'unknown', undefined]) {
+        assert.deepEqual(shapeBounds(3, 3, { fret: 2, width: 4, guidanceOrigin }), { dMin: 2, dMax: 6 });
+    }
+});
+
+const resolveLanes = new Function('const NFRETS = 24, CHORD_ANCHOR_TIME_EPS = .000501; const isUnpitchedMute = n => n.f > 24;' +
+    extractFn(screenSrc, 'hwyResolveGuidanceAnchors') + '\nreturn hwyResolveGuidanceAnchors;')();
+
+test('invalid authored position resolves one safe lane for the floor and frame without source mutation', () => {
+    const anchors = [{ time: 0, fret: 5, width: 4, guidanceOrigin: 'source' }];
+    const resolved = resolveLanes([], [{ t: 1, notes: [{ s: 0, f: 3 }, { s: 1, f: 7 }] }], anchors);
+    const lane = resolved.at(-1);
+    assert.deepEqual(shapeBounds(3, 7, lane), { dMin: lane.fret - 1, dMax: lane.fret + lane.width - 1 });
+    assert.equal(anchors[0].fret, 5);
+    assert.equal(lane.fret, 3);
+});
+
+test('mixed lane timeline preserves generated spans and difficulty replacement changes ownership', () => {
+    const notes = [{ t: 1, s: 0, f: 3 }, { t: 3, s: 0, f: 3 }];
+    const anchors = [{ time: 0, fret: 2, width: 4, guidanceOrigin: 'source' },
+        { time: 2, fret: 2, width: 4, guidanceOrigin: 'generated' }];
+    const resolved = resolveLanes(notes, [], anchors);
+    assert.deepEqual(shapeBounds(3, 3, resolved[0]), { dMin: 1, dMax: 5 });
+    assert.deepEqual(shapeBounds(3, 3, resolved[1]), { dMin: 2, dMax: 6 });
+    const generated = anchors.map(a => ({ ...a, guidanceOrigin: 'generated' }));
+    assert.equal(resolveLanes(notes, [], generated), generated);
+});
+
 test('each chord starts at its lowest fret with at least four cells regardless of surrounding lane', () => {
     for (const anchor of [null, { fret: 1, width: 24 }, { fret: 3, width: 6 }, { fret: 20, width: 4 }]) {
         for (const [lo, hi, expected] of [[5, 7, [4, 8]], [7, 8, [6, 10]],

@@ -256,3 +256,27 @@ def test_no_notation_key_means_has_notation_false(make_client):
     assert frames[0]["has_notation"] is False
     assert "notation_info" not in order
     assert "notation_measures" not in order
+
+
+def test_guidance_ownership_reaches_effective_playback_anchors(make_client):
+    from lib.guidance_provenance import stamp
+    server = make_client()
+    pak = _write_sloppak(server._get_dlc_dir(), notation=False)
+    path = pak / "arrangements" / "keys.json"
+    chart = json.loads(path.read_text())
+    chart["anchors"] = [{"time": 0, "fret": 2, "width": 4}]
+    stamp(chart, "anchors", "source", producer="fixture")
+    level = {"difficulty": 0, "notes": [], "chords": [], "handshapes": [],
+             "anchors": [{"time": 0, "fret": 3, "width": 4}]}
+    stamp(level, "anchors", "generated", producer="fixture", policy="v1")
+    chart["phrases"] = [{"start_time": 0, "end_time": 10, "max_difficulty": 0, "levels": [level]}]
+    path.write_text(json.dumps(chart))
+    before = path.read_bytes()
+    with TestClient(server.app) as client:
+        frames = _drain(client, "/ws/highway/wstest.sloppak?arrangement=0", stop_type="ready")
+    anchors = next(f["data"] for f in frames if f["type"] == "anchors")
+    phrases = next(f["data"] for f in frames if f["type"] == "phrases")
+    assert anchors[0]["guidanceOrigin"] == "source"
+    assert phrases[0]["levels"][0]["anchors"][0]["guidanceOrigin"] == "generated"
+    assert "ext" not in phrases[0]["levels"][0]
+    assert path.read_bytes() == before

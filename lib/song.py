@@ -1,6 +1,7 @@
 """arrangement XML parser and song data models."""
 
 from dataclasses import dataclass, field
+from copy import deepcopy
 from pathlib import Path
 import bisect
 import json
@@ -133,6 +134,7 @@ class Anchor:
     time: float
     fret: int
     width: int = 4
+    guidance_origin: str = "unknown"  # resolved once on load; playback only
 
 
 @dataclass
@@ -172,6 +174,9 @@ class PhraseLevel:
     chords: list[Chord] = field(default_factory=list)
     anchors: list[Anchor] = field(default_factory=list)
     hand_shapes: list[HandShape] = field(default_factory=list)
+    ext: dict = field(default_factory=dict)
+    source_wire: dict = field(default_factory=dict, repr=False, compare=False)
+    normalized_wire: dict = field(default_factory=dict, repr=False, compare=False)
 
 
 @dataclass
@@ -233,6 +238,9 @@ class Arrangement:
     # follows the song-level tempo; when present a Reader uses it for this
     # chart and ignores the song-level tempo.
     tempos: list | None = None
+    ext: dict = field(default_factory=dict)
+    source_wire: dict = field(default_factory=dict, repr=False, compare=False)
+    normalized_wire: dict = field(default_factory=dict, repr=False, compare=False)
 
 
 @dataclass
@@ -388,8 +396,9 @@ def chord_to_wire(c: Chord) -> dict:
     return out
 
 
-def anchor_to_wire(a: Anchor) -> dict:
-    return {"time": a.time, "fret": a.fret, "width": a.width}
+def anchor_to_wire(a: Anchor, *, playback=False) -> dict:
+    return {"time": a.time, "fret": a.fret, "width": a.width,
+            **({"guidanceOrigin": a.guidance_origin} if playback else {})}
 
 
 def hand_shape_to_wire(h: HandShape) -> dict:
@@ -781,34 +790,40 @@ def chord_from_wire(d: dict) -> Chord:
     )
 
 
-def phrase_level_to_wire(pl: PhraseLevel) -> dict:
-    return {
+def phrase_level_to_wire(pl: PhraseLevel, *, playback=False) -> dict:
+    out = {
         "difficulty": pl.difficulty,
         "notes": [note_to_wire(n) for n in pl.notes],
         "chords": [chord_to_wire(c) for c in pl.chords],
-        "anchors": [anchor_to_wire(a) for a in pl.anchors],
+        "anchors": [anchor_to_wire(a, playback=playback) for a in pl.anchors],
         "handshapes": [hand_shape_to_wire(h) for h in pl.hand_shapes],
     }
+    if pl.ext and not playback:
+        out["ext"] = deepcopy(pl.ext)
+    return out if playback else _preserve_guidance_wire(pl, out)
 
 
-def phrase_to_wire(p: Phrase) -> dict:
+def phrase_to_wire(p: Phrase, *, playback=False) -> dict:
     return {
         "start_time": round(p.start_time, 3),
         "end_time": round(p.end_time, 3),
         "max_difficulty": p.max_difficulty,
-        "levels": [phrase_level_to_wire(lv) for lv in p.levels],
+        "levels": [phrase_level_to_wire(lv, playback=playback) for lv in p.levels],
     }
 
 
-def phrase_level_from_wire(d: dict) -> PhraseLevel:
-    return PhraseLevel(
+def phrase_level_from_wire(d: dict, inherited=None, *, remember=True) -> PhraseLevel:
+    from lib.guidance_provenance import origins
+    lane_origins = origins({**(inherited or {}), **d}, "anchors")
+    result = PhraseLevel(
+        ext=deepcopy(d.get("ext", {})),
         difficulty=int(d.get("difficulty", 0)),
         notes=[note_from_wire(n) for n in d.get("notes", [])],
         chords=[chord_from_wire(c) for c in d.get("chords", [])],
         anchors=[
             Anchor(time=float(a.get("time", 0)), fret=int(a.get("fret", 0)),
-                   width=int(a.get("width", 4)))
-            for a in d.get("anchors", [])
+                   width=int(a.get("width", 4)), guidance_origin=origin)
+            for a, origin in zip(d.get("anchors", []), lane_origins)
         ],
         hand_shapes=[
             HandShape(chord_id=int(h.get("chord_id", 0)),
@@ -818,14 +833,17 @@ def phrase_level_from_wire(d: dict) -> PhraseLevel:
             for h in d.get("handshapes", [])
         ],
     )
+    if remember:
+        _remember_guidance_wire(result, d)
+    return result
 
 
-def phrase_from_wire(d: dict) -> Phrase:
+def phrase_from_wire(d: dict, inherited=None) -> Phrase:
     return Phrase(
         start_time=float(d.get("start_time", 0.0)),
         end_time=float(d.get("end_time", 0.0)),
         max_difficulty=int(d.get("max_difficulty", 0)),
-        levels=[phrase_level_from_wire(lv) for lv in d.get("levels", [])],
+        levels=[phrase_level_from_wire(lv, inherited) for lv in d.get("levels", [])],
     )
 
 
@@ -1116,6 +1134,36 @@ def sanitize_tempos(events) -> list[dict]:
     return out
 
 
+def _remember_guidance_wire(obj, raw):
+    if isinstance(raw.get("ext"), dict) and "guidanceProvenance" in raw["ext"]:
+        keys = ("tuning", "capo", "centOffset", "notes", "chords", "templates", "anchors", "handshapes", "beats")
+        obj.source_wire = deepcopy({k: raw[k] for k in keys if k in raw})
+
+
+def _preserve_guidance_wire(obj, out):
+    # Saving an untouched chart must not invalidate receipts through the wire
+    # parser's rounding/default insertion. Never reseal data merely on loading.
+    from lib.guidance_provenance import digest
+    if "beats" in obj.source_wire:
+        out.setdefault("beats", deepcopy(obj.source_wire["beats"]))
+    if obj.source_wire and not obj.normalized_wire:
+        # Saving needs the parser's display projection; ordinary gameplay does
+        # not. Compute it lazily from the immutable original, not edited objects.
+        if isinstance(obj, PhraseLevel):
+            normalized = phrase_level_to_wire(phrase_level_from_wire(obj.source_wire, remember=False))
+        else:
+            normalized = arrangement_to_wire(arrangement_from_wire(obj.source_wire, remember=False))
+        obj.normalized_wire = {k: digest(normalized[k]) for k in
+            ("tuning", "capo", "centOffset", "notes", "chords", "templates", "anchors", "handshapes") if k in normalized}
+    for key, normalized in obj.normalized_wire.items():
+        if digest(out.get(key)) == normalized:
+            if key in obj.source_wire:
+                out[key] = deepcopy(obj.source_wire[key])
+            else:
+                out.pop(key, None)
+    return out
+
+
 def arrangement_to_wire(arr: Arrangement) -> dict:
     """Serialize an Arrangement into a JSON-ready dict matching the wire format."""
     out = {
@@ -1147,14 +1195,20 @@ def arrangement_to_wire(arr: Arrangement) -> dict:
     # the song-level tempo (empty/None).
     if arr.tempos:
         out["tempos"] = list(arr.tempos)
-    return out
+    if arr.ext:
+        out["ext"] = deepcopy(arr.ext)
+    return _preserve_guidance_wire(arr, out)
 
 
-def arrangement_from_wire(d: dict) -> Arrangement:
+def arrangement_from_wire(d: dict, *, remember=True) -> Arrangement:
     """Parse a wire-format arrangement dict back into an Arrangement dataclass."""
     from lib.generated_guidance_compat import refresh_generated_positions
+    from lib.guidance_provenance import origins
     d = refresh_generated_positions(d)
-    return Arrangement(
+    lane_origins = origins(d, "anchors")
+    inherited = {k: d[k] for k in ("tuning", "capo", "centOffset", "templates", "beats") if k in d}
+    result = Arrangement(
+        ext=deepcopy(d.get("ext", {})),
         name=d.get("name", ""),
         tuning=list(d.get("tuning", [0] * 6)),
         capo=int(d.get("capo", 0)),
@@ -1164,8 +1218,8 @@ def arrangement_from_wire(d: dict) -> Arrangement:
         chords=[chord_from_wire(c) for c in d.get("chords", [])],
         anchors=[
             Anchor(time=float(a.get("time", 0)), fret=int(a.get("fret", 0)),
-                   width=int(a.get("width", 4)))
-            for a in d.get("anchors", [])
+                   width=int(a.get("width", 4)), guidance_origin=origin)
+            for a, origin in zip(d.get("anchors", []), lane_origins)
         ],
         hand_shapes=[
             HandShape(chord_id=int(h.get("chord_id", 0)),
@@ -1191,7 +1245,7 @@ def arrangement_from_wire(d: dict) -> Arrangement:
         # "slider disabled" signal downstream; an explicit empty list on
         # the wire is treated the same as absent.
         phrases=(
-            [phrase_from_wire(p) for p in d["phrases"]]
+            [phrase_from_wire(p, inherited) for p in d["phrases"]]
             if d.get("phrases") else None
         ),
         # `tones` is an opaque block written by the converter. An empty dict
@@ -1201,6 +1255,9 @@ def arrangement_from_wire(d: dict) -> Arrangement:
         # Absent on older sloppaks.
         tones=(d["tones"] if isinstance(d.get("tones"), dict) and d["tones"] else None),
     )
+    if remember:
+        _remember_guidance_wire(result, d)
+    return result
 
 
 def _float(elem, attr, default=0.0):

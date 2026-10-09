@@ -3239,6 +3239,14 @@
     // An unrelated lane may be wider or begin below the chord; its spare space
     // must not become part of this chord. All-open shapes retain a local context.
     function chordShapeLaneBounds(fMin, fMax, anchor) {
+        if (anchor?.guidanceOrigin === 'source' || anchor?.guidanceOrigin === 'user') {
+            const first = Math.max(1, Number(anchor.fret));
+            const width = Number(anchor.width ?? 4), last = first + width - 1;
+            const hasFrets = Number.isFinite(fMin) && Number.isFinite(fMax) && fMin > 0 && fMax >= fMin;
+            if (Number.isInteger(first) && Number.isInteger(width) && width > 0
+                && last <= NFRETS && !(first === 1 && width === NFRETS)
+                && (!hasFrets || (first <= fMin && last >= fMax))) return laneBoundsFromAnchor(anchor);
+        }
         if (Number.isFinite(fMin) && Number.isFinite(fMax) && fMin > 0 && fMax >= fMin) {
             return chordFallbackLaneBounds(fMin, fMax);
         }
@@ -3249,6 +3257,56 @@
     function anchorPlayedFretSpanAt(anchorArr, t) {
         if (!anchorArr || !anchorArr.length) return null;
         return anchorPlayedFretInclusiveSpan(getChartAnchorAt(anchorArr, t));
+    }
+
+    // Resolve malformed/outlying authored positions once per effective chart.
+    // Generated and unknown spans retain the established geometry policy.
+    // The returned lanes are shared by the floor, boxes, holds and hit edges.
+    function hwyResolveGuidanceAnchors(notes, chords, anchors) {
+        if (!anchors?.some(a => a.guidanceOrigin === 'source' || a.guidanceOrigin === 'user')) return anchors;
+        const positions = anchors.slice().sort((a, b) => a.time - b.time);
+        const attacks = [];
+        const add = (t, members) => {
+            if (!Number.isFinite(t)) return;
+            const frets = members.filter(n => n && n.f > 0 && n.f <= NFRETS && !isUnpitchedMute(n)).map(n => n.f);
+            if (frets.length) attacks.push({ t, low: Math.min(...frets), high: Math.max(...frets) });
+        };
+        for (const n of notes || []) add(n.t, [n]);
+        for (const c of chords || []) if (!c.h3dSynth) add(c.t, c.notes || []);
+        attacks.sort((a, b) => a.t - b.t);
+        const result = [];
+        let index = 0;
+        for (let i = 0; i < positions.length; i++) {
+            const original = positions[i], nextTime = positions[i + 1]?.time ?? Infinity;
+            const authored = original.guidanceOrigin === 'source' || original.guidanceOrigin === 'user';
+            let row = original;
+            if (authored) {
+                const first = Math.max(1, Number(row.fret)), width = Number(row.width ?? 4);
+                if (!Number.isInteger(first) || !Number.isInteger(width) || width < 1
+                    || first + width - 1 > NFRETS || (first === 1 && width === NFRETS)) {
+                    row = { ...original, fret: Math.max(1, Math.min(NFRETS - 3,
+                        Math.round(Number(row.fret)) || 1)), width: 4 };
+                }
+            }
+            result.push(row);
+            while (index < attacks.length && attacks[index].t < nextTime - CHORD_ANCHOR_TIME_EPS) {
+                const attack = attacks[index++];
+                if (!authored || attack.t < original.time - CHORD_ANCHOR_TIME_EPS) continue;
+                const first = Math.max(1, Number(row.fret)), width = Number(row.width ?? 4);
+                const last = first + width - 1;
+                const valid = Number.isInteger(first) && Number.isInteger(width) && width > 0
+                    && last <= NFRETS && !(first === 1 && width === NFRETS);
+                if (valid && first <= attack.low && last >= attack.high) continue;
+                const low = valid ? Math.min(first, attack.low) : attack.low;
+                const high = valid ? Math.max(last, attack.high) : attack.high;
+                const size = Math.min(NFRETS, Math.max(4, high - low + 1));
+                row = { ...original, time: Math.max(original.time, attack.t),
+                    fret: Math.max(1, Math.min(low, NFRETS - size + 1)), width: size };
+                if (result[result.length - 1].time === row.time) result.pop();
+                result.push(row);
+            }
+        }
+        return result;
     }
 
     // Camera stops are separate from musical regions. Brief detours can share
@@ -13873,8 +13931,8 @@
         // Hold timing and position guidance are resolved independently from
         // chord-frame visibility. Rebuild only when arrangement inputs change;
         // approach, seeking and suppressed repeat gems cannot change an end.
-        function _ensureChordGuideEnds(chords, bundle) {
-            const { notes, handShapes, chordTemplates, anchors } = bundle;
+        function _ensureChordGuideEnds(chords, bundle, anchors = bundle.anchors) {
+            const { notes, handShapes, chordTemplates } = bundle;
             const old = _chordGuideCache;
             if (old && old.chords === chords && old.notes === notes && old.handShapes === handShapes
                 && old.chordTemplates === chordTemplates && old.anchors === anchors
@@ -15215,6 +15273,7 @@
         }
 
         function update(bundle) {
+            const effectiveAnchors = resolvedGuidanceAnchors(bundle);
             pbBeg(0);
             _trailYieldFrameId++;
             for (const event of _visibleTrailEvents) {
@@ -15410,12 +15469,12 @@
             }
             const boxedChordMembers = _ensureBoxedChordMembership(
                 notes, chords, bundle.handShapes, bundle.chordTemplates);
-            const chordGuideEnds = _ensureChordGuideEnds(chords, bundle);
+            const chordGuideEnds = _ensureChordGuideEnds(chords, bundle, effectiveAnchors);
             if (!_authoredStrumCache || _authoredStrumCache.notes !== notes
-                || _authoredStrumCache.chords !== chords || _authoredStrumCache.anchors !== bundle.anchors
+                || _authoredStrumCache.chords !== chords || _authoredStrumCache.anchors !== effectiveAnchors
                 || _authoredStrumCache.stringCount !== nStr) {
-                const model = hwyBuildAuthoredStrumFrames(notes, chords, bundle.anchors, nStr);
-                _authoredStrumCache = { notes, chords, anchors: bundle.anchors, stringCount: nStr, ...model,
+                const model = hwyBuildAuthoredStrumFrames(notes, chords, effectiveAnchors, nStr);
+                _authoredStrumCache = { notes, chords, anchors: effectiveAnchors, stringCount: nStr, ...model,
                     displayChords: model.frames.length
                         ? [...chords, ...model.frames].sort((a, b) => a.t - b.t) : chords };
             }
@@ -15476,7 +15535,7 @@
             // destination representation. Do not infer links from timing alone:
             // grace-slide targets deliberately omit `ln` because they are struck.
             if (notes !== _linkNextTargetNotesRef || bundle.chords !== _linkNextTargetChordsRef
-                || bundle.anchors !== _linkedTrailAnchorsRef
+                || effectiveAnchors !== _linkedTrailAnchorsRef
                 || _chordGuideCache.model !== _linkedTrailHoldModelRef) {
                 const bendLinks = new Map();
                 _linkNextTargetSet = hwyLinkNextTargetNotes(notes, bundle.chords, 1e-6, bendLinks);
@@ -15499,16 +15558,16 @@
                         const a = _linkedTrailOpenOrigins.get(source);
                         const b = _linkedTrailOpenOrigins.get(destination);
                         if (a === false || b === false) return false;
-                        trailOpenLayoutAt(sourceTime, a, bundle.anchors, _trailOpenLayoutScratch);
+                        trailOpenLayoutAt(sourceTime, a, effectiveAnchors, _trailOpenLayoutScratch);
                         const center = _trailOpenLayoutScratch[0], width = _trailOpenLayoutScratch[1];
-                        trailOpenLayoutAt(targetTime, b, bundle.anchors, _trailOpenLayoutScratch);
+                        trailOpenLayoutAt(targetTime, b, effectiveAnchors, _trailOpenLayoutScratch);
                         return Math.abs(center - _trailOpenLayoutScratch[0]) < 1e-8
                             && Math.abs(width - _trailOpenLayoutScratch[1]) < 1e-8;
                     },
                 });
                 _linkNextTargetNotesRef = notes;
                 _linkNextTargetChordsRef = bundle.chords;
-                _linkedTrailAnchorsRef = bundle.anchors;
+                _linkedTrailAnchorsRef = effectiveAnchors;
                 _linkedTrailHoldModelRef = _chordGuideCache.model;
                 _trailYieldNotesRef = null;
             }
@@ -15634,7 +15693,7 @@
                 _measureStarts = _ms;
             }
             const sections = bundle.sections;
-            const anchors = bundle.anchors;
+            const anchors = effectiveAnchors;
             // Stable-camera fallback positions are chart-local too. Use the
             // same region for the floor, gold row and camera, without changing
             // the authored anchors used by chord/technique rendering.
@@ -22601,6 +22660,7 @@
         const _stablePlan = { rows: null, key: '', rate: 1, stops: [], regions: [], revision: 0, result: {} };
 
         function stableRegionReset() {
+            _guidanceLanes.notes = _guidanceLanes.chords = _guidanceLanes.anchors = _guidanceLanes.result = null;
             const cache = _stableRegions;
             cache.notes = cache.chords = cache.anchors = null;
             cache.noteCount = cache.chordCount = cache.anchorCount = -1;
@@ -22609,9 +22669,23 @@
             _stablePlan.rows = null; _stablePlan.stops = []; _stablePlan.regions = []; _stablePlan.key = '';
         }
 
+        const _guidanceLanes = { notes: null, chords: null, anchors: null, result: null, noteCount: -1, chordCount: -1, anchorCount: -1 };
+        function resolvedGuidanceAnchors(bundle) {
+            const c = _guidanceLanes;
+            if (c.notes !== bundle.notes || c.chords !== bundle.chords || c.anchors !== bundle.anchors
+                || c.noteCount !== (bundle.notes?.length || 0) || c.chordCount !== (bundle.chords?.length || 0)
+                || c.anchorCount !== (bundle.anchors?.length || 0)) {
+                c.result = hwyResolveGuidanceAnchors(bundle.notes, bundle.chords, bundle.anchors);
+                c.notes = bundle.notes; c.chords = bundle.chords; c.anchors = bundle.anchors;
+                c.noteCount = bundle.notes?.length || 0; c.chordCount = bundle.chords?.length || 0;
+                c.anchorCount = bundle.anchors?.length || 0;
+            }
+            return c.result;
+        }
+
         function stableRegionAnchors(bundle) {
             const c = _stableRegions;
-            const notes = bundle.notes, chords = bundle.chords, anchors = bundle.anchors;
+            const notes = bundle.notes, chords = bundle.chords, anchors = resolvedGuidanceAnchors(bundle);
             if (c.notes !== notes || c.chords !== chords || c.anchors !== anchors
                 || c.noteCount !== (notes?.length || 0) || c.chordCount !== (chords?.length || 0)
                 || c.anchorCount !== (anchors?.length || 0) || c.strings !== nStr || c.uniform !== _h3dFretUniform) {
