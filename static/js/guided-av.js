@@ -1,6 +1,7 @@
 import {createAvComparison, calibrationVisualTime} from './guided-av-model.js';
 import {jucePlayer, pausePlayback, _queueBackingCommand} from './transport.js';
 import {setAvOffsetMs} from './settings.js';
+import {startCalibrationPlayback} from './guided-av-playback.js';
 
 let opening = false;
 export async function openGuidedAv() {
@@ -20,7 +21,7 @@ export async function openGuidedAv() {
     .gav-wrap{padding:32px}.gav-top{display:flex;justify-content:space-between;gap:16px;align-items:start}.gav-eyebrow{font-size:12px;color:#71ddc5;letter-spacing:.12em;text-transform:uppercase}.gav-title{font-size:28px;font-weight:650;margin:8px 0}.gav-muted{color:#a6b7cc;font-size:14px;line-height:1.6}.gav-device{background:#1b2940;border-radius:12px;padding:12px 16px;margin:20px 0;font-size:13px;color:#b8c9df;overflow-wrap:anywhere}
     .gav-stage{margin:24px 0;background:#0a1322;border:1px solid #26364d;border-radius:16px;overflow:hidden}.gav-track{position:relative;height:150px;margin:0 32px}.gav-line{position:absolute;left:50%;top:32px;bottom:32px;width:3px;background:#526c89;border-radius:4px}.gav-marker{position:absolute;left:50%;top:63px;width:24px;height:24px;border-radius:50%;background:#69e1c5;transform:translateX(-50%);opacity:0;box-shadow:0 0 20px #69e1c540}.gav-caption{text-align:center;min-height:28px;padding:0 16px 14px;color:#9eb1ca;font-size:13px}.gav-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}.guided-av-dialog button{border-radius:10px;padding:11px 17px;font-size:14px;font-weight:600;border:1px solid #344760;background:#223149;color:#e6edf7;cursor:pointer}.guided-av-dialog button:hover{background:#30435d}.guided-av-dialog button:focus-visible{outline:3px solid #72e3cc;outline-offset:3px}.guided-av-dialog button:disabled{opacity:.4;cursor:default}.guided-av-dialog .gav-primary{background:#64dbc0;color:#09241e;border-color:#64dbc0}.guided-av-dialog .gav-close{padding:4px 10px;background:transparent;border:0;font-size:25px}.gav-choices{display:grid;grid-template-columns:1fr 1fr;gap:10px}.gav-value{font-size:38px;font-weight:650;margin:10px 0}.gav-error{color:#ffd2a0;min-height:24px;font-size:14px;margin-top:12px}.gav-footer{display:flex;justify-content:space-between;align-items:center;margin-top:20px;gap:12px}.gav-volume{display:flex;align-items:center;gap:12px;margin:16px 0;font-size:13px;color:#a6b7cc}.gav-volume input{accent-color:#69e1c5;width:130px}.gav-hidden{display:none!important}@media(max-width:540px){.gav-wrap{padding:20px}.gav-title{font-size:23px}.gav-choices{grid-template-columns:1fr}.gav-actions button{flex:1}}
     </style><div class="gav-wrap"><div class="gav-top"><div><div class="gav-eyebrow" id="gav-step">Audio / visual calibration</div><h2 id="gav-title" class="gav-title">Find your rhythm</h2></div><button class="gav-close" id="gav-close" aria-label="Close calibration">×</button></div>
-    <p class="gav-muted" id="gav-description">Watch the marker cross the line and listen to the click. No guitar or microphone needed. Your song will stay paused.</p>
+    <p class="gav-muted" id="gav-description">Watch the marker cross the line and listen to the click. No guitar or microphone needed.</p>
     <div class="gav-device" id="gav-device">Preparing your active output…</div>
     <div class="gav-volume"><label for="gav-volume">Click volume</label><input id="gav-volume" type="range" min="2" max="60" value="35" aria-label="Click volume"></div>
     <div class="gav-stage"><div class="gav-track"><div id="gav-line" class="gav-line"></div><div id="gav-marker" class="gav-marker"></div></div><div class="gav-caption" id="gav-caption">Each click belongs to one crossing.</div></div>
@@ -34,7 +35,7 @@ export async function openGuidedAv() {
     let lease = null, model = null, mode = 'prepare', cancelled = false, closing = false;
     let heartbeat = null, frame = null, clock = null, playing = false, trialBusy = false;
     let offset = 0, lastFrame = 0, observed = 0, cueIndex = -1, invalid = false, pollBusy = false;
-    let actionGeneration = 0, trialStarted = 0;
+    let actionGeneration = 0, trialStarted = 0, recoveryAttempted = false;
     const busy = {busy:true}; window._guidedAvCalibration = busy;
     const setError = text => { $('error').textContent = text; };
     const controls = enabled => buttons.forEach(button => {button.disabled = !enabled;});
@@ -115,18 +116,41 @@ export async function openGuidedAv() {
     async function trial(value) {
         if (!lease || trialBusy || cancelled) return;
         trialBusy = true; const generation = ++actionGeneration;
+        const launchControls = ['test','start','replay','undo','retry','old','new','save'];
+        launchControls.forEach(id => {$(id).disabled = true;});
+        let failed = false;
         controls(false); stopVisual(); setError('');
         $('caption').textContent = 'Listen to three clicks. Watch where the marker crosses.';
         try {
-            await api.playCalibrationTrial(lease.token, Number($('volume').value) / 100);
-            if (cancelled || generation !== actionGeneration) return;
+            const ready = await startCalibrationPlayback({api, lease,
+                volume:Number($('volume').value) / 100,
+                active:() => !cancelled && generation === actionGeneration,
+                onLease:value => {lease = value;}, status:setError,
+                recover:() => {if (recoveryAttempted) return false; recoveryAttempted = true; return true;},
+            });
+            if (!ready) return;
+            setError('');
             clock = Object.create(jucePlayer);
             Object.assign(clock, {_polling:true, _speed:1, _dur:10, _presentation:null, _sourceAt:performance.now(),
                 _sampleSequence:-1, _nativeGeneration:-1, _clockMapping:null, _clockSnapshot:{}});
             offset = value; observed = 0; cueIndex = -1; invalid = false; lastFrame = 0; playing = true; trialStarted = performance.now();
             frame = requestAnimationFrame(animate);
-        } catch (error) {setError('The output is unavailable or changed. Close calibration and apply your output again.');}
-        finally {trialBusy = false;}
+        } catch (error) {
+            failed = true;
+            if (!cancelled) {
+                $('caption').textContent = 'Audio could not start.';
+                setError(error?.message || 'The output is unavailable. Close calibration and apply your output again.');
+            }
+        }
+        finally {
+            trialBusy = false;
+            if (!cancelled && dialog.isConnected) {
+                launchControls.forEach(id => {$(id).disabled = !lease;});
+                $('undo').disabled = !lease || !model.canUndo;
+                $('new').disabled = !lease || !model.result?.consistent;
+                $('save').disabled = !lease || failed || !model.result?.consistent;
+            }
+        }
     }
     async function poll() {
         if (!lease || pollBusy || closing) return;
