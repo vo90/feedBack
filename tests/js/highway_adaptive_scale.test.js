@@ -120,11 +120,12 @@ test('render scale is sanitized on load and effective scale guards non-finite', 
 
 test('stop() tears down the perf HUD and resets per-session accumulators', () => {
     const src = highwaySources();
-    assert.match(src, /stop\(\)\s*\{[\s\S]{0,400}?_perfHud\.remove\(\)/,
+    const stop = extractBlock(src, '        stop() {');
+    assert.match(stop, /_perfHud\.remove\(\)/,
         'stop() must remove the perf HUD so it cannot strand in the DOM');
-    assert.match(src, /stop\(\)\s*\{[\s\S]{0,1200}?_autoScale\s*=\s*1/,
+    assert.match(stop, /_autoScale\s*=\s*1/,
         'stop() must reset _autoScale so the next session starts at the manual scale');
-    assert.match(src, /stop\(\)\s*\{[\s\S]{0,1200}?_lastPausedDrawAt\s*=\s*0/,
+    assert.match(stop, /_lastPausedDrawAt\s*=\s*0/,
         'stop() must reset _lastPausedDrawAt so a quick stop→init has fresh paused-throttle timing');
 });
 
