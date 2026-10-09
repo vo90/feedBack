@@ -27,28 +27,47 @@ export async function openGuidedAv() {
     <div class="gav-stage"><div class="gav-track"><div id="gav-line" class="gav-line"></div><div id="gav-marker" class="gav-marker"></div></div><div class="gav-caption" id="gav-caption">Each click belongs to one crossing.</div></div>
     <div id="gav-prepare"><p class="gav-muted">Sit where you normally play, using your normal display settings. Start with a comfortable volume.</p><div class="gav-actions"><button id="gav-test">Test clicks</button><button class="gav-primary" id="gav-start">Begin comparison</button></div></div>
     <div id="gav-compare" class="gav-hidden"><p class="gav-muted" id="gav-question">Which came first?</p><div class="gav-choices"><button data-answer="earlier">Sound earlier</button><button data-answer="later">Sound later</button><button data-answer="together">They seem together</button><button data-answer="unsure">Not sure</button></div><div class="gav-actions"><button id="gav-replay">Replay</button><button id="gav-undo">Undo answer</button></div></div>
-    <div id="gav-review" class="gav-hidden"><div id="gav-result" class="gav-value"></div><p id="gav-consistency" class="gav-muted"></p><div class="gav-actions"><button id="gav-old">Preview previous</button><button id="gav-new">Preview suggested</button></div><div class="gav-actions"><button id="gav-save" class="gav-primary">Save calibration</button><button id="gav-retry">Try again</button><button id="gav-keep">Keep previous</button></div></div>
+    <div id="gav-review" class="gav-hidden"><div id="gav-result" class="gav-value"></div><p id="gav-consistency" class="gav-muted"></p>
+    <div class="gav-fine"><label for="gav-adjust">Fine-tune alignment</label><div class="gav-adjust-row"><button id="gav-minus" aria-label="Decrease alignment by 1 millisecond">−1 ms</button><input id="gav-adjust" type="range" min="-1000" max="1000" step="1" aria-describedby="gav-adjust-help"><button id="gav-plus" aria-label="Increase alignment by 1 millisecond">+1 ms</button><label class="gav-exact"><input id="gav-exact" type="number" min="-1000" max="1000" step="1" aria-label="Alignment in milliseconds"> ms</label></div><p id="gav-adjust-help" class="gav-muted">Lower values move the marker later; higher values move it earlier. Preview your adjustment before saving.</p></div>
+    <div class="gav-actions"><button id="gav-new">Preview adjustment</button><button id="gav-old">Preview previous</button><button id="gav-reset">Reset adjustment</button></div><div class="gav-actions"><button id="gav-save" class="gav-primary">Save calibration</button><button id="gav-retry">Try again</button><button id="gav-keep">Keep previous</button></div></div>
     <p id="gav-error" class="gav-error" role="status" aria-live="polite"></p><div class="gav-footer"><span class="gav-muted" id="gav-progress">Prepare · Compare · Review</span><span class="gav-muted">Input timing stays unchanged</span></div></div>`;
     document.body.appendChild(dialog); dialog.showModal();
+    const style = document.createElement('style');
+    style.textContent = '.gav-fine{background:#1b2940;border-radius:12px;padding:16px}.gav-adjust-row{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}.gav-adjust-row input[type=range]{flex:1;min-width:100px;accent-color:#69e1c5}.gav-exact{white-space:nowrap}.gav-exact input{width:80px;background:#0a1322;color:#e6edf7;border:1px solid #526c89;border-radius:8px;padding:8px;font:inherit}.gav-fine .gav-muted{margin-bottom:0;font-size:13px}.gav-fine>label{font-size:14px;font-weight:600}';
+    dialog.appendChild(style);
     const $ = id => dialog.querySelector('#gav-' + id);
     const buttons = [...dialog.querySelectorAll('[data-answer]')];
     let lease = null, model = null, mode = 'prepare', cancelled = false, closing = false;
     let heartbeat = null, frame = null, clock = null, playing = false, trialBusy = false;
     let offset = 0, lastFrame = 0, observed = 0, cueIndex = -1, invalid = false, pollBusy = false;
     let actionGeneration = 0, trialStarted = 0, recoveryAttempted = false;
+    let draft = 0, verifiedDraft = null, previewDraft = false, previewChanged = false, routeValid = true;
     const busy = {busy:true}; window._guidedAvCalibration = busy;
     const setError = text => { $('error').textContent = text; };
     const controls = enabled => buttons.forEach(button => {button.disabled = !enabled;});
+    function updateSave() {
+        $('save').disabled = !lease || !routeValid || trialBusy || playing || verifiedDraft !== draft || $('exact').value === '';
+    }
+    function adjust(value) {
+        if (!Number.isFinite(value)) return;
+        draft = Math.max(-1000, Math.min(1000, Math.round(value)));
+        $('adjust').value = $('exact').value = String(draft);
+        $('result').textContent = `${draft > 0 ? '+' : ''}${draft} ms`;
+        verifiedDraft = null;
+        if (playing && previewDraft) {offset = draft; previewChanged = true;}
+        updateSave();
+    }
     function stopVisual() {
         playing = false; if (frame) cancelAnimationFrame(frame); frame = null;
         $('marker').style.opacity = '0'; $('line').style.background = '#526c89';
     }
     async function close(save = false) {
         if (closing) return;
+        if (save && (!lease || !routeValid || trialBusy || playing || verifiedDraft !== draft || $('exact').value === '')) return;
         closing = true; cancelled = true; actionGeneration++; stopVisual();
         try {
             if (lease) {
-                const value = save ? model.result.offsetMs : undefined;
+                const value = save ? draft : undefined;
                 const response = await api.finishGuidedCalibration(lease.token, value);
                 lease = null;
                 if (save) {
@@ -77,21 +96,24 @@ export async function openGuidedAv() {
     function renderMode() {
         for (const name of ['prepare','compare','review']) $(name).classList.toggle('gav-hidden', name !== mode);
         $('step').textContent = mode === 'prepare' ? 'Step 1 of 3 · Prepare' : mode === 'compare' ? 'Step 2 of 3 · Compare' : 'Step 3 of 3 · Review';
-        $('title').textContent = mode === 'prepare' ? 'Find your rhythm' : mode === 'compare' ? 'Watch. Listen. Compare.' : 'Your suggested alignment';
+        $('title').textContent = mode === 'prepare' ? 'Find your rhythm' : mode === 'compare' ? 'Watch. Listen. Compare.' : 'Review your alignment';
         $('undo').disabled = !model?.canUndo;
         $('progress').textContent = mode === 'compare' ? `Comparison ${model.count + 1} · ${model.round ? 'Checking consistency' : 'Finding alignment'}` : 'Prepare · Compare · Review';
     }
     function review() {
         mode = 'review'; renderMode(); const r = model.result;
-        $('result').textContent = r.consistent ? `${r.offsetMs > 0 ? '+' : ''}${r.offsetMs} ms` : 'Let’s check again';
-        $('consistency').textContent = r.consistent ? `The two rounds were ${r.repeatabilityMs} ms apart. Previous setting: ${lease.profile.output.offsetMs} ms. This is perceptual alignment, not a measured hardware delay.` : 'Your answers did not identify a repeatable alignment. Your previous calibration is still saved. You can try again or keep it.';
-        $('save').disabled = !r.consistent; $('new').disabled = !r.consistent;
+        adjust(r.consistent ? r.offsetMs : lease.profile.output.offsetMs);
+        const reason = r.repeatabilityMs !== undefined ? `The two rounds were ${r.repeatabilityMs} ms apart (the guide needs 30 ms or less).` : r.outOfRange ? 'The comparisons reached the adjustment limit.' : 'The comparisons did not find a clear alignment.';
+        $('consistency').textContent = r.consistent ? `Suggested: ${r.offsetMs} ms. The two rounds were ${r.repeatabilityMs} ms apart. Fine-tune if needed, then preview. Previous: ${lease.profile.output.offsetMs} ms.` : `${reason} Start from your previous ${draft} ms setting below, adjust manually, or try the guide again.`;
+        $('caption').textContent = 'Preview your adjustment to check the click and crossing.';
+        $('new').disabled = false; updateSave();
         $('save').textContent = lease.profile.perOutputSetup === false ? 'Save shared calibration' : 'Save calibration';
     }
     function animate(now) {
         if (!playing) return;
         if (now - trialStarted > 12000) {
             stopVisual(); controls(false);
+            verifiedDraft = null; updateSave();
             setError('The timing signal was interrupted. Replay this comparison.'); return;
         }
         if (lastFrame && now - lastFrame > 80) invalid = true;
@@ -107,19 +129,22 @@ export async function openGuidedAv() {
             if (passed > cueIndex) {cueIndex = passed; observed = passed;}
             if (observed >= 3 && t >= 8.2 && t - offset / 1000 >= 8.2) {
                 stopVisual(); controls(!invalid);
-                $('caption').textContent = invalid ? 'Timing was interrupted. Replay this comparison.' : 'Think about the click and the crossing, then choose below.';
+                if (mode === 'review' && previewDraft && !previewChanged && !invalid) verifiedDraft = draft;
+                $('caption').textContent = invalid ? 'Timing was interrupted. Replay this comparison.' : mode === 'review' ? (previewChanged ? 'Preview again to check all three clicks at this adjustment.' : 'Adjust further, or save if the click and crossing feel aligned.') : 'Think about the click and the crossing, then choose below.';
+                updateSave();
                 return;
             }
         } else if (clock?._presentation && now - clock._sourceAt > 150) invalid = true;
         frame = requestAnimationFrame(animate);
     }
-    async function trial(value) {
-        if (!lease || trialBusy || cancelled) return;
+    async function trial(value, isDraft = false) {
+        if (!lease || !routeValid || trialBusy || cancelled) return;
         trialBusy = true; const generation = ++actionGeneration;
-        const launchControls = ['test','start','replay','undo','retry','old','new','save'];
+        const launchControls = ['test','start','replay','undo','retry','old','new','save','adjust','exact','minus','plus','reset'];
         launchControls.forEach(id => {$(id).disabled = true;});
         let failed = false;
         controls(false); stopVisual(); setError('');
+        previewDraft = isDraft; previewChanged = false; verifiedDraft = null;
         $('caption').textContent = 'Listen to three clicks. Watch where the marker crosses.';
         try {
             const ready = await startCalibrationPlayback({api, lease,
@@ -147,8 +172,9 @@ export async function openGuidedAv() {
             if (!cancelled && dialog.isConnected) {
                 launchControls.forEach(id => {$(id).disabled = !lease;});
                 $('undo').disabled = !lease || !model.canUndo;
-                $('new').disabled = !lease || !model.result?.consistent;
-                $('save').disabled = !lease || failed || !model.result?.consistent;
+                $('new').disabled = !lease || !routeValid;
+                if (failed) verifiedDraft = null;
+                updateSave();
             }
         }
     }
@@ -156,9 +182,10 @@ export async function openGuidedAv() {
         if (!lease || pollBusy || closing) return;
         pollBusy = true;
         try {
-            const polledClock = clock;
-            const sent = performance.now(), snapshot = await api.pollCalibration(lease.token), received = performance.now();
-            if (!snapshot) {setError('Output changed. Close this guide and start again for the new setup.'); stopVisual(); controls(false); $('save').disabled = true; return;}
+            const polledClock = clock, polledLease = lease;
+            const sent = performance.now(), snapshot = await api.pollCalibration(polledLease.token), received = performance.now();
+            if (lease !== polledLease || closing) return;
+            if (!snapshot) {routeValid = false; verifiedDraft = null; setError('Output changed. Close this guide and start again for the new setup.'); stopVisual(); controls(false); updateSave(); return;}
             if (clock && clock === polledClock && clock._validSnapshot(snapshot)) {
                 const mapped = clock._mapSnapshotTime(snapshot, sent, received);
                 if (mapped !== null) clock._acceptSnapshot(snapshot, mapped);
@@ -178,7 +205,13 @@ export async function openGuidedAv() {
     for (const button of buttons) button.onclick = () => {model.answer(button.dataset.answer); if (model.result) review(); else {renderMode();void trial(model.candidate);}};
     $('retry').onclick = () => {model = createAvComparison(lease.profile.output.offsetMs);mode='compare';renderMode();void trial(model.candidate);};
     $('old').onclick = () => void trial(lease.profile.output.offsetMs);
-    $('new').onclick = () => void trial(model.result.offsetMs);
+    $('new').onclick = () => void trial(draft, true);
+    $('adjust').oninput = () => adjust(Number($('adjust').value));
+    $('exact').oninput = () => {if ($('exact').value === '') {verifiedDraft = null; previewChanged = true; updateSave();} else adjust(Number($('exact').value));};
+    $('exact').onchange = () => adjust(Number($('exact').value || draft));
+    $('minus').onclick = () => adjust(draft - 1);
+    $('plus').onclick = () => adjust(draft + 1);
+    $('reset').onclick = () => adjust(model.result?.consistent ? model.result.offsetMs : lease.profile.output.offsetMs);
     $('save').onclick = () => void close(true);
     document.addEventListener('visibilitychange', hidden); window.addEventListener('pagehide', hidden);
     window.addEventListener('keydown', keys, true);
