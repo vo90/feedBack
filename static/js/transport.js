@@ -647,6 +647,7 @@ let _resumeInFlight = null;
 let _resumeRequestGen = 0;
 
 export async function startPhysicalPlayback(options = {}) {
+    if (window._guidedAvCalibration) return {status:'cancelled', completed:false};
     const session = audioSeekGen();
     const attempt = ++_playAttemptGen;
     const permitted = () => session === audioSeekGen()
@@ -699,6 +700,7 @@ export async function pausePlayback() {
 }
 
 export function resumePlayback() {
+    if (window._guidedAvCalibration) return Promise.resolve({status:'cancelled', completed:false});
     const owner = _playbackStartOwner();
     if (owner) return owner.completion;
     if (_resumeInFlight) return _resumeInFlight;

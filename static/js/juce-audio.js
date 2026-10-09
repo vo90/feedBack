@@ -17,6 +17,7 @@ if (window.feedBack?.audioSession && window.feedBackDesktop?.audio) {
         () => jucePlayer._polling && jucePlayer._sourcePlaying);
     window.feedBack.audioSession.nativeBacking = createNativeBackingOwner({
         api: window.feedBackDesktop.audio, player: jucePlayer, queue: _queueBackingCommand,
+        isSuspended: () => !!window._guidedAvCalibration,
         getSong: () => window._currentSongAudio, isCoreNative: () => !!window._juceMode,
         isPresentationComplete: () => window.highway?.isPresentationComplete?.() !== false,
         getAnalyser: () => window._juceMode || window.feedBack.audioSession.nativeBacking?.snapshot()?.state === 'ready' ? analysis : null,
@@ -328,7 +329,7 @@ if (window.feedBack?.audioSession && window.feedBackDesktop?.audio) {
     }
 
     async function _reevaluateJuceRouting() {
-        if (_rerouteInFlight) return;
+        if (_rerouteInFlight || window._guidedAvCalibration) return;
         const songAudio = window._currentSongAudio;
         // Core owns single-file playback; the Stems plugin owns multitrack
         // sessions through the same native player.
