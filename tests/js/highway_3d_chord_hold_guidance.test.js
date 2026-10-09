@@ -135,7 +135,7 @@ test('bounds agree with chord fret cells, including out-of-anchor chords', () =>
     const narrow = resolve([ch], [], [], [{ time: 0, fret: 4, width: 4 }]).holds[0];
     assert.deepEqual([narrow.dMin, narrow.dMax], [2, 6]);
     const covering = resolve([ch], [], [], [{ time: 0, fret: 2, width: 4 }]).holds[0];
-    assert.deepEqual([covering.dMin, covering.dMax], [2, 6]);
+    assert.deepEqual([covering.dMin, covering.dMax], [1, 5]);
 });
 
 test('muted and moving technique chords do not lose per-string instruction', () => {
@@ -353,7 +353,7 @@ test('chart timestamp rounding recognizes the correct onset without shortening i
         [{ time: 0, fret: 8 }, { time: 10.0004, fret: 2, width: 4 }]);
     const hold = result.byChord.get(ch);
     near(hold.end, 12);
-    assert.deepEqual([hold.dMin, hold.dMax], [2, 6]);
+    assert.deepEqual([hold.dMin, hold.dMax], [1, 5]);
 });
 
 test('resolution is deterministic for seeking and does not mutate chart input', () => {

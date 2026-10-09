@@ -31,6 +31,8 @@ function once(value, anchor, replacement) {
   return value.replace(anchor, replacement);
 }
 let served = source;
+if(served.includes('const positionAnchors = anchors;'))served=once(served,'const positionAnchors = anchors;',
+  'const positionAnchors = anchors; if(window.__holdProbe)window.__holdProbe.lanes=positionAnchors.map(a=>({...a}));');
 if (served.includes('function hwyResolveGuidanceAnchors(notes, chords, anchors) {'))
   served=once(served,'function hwyResolveGuidanceAnchors(notes, chords, anchors) {',
     'function hwyResolveGuidanceAnchors(notes, chords, anchors) { window.__guidanceBuilds=(window.__guidanceBuilds||0)+1;');
@@ -75,13 +77,23 @@ const scenarios=[];
 function add(name,b,expected,extra={}) { scenarios.push({name,b,expected,...extra}); }
 for (const origin of ['source', 'user', 'generated', 'unknown']) {
   for (const cameraMode of ['lookahead', 'stable']) for (const lefty of [false, true]) {
-    const authored = origin === 'source' || origin === 'user';
-    const lo = authored ? 1 : 2, hi = authored ? 5 : 6;
+    const lo = 1, hi = 5;
     add(`provenance-${origin}-${cameraMode}-${lefty}`, base({cameraMode,lefty,
       anchors:[{time:0,fret:2,width:4,guidanceOrigin:origin}],
       chords:[chord(10,0),chord(10.6,0,{hd:true})],handShapes:[shape(10,12)]}),[[10,12]],
       {image:true,wantFrames:2,frameBounds:[[10,lo,hi],[10.6,lo,hi]]});
   }
+}
+for(const cameraMode of ['lookahead','stable']) for(const lefty of [false,true]) {
+  add(`shared-legacy-g-${cameraMode}-${lefty}`,base({cameraMode,lefty,currentTime:71.8,
+    anchors:[{time:67.039001,fret:2,width:4},{time:71.998001,fret:2,width:4}],
+    chordTemplates:[{name:'G5',frets:[3,-1,0,0,3,3],fingers:[-1,-1,-1,-1,-1,-1]}],
+    chords:[71.998,72.468,72.937].map((t,i)=>chord(t,0,{hd:i>0,
+      notes:[3,127,0,0,3,3].map((f,s)=>note({s,f,mt:f===127}))})),handShapes:[]}),[],
+    {image:true,wantFrames:3,sharedLane:true,frameBounds:[71.998,72.468,72.937].map(t=>[t,1,5])});
+  add(`shared-legacy-outlying-${cameraMode}-${lefty}`,base({cameraMode,lefty,
+    anchors:[{time:0,fret:12,width:8}],chords:[chord(10,1)]}),[[10,11]],
+    {image:true,sharedLane:true,frameBounds:[[10,2,6]]});
 }
 for (const cameraMode of ['lookahead', 'stable']) {
   add('provenance-invalid-lane-'+cameraMode, base({cameraMode,
@@ -253,6 +265,10 @@ async function main() {
         check(proof.rails.some(r=>r.start<=start+1e-6&&r.end>=end-1e-6),scenario.name+': shared hold missing');
       }
       if(scenario.frameBounds) {
+        if(scenario.sharedLane)for(const [t,lo,hi] of scenario.frameBounds) {
+          const row=proof.lanes.filter(a=>a.time<=t+.000501).at(-1);
+          check(row&&row.fret-1===lo&&row.fret+row.width-1===hi,scenario.name+': floor/box lane mismatch '+t);
+        }
         const expected=await page.evaluate(rows=>rows.map(([t,lo,hi])=>{
           const a=r.__holdAudit(),l=a.fretWorld(lo),h=a.fretWorld(hi);
           return {t,center:(l+h)/2,width:Math.abs(h-l)};

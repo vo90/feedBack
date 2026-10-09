@@ -31,6 +31,20 @@ function harness(logarithmic = false) {
     `)();
 }
 const { build, at } = harness();
+const shared = new Function(`
+    const NFRETS=24, CHORD_ANCHOR_TIME_EPS=.000501;
+    const fretWire=f=>f*10, fretX=fretWire, fretMid=f=>f>0?(f-.5)*10:-2;
+    ${helpers}
+    ${['laneBoundsFromAnchor', 'chordFallbackLaneBounds', 'chordShapeLaneBounds',
+        'hwyBuildAuthoredStrumFrames', 'hwyResolveGuidanceAnchors', 'hwyResolveChordLanes'].map(extract).join('\n')}
+    return {
+        bounds:chordShapeLaneBounds,
+        build(notes,chords,anchors,stable=true) {
+            const resolved=hwyResolveChordLanes(chords,hwyResolveGuidanceAnchors(notes,chords,anchors),notes);
+            return stable ? hwyResolveChordLanes(chords,hwyBuildPlayingRegions(notes,chords,resolved),notes) : resolved;
+        }
+    };
+`)();
 const note = (t, f, extra = {}) => ({ t, f, s: 0, ...extra });
 const anchor = (time, fret, width = 4) => ({ time, fret, width });
 const chord = (t, frets, extra = {}) => ({ t, notes: frets.map((f, s) => ({ f, s })), ...extra });
@@ -43,6 +57,77 @@ function frozen(value) {
     }
     return value;
 }
+
+test('legacy Back In Black G repeats share the 2–5 lane rather than shift their boxes to 3–6', () => {
+    const chords = [71.998,72.468,72.937,73.407,74.189].map(t => chord(t,[3,0,0,0,3,3]));
+    const anchors = [anchor(67.039001,2),anchor(71.998001,2),anchor(76.93,2)];
+    const before = JSON.stringify({chords,anchors});
+    for (const stable of [false,true]) {
+        const rows=shared.build([],chords,anchors,stable);
+        for(const c of chords) {
+            const row=at(rows,c.t+.000501);
+            assert.deepEqual(bounds(row),[2,4]);
+            assert.deepEqual(shared.bounds(3,3,row),{dMin:1,dMax:5});
+        }
+    }
+    assert.equal(JSON.stringify({chords,anchors}),before);
+});
+
+test('outlying, oversized and missing legacy positions repair the lane and box together', () => {
+    for(const anchors of [[],[anchor(0,1,24)],[anchor(0,3,12)],[anchor(0,15)]]) {
+        const chords=[chord(1,[5,7]),chord(2,[3,12]),chord(3,[7,8])];
+        for(const stable of [false,true]) {
+            const rows=shared.build([],chords,anchors,stable);
+            for(const [i,expected] of [[0,[5,4]],[1,[3,10]],[2,[7,4]]]) {
+                const row=at(rows,chords[i].t+.000501);
+                assert.deepEqual(bounds(row),expected);
+                const frets=chords[i].notes.map(n=>n.f);
+                assert.deepEqual(shared.bounds(Math.min(...frets),Math.max(...frets),row),
+                    {dMin:row.fret-1,dMax:row.fret+row.width-1});
+            }
+        }
+    }
+});
+
+test('source/user wide positions survive stable-camera resolution and narrower chords', () => {
+    for(const guidanceOrigin of ['source','user']) {
+        const rows=shared.build([], [chord(1,[3,5]),chord(2,[7,8])],
+            [{...anchor(0,2,10),guidanceOrigin}]);
+        for(const time of [1,2]) {
+            const row=at(rows,time);
+            assert.deepEqual(bounds(row),[2,10]);
+            assert.equal(row.guidanceOrigin,guidanceOrigin);
+            assert.deepEqual(shared.bounds(7,8,row),{dMin:1,dMax:11});
+        }
+    }
+});
+
+test('simultaneous shapes share union bounds; open and unpitched mutes never widen them', () => {
+    const chords=[chord(1,[3,5]),chord(1.0004,[8,10]),
+        {t:2,notes:[{s:0,f:3},{s:1,f:22,mt:true},{s:2,f:0}]}];
+    const rows=shared.build([],chords,[anchor(0,1)]);
+    const union=at(rows,1.000501);
+    assert.deepEqual(bounds(union),[3,8]);
+    assert.deepEqual(shared.bounds(3,5,union),shared.bounds(8,10,union));
+    assert.deepEqual(bounds(at(rows,2)),[3,4]);
+});
+
+test('explicit staggered strums resolve the full brush lane at the first attack', () => {
+    const notes=[{t:1,s:0,f:3,ch:0},{t:1.03,s:1,f:7,ch:0},{t:1.06,s:2,f:8,ch:0}];
+    for(const stable of [false,true]) {
+        const rows=shared.build(notes,[],[anchor(0,2)],stable);
+        assert.deepEqual(bounds(at(rows,1)),[3,6]);
+        assert.deepEqual(shared.bounds(3,8,at(rows,1)),{dMin:2,dMax:8});
+    }
+});
+
+test('inferred stable lane becomes the box lane and retains rest-only position changes', () => {
+    const notes=[note(1,10),note(1.2,10),note(1.4,10)];
+    const rows=shared.build(notes,[chord(2,[10,12])],[anchor(0,2),anchor(5,15)]);
+    const row=at(rows,2);
+    assert.deepEqual(shared.bounds(10,12,row),{dMin:row.fret-1,dMax:row.fret+row.width-1});
+    assert.deepEqual(bounds(at(rows,6)),[15,4]);
+});
 
 test('fixed authored area ignores alternating fretted, open and chord attacks', () => {
     const notes = Array.from({ length: 60 }, (_, i) => note(i / 10, [2, 0, 5, 3][i % 4]));
