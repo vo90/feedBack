@@ -1,5 +1,31 @@
 # Chord boxes and generated hand positions
 
+## Shared renderer lane bounds
+
+The renderer now accepts a valid containing four-fret position even when an
+older FeedPak has no guidance provenance. A chord fretted at 3 inside a 2–5
+lane therefore uses a 2–5 box, rather than an independently positioned 3–6 box.
+Source/user positions retain their explicitly authored wider spans. Untrusted
+oversized or outlying positions use the existing shape-local fallback, applied
+to both the lane timeline and its chord boxes. Genuine wide chords remain wide.
+
+This resolution is cached per effective note/chord/anchor arrays, streamed
+counts and string count. Stable-camera inferred regions are reconciled once
+and shared by the floor, boxes, holds and technique geometry. Simultaneous
+groups use their combined fretted span; explicit staggered strums use the whole
+brush at its first attack. Open strings and unpitched mutes add no artificial
+fretted position. Authored provenance survives stable-region construction.
+
+No archive, note timing, scoring, or import data is changed. Older PSARC and
+MinusMix conversions benefit without reimporting. The shape-local geometry
+described below is the fallback, not a reason to offset a box from a valid lane.
+
+Validation: 927 highway JavaScript tests; 74 WebGL cases plus eight shared-lane
+cases in each notation style; all 283 chords in the reported older Back In Black
+FeedPak agree with their resolved lane in both camera modes. Cache tests include
+2,000 repeated frame/seek queries and difficulty replacement. Real-library
+evidence is kept outside the repository.
+
 ## Timed slide positions
 
 The shared policy is now `slide-follow-v1`. Known slides produce moving

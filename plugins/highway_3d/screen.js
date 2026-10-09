@@ -2983,8 +2983,8 @@
      * maximum end in their range, allowing whole expired ranges to be skipped.
      */
     // Explicit note `ch` IDs describe one brush gesture, never a timing guess.
-    // These frames are presentation-only: source events, camera, holds and scoring
-    // continue to consume the original note/chord arrays at their own attack times.
+    // These frames are presentation-only: holds and scoring continue to consume
+    // the original events at their own attack times. Their lane uses the full brush.
     function hwyBuildAuthoredStrumFrames(notes, chords, anchors, stringCount = 6) {
         const groups = new Map(), byNote = new Map(), frames = [];
         const realMembers = new Set();
@@ -3302,17 +3302,19 @@
         });
     }
 
-    // One shape-local rule for frames, holds, open members and trail footprints.
-    // An unrelated lane may be wider or begin below the chord; its spare space
-    // must not become part of this chord. All-open shapes retain a local context.
+    // Share a valid containing lane with the floor, including legacy FeedPaks
+    // without provenance. Untrusted oversized/outlying spans still need repair.
     function chordShapeLaneBounds(fMin, fMax, anchor) {
-        if (anchor?.guidanceOrigin === 'source' || anchor?.guidanceOrigin === 'user') {
+        if (anchor) {
             const first = Math.max(1, Number(anchor.fret));
             const width = Number(anchor.width ?? 4), last = first + width - 1;
             const hasFrets = Number.isFinite(fMin) && Number.isFinite(fMax) && fMin > 0 && fMax >= fMin;
+            const trusted = anchor.guidanceOrigin === 'source' || anchor.guidanceOrigin === 'user'
+                || anchor.h3dResolvedChordLane;
+            const suitableWidth = trusted || (width >= 4 && width <= Math.max(4, hasFrets ? fMax - fMin + 1 : 4));
             if (Number.isInteger(first) && Number.isInteger(width) && width > 0
                 && last <= NFRETS && !(first === 1 && width === NFRETS)
-                && (!hasFrets || (first <= fMin && last >= fMax))) return laneBoundsFromAnchor(anchor);
+                && suitableWidth && (!hasFrets || (first <= fMin && last >= fMax))) return laneBoundsFromAnchor(anchor);
         }
         if (Number.isFinite(fMin) && Number.isFinite(fMax) && fMin > 0 && fMax >= fMin) {
             return chordFallbackLaneBounds(fMin, fMax);
@@ -3373,6 +3375,51 @@
                 result.push(row);
             }
         }
+        return result;
+    }
+
+    // Reconcile chord geometry with the lane timeline once per chart. A repair
+    // changes both consumers, never just the box. Simultaneous chord groups use
+    // their combined fretted span; open and unpitched members add no fake fret.
+    // The chart and its imported anchor records remain untouched.
+    function hwyResolveChordLanes(chords, anchors, notes = [], stringCount = 6) {
+        const events = (chords || []).filter(c => c && !c.h3dSynth && Number.isFinite(c.t))
+            .concat(notes?.length ? hwyBuildAuthoredStrumFrames(notes, chords, anchors, stringCount).frames : [])
+            .sort((a, b) => a.t - b.t);
+        if (!events.length) return anchors;
+        const positions = (anchors || []).filter(a => a && Number.isFinite(a.time))
+            .slice().sort((a, b) => a.time - b.time);
+        if (!positions.length || positions[0].time > events[0].t + CHORD_ANCHOR_TIME_EPS) {
+            positions.unshift({ time: Math.min(0, events[0].t), fret: 1, width: 4 });
+        }
+        const result = [];
+        const append = row => {
+            if (result.at(-1)?.time === row.time) result.pop();
+            result.push(row);
+        };
+        let p = 0, row = positions[0];
+        for (let i = 0; i < events.length;) {
+            const time = events[i].t;
+            while (p < positions.length && positions[p].time <= time + CHORD_ANCHOR_TIME_EPS) {
+                row = positions[p++]; append(row);
+            }
+            let low = Infinity, high = -Infinity;
+            do {
+                for (const n of events[i].notes || []) {
+                    if (!n || !Number.isFinite(n.f) || n.f <= 0 || n.f > NFRETS || isUnpitchedMute(n)) continue;
+                    low = Math.min(low, n.f); high = Math.max(high, n.f);
+                }
+                i++;
+            } while (i < events.length && events[i].t - time <= CHORD_ANCHOR_TIME_EPS);
+            // A prior derived wide chord is not authority for the next shape.
+            const bounds = chordShapeLaneBounds(low, high, { ...row, h3dResolvedChordLane: false });
+            const fret = bounds.dMin + 1, width = bounds.dMax - bounds.dMin;
+            if (fret !== Number(row.fret) || width !== Number(row.width ?? 4) || !row.h3dResolvedChordLane) {
+                row = { ...row, time: Math.max(row.time, time), fret, width, h3dResolvedChordLane: true };
+                append(row);
+            }
+        }
+        while (p < positions.length) append(positions[p++]);
         return result;
     }
 
@@ -3585,7 +3632,10 @@
             const valid = anchor.fret != null && Number.isFinite(f) && f >= 0 && fret <= NFRETS
                 && Number.isFinite(w) && width >= 1 && fret + width - 1 <= NFRETS
                 && !(fret === 1 && width === NFRETS);
-            positionRows.push({ time: anchor.time, bounds: valid ? { fret, width } : null });
+            positionRows.push({ time: anchor.time, bounds: valid ? { fret, width,
+                ...(anchor.guidanceOrigin ? { guidanceOrigin: anchor.guidanceOrigin } : {}),
+                ...(anchor.h3dResolvedChordLane ? { h3dResolvedChordLane: true } : {}),
+            } : null });
         }
         positionRows.sort((a, b) => a.time - b.time);
         // At an exact duplicate timestamp the last source row wins, just as
@@ -3665,7 +3715,8 @@
             }
         }
 
-        const equal = (a, b) => !!a && !!b && a.fret === b.fret && a.width === b.width;
+        const equal = (a, b) => !!a && !!b && a.fret === b.fret && a.width === b.width
+            && a.guidanceOrigin === b.guidanceOrigin && !!a.h3dResolvedChordLane === !!b.h3dResolvedChordLane;
         const covers = (area, low, high) => low >= area.fret && high < area.fret + area.width;
         const rows = [];
         let current = positions[0]?.bounds || { fret: 1, width: Math.min(4, NFRETS) };
@@ -3680,7 +3731,7 @@
         const append = (time, area, source) => {
             const previous = rows[rows.length - 1];
             if (equal(previous, area)) return;
-            const row = { time, fret: area.fret, width: area.width, source };
+            const row = { time, ...area, source };
             if (previous?.time === time) rows[rows.length - 1] = row;
             else rows.push(row);
         };
@@ -15346,7 +15397,7 @@
 
         function update(bundle) {
             bundle = letRingView(bundle);
-            const effectiveAnchors = resolvedGuidanceAnchors(bundle);
+            const effectiveAnchors = cameraMode === 'stable' ? stableRegionAnchors(bundle) : resolvedGuidanceAnchors(bundle);
             pbBeg(0);
             _trailYieldFrameId++;
             for (const event of _visibleTrailEvents) {
@@ -15767,10 +15818,9 @@
             }
             const sections = bundle.sections;
             const anchors = effectiveAnchors;
-            // Stable-camera fallback positions are chart-local too. Use the
-            // same region for the floor, gold row and camera, without changing
-            // the authored anchors used by chord/technique rendering.
-            const positionAnchors = cameraMode === 'stable' ? stableRegionAnchors(bundle) : anchors;
+            // Floor, gold row, chord boxes and techniques consume the same
+            // cached lane timeline, including stable-camera inferred positions.
+            const positionAnchors = anchors;
 
             // ── Fret wire anchor highlight ─────────────────────────────────
             // Default all wires to gray; wires inside the active anchor range
@@ -22795,16 +22845,18 @@
             _stablePlan.rows = null; _stablePlan.stops = []; _stablePlan.regions = []; _stablePlan.key = '';
         }
 
-        const _guidanceLanes = { notes: null, chords: null, anchors: null, result: null, noteCount: -1, chordCount: -1, anchorCount: -1 };
+        const _guidanceLanes = { notes: null, chords: null, anchors: null, result: null, noteCount: -1, chordCount: -1, anchorCount: -1, strings: 0 };
         function resolvedGuidanceAnchors(bundle) {
             const c = _guidanceLanes;
             if (c.notes !== bundle.notes || c.chords !== bundle.chords || c.anchors !== bundle.anchors
                 || c.noteCount !== (bundle.notes?.length || 0) || c.chordCount !== (bundle.chords?.length || 0)
-                || c.anchorCount !== (bundle.anchors?.length || 0)) {
-                c.result = hwyResolveGuidanceAnchors(bundle.notes, bundle.chords, bundle.anchors);
+                || c.anchorCount !== (bundle.anchors?.length || 0) || c.strings !== nStr) {
+                c.result = hwyResolveChordLanes(bundle.chords,
+                    hwyResolveGuidanceAnchors(bundle.notes, bundle.chords, bundle.anchors), bundle.notes, nStr);
                 c.notes = bundle.notes; c.chords = bundle.chords; c.anchors = bundle.anchors;
                 c.noteCount = bundle.notes?.length || 0; c.chordCount = bundle.chords?.length || 0;
                 c.anchorCount = bundle.anchors?.length || 0;
+                c.strings = nStr;
             }
             return c.result;
         }
@@ -22815,7 +22867,7 @@
             if (c.notes !== notes || c.chords !== chords || c.anchors !== anchors
                 || c.noteCount !== (notes?.length || 0) || c.chordCount !== (chords?.length || 0)
                 || c.anchorCount !== (anchors?.length || 0) || c.strings !== nStr || c.uniform !== _h3dFretUniform) {
-                c.rows = hwyBuildPlayingRegions(notes, chords, anchors, nStr);
+                c.rows = hwyResolveChordLanes(chords, hwyBuildPlayingRegions(notes, chords, anchors, nStr), notes, nStr);
                 c.notes = notes; c.chords = chords; c.anchors = anchors;
                 c.noteCount = notes?.length || 0; c.chordCount = chords?.length || 0;
                 c.anchorCount = anchors?.length || 0; c.strings = nStr; c.uniform = _h3dFretUniform;

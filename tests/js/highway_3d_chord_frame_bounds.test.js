@@ -53,13 +53,13 @@ const shapeBounds = new Function('const NFRETS = 24;' +
     ['laneBoundsFromAnchor', 'chordFallbackLaneBounds', 'chordShapeLaneBounds'].map(n => extractFn(screenSrc, n)).join('\n') +
     '\nreturn chordShapeLaneBounds;')();
 
-test('authored lane controls repeat geometry while generated and unknown keep their policy', () => {
+test('valid containing four-fret lanes align old and new FeedPak chord boxes with the floor', () => {
     for (const guidanceOrigin of ['source', 'user']) {
         assert.deepEqual(shapeBounds(3, 3, { fret: 2, width: 4, guidanceOrigin }), { dMin: 1, dMax: 5 });
         assert.deepEqual(shapeBounds(Infinity, -Infinity, { fret: 2, width: 5, guidanceOrigin }), { dMin: 1, dMax: 6 });
     }
     for (const guidanceOrigin of ['generated', 'unknown', undefined]) {
-        assert.deepEqual(shapeBounds(3, 3, { fret: 2, width: 4, guidanceOrigin }), { dMin: 2, dMax: 6 });
+        assert.deepEqual(shapeBounds(3, 3, { fret: 2, width: 4, guidanceOrigin }), { dMin: 1, dMax: 5 });
     }
 });
 
@@ -81,7 +81,7 @@ test('mixed lane timeline preserves generated spans and difficulty replacement c
         { time: 2, fret: 2, width: 4, guidanceOrigin: 'generated' }];
     const resolved = resolveLanes(notes, [], anchors);
     assert.deepEqual(shapeBounds(3, 3, resolved[0]), { dMin: 1, dMax: 5 });
-    assert.deepEqual(shapeBounds(3, 3, resolved[1]), { dMin: 2, dMax: 6 });
+    assert.deepEqual(shapeBounds(3, 3, resolved[1]), { dMin: 1, dMax: 5 });
     const generated = anchors.map(a => ({ ...a, guidanceOrigin: 'generated' }));
     assert.equal(resolveLanes(notes, [], generated), generated);
 });

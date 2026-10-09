@@ -21,6 +21,8 @@ function harness() {
         const isUnpitchedMute=n=>n.f>24;
         ${source.match(/const _guidanceLanes = [^;]+;/)[0]}
         ${extract('hwyResolveGuidanceAnchors')}
+        ${['isPlayableFret', 'isPlainDeadNote', 'isRenderableNote', 'laneBoundsFromAnchor',
+            'chordFallbackLaneBounds', 'chordShapeLaneBounds', 'hwyBuildAuthoredStrumFrames', 'hwyResolveChordLanes'].map(extract).join('\n')}
         ${extract('resolvedGuidanceAnchors')}
         ${source.slice(start, end)}
         const xFret=f=>(lefty?-1:1)*f*10;
@@ -60,6 +62,18 @@ test('anchor replacement of equal size and streamed growth rebuild the index', (
     b.anchors.push({time:20,fret:20,width:4});
     assert.equal(h.region(b,21).x,210);
     assert.equal(h.count(),3);
+});
+
+test('real chord repairs are cached across playback and seeks, then rebuilt for a new difficulty', () => {
+    const h=harness(), b=bundle();
+    b.chords=[{t:1,notes:[{s:0,f:8},{s:1,f:10}]}];
+    const rows=h.rows(b);
+    assert.deepEqual([h.region(b,1).dMin,h.region(b,1).dMax],[7,11]);
+    for(let i=0;i<2000;i++) assert.equal(h.rows(b),rows);
+    assert.equal(h.count(),1);
+    b.chords=[{t:1,notes:[{s:0,f:3},{s:1,f:5}]}];
+    assert.deepEqual([h.region(b,1).dMin,h.region(b,1).dMax],[1,5]);
+    assert.equal(h.count(),2);
 });
 test('notes, chords, spacing and string count invalidate inferred region data', () => {
     const h=harness(), b=bundle(); h.rows(b);
