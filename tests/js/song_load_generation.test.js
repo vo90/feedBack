@@ -13,7 +13,7 @@ function build() {
         artAbortController:null, audio:{pause(){},src:''}, currentFilename:'',
         document:{getElementById(id){if(!elements.has(id))elements.set(id,{textContent:'Previous song'});return elements.get(id);}},
         setTimeout(fn,ms){timers.push({fn,ms});},
-        window:{feedBack:{emit(){}},highway:{stop(){},init(){},connect(url){connections.push(url);},getRenderScale(){return 1;}}},
+        window:{feedBack:{isPlaying:true,emit(){}},highway:{stop(){},init(){},connect(url){connections.push(url);},getRenderScale(){return 1;}}},
         jucePlayer:{stop(){return new Promise(r=>stops.push(r));}},
     };
     for (const name of ['_recordPlaybackBridge','_clearAutoplayHold','_cancelCountIn','_resetJuceAudioShimChain',
@@ -28,6 +28,7 @@ test('load clears stale title immediately and yields without a fixed 500ms delay
     const h=build();const p=h.sb.playSong('first',2);
     assert.equal(h.elements.get('hud-title').textContent,'Loading song…');
     assert.equal(h.elements.get('hud-arrangement').textContent,'');
+    assert.equal(h.sb.window.feedBack.isPlaying,false,'public playback state clears even if no pause event fires');
     assert.equal(h.timers[0].ms,0);
     h.timers.shift().fn();await p;
     assert.equal(h.connections.length,1);assert.match(h.connections[0],/first\?arrangement=2/);
