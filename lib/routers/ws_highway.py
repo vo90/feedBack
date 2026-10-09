@@ -721,7 +721,7 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
                 return
 
         # Send anchors
-        anchors = [anchor_to_wire(a) for a in arr.anchors]
+        anchors = [anchor_to_wire(a, playback=True) for a in arr.anchors]
         await websocket.send_json({"type": "anchors", "data": anchors})
 
         # Send chord templates. Include `fingers` alongside `name` /
@@ -1104,7 +1104,7 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
             for i in range(0, total, 20):
                 await websocket.send_json({
                     "type": "phrases",
-                    "data": [phrase_to_wire(p) for p in arr.phrases[i:i + 20]],
+                    "data": [phrase_to_wire(p, playback=True) for p in arr.phrases[i:i + 20]],
                     "total": total,
                 })
 

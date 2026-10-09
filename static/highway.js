@@ -1697,7 +1697,16 @@ function createHighway() {
             out = _cloneChartTransformValue(out);
             if (Array.isArray(out.notes)) hwState._xfNotes = _sortedChartTransformArray(out.notes, 't');
             if (Array.isArray(out.chords)) hwState._xfChords = _sortedChartTransformArray(out.chords, 't');
-            if (Array.isArray(out.anchors)) hwState._xfAnchors = _sortedChartTransformArray(out.anchors, 'time');
+            if (Array.isArray(out.anchors)) {
+                const source = hwState._filteredAnchors !== null ? hwState._filteredAnchors : hwState.anchors;
+                const unchanged = new Map(source.map(a => [JSON.stringify([a.time, a.fret, a.width ?? 4]), a.guidanceOrigin]));
+                hwState._xfAnchors = _sortedChartTransformArray(out.anchors.map(a => ({ ...a,
+                    // A cloned/replaced row cannot inherit authority merely by
+                    // retaining a label. Transforms preserve exact rows only;
+                    // explicit lineage for retiming can be added by its owner.
+                    guidanceOrigin: unchanged.get(JSON.stringify([a.time, a.fret, a.width ?? 4])) || 'unknown',
+                })), 'time');
+            }
             // Full-difficulty views: explicit allNotes/allChords, or reuse the
             // effective output when no filter is active (effective === raw then).
             if (Array.isArray(out.allNotes)) hwState._xfNotesAll = _sortedChartTransformArray(out.allNotes, 't');
