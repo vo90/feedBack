@@ -43,15 +43,99 @@ def _zip_pack(path, stem_bytes=STEM):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_module_state():
+def _fresh_module_state(monkeypatch):
     # _source_cache is module state and would leak across tests.
     importlib.reload(sloppak_mod)
     yield
+    _wait_for_eviction()
     importlib.reload(sloppak_mod)
+
+
+def _wait_for_eviction():
+    worker = sloppak_mod._eviction_worker
+    if worker is not None:
+        worker.join(10)
+        assert not worker.is_alive(), "cache maintenance did not finish"
 
 
 def _cap_mb(monkeypatch, mb):
     monkeypatch.setenv("FEEDBACK_SLOPPAK_CACHE_MAX_MB", str(mb))
+
+
+def test_slow_housekeeping_does_not_block_song_resolution(tmp_path, monkeypatch):
+    import threading
+    dlc, cache = tmp_path / "dlc", tmp_path / "cache"
+    dlc.mkdir()
+    cache.mkdir()
+    _zip_pack(dlc / "song.feedpak")
+    entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+    result = []
+
+    def slow_sweep(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+
+    def resolve():
+        result.append(sloppak_mod.resolve_source_dir("song.feedpak", dlc, cache))
+        returned.set()
+
+    monkeypatch.setattr(sloppak_mod, "_evict_unpack_cache", slow_sweep)
+    thread = threading.Thread(target=resolve)
+    thread.start()
+    try:
+        assert entered.wait(5)
+        assert returned.wait(2), "playback waited for unrelated cache maintenance"
+        assert (result[0] / "stems/audio.ogg").is_file()
+        assert sloppak_mod.get_cached_source_dir("song.feedpak") == result[0]
+    finally:
+        release.set()
+        thread.join(5)
+        _wait_for_eviction()
+
+
+def test_burst_coalesces_and_failed_pass_does_not_wedge_worker(tmp_path, monkeypatch):
+    import threading
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def sweep(root, keep):
+        calls.append(keep.name)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(5)
+            raise RuntimeError("simulated housekeeping failure")
+
+    monkeypatch.setattr(sloppak_mod, "_evict_unpack_cache", sweep)
+    sloppak_mod._schedule_unpack_cache_eviction(tmp_path, tmp_path / "A")
+    try:
+        assert entered.wait(5)
+        worker = sloppak_mod._eviction_worker
+        for name in ["B", "C", "D"]:
+            sloppak_mod._schedule_unpack_cache_eviction(tmp_path, tmp_path / name)
+            assert sloppak_mod._eviction_worker is worker
+    finally:
+        release.set()
+        _wait_for_eviction()
+    assert calls == ["A", "D"]
+    sloppak_mod._schedule_unpack_cache_eviction(tmp_path, tmp_path / "E")
+    _wait_for_eviction()
+    assert calls == ["A", "D", "E"]
+
+
+def test_sweep_protects_newer_pending_song(tmp_path, monkeypatch):
+    _cap_mb(monkeypatch, 1)
+    current, pending = tmp_path / "current", tmp_path / "pending"
+    for directory in [current, pending]:
+        directory.mkdir()
+        (directory / "audio").write_bytes(b"0" * (700 * 1024))
+    with sloppak_mod._eviction_guard:
+        sloppak_mod._eviction_pending[tmp_path] = pending
+    sloppak_mod._evict_unpack_cache(tmp_path, keep=current)
+    assert current.is_dir() and pending.is_dir()
+    with sloppak_mod._eviction_guard:
+        sloppak_mod._eviction_pending.clear()
+    sloppak_mod._evict_unpack_cache(tmp_path, keep=pending)
+    assert pending.is_dir() and not current.exists()
 
 
 def test_read_member_bytes_does_not_unpack(tmp_path, monkeypatch):
@@ -90,6 +174,7 @@ def test_unpack_cache_evicts_lru_to_stay_under_cap(tmp_path, monkeypatch):
 
     for i in range(6):
         sloppak_mod.resolve_source_dir(f"song{i}.feedpak", dlc, cache)
+    _wait_for_eviction()
 
     total = sum(f.stat().st_size for f in cache.rglob("*") if f.is_file())
     assert total <= 1 * 1024 * 1024, (
@@ -119,6 +204,7 @@ def test_eviction_drops_the_source_cache_entry(tmp_path, monkeypatch):
         _zip_pack(dlc / f"song{i}.feedpak")
     for i in range(6):
         sloppak_mod.resolve_source_dir(f"song{i}.feedpak", dlc, cache)
+    _wait_for_eviction()
 
     evicted = sloppak_mod.get_cached_source_dir("song0.feedpak")
     assert evicted is None, "an evicted song must be dropped from _source_cache"
@@ -229,6 +315,7 @@ def test_eviction_never_deletes_an_in_flight_unpack(tmp_path, monkeypatch):
     # song0 lands and sweeps: keep=song0, cache holds song0+song2 = 1.4 MB > 1 MB,
     # so the sweep MUST try to delete song2 — which is still being written.
     sloppak_mod.resolve_source_dir("song0.feedpak", dlc, cache)
+    _wait_for_eviction()
     in_flight_survived = victim.is_dir()
 
     release.set()
