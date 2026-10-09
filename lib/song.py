@@ -94,6 +94,8 @@ class Note:
     harmonic_changes: dict | None = None
     # Present array is authoritative; [] suppresses legacy whole-note vibrato.
     vibrato_marks: list | None = None
+    let_ring: bool = False
+    let_ring_sustain: float | None = None
 
 
 @dataclass
@@ -287,6 +289,10 @@ def note_to_wire(n: Note) -> dict:
     }
     if n.link_next:
         out["ln"] = True
+    if n.let_ring:
+        out['lr'] = True
+    if n.let_ring_sustain is not None:
+        out['let_ring_sus'] = round(n.let_ring_sustain, 6)
     if n.slide_interval is not None:
         out['t'] = round(n.time, 6)
         out['sus'] = round(n.sustain, 6)
@@ -686,6 +692,10 @@ def validate_slide_interval(note):
 
 
 def note_from_wire(d: dict, time: float | None = None) -> Note:
+    ring = d.get('let_ring_sus')
+    if ring is not None and (type(ring) not in (int, float) or not math.isfinite(ring)
+                             or ring <= float(d.get('sus', 0)) or d.get('mt')):
+        raise ValueError('Invalid visual let-ring span')
     precise = d.get("hm") is True and _valid_natural_target(d.get("hn"), d.get("hps"))
     if ("hn" in d or "hps" in d) and not precise:
         raise ValueError("Invalid precise natural harmonic node/pitch pair")
@@ -695,6 +705,8 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         string=int(d.get("s", 0)),
         fret=int(d.get("f", 0)),
         sustain=float(d.get("sus", 0.0)),
+        let_ring=d.get("lr") is True,
+        let_ring_sustain=ring,
         slide_to=int(d.get("sl", -1)),
         slide_interval=validate_slide_interval(d),
         slide_unpitch_to=int(d.get("slu", -1)),

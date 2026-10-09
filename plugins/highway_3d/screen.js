@@ -9,6 +9,30 @@
 (function () {
     'use strict';
 
+    // Keep score/capability inputs untouched. Only this renderer sees ringing
+    // as a longer sustain, so all existing trail/chord visibility rules apply.
+    function createLetRingView() {
+        const cache = new WeakMap();
+        function note(n) {
+            const span = n.let_ring_sus;
+            return !n.mt && typeof span === 'number' && Number.isFinite(span) && span > (n.sus || 0)
+                ? {...n, sus: span} : n;
+        }
+        return function (bundle) {
+            if (!bundle || !Array.isArray(bundle.notes) || !Array.isArray(bundle.chords)) return bundle;
+            let byChord = cache.get(bundle.notes);
+            if (!byChord) { byChord = new WeakMap(); cache.set(bundle.notes, byChord); }
+            let view = byChord.get(bundle.chords);
+            if (!view) {
+                view = {notes: bundle.notes.map(note), chords: bundle.chords.map(c => ({...c,
+                    notes: Array.isArray(c.notes) ? c.notes.map(note) : c.notes}))};
+                byChord.set(bundle.chords, view);
+            }
+            return {...bundle, ...view};
+        };
+    }
+    const letRingView = createLetRingView();
+
     // Explicit transport epochs separate genuine repositioning from clock
     // measurement corrections. This clock is visual only; scoring reads audio.
     function createPresentationClock() {
@@ -15145,6 +15169,7 @@
         }
 
         function update(bundle) {
+            bundle = letRingView(bundle);
             pbBeg(0);
             _trailYieldFrameId++;
             _trailPathCacheCount = 0;
@@ -22839,6 +22864,7 @@
 
         /* ── Camera smooth lerp ──────────────────────────────────────────── */
         function camUpdate(bundle) {
+            bundle = letRingView(bundle);
             if (cameraMode === 'stable') { stableCamUpdate(bundle, _frameNow); return; }
             if (_stableCam.active) {
                 _stableCam.active = false;
