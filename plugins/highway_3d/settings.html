@@ -1124,6 +1124,12 @@
         <div class="flex justify-between text-[10px] text-gray-500 mt-1"><span>Small</span><span>Large</span></div>
     </div>
 
+    <label class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer mt-4">
+        <input type="checkbox" id="h3d-wah-guidance" class="accent-accent"
+               onchange="window.h3dBgSetWahGuidanceVisible && window.h3dBgSetWahGuidanceVisible(this.checked)">
+        Show WAH ○ / + guidance above notes
+    </label>
+    <p class="text-[10px] text-gray-500 mt-1">Optional pedal instructions. Audio and scoring are unchanged.</p>
     <!-- Advanced: legacy on-highway labels -->
     <details class="mt-4 rounded-lg border border-gray-800 bg-dark-700/40">
         <summary class="cursor-pointer select-none px-3 py-2 text-xs font-medium text-gray-400 hover:text-gray-200">
@@ -1865,6 +1871,8 @@
             const fdv = document.getElementById('h3d-fret-dividers-visible');
             if (fdv)   fdv.checked  = fretDividersVisible;
             if (slhi)  slhi.checked = sectionLabelsOnHighway;
+            const wahToggle=document.getElementById('h3d-wah-guidance');
+            if(wahToggle) wahToggle.checked=coerceBool(localStorage.getItem('h3d_bg_wahGuidanceVisible'),true);
             if (shvi)  shvi.checked = sectionHudVisible;
             if (shpos) shpos.value  = sectionHudPosition;
             if (shsi)  shsi.value   = String(sectionHudSize);

@@ -12,6 +12,7 @@ from lib.whammy import validate_whammy
 from lib.finger_vibrato import validate_marks as validate_vibrato_marks
 from lib.harmonic_changes import validate_changes
 from lib.tremolo import validate as validate_tremolo_marks
+from lib.wah import validate as validate_wah
 
 log = logging.getLogger("feedBack.lib.song")
 
@@ -219,6 +220,7 @@ class Arrangement:
     # `base`/`changes` drive the highway tone-change markers; `definitions`
     # feed the Tones plugin gear panel.
     tones: dict | None = None
+    wah: list[dict] = field(default_factory=list)  # Optional timed guidance; never scored.
     # Editor-authored instrument type (feedpak-spec §5.2 / editor PR #335):
     # "bass" | "guitar" | "piano" | "keys" | "drums" | "". First-class DATA that
     # lets a user author an instrument on an arrangement whose NAME doesn't say
@@ -1162,6 +1164,8 @@ def arrangement_to_wire(arr: Arrangement) -> dict:
     # (sloppaks converted from a archive). Absent on archive/loose-derived
     # Arrangements and old sloppaks; readers treat a missing key as
     # "no tones".
+    if arr.wah:
+        out["wah"] = validate_wah(arr.wah)
     if arr.tones:
         out["tones"] = arr.tones
     # Per-chart tempo override (§6.10) — additive; omit when the chart follows
@@ -1221,6 +1225,7 @@ def arrangement_from_wire(d: dict) -> Arrangement:
         # truthy, and consistent with how `phrases` treats an empty value.
         # Absent on older sloppaks.
         tones=(d["tones"] if isinstance(d.get("tones"), dict) and d["tones"] else None),
+        wah=validate_wah(d.get("wah", [])),
     )
 
 
