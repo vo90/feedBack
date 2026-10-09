@@ -23835,6 +23835,11 @@
                         _invertedForBoard = _invertedCached;
                         _leftyForBoard = _leftyCached;
                         if (!initScene()) { _unsubscribeFocus(); _rejectReady(new Error('initScene failed')); return; }
+                        // Allocate the final surface before submitting warm-up GPU
+                        // work. Resizing afterwards can synchronously drain all
+                        // those uploads on the UI thread just to replace the buffer.
+                        const sz = canvasSize(highwayCanvas);
+                        if (sz.w > 0 && sz.h > 0) applySize(sz.w, sz.h);
                         // Pre-compile shaders + upload deterministic label
                         // textures while the load spinner is still up; the
                         // chart-dependent half runs on first draw() (bundle
@@ -23842,7 +23847,6 @@
                         _prewarmStatic();
                         _prewarmRsNotation(bundle);
                         _chartPrewarmed = false;
-                        const sz = canvasSize(highwayCanvas);
                         // Mark ready before RAF so any resize(w,h) calls that arrive
                         // in the meantime (e.g. from sizeCanvases()) are applied directly.
                         _isReady = true;
