@@ -246,6 +246,7 @@ export async function showScreen(id) {
         // Reloading any song later should get a fresh JUCE routing attempt.
         window._clearJuceRerouteMemo?.();
         S.isPlaying = false;
+        if (window.feedBack) window.feedBack.isPlaying = false;
         setPlayButtonState(false);
     }
     window.scrollTo(0, 0);
@@ -716,6 +717,7 @@ export async function playSong(filename, arrangement, options) {
     // Fresh JUCE routing attempt for whatever song loads next.
     window._clearJuceRerouteMemo?.();
     S.isPlaying = false;
+    if (window.feedBack) window.feedBack.isPlaying = false;
     setPlayButtonState(false);
     _resetPlaybackSpeedForNewSong();
     clearLoop();
