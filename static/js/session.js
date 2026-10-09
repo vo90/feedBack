@@ -106,6 +106,8 @@ export let _settingsOriginScreen = 'home';
 
 // ── Screen Navigation ─────────────────────────────────────────────────────
 export async function showScreen(id) {
+    const loadGeneration = id === 'player' ? S.songLoadGeneration
+        : (S.songLoadGeneration = (S.songLoadGeneration || 0) + 1);
     // ── 'home' is the LEGACY library screen. Always route it to the v3 Songs list. ──
     //
     // The v3 shell replaced #home with #v3-songs. That mapping DID exist — but only inside
@@ -203,6 +205,7 @@ export async function showScreen(id) {
         loadSettings();
     }
     if (id !== 'player') {
+        if (loadGeneration !== S.songLoadGeneration) return;
         const audio = document.getElementById('audio');
         const stopTime = _audioTime();
         const hadPlayableSong = !!audio.src || !!window._juceAudioUrl || S.isPlaying;
@@ -228,6 +231,7 @@ export async function showScreen(id) {
             const payload = _songEventPayload();
             const wasPlaying = S.isPlaying;
             await jucePlayer.stop().catch(() => {});
+            if (loadGeneration !== S.songLoadGeneration) return;
             if (wasPlaying && window.feedBack) {
                 window.feedBack.isPlaying = false;
                 window.feedBack.emit('song:pause', payload);
@@ -642,6 +646,7 @@ window.feedBack.on('song:ended', () => {
 export let artAbortController = null;
 
 export async function playSong(filename, arrangement, options) {
+    const loadGeneration = S.songLoadGeneration = (S.songLoadGeneration || 0) + 1;
     console.log('playSong called:', filename);
     // A manual (non-queue) play abandons any active play-queue, so a stale queue
     // can't hijack the next song's end. The queue signals a play it is DRIVING
@@ -670,6 +675,11 @@ export async function playSong(filename, arrangement, options) {
     artAbortController = null;
 
     window.highway.stop();
+    // The old chart is gone; don't leave its identity visible during the load.
+    for (const id of ['hud-artist', 'hud-title', 'hud-arrangement', 'hud-tuning', 'hud-tuning-targets']) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = id === 'hud-title' ? 'Loading song…' : '';
+    }
     // Cancel any active count-in: clear timers/RAF and bump the gen so
     // delayed callbacks (rewind frames, post-seek then, count-in ticks,
     // post-count play) bail before mutating the new session.
@@ -691,6 +701,7 @@ export async function playSong(filename, arrangement, options) {
         const payload = _songEventPayload();
         const wasPlaying = S.isPlaying;
         await jucePlayer.stop().catch(() => {});
+        if (loadGeneration !== S.songLoadGeneration) return;
         if (wasPlaying && window.feedBack) {
             window.feedBack.isPlaying = false;
             window.feedBack.emit('song:pause', payload);
@@ -735,8 +746,10 @@ export async function playSong(filename, arrangement, options) {
     _playerOriginScreen = _resolvePlayerOrigin();
     showScreen('player');
 
-    // Wait for previous WebSocket to fully close before opening new one
-    await new Promise(r => setTimeout(r, 500));
+    // Yield a paint for the loading state, without an arbitrary half-second
+    // delay. Socket generations isolate late messages from the outgoing song.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    if (loadGeneration !== S.songLoadGeneration) return;
     window.highway.init(document.getElementById('highway'));
 
     const wsParams = new URLSearchParams();

@@ -13,6 +13,7 @@ test('showScreen prepares outgoing screens and completes visibility before scree
         remove() { events.push('hide:' + id); }, add() { events.push('show:' + id); },
     }}]));
     const context = vm.createContext({
+        S: {},
         selectionLifecycle: () => ({
             prepareToHide(root) { events.push('prepare:' + root.id); },
             finishVisibilityChange() { events.push('finish'); },
