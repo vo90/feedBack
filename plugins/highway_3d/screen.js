@@ -33,6 +33,47 @@
     }
     const letRingView = createLetRingView();
 
+    // Chart-local guidance: one cue per authored instant, not per string.
+    // A sweep over sorted notes is done only when the chart changes.
+    function buildWahGuidance(bundle) {
+        const groups = new Map();
+        for (const e of bundle.wah || []) {
+            if (!Number.isFinite(e.t) || !['open','closed'].includes(e.state)) continue;
+            let g = groups.get(e.t);
+            if (!g) { g = {t:e.t, states:new Set(), strings:new Set()}; groups.set(e.t,g); }
+            g.states.add(e.state);
+            for (const s of e.strings || []) g.strings.add(s);
+        }
+        const cues = [...groups.values()].sort((a,b)=>a.t-b.t);
+        if (!cues.length) return [];
+        const notes = [...(bundle.notes || []), ...(bundle.chords || []).flatMap(c =>
+            (c.notes || []).map(n=>({...n,t:Number.isFinite(n.t)?n.t:c.t})))].sort((a,b)=>a.t-b.t);
+        const active = new Map(), anchors = bundle.anchors || [];
+        let index=0, anchor=0;
+        const rows=[];
+        return cues.map(c=>{
+            while(index<notes.length && notes[index].t<=c.t+1e-6) {
+                const n=notes[index++]; active.set(n.s,n);
+            }
+            while(anchor+1<anchors.length && anchors[anchor+1].time<=c.t) anchor++;
+            const frets=[];
+            for(const s of c.strings) {
+                const n=active.get(s);
+                if(!n || n.mt || n.f<=0 || n.f>24 || c.t>n.t+(n.sus||0)+1e-6) continue;
+                let f=n.f;
+                if(n.sl>=0 && n.sl<=24 && n.sus>0) f+=(n.sl-f)*Math.min(1,Math.max(0,(c.t-n.t)/n.sus));
+                frets.push(f);
+            }
+            const a=anchors[anchor];
+            const fret=frets.length ? frets.reduce((x,y)=>x+y,0)/frets.length :
+                a ? a.fret+((a.width||4)-1)/2 : 3;
+            let row=rows.findIndex(t=>c.t-t>=.18);
+            if(row<0) row=rows.length;
+            rows[row]=c.t;
+            return {t:c.t,fret,row,text:c.states.size>1?'WAH ○/+':c.states.has('open')?'WAH ○':'WAH +'};
+        });
+    }
+
     // Explicit transport epochs separate genuine repositioning from clock
     // measurement corrections. This clock is visual only; scoring reads audio.
     function createPresentationClock() {
@@ -5209,7 +5250,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration, trailYieldSameStringEnabled: TRAIL_YIELD_DEFAULTS.sameStringEnabled, trailYieldSameStringMaxGap: TRAIL_YIELD_DEFAULTS.sameStringMaxGap, trailYieldSameStringLeadTime: TRAIL_YIELD_DEFAULTS.sameStringLeadTime };
+    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, wahGuidanceVisible: true, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration, trailYieldSameStringEnabled: TRAIL_YIELD_DEFAULTS.sameStringEnabled, trailYieldSameStringMaxGap: TRAIL_YIELD_DEFAULTS.sameStringMaxGap, trailYieldSameStringLeadTime: TRAIL_YIELD_DEFAULTS.sameStringLeadTime };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -5621,7 +5662,7 @@
     // means (fall back to default rather than silently flipping to
     // false). Add new boolean keys to BG_DEFAULTS and they pick this
     // up via the dispatch below.
-    const _BG_BOOL_KEYS = new Set(['repeatChordFullBorder', 'reactive', 'showFretOnNote', 'cameraLockLow', 'stableCameraFollow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'noteStemsVisible', 'openStringStemsVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront', 'trailYieldIncludeTrails', 'trailYieldSameStringEnabled']);
+    const _BG_BOOL_KEYS = new Set(['wahGuidanceVisible', 'repeatChordFullBorder', 'reactive', 'showFretOnNote', 'cameraLockLow', 'stableCameraFollow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'noteStemsVisible', 'openStringStemsVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront', 'trailYieldIncludeTrails', 'trailYieldSameStringEnabled']);
     function _bgCoerceBool(val, fallback) {
         if (val === 'true' || val === '1') return true;
         if (val === 'false' || val === '0') return false;
@@ -5820,6 +5861,7 @@
     window.h3dBgSetChordDiagramPosition = (v) => _bgWriteGlobal('chordDiagramPosition', v);
     window.h3dBgSetFretColumnMarkerCadence = (v) => _bgWriteGlobal('fretColumnMarkerCadence', v);
     window.h3dBgSetInlayLabelsVisible = (v) => _bgWriteGlobal('inlayLabelsVisible', !!v);
+    window.h3dBgSetWahGuidanceVisible = (v) => _bgWriteGlobal('wahGuidanceVisible', !!v);
     window.h3dBgSetSectionLabelsOnHighway = (v) => _bgWriteGlobal('sectionLabelsOnHighway', !!v);
     window.h3dBgSetSectionHudVisible      = (v) => _bgWriteGlobal('sectionHudVisible', !!v);
     window.h3dBgSetSectionHudPosition     = (v) => _bgWriteGlobal('sectionHudPosition', v);
@@ -7990,6 +8032,7 @@
         let fretColumnMarkerCadence = BG_DEFAULTS.fretColumnMarkerCadence;
         let inlayLabelsVisible = BG_DEFAULTS.inlayLabelsVisible;
         let sectionLabelsOnHighway = BG_DEFAULTS.sectionLabelsOnHighway;
+        let wahGuidanceVisible = true;
         let sectionHudVisible      = BG_DEFAULTS.sectionHudVisible;
         let sectionHudPosition     = BG_DEFAULTS.sectionHudPosition;
         let sectionHudSize         = BG_DEFAULTS.sectionHudSize;
@@ -8206,7 +8249,8 @@
         }
 
         // Object pools
-        let pNote, pSus, pLbl, pBeat, pSec;
+        let pNote, pSus, pLbl, pBeat, pSec, pWah;
+        let wahRefs = [], wahCues = [];
         let pFretLbl, pLane, pLaneDivider;
         // Reused label-layout records; no per-frame geometry or texture creation.
         const _incomingFloorLabels = [], _incomingLabelOccluders = [];
@@ -11144,6 +11188,7 @@
             pLbl  = pool(lblG,  () => new T.Sprite(txtMat('0', '#fff', false, 'technique')));
             pBeat = pool(beatG, () => new T.Line(gBeat, mBeatQ));
             pSec  = pool(lblG,  () => new T.Sprite(txtMat('', '#0dd', true, 'section')));
+            pWah = pool(lblG, () => new T.Sprite(txtMat('WAH ○', '#d8f3f5', true, 'technique')));
 
             // Chord sustain length indicator — thin horizontal plane rails.
             // Unit plane (1×1 in XZ) laid flat; scaled to (railWidth, 1, railLen).
@@ -12356,6 +12401,7 @@
             fretColumnMarkerCadence = _bgReadSetting(panelKey, 'fretColumnMarkerCadence');
             inlayLabelsVisible = _bgReadSetting(panelKey, 'inlayLabelsVisible');
             sectionLabelsOnHighway = _bgReadSetting(panelKey, 'sectionLabelsOnHighway');
+            wahGuidanceVisible = _bgReadSetting(panelKey, 'wahGuidanceVisible');
             sectionHudVisible      = _bgReadSetting(panelKey, 'sectionHudVisible');
             sectionHudPosition     = _bgReadSetting(panelKey, 'sectionHudPosition');
             sectionHudSize         = _bgReadSetting(panelKey, 'sectionHudSize');
@@ -15223,7 +15269,7 @@
             _syncOpenStringPitchLabels(bundle);
 
             pNote.reset(); pNoteEdge.reset(); pSus.reset(); pSusOutline.reset(); pSusRibbon.reset(); pSusRibbonOl.reset(); pTapChevron.reset(); pAccentHalo.reset(); pLbl.reset();
-            pBeat.reset(); pSec.reset();
+            pBeat.reset(); pSec.reset(); pWah.reset();
             if (projMeshArr) for (const arr of projMeshArr) for (const m of arr) m.visible = false;
             _incomingFloorLabelCount = _incomingLabelOccluderCount = 0;
             _incomingFixedFretLabels.fill(null);
@@ -17875,6 +17921,20 @@
                     bl2.material = isMeasure ? mBeatM : mBeatQ;
                     bl2.scale.set(bw2, 1, 1);
                     bl2.position.set(board.min - 2 * K, S_BASE - NH / 2 - 1.5 * K, dZ(b.time - now));
+                }
+            }
+
+            // Pedal guidance stays above the musical position inside the lanes.
+            const refs=[bundle.wah,notes,bundle.chords,bundle.anchors];
+            if(refs.some((r,i)=>r!==wahRefs[i])) { wahRefs=refs; wahCues=buildWahGuidance(bundle); }
+            if(wahGuidanceVisible) {
+                for(let i=lowerBoundT(wahCues,t0); i<wahCues.length && wahCues[i].t<=t1; i++) {
+                    const cue=wahCues[i], label=pWah.get();
+                    label.material=txtMat(cue.text, '#d8f3f5', true, 'technique');
+                    label.scale.set(24*K*_textSizeMul, 6*K*_textSizeMul, 1);
+                    label.renderOrder=renderOrderForLayerAtZ(dZ(cue.t-now), 'TECHNIQUE_MARKER');
+                    label.position.set(xFretMid(cue.fret), Math.max(sY(0),sY(nStr-1))+(4+cue.row*5)*K,
+                                       dZ(cue.t-now));
                 }
             }
 
@@ -23382,6 +23442,7 @@
             _fwHitPrevTime = -Infinity;
             _renderScale = 1;
             mBeatM = mBeatQ = null;
+            wahRefs=[]; wahCues=[]; pWah=null;
             pNote = pNoteEdge = pSus = pSusOutline = pSusRibbon = pSusRibbonOl = pLbl = pBeat = pSec = null;
             pFretLbl = pLane = pLaneDivider = pGhostFretLbl = pChordBox = pChordFrameFill = pChordLbl = pBarreLine = pArpBracket = pNoteFretLabel = pConnectorLine = pDropLine = pTapChevron = pAccentHalo = pHaloBar = pPMXFill = pFHXFill = pMuteXLines = pFHXLines = pTeachMarkLbl = null;
             if (gPMXFill) { gPMXFill.dispose(); gPMXFill = null; }
@@ -24041,6 +24102,7 @@
     //                        picking us on machines without WebGL2.
     window.feedBackViz_highway_3d.contextType = 'webgl2';
     window.feedBackViz_highway_3d.__test = {
+        buildWahGuidance,
         createPresentationClock,
         getAnalyserForBridgeTest: _bgGetAnalyser,
         readBandsForBridgeTest: _bgReadBands,

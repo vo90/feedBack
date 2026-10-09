@@ -232,7 +232,7 @@ function createHighway() {
     hwState.chords = [];
     hwState.handShapes = [];
     hwState.beats = [];
-    hwState.sections = [];
+    hwState.sections = []; hwState.wah = [];
     hwState.anchors = [];
     hwState.chordTemplates = [];
     // Number of strings on the active arrangement. Updated from the
@@ -608,6 +608,7 @@ function createHighway() {
             : hwState._filteredAnchors !== null ? hwState._filteredAnchors : hwState.anchors;
         b.beats = hwState.beats;
         b.sections = hwState.sections;
+        b.wah = hwState.wah;
         b.chordTemplates = hwState._xfChordTemplates !== null ? hwState._xfChordTemplates : hwState.chordTemplates;
         b.stringCount = hwState._xfStringCount !== null ? hwState._xfStringCount : hwState.stringCount;
         // Effective tuning metadata; live references like the chart arrays.
@@ -1740,7 +1741,7 @@ function createHighway() {
             hwState._resizeHandler = () => this.resize();
             window.addEventListener('resize', hwState._resizeHandler);
             hwState.ready = false;
-            hwState.notes = []; hwState.chords = []; hwState.handShapes = []; hwState.beats = []; hwState.sections = []; hwState.anchors = []; hwState.chordTemplates = []; hwState.lyrics = []; hwState.lyricsSource = ""; hwState.toneChanges = []; hwState.toneBase = ""; hwState.drumTab = null;
+            hwState.notes = []; hwState.chords = []; hwState.handShapes = []; hwState.beats = []; hwState.sections = []; hwState.wah = []; hwState.anchors = []; hwState.chordTemplates = []; hwState.lyrics = []; hwState.lyricsSource = ""; hwState.toneChanges = []; hwState.toneBase = ""; hwState.drumTab = null;
             hwState.stringCount = 6;  // default until song_info arrives
             // Reset phrase ladder + filter (feedBack#48). _mastery
             // persists across arrangement switches — the slider's
@@ -2429,6 +2430,7 @@ function createHighway() {
                                 window.feedBack.emit('beats:loaded', { count: hwState.beats.length });
                             }
                             break;
+                        case 'wah': hwState.wah = Array.isArray(msg.data) ? msg.data : []; break;
                         case 'sections': hwState.sections = msg.data; break;
                         case 'anchors':
                             hwState.anchors = msg.data;
@@ -2916,7 +2918,7 @@ function createHighway() {
             // Close old WS but keep audio + animation running
             if (hwState.ws) { hwState.ws.close(); hwState.ws = null; }
             hwState.ready = false;
-            hwState.notes = []; hwState.chords = []; hwState.handShapes = []; hwState.beats = []; hwState.sections = []; hwState.anchors = []; hwState.chordTemplates = []; hwState.lyrics = []; hwState.lyricsSource = ""; hwState.toneChanges = []; hwState.toneBase = ""; hwState.drumTab = null;
+            hwState.notes = []; hwState.chords = []; hwState.handShapes = []; hwState.beats = []; hwState.sections = []; hwState.wah = []; hwState.anchors = []; hwState.chordTemplates = []; hwState.lyrics = []; hwState.lyricsSource = ""; hwState.toneChanges = []; hwState.toneBase = ""; hwState.drumTab = null;
             hwState.stringCount = 6;  // default until song_info arrives
             // Drop any per-song offset from the previous load so setTime
             // calls that fire before the next song_info arrives don't

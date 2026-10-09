@@ -661,6 +661,8 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
         beats = [{"time": b.time, "measure": b.measure} for b in song.beats]
         await websocket.send_json({"type": "beats", "data": beats})
 
+        await websocket.send_json({"type": "wah", "data": arr.wah})
+
         # Send sections
         sections = [{"name": s.name, "time": s.start_time} for s in song.sections]
         await websocket.send_json({"type": "sections", "data": sections})
