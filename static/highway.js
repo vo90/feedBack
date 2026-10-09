@@ -590,7 +590,10 @@ function createHighway() {
             t.rate = n ? n.rate : hwState._playbackRate;
             const duration = n ? n.duration : Number(hwState.songInfo.duration);
             t.endTime = duration > 0 ? duration + offset : Infinity;
-            if (n?.timingVersion === 2 && Number.isFinite(n.maxPosition)) t.endTime = Math.min(t.endTime, n.maxPosition + offset);
+            // A delivered audio sample is an observation, not an end boundary.
+            // Clamping to its raw position freezes motion between IPC updates.
+            // The renderer already bounds extrapolation by source freshness;
+            // only the actual duration may stop a live presentation clock.
             if (n?.timingVersion === 2 && n.ended) {
                 // Downstream A/V correction can outlast native EOF. The last
                 // callback remains a bounded reference until that tail ends.
@@ -2638,7 +2641,8 @@ function createHighway() {
             let position;
             if (n?.timingVersion === 2) {
                 const elapsed = n.playing || n.ended ? Math.max(0, (n.ended ? eventAtMs : Math.min(eventAtMs, n.freshAt + 250)) - n.sampledAt) / 1000 : 0;
-                const maximum = n.ended ? n.duration - Math.min(0, hwState.avOffsetSec * rate) : n.maxPosition;
+                const maximum = n.ended ? n.duration - Math.min(0, hwState.avOffsetSec * rate)
+                    : n.duration > 0 ? n.duration : Infinity;
                 position = Math.min(maximum, n.position + elapsed * rate) + hwState.songOffset;
             } else position = api.getTime();
             return position + (hwState.avOffsetSec - age / 1000) * rate;

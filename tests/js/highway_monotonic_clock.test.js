@@ -93,6 +93,55 @@ function buildClockSandbox(perfNowImpl) {
     return sandbox;
 }
 
+function rendererClock() {
+    const src = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
+    const start = src.indexOf('    function createPresentationClock() {');
+    return vm.runInNewContext(`(${src.slice(start, src.indexOf('    // End presentation clock.', start)).trim()})`)();
+}
+
+test('native output samples remain smooth through the actual core-to-renderer timing bridge', () => {
+    for (const hz of [30, 60, 100, 144]) for (const rate of [.5, 1, 2]) for (const offset of [-150, 0, 100]) {
+        let now = 0;
+        const sb = buildClockSandbox(() => now), clock = rendererClock();
+        sb.setPlaybackRate(rate); sb.setAvOffset(offset);
+        let previous;
+        for (let frame = 0; frame < hz * 3; frame++) {
+            now = frame * 1000 / hz;
+            const sampledAt = Math.floor(now / 80) * 80;
+            // Low output latency: the audible position reaches the last raw
+            // sample well before the next IPC delivery. It must not stop there.
+            const position = 10 + (sampledAt - 12) * rate / 1000;
+            sb.setPlaybackSample({position, sampledAt, freshAt: sampledAt, rate,
+                duration: 300, sequence: sampledAt, generation: 1, playing: true,
+                timingVersion: 2, maxPosition: position + .012 * rate}, true);
+            const expected = 10 + (now - 12 + offset) * rate / 1000;
+            const raw = sb.api.getPresentationTime();
+            const shown = clock.sample(raw, now, sb.timingBundle().transport);
+            assert.ok(Math.abs(raw - expected) < 1e-8);
+            assert.ok(Math.abs(shown - expected) < 1e-8);
+            if (previous !== undefined) assert.ok(Math.abs(shown - previous - rate / hz) < 1e-8);
+            previous = shown;
+        }
+    }
+});
+
+test('live native presentation remains bounded at source loss, pause and actual duration', () => {
+    let now = 1000;
+    const sb = buildClockSandbox(() => now), clock = rendererClock();
+    const sample = {position: 10, sampledAt: now, freshAt: now, rate: 1,
+        duration: 300, sequence: 1, generation: 1, playing: true, timingVersion: 2, maxPosition: 10.01};
+    sb.setPlaybackSample(sample, true);
+    for (; now <= 3000; now += 10) {
+        const raw = sb.api.getPresentationTime();
+        assert.ok(Math.abs(raw - (10 + Math.min(now - 1000, 250) / 1000)) < 1e-8);
+        assert.ok(clock.sample(raw, now, sb.timingBundle().transport) <= 10.25 + 1e-8);
+    }
+    sb.setPlaybackSample({...sample, position: 11, sampledAt: now, freshAt: now, playing: false}, false);
+    now += 1000; assert.equal(sb.api.getPresentationTime(), 11);
+    sb.setPlaybackSample({...sample, position: 299.99, sampledAt: now, freshAt: now}, true);
+    now += 200; assert.equal(sb.api.getPresentationTime(), 300);
+});
+
 test('presentation and judgment use one rate-scaled reference without moving the raw transport clock', () => {
     for (const rate of [.5, .75, 1, 1.5, 2]) for (const offset of [0, -100, -500, 100]) {
         const sb = buildClockSandbox(() => 1000);
