@@ -236,6 +236,46 @@ _unpack_locks_guard = threading.Lock()
 _unpacking: set[Path] = set()
 _unpacking_guard = threading.Lock()
 
+# Cache housekeeping must not delay the song that was just extracted. One
+# daemon drains coalesced requests; a burst never launches competing scans.
+_eviction_guard = threading.Lock()
+_eviction_pending: dict[Path, Path] = {}
+_eviction_worker: threading.Thread | None = None
+
+
+def _schedule_unpack_cache_eviction(root: Path, keep: Path) -> None:
+    global _eviction_worker
+    if _unpack_cache_cap_bytes() <= 0:
+        return
+    with _eviction_guard:
+        _eviction_pending[root] = keep
+        if _eviction_worker is None:
+            _eviction_worker = threading.Thread(
+                target=_drain_unpack_cache_evictions,
+                name="song-cache-maintenance", daemon=True,
+            )
+            try:
+                _eviction_worker.start()
+            except RuntimeError:
+                _eviction_worker = None
+                log.warning("sloppak: unable to start cache maintenance", exc_info=True)
+
+
+def _drain_unpack_cache_evictions() -> None:
+    global _eviction_worker
+    while True:
+        with _eviction_guard:
+            if not _eviction_pending:
+                _eviction_worker = None
+                return
+            root, keep = _eviction_pending.popitem()
+        try:
+            _evict_unpack_cache(root, keep=keep)
+        except Exception:
+            # A failed maintenance pass must neither fail playback nor wedge
+            # future requests. The next extraction will request another pass.
+            log.warning("sloppak: background cache maintenance failed", exc_info=True)
+
 # Cap the unpack cache. Stems are already-compressed audio, so an unpacked song
 # is ~1.1x its zip — the cache is effectively a second, DECOMPRESSED copy of
 # every song it holds, and it used to grow without any bound at all. A tester
@@ -327,6 +367,14 @@ def _evict_unpack_cache(root: Path, keep: Path | None = None) -> None:
             with _unpacking_guard:
                 if d in _unpacking:
                     continue                      # another thread is writing this
+                with _eviction_guard:
+                    if _eviction_pending.get(root) == d:
+                        continue                  # a newer song is waiting for its pass
+                try:
+                    if d.stat().st_mtime != _mtime:
+                        continue                  # touched/reused since this scan began
+                except OSError:
+                    continue
                 shutil.rmtree(d, ignore_errors=True)
             if d.exists():
                 continue                          # couldn't remove — don't claim the bytes back
@@ -464,9 +512,9 @@ def resolve_source_dir(
                     with _unpack_semaphore:
                         _unpack_zip(path, dest)
                     resolved = dest
-                    # The only moment this cache grows. Sweep here rather than on a
-                    # timer so it can never drift far past the cap.
-                    _evict_unpack_cache(unpack_cache_root, keep=dest)
+                    # Request a bounded/coalesced maintenance pass when the
+                    # cache grows, without making playback wait for a disk walk.
+                    _schedule_unpack_cache_eviction(unpack_cache_root, keep=dest)
 
         with _source_lock:
             _source_cache[filename] = (resolved, mtime, size)
