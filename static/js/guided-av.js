@@ -162,7 +162,9 @@ export async function openGuidedAv() {
             if (clock && clock === polledClock && clock._validSnapshot(snapshot)) {
                 const mapped = clock._mapSnapshotTime(snapshot, sent, received);
                 if (mapped !== null) clock._acceptSnapshot(snapshot, mapped);
-                if (playing && received - sent > 30) invalid = true;
+                // A slow IPC reply alone is not a timing error: the monotonic
+                // clock mapping accounts for it. Reject actual stale samples
+                // and animation stalls in animate(), not healthy playback.
             }
         } catch (_) {invalid = true;}
         finally {pollBusy = false;}
