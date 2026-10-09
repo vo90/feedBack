@@ -129,7 +129,7 @@
             // Guitar/bass: show the audio source (audio-input) and launch the
             // note_detect Calibration Wizard for the deep work.
             async function renderAudioPanel(inst) {
-                const { sources, selected } = await _audioSources();
+                const { sources } = await _audioSources();
                 const opts2 = sources.map((s) =>
                     '<option value="' + esc(s.logicalSourceKey || s.sourceId || '') + '"' + (s.selected ? ' selected' : '') + '>' + esc(s.label || 'Input') + '</option>').join('');
                 const hasDetector = !!(window.noteDetect && typeof window.noteDetect.launchCalibration === 'function');
@@ -139,6 +139,7 @@
                         ? '<label class="block text-xs uppercase tracking-wider text-fb-textDim mt-3 mb-1">Audio input</label>' +
                           '<select data-is-audio class="w-full bg-gray-800/50 border border-gray-700 rounded-md px-2 py-1.5 text-sm text-fb-text outline-none">' + opts2 + '</select>'
                         : '<p class="text-sm text-fb-accent mt-2">No audio input detected yet — plug in your interface, or skip and set this up later.</p>') +
+                    '<p data-is-audio-status role="status" class="text-xs text-fb-textDim mt-2"></p>' +
                     (hasDetector ? '' : '<p class="text-xs text-fb-textDim mt-3">The note detector isn’t loaded here — you can calibrate later from the player.</p>');
                 const foot =
                     '<button type="button" data-is-cal class="bg-fb-primary hover:bg-fb-primaryHi text-white px-5 py-2 rounded-md font-medium">' +
@@ -146,23 +147,51 @@
                 shell(inst, body, foot);
 
                 const sel = host.querySelector('[data-is-audio]');
+                const calibrate = host.querySelector('[data-is-cal]');
+                const status = host.querySelector('[data-is-audio-status]');
+                let selection = Promise.resolve();
+                let selecting = 0;
+                let selectionFailed = false;
                 const commitAudio = (key) => {
                     if (!capabilities || !key) return;
-                    capabilities.command('audio-input', 'select-source', { requester: 'input_setup', payload: { logicalSourceKey: key } }).catch(() => {});
+                    const request = ++selecting;
+                    calibrate.disabled = true;
+                    status.textContent = 'Selecting input…';
+                    // Serialize quick changes so an older selection cannot win.
+                    selection = selection.catch(() => {}).then(async () => {
+                        const result = await capabilities.command('audio-input', 'select-source', { requester: 'input_setup', payload: { logicalSourceKey: key } });
+                        if (result?.outcome !== 'handled') throw new Error(result?.reason || 'Could not select this input.');
+                    });
+                    selection.then(() => {
+                        if (request === selecting) {
+                            selectionFailed = false; calibrate.disabled = false; status.textContent = '';
+                            calibrate.textContent = hasDetector ? 'Calibrate' : 'Continue';
+                        }
+                    }, error => {
+                        if (request === selecting) {
+                            selectionFailed = true; calibrate.disabled = false;
+                            calibrate.textContent = 'Retry input selection';
+                            status.textContent = error.message || 'Could not select this input.';
+                        }
+                    });
                 };
                 if (sel) {
                     sel.addEventListener('change', () => commitAudio(sel.value));
                     // The <select> shows its first option by default, but no `change`
                     // fires for that implicit pick — so on a first run with nothing yet
                     // selected, audio-input would calibrate against the wrong/no source.
-                    // Commit the shown option up-front so the displayed device is the
-                    // one calibrated (idempotent if it was already selected).
-                    if (!selected) commitAudio(sel.value);
+                    // Also covers a saved source that has disappeared from the
+                    // list: confirm the displayed option, never the stale key.
+                    // Selecting the existing source is idempotent.
+                    commitAudio(sel.value);
                 }
                 // Tell the tuner tables / note_detect which instrument this is.
                 try { fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instrument: inst }) }); } catch (_) {}
 
-                host.querySelector('[data-is-cal]').addEventListener('click', () => {
+                calibrate.addEventListener('click', async () => {
+                    if (selectionFailed && sel) commitAudio(sel.value);
+                    try { await selection; } catch (_) { return; }
+                    if (!calibrate.isConnected) return;
                     if (hasDetector) {
                         // Hide our own full-screen overlay while note_detect's
                         // Calibration Wizard runs on top. That wizard goes
