@@ -247,10 +247,11 @@ test('horizon visits preserve note identity and isolate chord render views witho
     visit(n, n.t, 10);
     assert.equal(drawCalls.length, 1);
     assert.equal(drawCalls[0][0], n, 'standalone scoring identity stays the original note');
-    assert.deepEqual(drawCalls[0].slice(1), [10, undefined, true, true], 'no new gem or label');
+    assert.deepEqual(drawCalls[0].slice(1,5), [10, undefined, true, true], 'no new gem or label');
     visit(incoming({t:13.3}), 13.3, 10);
     visit({t:13.1,s:0,f:7,sus:1}, 13.1, 10);
     assert.equal(drawCalls.length, 1, 'only an entering incoming contour extends the visit window');
+    assert.equal(drawCalls[0][17],n,'visibility lookup keeps original identity');
     const cn = Object.freeze({s:1,f:9,sus:0,slide_in_marks:Object.freeze([{direction:'down',time:0}]),ghost:true});
     const chords = Object.freeze([Object.freeze({t:13.1,notes:Object.freeze([cn])})]);
     const before = JSON.stringify(chords);

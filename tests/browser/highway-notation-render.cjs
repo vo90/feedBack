@@ -60,7 +60,7 @@ function once(text, marker, replacement) {
   return text.replace(marker, replacement);
 }
 let served = once(source, 'const core = pNote.get();', `const core = pNote.get();
-  if (window.__notationProbe) window.__notationProbe.notes.push({ note: {...n}, sourceFret:sourceNote.f, dt, fromChord, boxed:typeof belongsToBoxedChord!=='undefined'&&belongsToBoxedChord, core, outline });`);
+  if (window.__notationProbe) window.__notationProbe.notes.push({ note: {...n}, sourceFret:sourceNote.f, dt, fromChord, boxed:typeof belongsToBoxedChord!=='undefined'&&belongsToBoxedChord, arpeggioBoxed:typeof belongsToBoxedArpeggio!=='undefined'&&belongsToBoxedArpeggio, core, outline });`);
 for (const anchor of ['const line = pConnectorLine.get();','const dl = pDropLine.get();']) {
   const mesh=anchor.includes('const line')?'line':'dl';
   served=once(served,anchor,`${anchor}
@@ -218,7 +218,7 @@ async function main() {
         const gl=a.ren.getContext();
         return {style:a.style,settings:a.settings,openStemFloor:a.openStemFloor,noteHeight:a.noteHeight,canvas:[a.ren.domElement.width,a.ren.domElement.height],
           renderer:{calls:a.ren.info.render.calls,triangles:a.ren.info.render.triangles,memory:{...a.ren.info.memory}},
-          notes:p.notes.map(({note,sourceFret,dt,fromChord,boxed,core,outline})=>{const v=core.getWorldPosition(core.position.clone()).project(a.cam);const rgba=new Uint8Array(4);gl.readPixels(Math.round((v.x+1)*a.ren.domElement.width/2),Math.round((v.y+1)*a.ren.domElement.height/2),1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba);return {note,sourceFret,dt,fromChord,boxed,core:__probeMesh(core),outline:__probeMesh(outline),screen:[(v.x+1)*innerWidth/2,(1-v.y)*innerHeight/2],centerPixel:Array.from(rgba)};}),
+          notes:p.notes.map(({note,sourceFret,dt,fromChord,boxed,arpeggioBoxed,core,outline})=>{const v=core.getWorldPosition(core.position.clone()).project(a.cam);const rgba=new Uint8Array(4);gl.readPixels(Math.round((v.x+1)*a.ren.domElement.width/2),Math.round((v.y+1)*a.ren.domElement.height/2),1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba);return {note,sourceFret,dt,fromChord,boxed,arpeggioBoxed,core:__probeMesh(core),outline:__probeMesh(outline),screen:[(v.x+1)*innerWidth/2,(1-v.y)*innerHeight/2],centerPixel:Array.from(rgba)};}),
           frames:p.frames.map(({fill,...metadata})=>({...metadata,fill:__probeMesh(fill),textureAlpha:__fillAlpha(fill.material)})),
           edges:p.edges.map(({t,dt,isRepeat,mesh})=>({t,dt,isRepeat,mesh:__probeMesh(mesh)})),
           roundedFrames:p.roundedFrames.map(({mesh,...rest})=>({...rest,mesh:__probeMesh(mesh)})),
@@ -490,8 +490,71 @@ async function main() {
       check(postOnsetProof.frames.length===0,'Ordinary chord frame survived after onset');
       const single=baseBundle();single.notes=[member({t:onset,s:0,f:0})];single.currentTime=onset-.3;
       await captureOpen('open-standalone',single,modern,{visible:true});
-      await captureOpen('open-chord-arpeggio',openChord({arpeggio:true}),modern,{visible:true,arpeggio:true});
+      const boxedArpeggioPolicy=source.includes('const belongsToBoxedArpeggio =');
+      await captureOpen('open-chord-arpeggio',openChord({arpeggio:true}),modern,{visible:!boxedArpeggioPolicy,arpeggio:true});
+      // Only attacks on the enclosing box lose stems. Later plucks keep
+      // their stems while approaching behind the box and after it arrives.
+      for(const lefty of [false,true])for(const inverted of [false,true]){
+        const arp=openChord({arpeggio:true,lefty});arp.inverted=inverted;
+        arp.notes=[member({t:onset,s:1,f:0,sus:1}),member({t:onset+.3,s:2,f:2}),member({t:onset+.6,s:3,f:2})];
+        const proof=await captureOpen(`arp-stream-${lefty}-${inverted}`,arp,modern,{visible:!boxedArpeggioPolicy,arpeggio:true});
+        if(boxedArpeggioPolicy){
+          check(proof.stems.filter(s=>s.note.t===onset).every(s=>!s.mesh.visible),'Boxed onset retained drop lines');
+          for(const t of [onset+.3,onset+.6])check(proof.stems.some(s=>s.note.t===t&&s.mesh.visible),'Separate arpeggio pluck lost its stem');
+        }
+        const synthetic={...arp,chords:[]};
+        await captureOpen(`arp-synth-box-${lefty}-${inverted}`,synthetic,modern,{visible:!boxedArpeggioPolicy,arpeggio:true});
+        const unboxed={...arp,chords:[],notes:[arp.notes[0]],
+          chordTemplates:[{...arp.chordTemplates[0],frets:[-1,0,-1,-1,-1,-1]}]};
+        const unboxedProof=await captureOpen(`arp-no-box-${lefty}-${inverted}`,unboxed,modern,{visible:true});
+        check(unboxedProof.frames.length===0,'Single-member arpeggio unexpectedly drew an enclosing box');
+        const landed={...arp,currentTime:onset};
+        await captureOpen(`arp-box-ended-${lefty}-${inverted}`,landed,modern,{visible:!boxedArpeggioPolicy});
+        const inferred=openChord({lefty});inferred.inverted=inverted;inferred.chords=[];inferred.notes=arp.notes;
+        await captureOpen(`arp-inferred-unboxed-${lefty}-${inverted}`,inferred,modern,{visible:true});
+      }
       await captureOpen('open-chord-current',openChord(),{notationStyle:'current',glow:0,bloom:false},{visible:true,frame:true});
+      const sparseArp=openChord({arpeggio:true});
+      sparseArp.chordTemplates[0].frets=[-1,0,2,-1,-1,-1];
+      sparseArp.chords[0].notes=sparseArp.chords[0].notes.slice(0,2);
+      sparseArp.notes=[member({t:onset,s:1,f:0,sus:1}),member({t:onset+.3,s:2,f:2}),member({t:onset+.5,s:3,f:7})];
+      const sparseProof=await captureOpen('arp-sparse-metadata',sparseArp,modern,{visible:!boxedArpeggioPolicy,arpeggio:true});
+      if(boxedArpeggioPolicy){
+        check(sparseProof.stems.some(s=>s.note.s===2&&s.note.t>onset&&s.mesh.visible),'Separate sparse arpeggio note lost its stem');
+        check(sparseProof.stems.some(s=>s.note.s===3&&s.mesh.visible),'Unrelated note lost its stem');
+      }
+      const liveArp=openChord({arpeggio:true});liveArp.chords[0].notes.forEach(n=>n.sus=1);
+      await init(liveArp,modern);
+      const arpPasses=[];
+      for(const [style,time,visible] of [['rsplus',onset-.3,!boxedArpeggioPolicy],
+        ['rsplus',onset,!boxedArpeggioPolicy],['rsplus',onset+.03,!boxedArpeggioPolicy],['rsplus',onset-.3,!boxedArpeggioPolicy],
+        ['current',onset-.3,true],['rsplus',onset-.3,!boxedArpeggioPolicy]]){
+        const proof=await page.evaluate(({style,time})=>{h3dBgSetNotationStyle(style);bundle.currentTime=time;
+          for(let i=0;i<4;i++)r.draw(bundle);return __captureNotation();},{style,time});
+        assertOpen(proof,`arpeggio live ${style}/${time}`,{visible});arpPasses.push(proof);
+      }
+      results.push({name:'arpeggio-live-stem-reuse',passes:arpPasses});
+      const rolling=openChord({arpeggio:true});
+      rolling.notes=[member({t:onset,s:1,f:0,sus:3}),member({t:onset+.65,s:2,f:2}),
+        member({t:onset+1.6,s:3,f:2}),member({t:onset+1.8,s:1,f:0}),member({t:onset+2.4,s:2,f:2})];
+      await init(rolling,modern);
+      const rollingPasses=[];
+      for(const time of [onset-.01,onset,onset+.01,onset+.4,onset+1.3,onset+2.2,onset-.01]){
+        const proof=await page.evaluate(time=>{bundle.currentTime=time;for(let i=0;i<4;i++)r.draw(bundle);
+          return __captureNotation();},time);
+        if(boxedArpeggioPolicy){
+          check(proof.stems.filter(s=>s.note.t===onset).every(s=>!s.mesh.visible),`Box-member stem popped at ${time}`);
+          check(proof.stems.filter(s=>s.note.t>onset&&s.note.t>=time).every(s=>s.mesh.visible),`Separate arpeggio stem missing at ${time}`);
+          check(proof.notes.filter(n=>n.note.f===0&&n.note.t===onset).every(n=>!n.outline.visible),`Boxed open stem popped at ${time}`);
+          check(proof.notes.filter(n=>n.note.f===0&&n.note.t>onset).every(n=>n.outline.visible),`Separate open stem missing at ${time}`);
+          if(time>=onset)check(proof.frames.every(f=>!f.isArpeggioFrame),`Leading box should have ended at ${time}`);
+        }
+        check(proof.stems.some(s=>s.note.t>onset+2&&s.mesh.visible),`Following standalone note lost its stem at ${time}`);
+        rollingPasses.push(proof);
+      }
+      const seekProof=await captureOpen('arpeggio-direct-seek',{...rolling,currentTime:onset+.4},modern,{visible:!boxedArpeggioPolicy});
+      if(boxedArpeggioPolicy)check(seekProof.stems.filter(s=>s.note.t>onset).every(s=>s.mesh.visible),'Direct seek hid separate arpeggio stems');
+      results.push({name:'arpeggio-stem-continuity',passes:rollingPasses});
       // Reproduce the reported pattern: standalone PM opens associated with a
       // hand shape, interleaved with actual open/fretted power-chord strikes.
       // The shared fromChord flag must still be exercised without shortening
@@ -541,7 +604,7 @@ async function main() {
             check(!proof.stems.some(s=>s.mesh.visible&&boxed.some(n=>n.note.t===s.note.t&&n.note.s===s.note.s&&n.note.f===s.note.f)),`${name}: a boxed chord has a fretted stem`);
             if(!enabled)check(!proof.stems.some(s=>s.mesh.visible),`${name}: a fretted stem ignored the off setting`);
             if(style==='rsplus')for(const n of proof.notes.filter(n=>n.note.f===0)){
-              check(n.outline.visible===(!n.boxed&&enabled),`${name}: open stem ignored box membership or its setting`);
+              check(n.outline.visible===(!n.boxed&&!n.arpeggioBoxed&&enabled),`${name}: open stem ignored box membership or its setting`);
             }
           }
         }

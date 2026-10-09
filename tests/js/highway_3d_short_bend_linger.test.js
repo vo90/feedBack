@@ -30,7 +30,7 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
     const draw = fn('drawNote');
     const cutoff = draw.indexOf('const noteZ =');
     assert.ok(cutoff > 0);
-    const gate = draw.match(/if \((!effSkipBody && !arpGhostOnlyMode && !_overLinger)\)/);
+    const gate = draw.match(/if \((visualParts\.head)\)/);
     assert.ok(gate, 'drawNote has an explicit gem visibility gate');
     return new Function('_invertedCached', '_scrEventTimes', 'verdict', `
         const nStr = 6, NFRETS = 24, S_COL = Array(6), _oobStringWarned = true;
@@ -43,6 +43,8 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
         const GHOST_HOLD_AFTER_ONSET = ${constant('CHORD_HWY_LINGER_S')};
         const BEND_HALFSTEP_WORLD_Y = 3.2;
         const _drawNextByString = null, sY = s => s;
+        const _collectNoteDraws = false;
+        let _noteDrawParts = null;
         const slideInVisualStart = n => n.t; // These pose cases contain no incoming cues.
         const _scrEventTimesLen = _scrEventTimes.length;
         const _susVerdictLatch = new Map();
@@ -52,7 +54,7 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
         let _linkedBendStarts = new WeakMap(), _linkedBendEnds = new WeakMap();
         let _linkedVibratoRuns = new WeakMap();
         ${['validString', 'isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote',
-            '_firstEventTimeGreaterThan', 'hwyShouldSuppressNoteBody',
+            '_firstEventTimeGreaterThan', 'hwyShouldSuppressNoteBody', 'hwyNoteVisualParts',
             'bnvSampleAt', 'bendCurveStartSemis', 'bendCurveSemisAt',
             'bendSemisAtElapsed', 'bendSemisAtTime', 'bendVisualDirY',
             'noteHasVibrato', 'vibratoSemisAtTime', 'prebendOffsetWorld',
@@ -68,6 +70,10 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
         }
         return {
             pose(n, now, options = {}) {
+                _noteDrawParts = hwyNoteVisualParts(n, now, 3, options.linger ?? .10,
+                    _firstEventTimeGreaterThan(n.t + 1e-6), n.t,
+                    hwyShouldSuppressNoteBody(options.skipBody || false,
+                        options.explicitLinkTarget || false, n.t - now), false);
                 return drawNote(n, now, undefined, false, options.skipBody || false,
                     options.linger ?? .10, undefined, options.fromChord || false,
                     undefined, false, options.arpBounds || null, -Infinity,

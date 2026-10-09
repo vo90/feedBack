@@ -73,10 +73,18 @@ export function _emitSongPositionChanged(time, duration) {
 // Native commands finish asynchronously. Keep stop behind an in-flight start
 // so cancellation cannot be undone by a late physical startBacking completion.
 let _backingCommandChain = Promise.resolve();
-function _queueBackingCommand(command) {
+export function _queueBackingCommand(command) {
     const result = _backingCommandChain.then(command);
     _backingCommandChain = result.catch(() => {});
     return result;
+}
+
+export function loadCoreBackingTrack(api, path, isCurrent) {
+    if (!isCurrent()) return Promise.resolve(false);
+    // Even a metadata-driven takeover (without a new song session) must revoke
+    // a plugin lease before its old cleanup can stop the new backing file.
+    void window.feedBack?.audioSession?.nativeBacking?.releaseCurrent('core-takeover');
+    return _queueBackingCommand(() => isCurrent() ? api.loadBackingTrack(path) : false);
 }
 
 export const jucePlayer = {
@@ -99,6 +107,7 @@ export const jucePlayer = {
     _clockMapping: null,
     _streamStop: null,
     _clockSnapshot: {},
+    _presentation: null,
     _validSnapshot(s) {
         return s && s.version === 1 && s.valid
             && Number.isFinite(s.position) && s.position >= 0
@@ -116,8 +125,16 @@ export const jucePlayer = {
         this._sourcePosition = snapshot.position;
         this._sourcePlaying = snapshot.playing;
         this._sourceEnded = snapshot.ended === true;
+        this._sourceFailed = snapshot.failed === true;
         this._sampleSequence = snapshot.sequence;
         this._nativeGeneration = snapshot.generation;
+        const p = snapshot.presentation;
+        if (p?.version === 2 && p.position !== this._presentation?.position)
+            this._sourceAt = sampledAt + snapshot.ageMs - p.ageMs;
+        this._presentation = p?.version === 2 && Number.isFinite(p.position)
+            && Number.isFinite(p.ageMs) && p.ageMs >= 0 && typeof p.playing === 'boolean'
+            ? { position: p.position, sampledAt: sampledAt + snapshot.ageMs - p.ageMs,
+                playing: p.playing, routeGeneration: p.routeGeneration } : null;
     },
     _mapSnapshotTime(snapshot, sentAt, receivedAt) {
         const rtt = receivedAt - sentAt;
@@ -155,6 +172,14 @@ export const jucePlayer = {
         s.duration = this._dur; s.sequence = this._sampleSequence;
         s.generation = this._nativeGeneration;
         s.playing = this._polling && this._sourcePlaying;
+        s.ended = this._sourceEnded;
+        s.timingVersion = this._presentation ? 2 : 1;
+        s.maxPosition = this._pos;
+        if (this._presentation) {
+            s.position = this._presentation.position; s.sampledAt = this._presentation.sampledAt;
+            s.playing = this._polling && this._presentation.playing;
+            s.routeGeneration = this._presentation.routeGeneration;
+        }
         return s;
     },
     get currentTime() {
@@ -176,7 +201,7 @@ export const jucePlayer = {
             if (!permitted()) return false;
             try {
                 selectionLifecycle().reconcileBeforePlayback();
-                await window.feedBackDesktop.audio.startBacking();
+                if (await window.feedBackDesktop.audio.startBacking() === false) throw new Error('Native backing start failed');
                 if (!permitted()) {
                     // A replacement song waits for stop() before loading its
                     // source. Finish this cleanup inside the same command queue.
@@ -201,7 +226,7 @@ export const jucePlayer = {
         return _queueBackingCommand(async () => {
             this._stopPolling();
             try {
-                await window.feedBackDesktop.audio.stopBacking();
+                if (await window.feedBackDesktop.audio.stopBacking() === false) throw new Error('Native backing stop failed');
                 return true;
             } catch (err) {
                 console.warn('[jucePlayer] stopBacking failed:', err);
@@ -221,7 +246,7 @@ export const jucePlayer = {
         this._pollAt = performance.now();
         this._sourceAt = this._pollAt;
         try {
-            await window.feedBackDesktop.audio.seekBacking(s);
+            if (await window.feedBackDesktop.audio.seekBacking(s) === false) throw new Error('Native backing seek failed');
         } catch (err) {
             console.warn('[jucePlayer] seekBacking failed:', err);
             if (owner === this._seekSerial) {
@@ -241,8 +266,10 @@ export const jucePlayer = {
         this._sourcePosition = NaN;
         this._sourcePlaying = true;
         this._sourceEnded = false;
+        this._sourceFailed = false;
         this._sampleSequence = -1;
         this._nativeGeneration = -1;
+        this._presentation = null;
         const self = this;
         const owner = this._pollGeneration;
         const owned = () => self._polling && owner === self._pollGeneration;
@@ -480,6 +507,8 @@ async function _restartLoopFromOutside(requestedTime, targetTime, trigger, guard
 }
 
 export function _resetAudioSeekState() {
+    // Invalidate plugin commands before any new song can load the shared player.
+    void window.feedBack?.audioSession?.nativeBacking?.releaseCurrent('song-change');
     // Bump the generation — in-flight chain callbacks see the mismatch on
     // their next guard check and short-circuit (no emit, no further state
     // mutation by us). Don't reset the chain head: new seeks must still
@@ -618,6 +647,7 @@ let _resumeInFlight = null;
 let _resumeRequestGen = 0;
 
 export async function startPhysicalPlayback(options = {}) {
+    if (window._guidedAvCalibration) return {status:'cancelled', completed:false};
     const session = audioSeekGen();
     const attempt = ++_playAttemptGen;
     const permitted = () => session === audioSeekGen()
@@ -670,6 +700,7 @@ export async function pausePlayback() {
 }
 
 export function resumePlayback() {
+    if (window._guidedAvCalibration) return Promise.resolve({status:'cancelled', completed:false});
     const owner = _playbackStartOwner();
     if (owner) return owner.completion;
     if (_resumeInFlight) return _resumeInFlight;

@@ -78,6 +78,9 @@ function buildClockSandbox(perfNowImpl) {
         globalThis.setPlaybackRate = function ${cleanup(setRateBody)};
         globalThis.freezeTime = function ${cleanup(freezeTimeBody)};
         globalThis.getTime = function ${cleanup(getTimeBody)};
+        api.getTime = getTime;
+        api.getPresentationTime = function ${extractBlock(src, 'getPresentationTime(inputAgeMs = 0, eventAtMs = performance.now()) {')};
+        api.isPresentationComplete = function ${extractBlock(src, 'isPresentationComplete() {')};
         globalThis.setPlaybackState = function ${extractBlock(src, 'setPlaybackState(state) {')};
         globalThis.setPlaybackSample = function ${extractBlock(src, 'setPlaybackSample(clock, playing) {')};
         globalThis.setAvOffset = function ${extractBlock(src, 'setAvOffset(ms) {')};
@@ -89,6 +92,50 @@ function buildClockSandbox(perfNowImpl) {
     `, sandbox);
     return sandbox;
 }
+
+test('presentation and judgment use one rate-scaled reference without moving the raw transport clock', () => {
+    for (const rate of [.5, .75, 1, 1.5, 2]) for (const offset of [0, -100, -500, 100]) {
+        const sb = buildClockSandbox(() => 1000);
+        sb.setPlaybackRate(rate); sb.setAvOffset(offset); sb.setTime(20);
+        const clock = {position: 10 + (2 - offset) * rate / 1000, sampledAt: 1000, freshAt: 1000,
+            rate, duration: 300, sequence: 7, generation: 2, playing: true, timingVersion: 2, maxPosition: 20};
+        sb.setPlaybackSample(clock, true);
+        assert.equal(sb.getTime(), 20);
+        assert.ok(Math.abs(sb.api.getPresentationTime(2) - 10) < 1e-10);
+        assert.ok(Math.abs(sb.api.getPresentationTime() - (10 + .002 * rate)) < 1e-10);
+    }
+});
+
+test('negative calibration lets the final heard notes finish after native EOF, with a bounded clock', () => {
+    for (const rate of [.5, 1, 2]) {
+        let now = 1000;
+        const sb = buildClockSandbox(() => now);
+        sb.setPlaybackRate(rate); sb.setAvOffset(-500); sb.setTime(10);
+        const clock = {position: 10, sampledAt: 1000, freshAt: 1000, rate, duration: 10,
+            sequence: 7, generation: 2, playing: false, ended: true, timingVersion: 2, maxPosition: 10};
+        sb.setPlaybackSample(clock, true);
+        assert.equal(sb.api.isPresentationComplete(), false);
+        assert.equal(sb.timingBundle().isPlaying, true);
+        assert.equal(sb.api.getPresentationTime(), 10 - .5 * rate);
+        now = 1400;
+        assert.ok(Math.abs(sb.api.getPresentationTime() - (10 - .1 * rate)) < 1e-10);
+        now = 1500;
+        assert.equal(sb.api.isPresentationComplete(), true);
+        assert.equal(sb.api.getPresentationTime(), 10);
+        now = 5000; assert.equal(sb.api.getPresentationTime(), 10);
+    }
+});
+
+test('pausing the calibrated EOF tail holds the displayed position', () => {
+    let now = 1000;
+    const sb = buildClockSandbox(() => now);
+    sb.setPlaybackRate(1); sb.setAvOffset(-500); sb.setTime(10);
+    const clock = {position:10, sampledAt:1000, freshAt:1000, rate:1, duration:10,
+        sequence:7,generation:2,playing:false,ended:true,timingVersion:2,maxPosition:10};
+    sb.setPlaybackSample(clock,true);
+    now = 1200; sb.setPlaybackSample(clock,false);
+    now = 1800; assert.equal(sb.api.getPresentationTime(),9.7);
+});
 
 test('native presentation adds song and AV offsets once without changing judgement time', () => {
     let now = 1000;
@@ -128,7 +175,7 @@ test('browser/stems anchors carry explicit state and calibration resets the epoc
     assert.equal(sb.timingBundle().isPlaying, false);
     sb.setAvOffset(-50);
     assert.equal(sb.timingBundle().transport.epoch, 1);
-    assert.equal(sb.timingBundle().transport.position, 9.95);
+    assert.equal(sb.timingBundle().transport.position, 9.975); // 50 physical ms at half speed
 });
 
 

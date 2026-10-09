@@ -79,6 +79,20 @@ add('open-anchor-change',base({notes:[note({f:0,sus:1,ln:true}),note({t:11,f:0,s
 add('hidden-continuation-unsplit',base({notes:[note({t:9.8,s:1,sus:1.5}),note({sus:2})]}),{expectNarrow:true});
 add('hidden-continuation-split',base({notes:[note({t:9.8,s:1,sus:1.2,ln:true}),note({sus:2}),note({t:11,s:1,sus:.3})]}),{expectNarrow:true,hidden:[{t:11,s:1}]});
 add('target-linked-trail',base({notes:[note({sus:2}),note({t:10.2,s:1,sus:.8,ln:true}),note({t:11,s:1,sus:.8,sl:8})]}),{mode:3,expectNarrow:true});
+// Handshape previews at a slide destination are hidden by the real note stream.
+// Even microsecond serialization differences must not turn them into attacks.
+for (const offset of [0, .000002, -.000002]) {
+    const b=base({notes:[note({t:11,s:2,f:9,sus:2}),note({t:11,s:3,f:9,sus:2})],
+        chords:[{t:10,id:0,notes:[note({s:2,f:7,sus:1,sl:9,ln:true}),note({s:3,f:7,sus:1,sl:9,ln:true})]}],
+        chordTemplates:[{name:'',frets:[-1,-1,7,7,-1,-1]},{name:'',frets:[-1,-1,9,9,-1,-1]}],
+        handShapes:[{start_time:11+offset,end_time:13,chord_id:1}]});
+    add('hidden-synth-slide-'+offset,b,{sourceString:3,expectFull:[10,11],seams:[[10,11]],hidden:[{t:11,s:3}],image:true});
+    add('hidden-synth-real-attack-'+offset,{...b,notes:[...b.notes,note({t:11.4,s:3,f:9})]},
+        {sourceString:3,expectNarrow:true});
+}
+add('visible-synth-preview',base({notes:[note({s:3,f:9,sus:2})],
+    handShapes:[{start_time:11,end_time:12,chord_id:0}],
+    chordTemplates:[{name:'',frets:[-1,-1,9,9,-1,-1]}]}),{sourceString:3,expectNarrow:true});
 add('real-gap',base({notes:[note({sus:.8,ln:true}),note({t:11,sus:1}),obstacle()]}),{gap:[10.8,11]});
 add('new-attack',base({notes:[note({sus:1}),note({t:11,sus:1}),obstacle()]}));
 add('ambiguous-target',base({notes:[note({sus:1,ln:true}),note({t:11,sus:1}),note({t:11,sus:.7,sl:7}),obstacle()]}));
@@ -145,7 +159,7 @@ async function main(){
         if(!option('--case')&&!args.includes('--perf-only')){
             if(!reference)for(const key of ['straight','bend','hidden-continuation']){const a=results.find(s=>s.name===key+'-unsplit'),b=results.find(s=>s.name===key+'-split');for(let t=10;t<=12+.0001;t+=.025){const aw=widthScaleAt(a,t),bw=widthScaleAt(b,t);check(aw!==null&&bw!==null&&Math.abs(aw-bw)<.07,`${key} partition changes width at ${t.toFixed(3)}: ${aw} vs ${bw}`);}}
             await init(straightSplit());const seeks=[];for(const time of [8,9.8,10.3,10.98,11.02,11.8,12.1,9.8])seeks.push(await page.evaluate(time=>{bundle.currentTime=time;return __capture();},time));
-            results.push({name:'seek-and-viewport',samples:seeks});if(!reference){for(const p of seeks){check(p.modelBuilds===1,'seek: linked model rebuilt or missing');if(p.time<11)validateScene({name:'seek-'+p.time,seams:[[10,11]]},p);for(const t of [10.95,11.025,11.1,11.3,11.7]){if(t<Math.max(10,p.time)||t>p.time+3)continue;const a=widthScaleAt(seeks[1],t),b=widthScaleAt(p,t);check(a!==null&&b!==null&&Math.abs(a-b)<.07,`seek ${p.time} changes chart-space width at ${t}: ${a} vs ${b}`);}}}
+            results.push({name:'seek-and-viewport',samples:seeks});if(!reference){for(const p of seeks){check(p.modelBuilds===1,'seek: linked model rebuilt or missing');if(p.time<11&&sourceStrands(p,11).length)validateScene({name:'seek-'+p.time,seams:[[10,11]]},p);for(const t of [10.95,11.025,11.1,11.3,11.7]){if(t<Math.max(10,p.time)||t>p.time+3)continue;const targetDrawn=p.gems.some(g=>g.note.s===1)||p.strands.some(r=>r.note.s===1);const a=targetDrawn?widthScaleAt(seeks[1],t):1,b=widthScaleAt(p,t);check(a!==null&&b!==null&&Math.abs(a-b)<.07,`seek ${p.time} changes chart-space width at ${t}: ${a} vs ${b}`);}}}
             const live=await page.evaluate(()=>{
                 const capture=(name,settings)=>{for(const [key,value] of Object.entries(settings))window['h3dBgSet'+key](value);return {name,...__capture()};};
                 return [capture('min-scale',{TrailYieldMinScale:.45}),capture('disabled',{TrailYieldEnabled:false}),capture('short-lead',{TrailYieldEnabled:true,TrailYieldLeadTime:.1,TrailYieldEndLeadTime:.1})];

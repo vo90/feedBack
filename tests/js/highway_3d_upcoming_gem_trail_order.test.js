@@ -141,7 +141,7 @@ test('ordinary and physical corrections share one finalizer in every mode', () =
 test('mode 0 keeps relationships active but bypasses every narrowing geometry path', () => {
     assert.match(
         source,
-        /const\s+trailYieldTargetEvent\s*=\s*trailYieldEventForNote\(sourceNote\)/,
+        /const\s+trailYieldTargetEvent\s*=\s*_noteDrawEvent/,
         'canonical event lookup must remain active when narrowing is disabled',
     );
     assert.match(
@@ -167,7 +167,7 @@ test('only emitted upcoming gems and visible sustain strands enter the resolver'
         /if\s*\(!\(dt\s*>\s*0\)\s*\|\|\s*!outline\s*\|\|\s*!core\)\s*return/,
     );
     const drawNoteStart = source.indexOf('function drawNote(');
-    const gemBlockStart = source.indexOf('if (!effSkipBody', drawNoteStart);
+    const gemBlockStart = source.indexOf('if (visualParts.head)', drawNoteStart);
     const gemRegistration = source.indexOf(
         'trailOrderRegisterUpcomingGem(', gemBlockStart,
     );

@@ -3,6 +3,8 @@
  * Receives note data via WebSocket, renders on requestAnimationFrame.
  */
 import { whammyApi } from './js/whammy.js';
+import { shouldUseNativeBacking } from './js/native-backing-route.js';
+import { loadCoreBackingTrack } from './js/transport.js';
 window.feedBackWhammy = whammyApi;
 import { harmonicContactsApi } from './js/harmonic-contacts.js';
 window.feedBackHarmonicContacts = harmonicContactsApi;
@@ -157,14 +159,10 @@ function createHighway() {
             session.recordBridgeHit({ bridgeId, domain, legacySurface, participantId: 'core.highway', outcome: outcome || 'handled', reason: reason || '' });
         } catch (_) { /* audio-session diagnostics are best-effort */ }
     }
-    // Two notions of "now" — kept deliberately separate:
-    //   chartTime — audio-aligned clock. What getTime() exposes to plugins
-    //               (scoring, note detection, etc.) and what setTime() receives.
-    //   currentTime — rendering clock. Equal to chartTime + avOffsetSec, so the
-    //                 draw code can shift visual notes forward to compensate
-    //                 for audio-output pipeline latency without plugins having
-    //                 to care about the offset.
-    // avOffsetSec is set by setAvOffset(ms); default 0 means old behavior.
+    // chartTime/getTime retain the raw transport + song offset for seek/loop
+    // control. currentTime/getPresentationTime align cues and judgments with
+    // output presentation plus rate-scaled residual A/V correction. Detection
+    // subtracts its independent input age from that shared reference.
     hwState.chartTime = 0;
     hwState.currentTime = 0;
     hwState.avOffsetSec = 0;
@@ -562,7 +560,7 @@ function createHighway() {
         // cost reasons.
         const b = _bundleReused;
         // Timing
-        b.currentTime = hwState.currentTime;
+        b.currentTime = api.getPresentationTime();
         b.playbackRate = hwState._playbackRate;
         b.songInfo = hwState.songInfo;
         b.isReady = hwState.ready;
@@ -583,7 +581,7 @@ function createHighway() {
         b.transport = null;
         if (hwState._playbackState) {
             const t = hwState._transportBundle, n = hwState._nativeClock;
-            const offset = hwState.songOffset + hwState.avOffsetSec;
+            const offset = hwState.songOffset + hwState.avOffsetSec * (hwState._playbackRate || 1);
             t.epoch = hwState._presentationEpoch;
             t.state = hwState._playbackState;
             t.position = n ? n.position + offset : hwState.currentTime;
@@ -592,6 +590,14 @@ function createHighway() {
             t.rate = n ? n.rate : hwState._playbackRate;
             const duration = n ? n.duration : Number(hwState.songInfo.duration);
             t.endTime = duration > 0 ? duration + offset : Infinity;
+            if (n?.timingVersion === 2 && Number.isFinite(n.maxPosition)) t.endTime = Math.min(t.endTime, n.maxPosition + offset);
+            if (n?.timingVersion === 2 && n.ended) {
+                // Downstream A/V correction can outlast native EOF. The last
+                // callback remains a bounded reference until that tail ends.
+                t.position = api.getPresentationTime();
+                t.sampledAt = t.freshAt = performance.now();
+                t.endTime = duration + hwState.songOffset;
+            }
             t.sequence = n ? n.sequence : 0;
             t.generation = n ? n.generation : 0;
             b.transport = t;
@@ -1322,7 +1328,8 @@ function createHighway() {
         let _paused = false;
         if (!Number.isNaN(hwState._chartAnchorPerfNow)) {
             const _nowP = performance.now();
-            if (_nowP - hwState._chartLastAdvanceAt > _CHART_MAX_INTERP_MS) {
+            if (_nowP - hwState._chartLastAdvanceAt > _CHART_MAX_INTERP_MS
+                && !(hwState._nativeClock?.ended && hwState._playbackState === 'playing')) {
                 _paused = true;
                 // ...unless the renderer says its picture is NOT static while
                 // paused. The throttle assumes a paused chart is a still frame,
@@ -1336,6 +1343,9 @@ function createHighway() {
                 hwState._lastPausedDrawAt = _nowP;
             }
         }
+        // Both renderers use the output presentation clock, including the
+        // default renderer which reads this closure rather than the bundle.
+        hwState.currentTime = api.getPresentationTime();
         // Skip bundle allocation when the default renderer is active —
         // it reads closure state directly and ignores the bundle.
         // _makeBundle at 60fps was a steady GC churn for the common
@@ -1688,7 +1698,16 @@ function createHighway() {
             out = _cloneChartTransformValue(out);
             if (Array.isArray(out.notes)) hwState._xfNotes = _sortedChartTransformArray(out.notes, 't');
             if (Array.isArray(out.chords)) hwState._xfChords = _sortedChartTransformArray(out.chords, 't');
-            if (Array.isArray(out.anchors)) hwState._xfAnchors = _sortedChartTransformArray(out.anchors, 'time');
+            if (Array.isArray(out.anchors)) {
+                const source = hwState._filteredAnchors !== null ? hwState._filteredAnchors : hwState.anchors;
+                const unchanged = new Map(source.map(a => [JSON.stringify([a.time, a.fret, a.width ?? 4]), a.guidanceOrigin]));
+                hwState._xfAnchors = _sortedChartTransformArray(out.anchors.map(a => ({ ...a,
+                    // A cloned/replaced row cannot inherit authority merely by
+                    // retaining a label. Transforms preserve exact rows only;
+                    // explicit lineage for retiming can be added by its owner.
+                    guidanceOrigin: unchanged.get(JSON.stringify([a.time, a.fret, a.width ?? 4])) || 'unknown',
+                })), 'time');
+            }
             // Full-difficulty views: explicit allNotes/allChords, or reuse the
             // effective output when no filter is active (effective === raw then).
             if (Array.isArray(out.allNotes)) hwState._xfNotesAll = _sortedChartTransformArray(out.allNotes, 't');
@@ -2123,31 +2142,17 @@ function createHighway() {
                                 if (msg.audio_url) {
                                     const audio = document.getElementById('audio');
                                     const audioFilename = msg.audio_url.split('/').pop();
-                                    // /audio/ URLs are always JUCE-routable. A feedpak full-mix
-                                    // (single-mix pack: original audio, no stems) is routable too,
-                                    // but ONLY under an exclusive-style output — the actual
-                                    // exclusive check happens at routing time (app.js watcher /
-                                    // the async block below), not here, because the share mode
-                                    // can change while the song is loaded. Sloppak stem URLs are
-                                    // never routable.
+                                    // Single backing files can use any native output backend.
+                                    // Multitrack packs retain their browser mixer.
                                     const isAudioUrl = msg.audio_url.startsWith('/audio/');
-                                    // "Full mix" covers BOTH single-mix pack shapes:
-                                    //  - single-stem packs (stems: [full.ogg] only) — the pack's
-                                    //    one stem IS its mixdown, so the server leaves it in the
-                                    //    stems list, has_full_mix is false, and audio_url points
-                                    //    at that one stem; and
-                                    //  - legacy stem-less packs, whose mixdown sits outside stems
-                                    //    behind the deprecated original_audio: key, so has_stems
-                                    //    is false and audio_url == full_mix_url.
-                                    // Either way there is one audible source and no per-stem mix
-                                    // to preserve, so routing it natively loses nothing. A pack
-                                    // that retains its `full` stem ALONGSIDE separated stems is
-                                    // multi-stem (has_full_mix && has_stems) and stays out until
-                                    // Phase 2 — routing it natively would drop the mixer.
+                                    // Every listed stem (even a sole full-mix stem) belongs to
+                                    // the stems plugin's transport and mixer. Only a full mix
+                                    // outside that list can use native playback without a
+                                    // coordinated ownership handoff to the plugin.
                                     const isFeedpakFullMix = !isAudioUrl
                                         && msg.audio_url.startsWith('/api/sloppak/')
-                                        && ((!!msg.has_full_mix && !msg.has_stems)
-                                            || (msg.stems || []).length === 1);
+                                        && !!msg.has_full_mix && !msg.has_stems
+                                        && (msg.stems || []).length === 0;
                                     // Record the loaded song's audio so app.js can re-route it
                                     // between the HTML5 and JUCE paths if the audio engine is
                                     // started/stopped after the song is already loaded. Set this
@@ -2157,14 +2162,18 @@ function createHighway() {
                                         url: msg.audio_url,
                                         juceEligible: isAudioUrl,
                                         feedpakFullMix: isFeedpakFullMix,
+                                        // Eligibility for a plugin-owned native lease, never an
+                                        // automatic core takeover of the stem's controls.
+                                        singleStemUrl: !msg.has_full_mix && (msg.stems || []).length === 1 ? msg.stems[0].url : null,
+                                        stemUrls: (msg.stems || []).map(stem => stem.url),
+                                        fullMixUrl: msg.has_full_mix ? msg.full_mix_url : null,
                                     };
                                     const alreadyLoaded = window._juceMode
                                         ? window._juceAudioUrl === msg.audio_url
                                         : (audio.src && audio.src.includes(audioFilename));
                                     // [feedpak-route] diagnostics: every eligibility input in one
-                                    // line — shows up in the exported diagnostics bundle. If
-                                    // has_stems is true the pack is multi-stem and Phase 1
-                                    // deliberately does not route it (Phase 2 work).
+                                    // line — shows up in the exported diagnostics bundle. Listed
+                                    // stems retain their plugin-owned browser transport.
                                     console.log('[feedpak-route] song-load:',
                                         'url=', msg.audio_url,
                                         'isAudioUrl=', isAudioUrl,
@@ -2220,30 +2229,22 @@ function createHighway() {
                                                         clearTimeout(barrierTimer);
                                                         if (gen !== hwState._wsGen) return; // navigated away during the wait
                                                     }
-                                                    // Feedpak full-mix rides the engine ONLY under an
-                                                    // exclusive-style output (shared mode falls through to
-                                                    // the HTML5 fallback below, keeping the WebAudio path
-                                                    // fully working). /audio/ songs route whenever the
-                                                    // engine runs, as before. If the share mode changes
-                                                    // later, the app.js watcher re-evaluates and migrates.
-                                                    let routeToJuce = await juceApi.isAudioRunning();
-                                                    console.log('[feedpak-route] initial-load: engineRunning=', routeToJuce);
-                                                    if (routeToJuce) {
-                                                        if (gen !== hwState._wsGen) return; // stale
-                                                        if (isFeedpakFullMix) {
-                                                            const exclFn = window._juceOutputIsExclusive;
-                                                            routeToJuce = !!(await exclFn?.());
-                                                            console.log('[feedpak-route] initial-load: feedpak exclusive check →',
-                                                                routeToJuce, '(predicate installed=', typeof exclFn === 'function', ')');
-                                                        }
-                                                    }
+                                                    // Share the watcher's policy: single backing files use
+                                                    // the selected native output, including shared Windows.
+                                                    const engineRunning = await juceApi.isAudioRunning();
+                                                    if (gen !== hwState._wsGen) return; // stale
+                                                    const routeToJuce = shouldUseNativeBacking({
+                                                        juceEligible: isAudioUrl, feedpakFullMix: isFeedpakFullMix,
+                                                    }, engineRunning);
+                                                    console.log('[feedpak-route] initial-load: engineRunning=', engineRunning,
+                                                        'native=', routeToJuce);
                                                     if (routeToJuce) {
                                                         if (gen !== hwState._wsGen) return; // stale
                                                         const res = await fetch(`/api/audio-local-path?url=${encodeURIComponent(audioUrl)}`);
                                                         if (!res.ok) throw new Error('HTTP ' + res.status);
                                                         const { path } = await res.json();
                                                         pathLabel = (typeof path === 'string' && path.split(/[\\/]/).pop()) || '<missing>';
-                                                        const ok = await juceApi.loadBackingTrack(path);
+                                                        const ok = await loadCoreBackingTrack(juceApi, path, () => gen === hwState._wsGen);
                                                         console.log('[highway] JUCE loadBackingTrack file=', pathLabel, 'ok=', ok);
                                                         if (ok === false) throw new Error('JUCE rejected backing track: ' + pathLabel);
                                                         if (gen !== hwState._wsGen) return; // stale
@@ -2540,12 +2541,20 @@ function createHighway() {
         },
         setPlaybackSample(clock, playing) {
             if (hwState._playbackState === 'seeking' || hwState._playbackState === 'rewind') return;
+            const previous = hwState._nativeClock;
+            if (!playing && previous?.ended && hwState._playbackState !== 'paused')
+                hwState._heldOutputTail = api.getPresentationTime();
+            if (playing || !clock?.ended) hwState._heldOutputTail = null;
+            if (clock && previous && (clock.generation !== previous.generation || clock.routeGeneration !== previous.routeGeneration))
+                api.resetPresentation('native-session');
             hwState._nativeClock = clock ? Object.assign(hwState._nativeClock || {}, clock) : null;
-            hwState._playbackState = playing ? (clock && !clock.playing ? 'ended' : 'playing') : 'paused';
+            const outputPlaying = clock?.ended ? !api.isPresentationComplete() : clock?.playing;
+            hwState._playbackState = playing ? (clock && !outputPlaying ? (clock.ended ? 'ended' : 'buffering') : 'playing') : 'paused';
         },
         resetPresentation(reason) {
             hwState._presentationEpoch++;
             hwState._nativeClock = null;
+            hwState._heldOutputTail = null;
             hwState._presentationReason = reason;
         },
         setClockDiagnostics(enabled) { hwState._renderer?.setClockDiagnostics?.(enabled); },
@@ -2555,7 +2564,7 @@ function createHighway() {
             // per-song offset in here so plugins (scoring, note detect,
             // etc.) see the same chart-aligned clock the renderer does.
             hwState.chartTime = t + hwState.songOffset;
-            hwState.currentTime = hwState.chartTime + hwState.avOffsetSec;
+            hwState.currentTime = hwState.chartTime + hwState.avOffsetSec * (hwState._playbackRate || 1);
             // Only re-anchor on a genuinely new audio time. Repeated
             // calls with the same `t` (audio.currentTime hasn't updated
             // yet) keep the anchor's perfNow fixed so interpolation
@@ -2605,7 +2614,7 @@ function createHighway() {
             api.resetPresentation('count-in');
             hwState._playbackState = 'count-in';
             hwState.chartTime = t + hwState.songOffset;
-            hwState.currentTime = hwState.chartTime + hwState.avOffsetSec;
+            hwState.currentTime = hwState.chartTime + hwState.avOffsetSec * (hwState._playbackRate || 1);
             hwState._chartAnchorAudioT = t;
             hwState._chartAnchorPerfNow = NaN;
             hwState._chartLastAdvanceAt = 0;
@@ -2615,9 +2624,36 @@ function createHighway() {
             const offset = (Number(ms) || 0) / 1000;
             if (offset !== hwState.avOffsetSec) api.resetPresentation('av-offset');
             hwState.avOffsetSec = offset;
-            hwState.currentTime = hwState.chartTime + hwState.avOffsetSec;
+            hwState.currentTime = hwState.chartTime + hwState.avOffsetSec * (hwState._playbackRate || 1);
         },
         getAvOffset() { return hwState.avOffsetSec * 1000; },
+        // A/V and input ages are physical milliseconds, scaled once by song
+        // speed. This clock is for cues and judgments; getTime remains the
+        // transport/chart clock used for seeking and loop boundaries.
+        getPresentationTime(inputAgeMs = 0, eventAtMs = performance.now()) {
+            const n = hwState._nativeClock;
+            const rate = n?.rate || hwState._playbackRate || 1;
+            const age = Number.isFinite(inputAgeMs) ? Math.max(0, inputAgeMs) : 0;
+            if (Number.isFinite(hwState._heldOutputTail)) return hwState._heldOutputTail - age * rate / 1000;
+            let position;
+            if (n?.timingVersion === 2) {
+                const elapsed = n.playing || n.ended ? Math.max(0, (n.ended ? eventAtMs : Math.min(eventAtMs, n.freshAt + 250)) - n.sampledAt) / 1000 : 0;
+                const maximum = n.ended ? n.duration - Math.min(0, hwState.avOffsetSec * rate) : n.maxPosition;
+                position = Math.min(maximum, n.position + elapsed * rate) + hwState.songOffset;
+            } else position = api.getTime();
+            return position + (hwState.avOffsetSec - age / 1000) * rate;
+        },
+        getTimingRate() { return hwState._nativeClock?.rate || hwState._playbackRate || 1; },
+        isPresentationComplete() {
+            const n = hwState._nativeClock;
+            return !n || n.timingVersion !== 2 || (n.ended && api.getPresentationTime() >= n.duration + hwState.songOffset - 1e-6);
+        },
+        getJudgmentTiming(inputAgeMs = 0) {
+            const n = hwState._nativeClock;
+            if (n?.timingVersion !== 2) return null;
+            return { version: 2, generation: n.generation, routeGeneration: n.routeGeneration,
+                songOffset: hwState.songOffset, avOffsetMs: hwState.avOffsetSec * 1000, inputAgeMs };
+        },
 
         getBPM(t) {
             // Calculate BPM from beat intervals near time t

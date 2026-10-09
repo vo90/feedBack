@@ -1,0 +1,23 @@
+const {test} = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync(require('node:path').join(__dirname, '../../static/js/native-backing-analyser.js'), 'utf8');
+const create = vm.runInNewContext(source.replace('export function', 'function') + '; createNativeBackingAnalyser');
+test('native analysis reads bounded PCM without opening an audio graph and locates the signal bin', async () => {
+    let now = 0, active = true, calls = 0;
+    const samples = Float32Array.from({length: 2048}, (_, i) => .2 * Math.sin(2 * Math.PI * 16 * i / 256));
+    const analyser = create({getBackingAnalysis: async () => { calls++; return samples; }}, () => active, () => .5, () => now);
+    analyser.smoothingTimeConstant = 0;
+    const bins = new Float32Array(128), waveform = new Float32Array(256);
+    analyser.getFloatFrequencyData(bins);
+    await new Promise(resolve => setImmediate(resolve));
+    analyser.getFloatFrequencyData(bins); analyser.getFloatTimeDomainData(waveform);
+    assert.equal(bins.indexOf(Math.max(...bins)), 16);
+    assert.ok(Math.abs(Math.max(...waveform) - .1) < .00001);
+    assert.equal(calls, 1);
+    assert.throws(() => analyser.connect({}), /read-only/);
+    assert.throws(() => { analyser.fftSize = 4096; }, /FFT size/);
+    active = false; analyser.getFloatTimeDomainData(waveform); assert.ok(waveform.every(v => v === 0));
+    analyser.getFloatFrequencyData(bins); assert.ok(bins.every(v => v === -Infinity));
+});

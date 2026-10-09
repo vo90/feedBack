@@ -54,6 +54,17 @@ The file is laid out top-to-bottom as:
    - `canvasSize()` — resilient canvas-dimension lookup
    - **Returned API** — `init / draw / resize / destroy` (setRenderer contract)
 
+Trail visibility uses the queued `drawNote` calls that survive the existing
+standalone/chord policies. `hwyNoteVisualParts` resolves head and trail lifetimes
+once, before `flushNoteDraws` emits geometry; narrowing and all ordering modes
+consume those same per-frame flags. Chart indexes retain conservative potential
+lifetimes, with separate origin records for coincident representations: a hidden
+copy cannot donate its duration or revive another copy's head. Never set an
+obstacle visible merely because a chart record exists. Keep guide projections,
+visible previews and real repeated attacks; hidden continuation heads can still
+have visible trails. Clear frame visibility on every draw (including paused
+settings changes and seeks), and release queue references with chart indexes.
+
 ## Incoming fret-label layout
 
 `_setIncomingFloorLabelMap` top-anchors the three gold incoming-label paths and
@@ -72,8 +83,11 @@ inside the viewport before handoff; wholly offscreen rows remain ineligible.
 The pool resets that temporary Sprite centre on the next update.
 `_registerFretColumnMarker` gives grey reference markers the same top anchor.
 After confirming a gold label is visible/projectable, layout suppresses grey
-markers for the same positive fret within 1 ms of the authored onset. Store
-actual `ch.t`/`n.t` and `b.time`; keep only the first drawable gold identity
+markers for the same positive fret within 1 ms of the authored onset, or when
+their projected glyph ink overlaps. The overlap rule handles authored beat/chord
+offsets beyond 1 ms without alternating grey/gold depth-bucket winners. Grey ink
+bounds are cached per layout frame; separated reference digits remain visible.
+Store actual `ch.t`/`n.t` and `b.time`; keep only the first drawable gold identity
 across chord and note paths each layout frame. Do not use clamped render Z or 40 ms density
 buckets. Teaching marks have no fret/time identity and never suppress a marker.
 Marker records are per renderer, reused, reset each update and cleared at teardown.
@@ -124,7 +138,7 @@ Each entry names the function or banner you should grep for, plus key sub-blocks
 - **Active-fret cooldown** → `FRET_COOLDOWN` constant. How long after the last note in a fret it stays in the active set.
 
 ### Notes
-- **Stem visibility** → `noteStemVisible()` gates fretted connectors, chord/arpeggio drop lines and RS+ open/unpitched-muted stems. `belongsToBoxedChord` always suppresses stems, including after the flying box ends at onset; open arpeggio brackets do not count as boxes. Otherwise fretted notes use `noteStemsVisible` and open/muted bars use `openStringStemsVisible`, independently of notation style. Current open bars have rims, not vertical stems: preserve those rims. Both settings default on, persist through `_bgReadSetting`, and refresh through the flag-only setting listener. Keep fret labels, chord boxes and sustain trails independent. Pooled visibility and bounds must follow the actual visible stem when toggling live.
+- **Stem visibility**: `noteStemVisible()` gates fretted connectors, chord/arpeggio drop lines and RS+ open/unpitched-muted stems. `_ensureBoxedChordMembership()` caches ordinary onset keys and separate `arpeggioKeys` for actual enclosing arpeggio frames. An explicit initiating arpeggio chord must pass `chordHasFrameShape()`; inferred handshapes, suppressed synthetic boxes and single-string shapes do not qualify. Match only its actual onset members, including coincident standalone copies. Later individual plucks within the handshape retain stems from their first appearance, even when they repeat the same string/fret. `drawNote()` applies those keys only in RS+. Membership lasts for each note's full display/sustain lifetime, including after the leading box disappears; do not switch stems on at the play line. The chart-derived cache also handles direct seeks and rewind without requiring an earlier draw. Ordinary boxed chords retain their existing behavior. Unboxed notes follow `noteStemsVisible` or `openStringStemsVisible`. Preserve Current open rims, note heads, labels, technique symbols and trails. Suppression happens before gem footprint registration, so hidden stems never enlarge overlap bounds.
 - **Single-note rendering** → `drawNote()`. Handles outline, core body, open-string variant, sustain trail, lane drop line, all technique labels, fret connector label, and the board projection. Each visual block has its own banner comment (`// ── Outline ──`, `// ── Core (filled note body) ──`, `// ── Sustain trail ──`, `// ── Lane drop line ──`, `// ── Technique labels ──`, `// ── Per-note fret connector label ──`, `// ── Board projection ──`).
 - **Note geometry / size** → Current uses `gNote` / `gNoteGrad`; RS+ inspired uses rounded `gRsNote` / `gRsNoteGrad`. Per-note scale and open-string widths are in `drawNote()`. Keep footprint/bounds helpers in sync with silhouette changes.
 - **Note approach orientation** → search `approachRot` inside `drawNote()`. RS+ inspired keeps gems, rims and attached technique symbols at their landing orientation throughout the approach. Current maps `dt / AHEAD` to `[0, π/2]`; open strings skip the rotation. Bend/slide trajectories and the bend chevron's direction are independent of this decorative turn.
@@ -291,12 +305,13 @@ when seeking backward or when the path's original attack is off screen.
 Visibility samples each piece through the existing `sustainTrailCenterXAt` model,
 and only the path's final endpoint is terminal. Body and outline must use the same
 visibility envelope at joins. The local query includes taper/recovery margins;
-mode-3 future depth priority remains independently cached per original event.
+mode-3 depth priority is cached per original event and frame, so a visibility
+change or seek cannot retain the depth of a hidden target.
 
 Obstacle indexes distinguish visible attack heads from emitted trails. Hidden
 continuations contribute no phantom gem, while an emitted continuation trail may
-still overlap another trail. The trail-eligibility callback is the extension point
-for renderers that suppress member trails or emit open chord-member trails.
+still overlap another trail. The trail-eligibility callback bounds potential
+lifetimes; queued draw decisions supply the actual per-frame visibility.
 Fret and string indexes use max-end trees to skip expired ranges, including those
 behind an old long-running target. Keep these indexes chart-static, retain bounded
 visible-window queries, and avoid scanning complete linked chains each frame.

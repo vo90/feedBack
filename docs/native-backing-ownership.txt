@@ -1,0 +1,50 @@
+Native backing ownership v1
+
+window.feedBack.audioSession.nativeBacking is installed by desktop Core. It
+leases the existing native backing player to a plugin that retains transport
+and mix controls. The first consumer is Stems; a browser/older host exposes no
+lease API and the plugin continues its existing browser playback.
+
+Core marks a song eligible for a lease only when its current song metadata has
+exactly one stem URL and no separate full mix. That marker never enables Core's
+automatic JUCE routing for a listed stem. The plugin explicitly requests the
+matching URL, an owner ID, an isCurrent generation guard, and loss/end callbacks.
+snapshot() exposes owner ID, lease generation, and preparing/ready state; it
+contains no file path or audio data.
+
+There is one active lease. All lease mutations and Core backing-file loads share
+the transport command queue. Session reset and loadCoreBackingTrack revoke the
+lease synchronously and queue its stop before the next file load. Stale commands
+are no-ops. A cancelled start also guards both sides of native startBacking IPC.
+An engine stop/error revokes the lease; fallback is permitted only after native
+stop succeeds or the engine is confirmed stopped. Lease callbacks run outside the
+command queue to avoid re-entry deadlocks. Health checks reuse Core's existing
+350 ms routing interval, including while hidden for an active lease.
+
+The Stems adapter transfers only before its first audible browser playback.
+Play requested during preparation waits for the decision; Pause cancels that
+request. A browser source that already played retains its current route because
+its capture tail cannot be discarded independently from other page audio.
+The plugin keeps its decoded graph for fallback and forwards play/pause, seek,
+pitch-preserving rate, natural end and combined master/stem gain to its lease.
+It observes existing gain handles, including automation mute, and coalesces gain
+writes. Core does not enable _juceMode for this lease: plugin controls and media
+element shims remain authoritative.
+
+Multitrack, streaming, legacy graphs, separate pristine mixes, and live browser
+analyser/graph consumers retain browser playback. A graph request after native
+activation restores browser playback after confirmed native silence. Native
+analysis providers and per-source native mixer taps remain future work.
+
+Testing:
+- Core: node --test tests/js/native_backing_owner.test.js
+- Plugin: node --test tests/*.mjs
+- Paired software gate: set FEEDBACK_CORE_DIR to the matching Core worktree and
+  run the plugin tests. native-playback-integration.test.mjs executes the actual
+  Core lease/player plus plugin transport/shims against simulated device IO.
+  Without that environment setting the paired tests explicitly skip.
+
+This change removes browser capture/renderer-bus buffering for eligible stems.
+It does not reduce native device buffers or measure end-to-end audible latency.
+The runtime/hardware gate must still cover ASIO and Windows output, stop/restart,
+song changes, mixer automation, loops/count-in and a browser analyser consumer.

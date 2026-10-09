@@ -16,6 +16,8 @@ def _digest(value):
 
 
 def _anchors(chart):
+    if isinstance(chart.get("ext"), dict) and "guidanceProvenance" in chart["ext"]:
+        return None  # Versioned ownership requires explicit regeneration.
     proof = chart.get("ext", {}).get("chartGuidance")
     if not isinstance(proof, dict) or proof.get("policy") != "feedforge-chart-guidance-v2":
         return None

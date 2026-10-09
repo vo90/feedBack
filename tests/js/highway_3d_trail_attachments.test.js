@@ -53,7 +53,7 @@ test('coincident real open and unpitched events stay distinct but exact chord co
             assert.equal(event.sourceFret, note.f);
             assert.equal(event.end, note.t + note.sus);
             assert.ok(event.standalone && event.chordMeta);
-            assert.equal(visibility.find({...note}), event, 'scratch views keep authored fret identity');
+            assert.equal(visibility.find({...note}, note), event, 'scratch views keep authored fret identity');
         }
         assert.notEqual(visibility.find(notes[0]), visibility.find(notes[1]));
     }
@@ -64,7 +64,7 @@ test('unpitched chord members count toward open bounds without extending the fre
     const event = visibility.build([], [chord], 6)[0]?.[0];
     assert.ok(event);
     assert.deepEqual(event.chordMeta, {size: 3, minF: 5, maxF: 7});
-    assert.equal(visibility.find({...chord.notes[0], t: chord.t}), event);
+    assert.equal(visibility.find({...chord.notes[0], t: chord.t}, chord.notes[0]), event);
 });
 
 test('invalid sentinel notes remain excluded', () => {
@@ -89,6 +89,9 @@ test('mixed scrape and unpitched chord members preserve only the playable frette
     assert.ok(mute && scrape, 'both visual-only members retain an open visibility footprint');
     assert.deepEqual(mute.chordMeta, {size: 4, minF: 5, maxF: 7});
     assert.deepEqual(scrape.chordMeta, mute.chordMeta);
+    assert.equal(scrape.sourceFret, 19);
+    assert.equal(visibility.find({...chord.notes[1], t: chord.t}, chord.notes[1]), scrape,
+        'scrape trail keeps its authored identity despite its open visual footprint');
     assert.equal(JSON.stringify(chord), original, 'visibility must not rewrite authored notes');
 });
 

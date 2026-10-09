@@ -1661,7 +1661,7 @@
             if (!Number.isFinite(t) || !Number.isInteger(s) || s < 0 || s >= stringCount) return;
             // Match drawNote's local open-bar view, retaining the authored
             // identity for lookup/dedup and all scoring/linked-path consumers.
-            const sourceFret = f;
+            const sourceFret = pathNote?.f ?? f;
             if (pathNote && isUnpitchedMute(pathNote)) f = 0;
             if (!Number.isInteger(f) || f < 0 || f > NFRETS) return;
             const duration = Number.isFinite(sustain) ? Math.max(0, sustain) : 0;
@@ -1675,6 +1675,7 @@
                 standaloneTrailVisible: trailVisible && chordMeta === null,
                 chordTrailMeta: trailVisible ? chordMeta : null,
                 sourceNote: pathNote,
+                sourceChord,
                 linkedPath: options?.linkedPaths?.byNote.get(pathNote) || null,
                 trailStart,
                 accent: !!accent,
@@ -1739,7 +1740,7 @@
             let write = 1;
             for (let read = 1; read < events.length; read++) {
                 const prev = events[write - 1], cur = events[read];
-                if (Math.abs(cur.t - prev.t) < 1e-6
+                if (!options?.separateRepresentations && Math.abs(cur.t - prev.t) < 1e-6
                     && cur.s === prev.s && cur.sourceFret === prev.sourceFret) {
                     prev.end = Math.max(prev.end, cur.end);
                     prev.accent = prev.accent || cur.accent;
@@ -2329,6 +2330,11 @@
             if (events[mid].t <= sourceStart + 1e-6) lo = mid + 1;
             else hi = mid;
         }
+        // The structural index retains potential attacks; drawing resolves
+        // approach/hold visibility each frame. Never skip a visible attack
+        // just because its fret differs from the source.
+        while (lo < events.length && events[lo].gemVisible === false
+            && events[lo].t <= sourceEnd + settings.sameStringMaxGap + 1e-9) lo++;
         const event = events[lo];
         return event && event.t <= sourceEnd + settings.sameStringMaxGap + 1e-9 ? event : null;
     }
@@ -2856,6 +2862,27 @@
         return explicitLinkTarget === true || (skipBody === true && dt > 0);
     }
 
+    /** One lifetime decision for the draw queue and its overlap candidates. */
+    function hwyNoteVisualParts(n, now, ahead, linger, nextT, visualStart,
+        suppressHead, suppressTrail, out) {
+        out = out || {};
+        const hasSus = n.sus > 0 && !isPlainDeadNote(n);
+        const end = n.t + (n.sus || 0);
+        const extra = hasSus ? Math.max(0, linger - n.sus) : linger;
+        const deadline = hasSus
+            ? (extra > 0 ? Math.min(end + extra, nextT) : end)
+            : Math.min(n.t + linger, nextT);
+        out.deadline = deadline;
+        out.overLinger = now > deadline;
+        out.head = !suppressHead && !out.overLinger && n.t <= now + ahead;
+        const start = Math.max(visualStart, now);
+        const duration = Math.min(end - start, ahead, now + ahead - start);
+        out.trail = !suppressTrail && !out.overLinger
+            && (hasSus || visualStart < n.t)
+            && duration > (visualStart < n.t ? 1e-6 : 0.01);
+        return out;
+    }
+
     // Binary lower-bound: returns the first index i in arr where arr[i].t >= t.
     // Assumes arr is sorted ascending by .t (bundle.notes / bundle.chords always are).
     // Byte-identical to core's bundle.lowerBoundT — kept as a local because this
@@ -3279,6 +3306,14 @@
     // An unrelated lane may be wider or begin below the chord; its spare space
     // must not become part of this chord. All-open shapes retain a local context.
     function chordShapeLaneBounds(fMin, fMax, anchor) {
+        if (anchor?.guidanceOrigin === 'source' || anchor?.guidanceOrigin === 'user') {
+            const first = Math.max(1, Number(anchor.fret));
+            const width = Number(anchor.width ?? 4), last = first + width - 1;
+            const hasFrets = Number.isFinite(fMin) && Number.isFinite(fMax) && fMin > 0 && fMax >= fMin;
+            if (Number.isInteger(first) && Number.isInteger(width) && width > 0
+                && last <= NFRETS && !(first === 1 && width === NFRETS)
+                && (!hasFrets || (first <= fMin && last >= fMax))) return laneBoundsFromAnchor(anchor);
+        }
         if (Number.isFinite(fMin) && Number.isFinite(fMax) && fMin > 0 && fMax >= fMin) {
             return chordFallbackLaneBounds(fMin, fMax);
         }
@@ -3289,6 +3324,56 @@
     function anchorPlayedFretSpanAt(anchorArr, t) {
         if (!anchorArr || !anchorArr.length) return null;
         return anchorPlayedFretInclusiveSpan(getChartAnchorAt(anchorArr, t));
+    }
+
+    // Resolve malformed/outlying authored positions once per effective chart.
+    // Generated and unknown spans retain the established geometry policy.
+    // The returned lanes are shared by the floor, boxes, holds and hit edges.
+    function hwyResolveGuidanceAnchors(notes, chords, anchors) {
+        if (!anchors?.some(a => a.guidanceOrigin === 'source' || a.guidanceOrigin === 'user')) return anchors;
+        const positions = anchors.slice().sort((a, b) => a.time - b.time);
+        const attacks = [];
+        const add = (t, members) => {
+            if (!Number.isFinite(t)) return;
+            const frets = members.filter(n => n && n.f > 0 && n.f <= NFRETS && !isUnpitchedMute(n)).map(n => n.f);
+            if (frets.length) attacks.push({ t, low: Math.min(...frets), high: Math.max(...frets) });
+        };
+        for (const n of notes || []) add(n.t, [n]);
+        for (const c of chords || []) if (!c.h3dSynth) add(c.t, c.notes || []);
+        attacks.sort((a, b) => a.t - b.t);
+        const result = [];
+        let index = 0;
+        for (let i = 0; i < positions.length; i++) {
+            const original = positions[i], nextTime = positions[i + 1]?.time ?? Infinity;
+            const authored = original.guidanceOrigin === 'source' || original.guidanceOrigin === 'user';
+            let row = original;
+            if (authored) {
+                const first = Math.max(1, Number(row.fret)), width = Number(row.width ?? 4);
+                if (!Number.isInteger(first) || !Number.isInteger(width) || width < 1
+                    || first + width - 1 > NFRETS || (first === 1 && width === NFRETS)) {
+                    row = { ...original, fret: Math.max(1, Math.min(NFRETS - 3,
+                        Math.round(Number(row.fret)) || 1)), width: 4 };
+                }
+            }
+            result.push(row);
+            while (index < attacks.length && attacks[index].t < nextTime - CHORD_ANCHOR_TIME_EPS) {
+                const attack = attacks[index++];
+                if (!authored || attack.t < original.time - CHORD_ANCHOR_TIME_EPS) continue;
+                const first = Math.max(1, Number(row.fret)), width = Number(row.width ?? 4);
+                const last = first + width - 1;
+                const valid = Number.isInteger(first) && Number.isInteger(width) && width > 0
+                    && last <= NFRETS && !(first === 1 && width === NFRETS);
+                if (valid && first <= attack.low && last >= attack.high) continue;
+                const low = valid ? Math.min(first, attack.low) : attack.low;
+                const high = valid ? Math.max(last, attack.high) : attack.high;
+                const size = Math.min(NFRETS, Math.max(4, high - low + 1));
+                row = { ...original, time: Math.max(original.time, attack.t),
+                    fret: Math.max(1, Math.min(low, NFRETS - size + 1)), width: size };
+                if (result[result.length - 1].time === row.time) result.pop();
+                result.push(row);
+            }
+        }
+        return result;
     }
 
     // Camera stops are separate from musical regions. Brief detours can share
@@ -7708,6 +7793,15 @@
         // order converge before Three.js draws, without chart scans or frame
         // allocations. Non-qualifying gems never enter this path.
         let _trailYieldFrameId = 0;
+        // Collect the calls that survive the note/chord rendering policies
+        // before any ribbon queries another note's visibility. Reuse records
+        // and chord views; the frame pass never scans the complete chart.
+        const _noteDrawQueue = [];
+        let _noteDrawCount = 0;
+        let _collectNoteDraws = false;
+        let _noteDrawParts = null;
+        let _noteDrawEvent = null;
+        const _visibleTrailEvents = [];
         const TRAIL_VISIBILITY_MIN_SCRATCH_CAPACITY = MAX_RENDER_STRINGS * 16;
         let _trailVisibilityScratchCapacity = TRAIL_VISIBILITY_MIN_SCRATCH_CAPACITY;
         let _trailYieldStartsScratch = new Float64Array(_trailVisibilityScratchCapacity);
@@ -7823,6 +7917,11 @@
          * fixed scratch buffers without allocating or clearing them.
          */
         function trailVisibilityReleaseChartReferences() {
+            _visibleTrailEvents.length = 0;
+            _noteDrawQueue.length = 0;
+            _noteDrawCount = 0;
+            _collectNoteDraws = false;
+            _noteDrawParts = _noteDrawEvent = null;
             _trailYieldEventsByFret = [];
             _trailOcclusionEventsByString = [];
             _trailAttacksByString = [];
@@ -13789,21 +13888,28 @@
             // Shape entries depend on templates as well as chord identity.
             // Refresh them when chart inputs change, including template-only edits.
             _chordShapeCache = new WeakMap();
-            const keys = new Set();
+            const keys = new Set(), arpeggioKeys = new Set();
             for (const ch of chords || []) {
                 if (!Number.isFinite(ch.t) || !Array.isArray(ch.notes)) continue;
                 const members = filterValidNotes(ch.notes);
                 if (!members.length) continue;
                 const shape = mergeChordShape(ch, members, templates);
                 const hint = chordHandShapeArpeggioHint(ch, handShapes, templates);
-                if (chordUsesArpeggioFrame(ch, hint)) continue;
                 const suppressed = suppressSynthChordForNotes(ch, shape, notes);
                 if (!chordHasFrameShape(ch, shape, suppressed, templates)) continue;
+                if (!ch.h3dStrum && chordUsesArpeggioFrame(ch, hint)) {
+                    // Only attacks on the leading box share its stem policy.
+                    // Later plucks keep stems throughout their approach, even
+                    // when they reuse the same string/fret within the handshape.
+                    // Onset membership stays stable across arrival and seeks.
+                    for (const cn of members) arpeggioKeys.add(_noteFretKey(ch.t, cn.s, cn.f));
+                    continue;
+                }
                 // Only actual members qualify. Template-only positions and later
                 // plucks inside a handshape must keep their own note stems.
                 for (const cn of members) keys.add(_noteFretKey(ch.t, cn.s, cn.f));
             }
-            _boxedChordMembership = { notes, chords, handShapes, templates, stringCount: nStr, keys };
+            _boxedChordMembership = { notes, chords, handShapes, templates, stringCount: nStr, keys, arpeggioKeys };
             return keys;
         }
 
@@ -13897,8 +14003,8 @@
         // Hold timing and position guidance are resolved independently from
         // chord-frame visibility. Rebuild only when arrangement inputs change;
         // approach, seeking and suppressed repeat gems cannot change an end.
-        function _ensureChordGuideEnds(chords, bundle) {
-            const { notes, handShapes, chordTemplates, anchors } = bundle;
+        function _ensureChordGuideEnds(chords, bundle, anchors = bundle.anchors) {
+            const { notes, handShapes, chordTemplates } = bundle;
             const old = _chordGuideCache;
             if (old && old.chords === chords && old.notes === notes && old.handShapes === handShapes
                 && old.chordTemplates === chordTemplates && old.anchors === anchors
@@ -14938,9 +15044,31 @@
         function _suppressCoincidentFretColumnMarkers(record) {
             // Called only for a gold label that will render (or hand off to the
             // fixed row). A missing gold label never removes a reference number.
+            if (!Number.isInteger(record.fret) || record.fret <= 0 || !Number.isFinite(record.time)) return;
+            let goldInk = null;
             for (let i = 0; i < _incomingFretColumnMarkerCount; i++) {
                 const marker = _incomingFretColumnMarkers[i];
+                if (marker.fret !== record.fret || !Number.isFinite(marker.time)
+                    || !marker.sprite.visible || marker.sprite.material.opacity <= 0) continue;
                 if (hwySameFretLabelBeat(record.fret, record.time, marker.fret, marker.time)) {
+                    marker.sprite.visible = false;
+                    continue;
+                }
+                // Authored beat/chord offsets can exceed the 1 ms identity
+                // tolerance while their digits still overlap. Rounded depth
+                // buckets then alternate which colour paints last. Gold owns
+                // the overlapping digit; keep distinct gold event identities
+                // and all gem/trail priorities unchanged.
+                if (!goldInk) {
+                    goldInk = record.inkRect || (record.inkRect = _newLabelRect());
+                    if (!_incomingLabelScreenRect(record.sprite, goldInk, true)) return;
+                }
+                if (marker.inkFrame !== _incomingLabelLayoutFrame) {
+                    marker.inkFrame = _incomingLabelLayoutFrame;
+                    marker.inkRect ||= _newLabelRect();
+                    marker.inkValid = _incomingLabelScreenRect(marker.sprite, marker.inkRect, true);
+                }
+                if (marker.inkValid && hwyScreenRectsOverlap(goldInk, marker.inkRect)) {
                     marker.sprite.visible = false;
                 }
             }
@@ -15218,8 +15346,14 @@
 
         function update(bundle) {
             bundle = letRingView(bundle);
+            const effectiveAnchors = resolvedGuidanceAnchors(bundle);
             pbBeg(0);
             _trailYieldFrameId++;
+            for (const event of _visibleTrailEvents) {
+                event.gemVisible = false;
+                event.trailVisible = false;
+            }
+            _visibleTrailEvents.length = 0;
             _trailPathCacheCount = 0;
             _trailVisibilityFrontMask = hwyTrailVisibilityFrontMask(
                 trailYieldSettings.enabled,
@@ -15408,12 +15542,12 @@
             }
             const boxedChordMembers = _ensureBoxedChordMembership(
                 notes, chords, bundle.handShapes, bundle.chordTemplates);
-            const chordGuideEnds = _ensureChordGuideEnds(chords, bundle);
+            const chordGuideEnds = _ensureChordGuideEnds(chords, bundle, effectiveAnchors);
             if (!_authoredStrumCache || _authoredStrumCache.notes !== notes
-                || _authoredStrumCache.chords !== chords || _authoredStrumCache.anchors !== bundle.anchors
+                || _authoredStrumCache.chords !== chords || _authoredStrumCache.anchors !== effectiveAnchors
                 || _authoredStrumCache.stringCount !== nStr) {
-                const model = hwyBuildAuthoredStrumFrames(notes, chords, bundle.anchors, nStr);
-                _authoredStrumCache = { notes, chords, anchors: bundle.anchors, stringCount: nStr, ...model,
+                const model = hwyBuildAuthoredStrumFrames(notes, chords, effectiveAnchors, nStr);
+                _authoredStrumCache = { notes, chords, anchors: effectiveAnchors, stringCount: nStr, ...model,
                     displayChords: model.frames.length
                         ? [...chords, ...model.frames].sort((a, b) => a.t - b.t) : chords };
             }
@@ -15474,7 +15608,7 @@
             // destination representation. Do not infer links from timing alone:
             // grace-slide targets deliberately omit `ln` because they are struck.
             if (notes !== _linkNextTargetNotesRef || bundle.chords !== _linkNextTargetChordsRef
-                || bundle.anchors !== _linkedTrailAnchorsRef
+                || effectiveAnchors !== _linkedTrailAnchorsRef
                 || _chordGuideCache.model !== _linkedTrailHoldModelRef) {
                 const bendLinks = new Map();
                 _linkNextTargetSet = hwyLinkNextTargetNotes(notes, bundle.chords, 1e-6, bendLinks);
@@ -15497,16 +15631,16 @@
                         const a = _linkedTrailOpenOrigins.get(source);
                         const b = _linkedTrailOpenOrigins.get(destination);
                         if (a === false || b === false) return false;
-                        trailOpenLayoutAt(sourceTime, a, bundle.anchors, _trailOpenLayoutScratch);
+                        trailOpenLayoutAt(sourceTime, a, effectiveAnchors, _trailOpenLayoutScratch);
                         const center = _trailOpenLayoutScratch[0], width = _trailOpenLayoutScratch[1];
-                        trailOpenLayoutAt(targetTime, b, bundle.anchors, _trailOpenLayoutScratch);
+                        trailOpenLayoutAt(targetTime, b, effectiveAnchors, _trailOpenLayoutScratch);
                         return Math.abs(center - _trailOpenLayoutScratch[0]) < 1e-8
                             && Math.abs(width - _trailOpenLayoutScratch[1]) < 1e-8;
                     },
                 });
                 _linkNextTargetNotesRef = notes;
                 _linkNextTargetChordsRef = bundle.chords;
-                _linkedTrailAnchorsRef = bundle.anchors;
+                _linkedTrailAnchorsRef = effectiveAnchors;
                 _linkedTrailHoldModelRef = _chordGuideCache.model;
                 _trailYieldNotesRef = null;
             }
@@ -15518,6 +15652,9 @@
                 _trailYieldEventsByFret = hwyBuildTrailYieldEvents(notes, chords, nStr, {
                     suppressedAttacks: _linkNextTargetSet,
                     linkedPaths: _linkedTrailPaths,
+                    // A hidden representation must not donate its duration,
+                    // path or head to a coincident visible representation.
+                    separateRepresentations: true,
                     trailVisible: (note, meta, chord) => !chordMemberTrailSuppressed(
                         chord && _chordGuideCache.model.byChord.get(chord), note),
                     visualStartForNote: slideInVisualStart,
@@ -15538,6 +15675,15 @@
                 _trailYieldNotesRef = notes;
                 _trailYieldChordsRef = chords;
                 _trailYieldNStr = nStr;
+                // The indexes above use conservative potential lifetimes.
+                // Frame visibility only removes candidates, so their search
+                // bounds remain valid without rebuilding chart indexes.
+                for (const events of _trailYieldEventsByFret) {
+                    for (const event of events || []) {
+                        event.gemVisible = false;
+                        event.trailVisible = false;
+                    }
+                }
             }
 
             /** Arpeggio lane purple rails — authored-marker cache + bounds cache. */
@@ -15620,7 +15766,7 @@
                 _measureStarts = _ms;
             }
             const sections = bundle.sections;
-            const anchors = bundle.anchors;
+            const anchors = effectiveAnchors;
             // Stable-camera fallback positions are chart-local too. Use the
             // same region for the floor, gold row and camera, without changing
             // the authored anchors used by chord/technique rendering.
@@ -16213,6 +16359,8 @@
             }
 
             pbBeg(4);
+            _noteDrawCount = 0;
+            _collectNoteDraws = true;
             // ── Single notes ──────────────────────────────────────────────
             // Reset the per-frame fret-label dedup set so stacked labels from
             // multiple strings at the same onset/fret (arpeggio, synth chord) don't repeat.
@@ -16898,6 +17046,7 @@
                                 chordMemberTrailSuppressed(sharedChordHold, cn),
                                 belongsToBoxedChord,
                                 chordFrameBounds,
+                                cn,
                             );
                             // Frame height follows the gems this path actually retains,
                             // including arpeggio deferral and linked continuation skips.
@@ -17539,6 +17688,7 @@
                 }
             }
 
+            flushNoteDraws();
             drawChordHoldGuides(now, _chordGuideCache.model);
             drawHandPositionGuides(now, _chordGuideCache.model);
 
@@ -19255,8 +19405,9 @@
         }
 
         /** Find the indexed event represented by a drawNote call. */
-        function trailYieldEventForNote(n) {
-            const fret = isUnpitchedMute(n) ? 0 : n.f;
+        function trailYieldEventForNote(n, sourceIdentity = n) {
+            const fret = isUnpitchedMute(n) || (n.mt === true && n.pick_scrape_marks?.length)
+                ? 0 : n.f;
             const events = _trailYieldEventsByFret[fret];
             if (!events || events.length === 0) return null;
             let lo = 0, hi = events.length;
@@ -19268,12 +19419,13 @@
             for (let i = lo; i < events.length; i++) {
                 const event = events[i];
                 if (event.t > n.t + 1e-6) break;
-                if (event.s === n.s && event.sourceFret === n.f) return event;
+                if (event.s === n.s && event.sourceFret === n.f
+                    && event.sourceNote === sourceIdentity) return event;
             }
             return null;
         }
 
-        /** Cache the chart-static mode-3 depth extent for each orientation. */
+        /** Cache this frame's mode-3 depth extent after visibility resolves. */
         function trailVisibilityMode3PriorityTime(event, sourceEnd) {
             if (!event || !Number.isFinite(sourceEnd)) return -Infinity;
             const endKey = _invertedCached
@@ -19282,7 +19434,8 @@
             const timeKey = _invertedCached
                 ? '_trailVisibilityPriorityTimeInverted'
                 : '_trailVisibilityPriorityTimeNormal';
-            if (event[endKey] !== sourceEnd) {
+            if (event[endKey] !== sourceEnd || event._visibilityPriorityFrame !== _trailYieldFrameId) {
+                event._visibilityPriorityFrame = _trailYieldFrameId;
                 event[endKey] = sourceEnd;
                 event[timeKey] = hwyTrailOcclusionFarthestTargetTime(
                     _trailOcclusionEventsByString,
@@ -20290,10 +20443,64 @@
                 const linkedTrail = _linkedTrailPaths.byNote.get(n);
                 if (linkedTrail) _linkedTrailPaths.byNote.set(view, linkedTrail);
             }
-            drawNote(view, now, undefined, true, true);
+            drawNote(view, now, undefined, true, true, 0.10, undefined, false,
+                undefined, false, null, -Infinity, false, false, false, false, null, n);
         }
 
-        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, belongsToBoxedChord = false, chordFrameBounds = null) {
+        function flushNoteDraws() {
+            _collectNoteDraws = false;
+            try {
+                for (let i = 0; i < _noteDrawCount; i++) {
+                    const record = _noteDrawQueue[i];
+                    _noteDrawParts = record.parts;
+                    _noteDrawEvent = record.event;
+                    drawNote.apply(null, record.args);
+                    record.args.fill(undefined);
+                    record.event = null;
+                }
+            } finally {
+                _noteDrawParts = null;
+                _noteDrawEvent = null;
+            }
+        }
+
+        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, belongsToBoxedChord = false, chordFrameBounds = null, sourceIdentity = n) {
+            if (_collectNoteDraws) {
+                if (!validString(n.s) || !isRenderableNote(n)) return;
+                const scrape = n.mt === true && n.pick_scrape_marks?.length > 0;
+                if (scrape && now > n.t + n.sus) return;
+                const slot = _noteDrawCount++;
+                const record = _noteDrawQueue[slot] || (_noteDrawQueue[slot] = {
+                    args: [], view: {}, parts: {}, event: null,
+                });
+                record.args.length = arguments.length;
+                for (let i = 0; i < arguments.length; i++) record.args[i] = arguments[i];
+                // Chord members use a shared scratch object in their caller.
+                // Retain an independent pooled view until the queue is drawn.
+                if (n === _scrChordNote) {
+                    const view = record.view;
+                    for (const key in view) if (!(key in n)) delete view[key];
+                    Object.assign(view, n);
+                    _linkedBendStarts.set(view, _linkedBendStarts.get(n) || 0);
+                    _linkedBendEnds.set(view, _linkedBendEnds.get(n));
+                    _linkedVibratoRuns.set(view, _linkedVibratoRuns.get(n));
+                    const linked = _linkedTrailPaths.byNote.get(n);
+                    if (linked) _linkedTrailPaths.byNote.set(view, linked);
+                    else _linkedTrailPaths.byNote.delete(view);
+                    record.args[0] = view;
+                }
+                hwyNoteVisualParts(n, now, AHEAD, linger,
+                    _firstEventTimeGreaterThan(n.t + 1e-6), slideInVisualStart(n),
+                    scrape || hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, n.t - now),
+                    sharedChordHold, record.parts);
+                const event = record.event = trailYieldEventForNote(n, sourceIdentity);
+                if (event && (record.parts.head || record.parts.trail)) {
+                    if (!event.gemVisible && !event.trailVisible) _visibleTrailEvents.push(event);
+                    event.gemVisible ||= record.parts.head;
+                    event.trailVisible ||= record.parts.trail;
+                }
+                return;
+            }
             _stableNoteRelevant = n.t + Math.max(0.03, n.sus || 0) >= now;
             const s = n.s;
             // Belt + suspenders: callers already gate via validString(),
@@ -20325,35 +20532,12 @@
             const hasSus = n.sus > 0 && !isPlainDeadNote(sourceNote);
             const visualTrailStart = slideInVisualStart(n);
             const hasLeadIn = visualTrailStart < n.t;
-            // Nearest event time across ALL strings strictly after this note —
-            // sourced from the sorted union of next/recent event times built
-            // once per frame in update() (see _scrEventTimes). _drawRecentByString
-            // is folded in so that once an event passes `now` (and leaves
-            // _drawNextByString) the deadline still holds: without this the
-            // next future event would reset _nextAnyT and old gems would
-            // linger after the new chord/note is already playing.
-            const _nextAnyT = _firstEventTimeGreaterThan(n.t + 1e-6);
-            // Deadline: absolute time after which the gem is culled.
-            //   Sustain long (sus >= linger): die immediately at susEnd — no tail.
-            //   Sustain short (sus < linger):  tail = linger - sus after susEnd,
-            //     capped by gap to next note (any string) so the gem disappears
-            //     when the next note arrives if it comes before the tail runs out.
-            //   No sustain: linger from onset, same gap-cap rule.
-            let _lingerDeadline;
-            if (hasSus) {
-                const extraLinger = Math.max(0, linger - (n.sus || 0));
-                // _nextAnyT cap only applies to the post-sustain linger tail.
-                // For long sustains (extraLinger = 0) the deadline is exactly
-                // susEnd — notes on other strings must not cut the held sustain
-                // short, which would hide the gem and trail mid-play.
-                _lingerDeadline = extraLinger > 0
-                    ? Math.min(susEnd + extraLinger, _nextAnyT)
-                    : susEnd;
-            } else {
-                const _gap = _nextAnyT - n.t;
-                _lingerDeadline = n.t + (_gap < linger ? _gap : linger);
-            }
-            const _overLinger = now > _lingerDeadline;
+            // Reuse the lifetime already resolved for overlap eligibility.
+            // Short-head linger is capped by the next event on any string;
+            // a long held sustain keeps its complete authored duration.
+            const visualParts = _noteDrawParts;
+            const _overLinger = visualParts.overLinger;
+            const _lingerDeadline = visualParts.deadline;
             // For arp-persisted notes past their time: bypass the early exit so
             // the board projection (fretboard ghost + fret labels) keeps rendering
             // until arpBounds.end. The gem/sustain blocks are gated by arpGhostOnlyMode.
@@ -20403,7 +20587,10 @@
                 ? techniqueYOffsetWorld(n, Math.min(now, susEnd))
                 : now <= n.t ? prebendOffsetWorld(n) : 0;
             const noteZ = sustained ? 0 : Math.min(0, dZ(dt));
-            const stemVisible = noteStemVisible(n, belongsToBoxedChord, noteStemsVisible, openStringStemsVisible);
+            const belongsToBoxedArpeggio = rsPlusNotation && !!_boxedChordMembership?.arpeggioKeys.has(
+                _noteFretKey(sourceNote.t, sourceNote.s, sourceNote.f));
+            const stemVisible = noteStemVisible(n, belongsToBoxedChord || belongsToBoxedArpeggio,
+                noteStemsVisible, openStringStemsVisible);
             // Per-note Z-based renderOrder: far notes get a low value (render
             // first, get overdrawn by close geometry), close notes get a high
             // value (render last, appear on top). RENDER_ORDER_LAYER_STACK decides
@@ -20643,10 +20830,10 @@
             const trailYieldIncludeTrails = !!(
                 _trailVisibilityFrontMask & TRAIL_OCCLUSION_TRAIL
             );
-            const trailYieldTargetEvent = trailYieldEventForNote(sourceNote);
+            const trailYieldTargetEvent = _noteDrawEvent;
             let trailYieldGemRecord = null;
 
-            if (!effSkipBody && !arpGhostOnlyMode && !_overLinger) {
+            if (visualParts.head) {
 
                 // ── Outline (slightly larger, bright emissive) ────────────
                 // Notedetect feedback (#9): if a recent hit/miss event
@@ -20943,7 +21130,7 @@
             // A uniform, ordinary chord uses its shared hold cue. Otherwise
             // every member retains its own timing, including open strings.
             // Body lifetime and technique geometry still use the true sustain.
-            if ((hasSus || hasLeadIn) && !_overLinger && !sharedChordHold) {
+            if (visualParts.trail) {
                     const susStart = Math.max(visualTrailStart, now);
                     const remSus = susEnd - susStart;
                     const sliceDur = Math.min(remSus, AHEAD, now + AHEAD - susStart);
@@ -22599,6 +22786,7 @@
         const _stablePlan = { rows: null, key: '', rate: 1, stops: [], regions: [], revision: 0, result: {} };
 
         function stableRegionReset() {
+            _guidanceLanes.notes = _guidanceLanes.chords = _guidanceLanes.anchors = _guidanceLanes.result = null;
             const cache = _stableRegions;
             cache.notes = cache.chords = cache.anchors = null;
             cache.noteCount = cache.chordCount = cache.anchorCount = -1;
@@ -22607,9 +22795,23 @@
             _stablePlan.rows = null; _stablePlan.stops = []; _stablePlan.regions = []; _stablePlan.key = '';
         }
 
+        const _guidanceLanes = { notes: null, chords: null, anchors: null, result: null, noteCount: -1, chordCount: -1, anchorCount: -1 };
+        function resolvedGuidanceAnchors(bundle) {
+            const c = _guidanceLanes;
+            if (c.notes !== bundle.notes || c.chords !== bundle.chords || c.anchors !== bundle.anchors
+                || c.noteCount !== (bundle.notes?.length || 0) || c.chordCount !== (bundle.chords?.length || 0)
+                || c.anchorCount !== (bundle.anchors?.length || 0)) {
+                c.result = hwyResolveGuidanceAnchors(bundle.notes, bundle.chords, bundle.anchors);
+                c.notes = bundle.notes; c.chords = bundle.chords; c.anchors = bundle.anchors;
+                c.noteCount = bundle.notes?.length || 0; c.chordCount = bundle.chords?.length || 0;
+                c.anchorCount = bundle.anchors?.length || 0;
+            }
+            return c.result;
+        }
+
         function stableRegionAnchors(bundle) {
             const c = _stableRegions;
-            const notes = bundle.notes, chords = bundle.chords, anchors = bundle.anchors;
+            const notes = bundle.notes, chords = bundle.chords, anchors = resolvedGuidanceAnchors(bundle);
             if (c.notes !== notes || c.chords !== chords || c.anchors !== anchors
                 || c.noteCount !== (notes?.length || 0) || c.chordCount !== (chords?.length || 0)
                 || c.anchorCount !== (anchors?.length || 0) || c.strings !== nStr || c.uniform !== _h3dFretUniform) {

@@ -826,6 +826,7 @@ test('a raw audio seek still snaps even if the supplied render clock changes onl
 test('the stable camera update entry point forwards the shared floor render clock', () => {
     const run = new Function(`
         const cameraMode = 'stable', _frameNow = 108.735;
+        const letRingView = bundle => bundle;
         let call;
         function stableCamUpdate(bundle, frameTime) { call = {bundle, frameTime}; }
         ${extractFunction('camUpdate')}

@@ -17,6 +17,11 @@ function harness() {
     const end = source.indexOf('function stableRegionReset()', start);
     return new Function(`
         let nStr=6, _h3dFretUniform=true, lefty=false, builds=0;
+        const NFRETS=24, CHORD_ANCHOR_TIME_EPS=.000501;
+        const isUnpitchedMute=n=>n.f>24;
+        ${source.match(/const _guidanceLanes = [^;]+;/)[0]}
+        ${extract('hwyResolveGuidanceAnchors')}
+        ${extract('resolvedGuidanceAnchors')}
         ${source.slice(start, end)}
         const xFret=f=>(lefty?-1:1)*f*10;
         function hwyBuildPlayingRegions(notes,chords,anchors) {
