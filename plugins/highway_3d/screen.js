@@ -9908,21 +9908,38 @@
 
         function pool(parent, mk, cameraRelevant = null) {
             const a = [];
+            const matrixModes = [];
             let n = 0;
+            function sleep(i) {
+                const o = a[i], modes = matrixModes[i];
+                modes[0] = o.matrixAutoUpdate;
+                modes[1] = o.matrixWorldAutoUpdate;
+                o.visible = false;
+                // Three updates invisible objects too. Retain dormant slots
+                // in the scene for reuse/disposal without rebuilding matrices
+                // for every prewarmed slot and past peak of a dense passage.
+                o.matrixAutoUpdate = o.matrixWorldAutoUpdate = false;
+            }
             return {
                 get() {
                     if (n < a.length) {
-                        const o = a[n++];
+                        const i = n++, o = a[i], modes = matrixModes[i];
+                        o.matrixAutoUpdate = modes[0];
+                        o.matrixWorldAutoUpdate = modes[1];
+                        // A parent may have moved while this slot slept, even
+                        // when the owner manages its local matrix manually.
+                        o.matrixWorldNeedsUpdate = true;
                         if (cameraRelevant) o.userData.stableCameraRelevant = cameraRelevant();
                         o.visible = true;
                         if (o.center && o.center.isVector2) o.center.set(0.5, 0.5);
                         return o;
                     }
                     const o = mk(); parent.add(o); a.push(o); n++;
+                    matrixModes.push([o.matrixAutoUpdate, o.matrixWorldAutoUpdate]);
                     if (cameraRelevant) o.userData.stableCameraRelevant = cameraRelevant();
                     return o;
                 },
-                reset() { for (let i = 0; i < n; i++) a[i].visible = false; n = 0; },
+                reset() { for (let i = 0; i < n; i++) sleep(i); n = 0; },
                 forEachActive(fn) { for (let i = 0; i < n; i++) if (a[i].visible) fn(a[i]); },
                 // Pre-allocate `cap` slots at construction so the first dense
                 // playback frames don't pay the new-Mesh allocation cost
@@ -9939,7 +9956,11 @@
                     // Local rename to avoid shadowing the pool's outer
                     // `n` (the in-use index advanced by get() / reset()).
                     const targetLen = Math.max(0, cap | 0);
-                    while (a.length < targetLen) { const o = mk(); o.visible = false; parent.add(o); a.push(o); }
+                    while (a.length < targetLen) {
+                        const o = mk(); parent.add(o); a.push(o);
+                        matrixModes.push([o.matrixAutoUpdate, o.matrixWorldAutoUpdate]);
+                        sleep(a.length - 1);
+                    }
                     return this;
                 },
             };
