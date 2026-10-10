@@ -1000,23 +1000,26 @@ function _syncSectionPracticePieceUi() {
     const active = _sectionPracticeActiveParent >= 0;
     if (label) {
         if (!active || !total) {
-            label.textContent = 'Part — of —';
+            if (label.textContent !== 'Part — of —') label.textContent = 'Part — of —';
         } else {
             const idx = _sectionPracticeCurrentPartIndex();
-            label.textContent = `Part ${idx + 1} of ${total}`;
+            const text = `Part ${idx + 1} of ${total}`;
+            if (label.textContent !== text) label.textContent = text;
         }
     }
-    if (wholeCb) {
+    if (wholeCb && wholeCb.checked !== _sectionPracticeWholeSection) {
         wholeCb.checked = _sectionPracticeWholeSection;
     }
     const partIdx = (!active || !total || _sectionPracticeWholeSection)
         ? 0
         : (_sectionPracticeSelected >= 0 ? _sectionPracticeSelected : 0);
     if (prev) {
-        prev.disabled = !active || !total || (!_sectionPracticeWholeSection && partIdx <= 0);
+        const disabled = !active || !total || (!_sectionPracticeWholeSection && partIdx <= 0);
+        if (prev.disabled !== disabled) prev.disabled = disabled;
     }
     if (next) {
-        next.disabled = !active || !total || (!_sectionPracticeWholeSection && partIdx >= total - 1);
+        const disabled = !active || !total || (!_sectionPracticeWholeSection && partIdx >= total - 1);
+        if (next.disabled !== disabled) next.disabled = disabled;
     }
 }
 
