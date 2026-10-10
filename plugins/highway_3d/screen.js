@@ -22722,7 +22722,8 @@
             if (depth > m[4]) { m[4] = depth; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
         }
 
-        function stableCollectViewPoint(x, y, z) {
+        function stableCollectViewPoint(point) {
+            const x = point[0], y = point[1], z = point[2];
             const b = _stableViewBasis;
             const dz = Math.max(z, Math.min(0, z + _stableSupport[0].prediction)) - z;
             const depth = b.bx * x + b.by * y + b.bz * z;
@@ -22754,7 +22755,9 @@
             bin.minX = Math.min(bin.minX, x); bin.maxX = Math.max(bin.maxX, x);
             bin.minY = Math.min(bin.minY, y); bin.maxY = Math.max(bin.maxY, y);
             bin.minZ = Math.min(bin.minZ, z); bin.maxZ = Math.max(bin.maxZ, z);
-            stableCollectViewPoint(x, y, z);
+            // Reuse the consumed point scratch for the weighted view handoff.
+            input[0] = x; input[1] = y;
+            stableCollectViewPoint(input);
         }
 
         // A long hold can cross the near window with both endpoints outside.
