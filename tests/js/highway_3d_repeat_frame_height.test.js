@@ -60,6 +60,7 @@ const dispatch = new Function('chordNotes', 'options', `
     const chordTemplateMarkedArpeggio = () => !!options.markedArpeggio;
     const chordSusTrailMatchArpFrame = false, _ghostPrevBuf = new Map();
     const chordHighwayLavenderArpVisual = !!options.arpeggio, chordWireHighDensity = () => !!options.highDensity;
+    const handShapeOnly = !!options.synth && !chordHighwayLavenderArpVisual;
     const lastFretForString = [], cameraMode = 'lookahead', drawn = [], drawCalls = [];
     function drawNote(note, at, openX, skipLabel, skipBody, linger, openWidth,
         fromChord, id, sustainFrame, arpBounds, previous, dropLine, linked,

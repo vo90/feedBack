@@ -13921,8 +13921,13 @@
             return hint.explicit && !isNaN(start) && Math.abs(ch.t - start) <= 0.1;
         }
 
-        function suppressSynthChordForNotes(ch, shape, notes) {
-            if (!ch.h3dSynth || !notes || shape.size === 0) return false;
+        function suppressSynthChordForNotes(ch, shape, notes, arpeggioPreview = false) {
+            if (!ch.h3dSynth) return false;
+            // Ordinary hand shapes describe finger placement, never a new
+            // attack. A missing matching note is not permission to invent one.
+            // Explicit arpeggios retain their existing shape-preview policy.
+            if (!arpeggioPreview) return true;
+            if (!notes || shape.size === 0) return false;
             const lo = ch.t - ARP_FRAME_ONSET_PAD_S;
             const hi = ch.t + ARP_FRAME_ONSET_CLUSTER_S;
             for (let i = lowerBoundT(notes, lo - 0.02); i < notes.length; i++) {
@@ -13956,7 +13961,7 @@
                 if (!members.length) continue;
                 const shape = mergeChordShape(ch, members, templates);
                 const hint = chordHandShapeArpeggioHint(ch, handShapes, templates);
-                const suppressed = suppressSynthChordForNotes(ch, shape, notes);
+                const suppressed = suppressSynthChordForNotes(ch, shape, notes, chordUsesArpeggioFrame(ch, hint));
                 if (!chordHasFrameShape(ch, shape, suppressed, templates)) continue;
                 if (!ch.h3dStrum && chordUsesArpeggioFrame(ch, hint)) {
                     // Only attacks on the leading box share its stem policy.
@@ -16938,17 +16943,11 @@
                         }
                     }
 
-                    // Suppress gems AND frame for hand-shape-synthesized chords whose
-                    // notes are already rendered individually via the note stream. Showing
-                    // chord gems or a framebox for a synth chord that duplicates the note
-                    // stream looks like phantom notes/chords. Check: any standalone note
-                    // matching any shape string in the onset window → player is already
-                    // guided by the note stream. Weaker than chordShapeCoveredByStandaloneNotes
-                    // (all strings covered) to handle patterns where one shape string only
-                    // appears well after the onset cluster (e.g. Walk intro, string 5 at
-                    // +0.7 s outside the 0.26 s window). Share this decision with
-                    // the standalone-note membership index.
-                    const suppressSynthChord = suppressSynthChordForNotes(ch, chShape, notes);
+                    // Ordinary synthetic chords carry hand-position guidance only.
+                    // Explicit arpeggio previews still defer to matching played notes
+                    // in the onset window. Share that policy with stem membership.
+                    const handShapeOnly = !!ch.h3dSynth && !chordHighwayLavenderArpVisual;
+                    const suppressSynthChord = suppressSynthChordForNotes(ch, chShape, notes, chordHighwayLavenderArpVisual);
 
                     // suppressSynthChord: skip gems + frame but still call drawNote with
                     // skipBody=true so the board projection (fret ghost on fretboard) renders
@@ -17092,7 +17091,7 @@
                                 _scrChordNote,
                                 now,
                                 usesUnfrettedPosition(cn) ? chordCX : undefined,
-                                skipLabel,
+                                skipLabel || handShapeOnly,
                                 suppressRepeatGems || suppressSynthChord,
                                 chordTailHoldS,
                                 usesUnfrettedPosition(cn) ? laneWForOpenStrings : undefined,
@@ -17107,6 +17106,7 @@
                                 belongsToBoxedChord,
                                 chordFrameBounds,
                                 cn,
+                                handShapeOnly,
                             );
                             // Frame height follows the gems this path actually retains,
                             // including arpeggio deferral and linked continuation skips.
@@ -20524,7 +20524,7 @@
             }
         }
 
-        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, belongsToBoxedChord = false, chordFrameBounds = null, sourceIdentity = n) {
+        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, belongsToBoxedChord = false, chordFrameBounds = null, sourceIdentity = n, handShapeOnly = false) {
             if (_collectNoteDraws) {
                 if (!validString(n.s) || !isRenderableNote(n)) return;
                 const scrape = n.mt === true && n.pick_scrape_marks?.length > 0;
@@ -20551,7 +20551,7 @@
                 }
                 hwyNoteVisualParts(n, now, AHEAD, linger,
                     _firstEventTimeGreaterThan(n.t + 1e-6), slideInVisualStart(n),
-                    scrape || hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, n.t - now),
+                    handShapeOnly || scrape || hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, n.t - now),
                     sharedChordHold, record.parts);
                 const event = record.event = trailYieldEventForNote(n, sourceIdentity);
                 if (event && (record.parts.head || record.parts.trail)) {
@@ -20638,7 +20638,8 @@
             // Legacy skipBody applies only to the pre-hit approach. An explicit
             // linkNext target is not re-struck, so its attack remains hidden at
             // and after onset; its sustain and any outgoing slide still render.
-            const effSkipBody = scrape || hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, dt);
+            // Hand-position hints likewise never acquire a gem at the play line.
+            const effSkipBody = handShapeOnly || scrape || hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, dt);
             const hasTechniqueVibrato = noteHasVibrato(n);
             // A short sustain can leave its gem visible until the linger
             // deadline. Hold the final bend/vibrato pose for that remainder,
