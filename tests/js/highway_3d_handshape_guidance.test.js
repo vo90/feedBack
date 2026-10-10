@@ -10,7 +10,7 @@ const fn = name => extractFunction(src, 'function ' + name);
 // dependencies are needed; these minimal fixtures reproduce the three reports.
 function harness() {
     const draw = fn('drawNote');
-    const queueEnd = draw.indexOf('            _stableNoteRelevant =');
+    const queueEnd = draw.indexOf('            return renderNote(');
     assert.ok(queueEnd > 0);
     return new Function(`
         'use strict';

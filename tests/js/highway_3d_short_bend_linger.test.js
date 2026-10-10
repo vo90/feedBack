@@ -27,7 +27,7 @@ function constant(name) {
 // life or makes a linked continuation visible. External renderer state and
 // note-detection responses are the only inputs supplied by this harness.
 function harness({ inverted = false, eventTimes = [], verdict } = {}) {
-    const draw = fn('drawNote');
+    const draw = fn('renderNote');
     const cutoff = draw.indexOf('const noteZ =');
     assert.ok(cutoff > 0);
     const gate = draw.match(/if \((visualParts\.head)\)/);
@@ -74,7 +74,7 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
                     _firstEventTimeGreaterThan(n.t + 1e-6), n.t,
                     options.guidanceOnly || hwyShouldSuppressNoteBody(options.skipBody || false,
                         options.explicitLinkTarget || false, n.t - now), false);
-                return drawNote(n, now, undefined, false, options.skipBody || false,
+                return renderNote(n, now, undefined, false, options.skipBody || false,
                     options.linger ?? .10, undefined, options.fromChord || false,
                     undefined, false, options.arpBounds || null, -Infinity,
                     false, options.explicitLinkTarget || false, false, false, null, n, options.guidanceOnly || false);

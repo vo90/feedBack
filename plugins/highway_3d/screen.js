@@ -20762,7 +20762,9 @@
                     const record = _noteDrawQueue[i];
                     _noteDrawParts = record.parts;
                     _noteDrawEvent = record.event;
-                    drawNote.apply(null, record.args);
+                    // Keep the collection check per item: a provider can reenter
+                    // the renderer while a preceding queued note is drawing.
+                    (_collectNoteDraws ? drawNote : renderNote).apply(null, record.args);
                     record.args.fill(undefined);
                     record.event = null;
                 }
@@ -20809,6 +20811,17 @@
                 }
                 return;
             }
+            return renderNote(n, now, openX, skipLabel, skipBody, linger,
+                openChordBoxWidth, fromChord, chordId, susTrailMatchArpFrame,
+                arpBounds, prevOnsetT, showDropLine, explicitLinkTarget,
+                sharedChordHold, belongsToBoxedChord, chordFrameBounds,
+                sourceIdentity, guidanceOnly);
+        }
+
+        // The queue collector needs raw arguments; drawing an already recorded
+        // call does not. Keep the rendering body and its defaults together so
+        // the small collector can optimize independently of the geometry pass.
+        function renderNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, belongsToBoxedChord = false, chordFrameBounds = null, sourceIdentity = n, guidanceOnly = false) {
             _stableNoteRelevant = n.t + Math.max(0.03, n.sus || 0) >= now;
             const s = n.s;
             // Belt + suspenders: callers already gate via validString(),
