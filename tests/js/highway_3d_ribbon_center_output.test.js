@@ -127,7 +127,9 @@ test('complete production functions preserve the frozen arithmetic and ribbon or
   .replace('const value = strandBaseX','return strandBaseX')
   .replace('\n            if (out) { out[0] = value; return; }\n            return value;','');
  assert.equal(center,centerBaseline);
- const ribbon=fn('slideRibbonUpdatePair').replace(`sustainTrailCenterXAt(
+ const ribbon=fn('slideRibbonUpdatePair').replace(`const baseY = y;
+                techniqueYOffsetWorld(n, Tk, _sustainYResult);
+                const yc = baseY + _sustainYResult[0];`,`const yc = y + techniqueYOffsetWorld(n, Tk);`).replace(`sustainTrailCenterXAt(
                     n, strandBaseX, Tk, slideSt, outlineTw, _sustainCenterResult,
                 );
                 const outlineX = _sustainCenterResult[0];`,`const outlineX = sustainTrailCenterXAt(
