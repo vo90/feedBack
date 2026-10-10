@@ -92,6 +92,6 @@ test('non-repeats and slide-linked repeats are never suppressed here', () => {
 test('chord rendering passes the targeted decision into drawNote', () => {
     assert.match(
         screenSrc,
-        /const suppressRepeatGems = repeatChordMaySuppressGems\([\s\S]*?isRepeat, chordLinksSlide, chordNotes,[\s\S]*?sharedChordHold\?\.suppressMemberTrails === true\);[\s\S]*?drawNote\([\s\S]*?skipLabel \|\| handShapeOnly,[\s\S]*?suppressRepeatGems \|\| suppressSynthChord,/,
+        /const suppressRepeatGems = repeatChordMaySuppressGems\([\s\S]*?isRepeat, chordLinksSlide, chordNotes,[\s\S]*?sharedChordHold\?\.suppressMemberTrails === true\);[\s\S]*?drawNote\([\s\S]*?skipLabel,[\s\S]*?suppressRepeatGems \|\| suppressSynthChord,/,
     );
 });

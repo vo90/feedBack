@@ -72,12 +72,12 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
             pose(n, now, options = {}) {
                 _noteDrawParts = hwyNoteVisualParts(n, now, 3, options.linger ?? .10,
                     _firstEventTimeGreaterThan(n.t + 1e-6), n.t,
-                    hwyShouldSuppressNoteBody(options.skipBody || false,
+                    options.guidanceOnly || hwyShouldSuppressNoteBody(options.skipBody || false,
                         options.explicitLinkTarget || false, n.t - now), false);
                 return drawNote(n, now, undefined, false, options.skipBody || false,
                     options.linger ?? .10, undefined, options.fromChord || false,
                     undefined, false, options.arpBounds || null, -Infinity,
-                    false, options.explicitLinkTarget || false);
+                    false, options.explicitLinkTarget || false, false, false, null, n, options.guidanceOnly || false);
             },
             sample: techniqueYOffsetWorld,
             direction: bendVisualDirY,
@@ -230,4 +230,17 @@ test('chord members share the same terminal pose without changing their chosen l
     close(h.pose(n, 10.125, options).offset, 3.2);
     close(h.pose(n, 10.125, options).deadline, 10.15);
     assert.equal(h.pose(n, 10.150001, options), undefined);
+});
+
+
+test('hand-shape projections never regain attack bodies or extend life for verdicts', () => {
+    const h = harness({verdict:{state:'hit'}});
+    const n = {t:10,s:4,f:1};
+    for (const now of [9.5,10,10.05,9.5]) {
+        const pose = h.pose(n, now, {guidanceOnly:true,skipBody:true,fromChord:true});
+        assert.equal(pose.bodyVisible, false);
+        assert.equal(pose.effSkipBody, true);
+    }
+    assert.equal(h.pose(n,10.10001,{guidanceOnly:true,skipBody:true}),undefined);
+    assert.equal(h.probeCount(),0, 'metadata must never request a note verdict');
 });
