@@ -193,13 +193,17 @@
     // measurement corrections. This clock is visual only; scoring reads audio.
     function createPresentationClock() {
         let time = NaN, lastPerf = NaN, epoch = null;
+        let lastFrame = NaN, lastRate = NaN, lastGeneration;
         let gapRecovery = false;
         let trace = null, traceCount = 0;
         const fields = ['wallMs', 'time', 'target', 'raw', 'epoch', 'reason',
             'sampleAgeMs', 'sequence', 'generation', 'rate', 'deltaMs', 'frameTimestampMs'];
         const reasons = ['advance', 'epoch', 'hold', 'stale', 'rewind', 'frame-gap', 'end', 'source-recovery'];
         return {
-            reset() { time = lastPerf = NaN; epoch = null; gapRecovery = false; traceCount = 0; },
+            reset() {
+                time = lastPerf = lastFrame = lastRate = NaN;
+                epoch = null; lastGeneration = undefined; gapRecovery = false; traceCount = 0;
+            },
             trace(enabled) { trace = enabled ? new Float64Array(4096 * fields.length) : null; traceCount = 0; },
             diagnostics() {
                 if (!trace) return null;
@@ -249,13 +253,30 @@
                     }
                     else if (gapRecovery) { time = Math.max(time, target); reason = gapRecovery; gapRecovery = false; }
                     else {
-                        const advance = dt * rate;
+                        // Use only animation-clock DELTAS: its absolute origin
+                        // can differ from performance.now(). Audio alignment,
+                        // freshness and gap recovery above keep the wall clock.
+                        const frameDt = Number.isFinite(frameTimestampMs)
+                            ? (frameTimestampMs - lastFrame) / 1000 : NaN;
+                        // Reject discontinuities, not ordinary callback jitter.
+                        // A >50ms change between the clock offsets is a gross
+                        // mismatch; resume from this frame on the next sample.
+                        const motionDt = frameDt > 0 && frameDt <= 0.25
+                            && Math.abs(frameDt - dt) <= 0.05
+                            && rate === lastRate && t.generation === lastGeneration ? frameDt : dt;
+                        const advance = motionDt * rate;
                         const predicted = time + advance;
-                        const correction = (target - predicted) * Math.min(1, dt / 0.12);
+                        // Match the gain to motion, so late callbacks do not
+                        // receive extra correction weight from wall jitter.
+                        const correction = (target - predicted) * Math.min(1, motionDt / 0.12);
                         time = predicted + Math.max(-advance * 0.2, Math.min(advance * 0.2, correction));
                     }
                     if (time >= end) { time = end; reason = 6; }
                 }
+                // Paused/stale/absent samples cannot bridge animation deltas
+                // into a later active frame. Invalid pairs use the wall path.
+                lastFrame = playing && age <= 250 && Number.isFinite(frameTimestampMs) ? frameTimestampMs : NaN;
+                lastRate = rate; lastGeneration = t.generation;
                 epoch = t.epoch; lastPerf = now;
                 if (trace) {
                     const at = (traceCount++ % 4096) * fields.length;
