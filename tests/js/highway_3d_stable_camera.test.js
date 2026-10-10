@@ -165,7 +165,11 @@ function harness(subject = source, three = null) {
             },
             compareSupportedGeometry(points) {
                 stableSupportReset();
-                for(const point of points)stableAddPoint(...point);
+                for(const point of points) {
+                    ${extract('stableAddPoint').startsWith('function stableAddPoint(input)')
+                        ? '_stablePointInput.set(point); stableAddPoint(_stablePointInput);'
+                        : 'stableAddPoint(...point);'}
+                }
                 const all=Float64Array.from(rawPoints.flat());
                 const selected=_stableViewPoints.slice();
                 const prediction=Math.min(AHEAD,.15*_stableCam.rate);
@@ -1000,6 +1004,53 @@ const supportBaseline = `
             stableSupportPoint(1, x, y, z, depth, right, up);
         }
 `;
+// Exact region collector from d5807829889e865673fb0a0dbe5c751a36fe228c;
+// the earlier frozen point helper takes scalar inputs at this final call site.
+const regionCollectionBaseline = `function stableCollectGeometry(region) {
+            stableSupportReset();
+            pNote?.forEachActive(stableCollectObject);
+            pSus?.forEachActive(stableCollectObject);
+            pSusRibbon?.forEachActive(stableCollectObject);
+            pChordBox?.forEachActive(stableCollectObject);
+            pRsChordFrame?.forEachActive(stableCollectObject);
+            pArpBracket?.forEachActive(stableCollectObject);
+            pSusRail?.forEachActive(stableCollectObject);
+            pTechPlane?.forEachActive(stableCollectObject);
+            for (let i = 0; i < _incomingFloorLabelCount; i++) {
+                const record = _incomingFloorLabels[i];
+                if (record.time < _frameNow - 0.03) continue;
+                stableCollectObject(record.sprite);
+            }
+            // The plan prepares future lane footprints; collecting them again
+            // here would pull toward empty future areas before that planned
+            // move. Protect the current lane with fret-centred label corners,
+            // avoiding an imaginary low rectangle across its entire width.
+            const addRegion = (row, dt) => {
+                stableRegionFootprint(row);
+                for (let i = 0; i < 48; i += 3) {
+                    stableAddPoint(_stableRegionPoints[i], _stableRegionPoints[i + 1],
+                        _stableRegionPoints[i + 2] + dZ(dt));
+                }
+            };
+            if (region?.valid) {
+                addRegion({minX:region.minX, maxX:region.maxX,
+                    firstFret:region.dMin + 1, lastFret:region.dMax}, 0);
+                for (let f = region.dMin + 1; f <= region.dMax; f++) {
+                    stableCollectObject(_incomingFixedFretLabels[f]);
+                }
+            }
+            let count = 0;
+            for (const bin of _stableBins) {
+                if (!Number.isFinite(bin.minX)) continue;
+                for (let i = 0; i < 8; i++) {
+                    _stablePoints[count++] = i & 1 ? bin.maxX : bin.minX;
+                    _stablePoints[count++] = i & 2 ? bin.maxY : bin.minY;
+                    _stablePoints[count++] = i & 4 ? bin.maxZ : bin.minZ;
+                }
+            }
+            _stableCam.pointCount = count;
+            _stableCam.viewPointCount = _stablePointSamples ? _stableViewPoints.length : 0;
+        }`;
 let referenceSource = source;
 for (const name of ['stableSupportReset', 'stableAddPoint', 'stableAddSegment', 'stableCollectObject']) {
     referenceSource = referenceSource.replace(extractFunction(name), extractFunction(name, collectionBaseline));
@@ -1007,6 +1058,7 @@ for (const name of ['stableSupportReset', 'stableAddPoint', 'stableAddSegment', 
 for (const name of ['stableSupportPoint', 'stableCollectViewPoint']) {
     referenceSource = referenceSource.replace(extractFunction(name), extractFunction(name, supportBaseline));
 }
+referenceSource = referenceSource.replace(extractFunction('stableCollectGeometry'), regionCollectionBaseline);
 const realThree = import(pathToFileURL(path.join(__dirname, '../../static/vendor/three/three.module.min.js')).href);
 
 function collectionPair(T, settings = {}) {
@@ -1062,6 +1114,20 @@ test('collection matches ordered legacy support at clipping, fading and predicti
             const pair = collectionPair(T, {rate, preset, lefty, aspect:3440/1440});
             assertCollectionParity(pair, objects, `${rate}/${preset}/${lefty}`);
         }
+    }
+});
+
+test('point scratch preserves region and label support after object and clipped-segment producers', async () => {
+    const T = await realThree, pair = collectionPair(T,{preset:'angled',lefty:true});
+    const box = collectionBox(T,-240,12), sprite = new T.Sprite(new T.SpriteMaterial());
+    sprite.position.set(90,20,-10); sprite.scale.set(16,8,1);
+    for (const h of pair) h.setObjects([box,sprite]);
+    const region = {valid:true,minX:20,maxX:60,dMin:2,dMax:6};
+    const labels = [{fret:3,x:25,y:1,z:8,size:5},{fret:6,x:55,y:3,z:-0,size:8}];
+    for (const row of [region,null,{valid:true,minX:-0,maxX:40,dMin:0,dMax:4},region]) {
+        const ordered = pair.map(h=>h.collectRegion(row,labels));
+        assert.deepEqual(ordered[0],ordered[1]);
+        assert.deepEqual(pair[0].collection(),pair[1].collection());
     }
 });
 

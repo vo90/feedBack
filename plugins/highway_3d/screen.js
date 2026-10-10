@@ -22662,6 +22662,7 @@
         const _stablePoints = new Float64Array(32 * 8 * 3);
         const _stableViewPoints = new Float64Array(2 * 5 * 3);
         const _stableSupportInput = new Float64Array(6);
+        const _stablePointInput = new Float64Array(3);
         let _stablePointSamples = 0;
         const _stableRegionPoints = new Float64Array(16 * 3);
         const _stableViewRegionPoints = new Float64Array(24 * 3);
@@ -22735,7 +22736,9 @@
             stableSupportPoint(1, input);
         }
 
-        function stableAddPoint(x, y, z) {
+        function stableAddPoint(input) {
+            let x = input[0], y = input[1];
+            const z = input[2];
             const c = _stableCollect;
             if (!Number.isFinite(x + y + z) || z > c.near || z < c.far - 1e-7) return;
             // Constraints enter over 300ms and become complete 600ms before
@@ -22776,7 +22779,10 @@
             if (!endpointsAdded || az < fullZ || bz < fullZ || lo > 0 || hi < 1) {
                 for (let i = 0; i < 3; i++) {
                     const t = i === 0 ? lo : i === 1 ? Math.max(lo, Math.min(hi, full)) : hi;
-                    stableAddPoint(ax + (bx - ax) * t, ay + (by - ay) * t, az + dz * t);
+                    _stablePointInput[0] = ax + (bx - ax) * t;
+                    _stablePointInput[1] = ay + (by - ay) * t;
+                    _stablePointInput[2] = az + dz * t;
+                    stableAddPoint(_stablePointInput);
                 }
             }
             // Within full strength, affine planes attain extrema at corners.
@@ -22784,7 +22790,12 @@
             if (Math.abs(dz) > 1e-10) for (let i = 0; i < 2; i++) {
                 const plane = i ? 0 : c.predictionZ;
                 const t = (plane - az) / dz;
-                if (t > lo && t < hi) stableAddPoint(ax + (bx - ax) * t, ay + (by - ay) * t, plane);
+                if (t > lo && t < hi) {
+                    _stablePointInput[0] = ax + (bx - ax) * t;
+                    _stablePointInput[1] = ay + (by - ay) * t;
+                    _stablePointInput[2] = plane;
+                    stableAddPoint(_stablePointInput);
+                }
             }
         }
 
@@ -22802,8 +22813,10 @@
                 for (let i = 0; i < 4; i++) {
                     const dx = ((i & 1 ? 1 : 0) - object.center.x) * sx;
                     const dy = ((i & 2 ? 1 : 0) - object.center.y) * sy;
-                    stableAddPoint(e[12] + b.rx * dx + b.ux * dy,
-                        e[13] + b.uy * dy, e[14] + b.rz * dx + b.uz * dy);
+                    _stablePointInput[0] = e[12] + b.rx * dx + b.ux * dy;
+                    _stablePointInput[1] = e[13] + b.uy * dy;
+                    _stablePointInput[2] = e[14] + b.rz * dx + b.uz * dy;
+                    stableAddPoint(_stablePointInput);
                 }
                 return;
             }
@@ -22822,7 +22835,10 @@
                         _stableRibbonPrevious[12] = v.x; _stableRibbonPrevious[13] = v.y;
                         _stableRibbonPrevious[14] = v.z;
                         stableAddSegment(_stableRibbonPrevious, j, 12);
-                    } else stableAddPoint(v.x, v.y, v.z);
+                    } else {
+                        _stablePointInput[0] = v.x; _stablePointInput[1] = v.y; _stablePointInput[2] = v.z;
+                        stableAddPoint(_stablePointInput);
+                    }
                     _stableRibbonPrevious[j] = v.x; _stableRibbonPrevious[j + 1] = v.y;
                     _stableRibbonPrevious[j + 2] = v.z;
                 }
@@ -22838,7 +22854,8 @@
                 v.set(i & 1 ? box.max.x : box.min.x,
                     i & 2 ? box.max.y : box.min.y,
                     i & 4 ? box.max.z : box.min.z).applyMatrix4(object.matrixWorld);
-                stableAddPoint(v.x, v.y, v.z);
+                _stablePointInput[0] = v.x; _stablePointInput[1] = v.y; _stablePointInput[2] = v.z;
+                stableAddPoint(_stablePointInput);
                 _stableBoxPoints[i * 3] = v.x; _stableBoxPoints[i * 3 + 1] = v.y;
                 _stableBoxPoints[i * 3 + 2] = v.z;
                 if (!(v.z >= _stableCollect.fullZ && v.z <= _stableCollect.near)) fullBounds = false;
@@ -22879,8 +22896,10 @@
             const addRegion = (row, dt) => {
                 stableRegionFootprint(row);
                 for (let i = 0; i < 48; i += 3) {
-                    stableAddPoint(_stableRegionPoints[i], _stableRegionPoints[i + 1],
-                        _stableRegionPoints[i + 2] + dZ(dt));
+                    _stablePointInput[0] = _stableRegionPoints[i];
+                    _stablePointInput[1] = _stableRegionPoints[i + 1];
+                    _stablePointInput[2] = _stableRegionPoints[i + 2] + dZ(dt);
+                    stableAddPoint(_stablePointInput);
                 }
             };
             if (region?.valid) {
