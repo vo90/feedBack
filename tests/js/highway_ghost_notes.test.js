@@ -175,7 +175,7 @@ test('chord scratch resets the omitted ghost field after a marked member', () =>
 });
 
 test('ghost geometry stays under the existing body, culling and physical-order gates', () => {
-    const body = extract(screen, 'drawNote');
+    const body = extract(screen, 'renderNote');
     const outline = body.indexOf('outline.geometry = n.ghost === true');
     assert.ok(outline > body.indexOf('if (!effSkipBody'));
     assert.ok(outline < body.indexOf('trailYieldRegisterGem('));

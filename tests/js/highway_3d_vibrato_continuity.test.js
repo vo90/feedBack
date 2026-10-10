@@ -235,7 +235,7 @@ test('run cache is built with chart-static link data and released with the other
     assert.match(src, /_linkedVibratoRuns = resolveLinkedVibratoRuns\(bendLinks\)/);
     assert.equal((src.match(/_linkedVibratoRuns = new WeakMap\(\)/g)||[]).length,2);
     assert.match(fn('techniqueYOffsetWorld'), /vibratoSemisAtTime\(n, chartTime\)/);
-    assert.match(fn('drawNote'), /techniqueYOffsetWorld\(n, Math\.min\(now, susEnd\)\)/);
+    assert.match(fn('renderNote'), /techniqueYOffsetWorld\(n, Math\.min\(now, susEnd\)\)/);
     assert.match(src, /const yc = y \+ techniqueYOffsetWorld\(n, Tk\)/,
         'sustain contour calls the shared sampler');
 });
