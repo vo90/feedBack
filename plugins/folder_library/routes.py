@@ -11,6 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 import shutil
 import re
+import threading
 
 
 # ── Pure, testable helpers ─────────────────────────────────────────────────
@@ -99,10 +100,18 @@ def setup(app, context):
     #                but that rebuild is now fast because _meta_cache is warm.
     _cache      = {}   # "tree" → JSONResponse-ready dict
     _meta_cache = {}   # abs_posix_path → extracted meta (no filename/added)
+    _tree_build_lock = threading.Lock()
+    _cache_lock = threading.Lock()
+    _cache_revision = 0
 
     def _invalidate():
         """Clear the tree structure cache only.  _meta_cache is preserved."""
-        _cache.clear()
+        nonlocal _cache_revision
+        # Mutations run on the event loop. Never make them wait for a slow
+        # metadata walk; its eventual result is discarded by the revision.
+        with _cache_lock:
+            _cache_revision += 1
+            _cache.clear()
 
     def _dlc_root() -> Path | None:
         try:
@@ -266,30 +275,44 @@ def setup(app, context):
         has_lyrics:         str = "",
         tunings:            str = "",
     ):
-        if "tree" not in _cache:
-            dlc = _dlc_root()
-            if not dlc or not dlc.exists():
-                return JSONResponse({"folders": [], "root_songs": [],
-                                     "error": "DLC directory not found"})
-            root = _scan_root(dlc)
-            log.info("folder_library: scanning %s", root)
-            folders = []
-            root_songs = []
-            try:
-                for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):
-                    if entry.name.startswith("."):
+        # Sync endpoints run in worker threads. A reload or another surface
+        # can arrive while the first walk is still extracting metadata: share
+        # that build instead of starting another full-library walk.
+        with _tree_build_lock:
+            while True:
+                with _cache_lock:
+                    tree = _cache.get("tree")
+                    revision = _cache_revision
+                if tree is not None:
+                    break
+                dlc = _dlc_root()
+                if not dlc or not dlc.exists():
+                    return JSONResponse({"folders": [], "root_songs": [],
+                                         "error": "DLC directory not found"})
+                root = _scan_root(dlc)
+                log.info("folder_library: scanning %s", root)
+                folders = []
+                root_songs = []
+                try:
+                    for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+                        if entry.name.startswith("."):
+                            continue
+                        if _is_song(entry):
+                            root_songs.append(_meta(entry, dlc))
+                        elif entry.is_dir():
+                            folders.append(_scan_dir(entry, root, dlc))
+                except PermissionError:
+                    return JSONResponse({"folders": [], "root_songs": [],
+                                         "error": "Permission denied"})
+                tree = {"folders": folders, "root_songs": root_songs}
+                with _cache_lock:
+                    if revision != _cache_revision:
                         continue
-                    if _is_song(entry):
-                        root_songs.append(_meta(entry, dlc))
-                    elif entry.is_dir():
-                        folders.append(_scan_dir(entry, root, dlc))
-            except PermissionError:
-                return JSONResponse({"folders": [], "root_songs": [],
-                                     "error": "Permission denied"})
-            _cache["tree"] = {"folders": folders, "root_songs": root_songs}
+                    _cache["tree"] = tree
+                    break
 
         result = _apply_tree_filters(
-            _cache["tree"], arrangements_has, arrangements_lacks,
+            tree, arrangements_has, arrangements_lacks,
             stems_has, stems_lacks, has_lyrics, tunings,
         )
         return JSONResponse(result)

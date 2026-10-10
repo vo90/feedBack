@@ -180,8 +180,10 @@ function createFolderSurface(cfg) {
             ++_loadVersion;
         }
         var visible = _surfaceVisible();
-        // Preserve the nav's background data scan, but never construct hidden
-        // UI. Large libraries can take minutes to scan on their first request.
+        // A cold tree request extracts metadata across the whole library and
+        // can run for minutes. Wait for this surface to open; an explicit
+        // refresh still supersedes an older request even after navigation.
+        if (!visible && !force) { _renderPending = true; return; }
         // Lib surface owns a couple of host-chrome tweaks on entry.
         if (visible && cfg.searchInputId) {
             var fe = _el(cfg.searchInputId);
@@ -1715,7 +1717,7 @@ function createFolderSurface(cfg) {
         if (filterBack) filterBack.addEventListener('click', _closeFilterPanel);
         _updateFilterBadge();
 
-        if (!_loaded) _load(true);
+        if (!_loaded && _surfaceVisible()) _load(false);
     }
 
     // ── Screen changed (nav surface) ────────────────────────────────────

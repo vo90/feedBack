@@ -12,6 +12,8 @@ does not collide in sys.modules with other bundled plugins' routes.py.
 
 import importlib.util
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -104,6 +106,75 @@ def _loose_song(folder: Path):
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "audio.wem").write_bytes(b"\x00")
     (folder / "lead.xml").write_text("<song><title>Loose</title></song>")
+
+
+class TestTreeBuildSharing:
+    def test_concurrent_cold_requests_share_extraction_and_keep_their_filters(self, tmp_path):
+        _song(tmp_path / "Song.feedpak", "fixture")
+        extraction_started = threading.Event()
+        second_extraction = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def extract(path):
+            calls.append(path.name)
+            if len(calls) > 1:
+                second_extraction.set()
+            extraction_started.set()
+            assert release.wait(5), "test did not release metadata extraction"
+            return {"title": "Song", "arrangements": ["Lead"]}
+
+        app = FastAPI()
+        fl.setup(app, {"log": logging.getLogger("folder_library_test"),
+                       "get_dlc_dir": lambda: str(tmp_path), "extract_meta": extract})
+        second_started = threading.Event()
+
+        def filtered_request():
+            second_started.set()
+            return client.get("/api/plugins/folder_library/tree", params={"arrangements_has": "Bass"})
+
+        with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as workers:
+            first = workers.submit(client.get, "/api/plugins/folder_library/tree")
+            try:
+                assert extraction_started.wait(2)
+                second = workers.submit(filtered_request)
+                assert second_started.wait(2)
+                assert not second_extraction.wait(0.2), "another request started a second metadata walk"
+            finally:
+                release.set()
+            assert first.result(timeout=2).json()["root_songs"][0]["title"] == "Song"
+            assert second.result(timeout=2).json()["root_songs"] == []
+        assert calls == ["Song.feedpak"]
+
+    def test_mutation_during_walk_invalidates_result_without_waiting_for_extraction(self, tmp_path):
+        _song(tmp_path / "Song.feedpak", "fixture")
+        extraction_started = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def extract(path):
+            calls.append(path.name)
+            extraction_started.set()
+            assert release.wait(5), "test did not release metadata extraction"
+            return {"title": "Song"}
+
+        app = FastAPI()
+        fl.setup(app, {"log": logging.getLogger("folder_library_test"),
+                       "get_dlc_dir": lambda: str(tmp_path), "extract_meta": extract})
+        with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as workers:
+            first = workers.submit(client.get, "/api/plugins/folder_library/tree")
+            try:
+                assert extraction_started.wait(2)
+                mutation = workers.submit(client.post, "/api/plugins/folder_library/folder/create",
+                                          json={"name": "New folder"})
+                assert mutation.result(timeout=2).status_code == 200
+            finally:
+                release.set()
+            result = first.result(timeout=2)
+            assert result.status_code == 200
+            assert [folder["name"] for folder in result.json()["folders"]] == ["New folder"]
+            assert result.json() == client.get("/api/plugins/folder_library/tree").json()
+        assert calls == ["Song.feedpak"], "structure invalidation should retain extracted metadata"
 
 
 class TestLooseFolderRecognition:

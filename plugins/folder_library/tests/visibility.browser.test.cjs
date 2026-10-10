@@ -59,13 +59,14 @@ test('an already visible embedded view still loads when its script arrives', asy
     assert.match(await p.locator('#lib-folder-tree').textContent(), /Fixture song/);
 });
 
-test('nav prefetch is preserved but hidden startup builds no song view', async t => {
+test('hidden nav startup defers the metadata walk until the folder screen opens', async t => {
     const p = await fixture(t);
+    assert.equal((await requests(p)).length, 0);
+    assert.equal(await p.locator('#fb-tree').innerHTML(), '');
+    await p.evaluate(() => window.enterNav());
     assert.equal((await requests(p)).length, 1);
     await p.evaluate(() => window.reply(0));
     await settle(p);
-    assert.equal(await p.locator('#fb-tree').innerHTML(), '');
-    await p.evaluate(() => window.enterNav());
     assert.match(await p.locator('#fb-tree').textContent(), /Fixture song/);
     const before = await p.locator('#fb-tree').innerHTML();
     await p.evaluate(() => window.enterNav());
@@ -103,6 +104,8 @@ test('a hidden refresh supersedes the older response without rebuilding DOM', as
 test('embedded library defers hidden responses and refreshes changed host filters', async t => {
     const p = await fixture(t, 'lib');
     assert.equal((await requests(p)).length, 0, 'hidden ancestor prevents embedded autoload');
+    await p.evaluate(() => window.folderLibrary.load());
+    assert.equal((await requests(p)).length, 0, 'an ordinary hidden host load also waits for entry');
     await p.evaluate(() => { document.getElementById('library-parent').classList.remove('hidden'); window.folderLibrary.load(); });
     await p.evaluate(() => { document.getElementById('library-parent').classList.add('hidden'); window.reply(0); });
     await settle(p);
@@ -116,9 +119,11 @@ test('embedded library defers hidden responses and refreshes changed host filter
         document.getElementById('library-parent').classList.add('hidden');
         window.params = 'arrangement=Bass'; window.folderLibrary.load();
     });
+    assert.equal((await requests(p)).length, 1, 'hidden filter changes do not start background requests');
+    await p.evaluate(() => { document.getElementById('library-parent').classList.remove('hidden'); window.folderLibrary.load(); });
     assert.equal((await requests(p)).length, 2);
     assert.match((await requests(p))[1], /arrangement=Bass/);
-    await p.evaluate(() => window.reply(1, 'Bass song'));
+    await p.evaluate(() => { document.getElementById('library-parent').classList.add('hidden'); window.reply(1, 'Bass song'); });
     await settle(p);
     assert.doesNotMatch(await p.locator('#lib-folder-tree').textContent(), /Bass song/);
     await p.evaluate(() => { document.getElementById('library-parent').classList.remove('hidden'); return window.folderLibrary.load(); });
@@ -127,7 +132,7 @@ test('embedded library defers hidden responses and refreshes changed host filter
 });
 
 test('hidden search leaves the old DOM alone and is applied on return', async t => {
-    const p = await fixture(t);
+    const p = await fixture(t, 'nav', true);
     await p.evaluate(() => window.reply(0));
     await settle(p);
     await p.evaluate(() => window.enterNav());
