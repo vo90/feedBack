@@ -7674,6 +7674,7 @@
         // — never a per-frame querySelector (see CLAUDE.md "never run DOM queries
         // on a per-frame path") — and re-resolved only when a node detaches.
         let _v3HudEls = null;
+        let _v3HudBottom = 0, _v3HudMeasureAt = -Infinity;
         // Returns the bottom edge (in overlay-canvas px, which are 1:1 CSS px on
         // this overlay) of the lowest visible top-right v3 chrome element, or 0
         // when none apply (classic v2 UI, or all hidden). Only called while the
@@ -7688,7 +7689,14 @@
             if (!_v3HudEls || _v3HudEls.some((el) => el && !el.isConnected)) {
                 _v3HudEls = ['v3-upnext', 'v3-live-performance-hud', 'hud-time']
                     .map((id) => document.getElementById(id));
+                _v3HudMeasureAt = -Infinity;
             }
+            // HUD geometry changes much less often than the highway. Avoid a
+            // synchronous layout read on every rendered frame; resize invalidates
+            // immediately, other chrome changes settle within 100 ms.
+            const now = performance.now();
+            if (now >= _v3HudMeasureAt && now - _v3HudMeasureAt < 100) return _v3HudBottom;
+            _v3HudMeasureAt = now;
             const top = highwayCanvas.getBoundingClientRect().top;
             let maxBottom = 0;
             for (const el of _v3HudEls) {
@@ -7698,6 +7706,7 @@
                 const b = el.getBoundingClientRect().bottom - top;
                 if (b > maxBottom) maxBottom = b;
             }
+            _v3HudBottom = maxBottom;
             return maxBottom;
         }
         let _diagChord            = null;
@@ -23411,6 +23420,7 @@
         /* ── Resize helper ───────────────────────────────────────────────── */
         let lastSizedRenderer = null, lastSizeW = 0, lastSizeH = 0, lastSizeDpr = 0;
         function applySize(w, h) {
+            _v3HudMeasureAt = -Infinity;
             if (!ren || !cam || !wrap) return;
             if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
             const baseDPR = _ssActive() ? Math.min(devicePixelRatio, 1.25) : Math.min(devicePixelRatio, 2);
