@@ -35,7 +35,7 @@ function helpers(lefty = false) {
     return new Function('T', `const NFRETS=24, MAX_RENDER_STRINGS=8, SLIDE_RIBBON_SAMPLES=96;
         const _leftyCached=${lefty}, _invertedCached=false, NW=4, K=1;
         const fretX=f=>f*10, fretMid=fretX, xFretMid=fretX, dZ=t=>-230*t;
-        const techniqueYOffsetWorld=(n,t,out)=>{if(out){out[0]=0;return;}return 0;}, tremoloOffsetWorldX=()=>0;
+        const techniqueYOffsetWorld=()=>0, tremoloOffsetWorldX=()=>0;
         const _slideRibbonTimesScratch=[], _slideOutCrossingTimesScratch=[];
         const _trailYieldMatchContext={}, _trailOcclusionEventsScratch=[], _trailOcclusionFlagsScratch=[];
         const _trailCrossingTargetBases=[], _trailCrossingTargetWidths=[];

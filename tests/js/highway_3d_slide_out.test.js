@@ -37,7 +37,7 @@ function helpers(lefty = false) {
         const fretX = f => f * 10; const fretMid = fretX;
         const _slideRibbonTimesScratch = [];
         const dZ = t => -230 * t;
-        const techniqueYOffsetWorld = (n,t,out) => {if(out){out[0]=0;return;}return 0;};
+        const techniqueYOffsetWorld = () => 0;
         const tremoloOffsetWorldX = () => 0;
         const TRAIL_YIELD_DEFAULTS = {minScale:.3,leadTime:.5,taperDuration:.05,holdAfter:.05,recoverDuration:.05,endLeadTime:.5,endTaperDuration:.05};`;
     const block = source.slice(source.indexOf('    function slideTrailEnd('), source.indexOf('    // Camera tgtDist building blocks'));

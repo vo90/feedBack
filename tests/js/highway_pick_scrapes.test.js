@@ -10,7 +10,7 @@ function renderer(lefty=false){
     class Attribute{constructor(array,itemSize){this.array=array;this.itemSize=itemSize;this.count=array.length/itemSize;}}
     return new Function('scrapeGeometry','T',`
         const NW=5,SLIDE_RIBBON_SAMPLES=96,_leftyCached=${lefty},_slideRibbonTimesScratch=[];
-        const fretX=f=>f*10,fretMid=fretX,dZ=t=>-230*t,techniqueYOffsetWorld=(n,t,out)=>{if(out){out[0]=0;return;}return 0;};
+        const fretX=f=>f*10,fretMid=fretX,dZ=t=>-230*t,techniqueYOffsetWorld=()=>0;
         const TRAIL_YIELD_DEFAULTS={minScale:.3,leadTime:.5,taperDuration:.05,holdAfter:.05,recoverDuration:.05,endLeadTime:.5,endTaperDuration:.05};
         ${fn('hwySmoothstep01')}${fn('hwyTrailYieldAmountAt')}${fn('hwyAppendTrailYieldContourTimes')}
         ${block}${fn('sustainTrailCenterXAt')}${fn('ensureSlideRibbonCapacity')}${fn('slideRibbonUpdatePair')}
