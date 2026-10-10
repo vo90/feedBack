@@ -974,9 +974,38 @@ test('near geometry cannot turn a suppressed detour into an opposing safety pan'
 // samples, support arrays and the actual controller, not a duplicate of the guard.
 const collectionBaseline = fs.readFileSync(path.join(__dirname,
     'fixtures/highway_3d_stable_collection.baseline.txt'), 'utf8');
+// Exact scalar support helpers from b2dbcb686008f766da0042cbb8ba882ad792ff7b.
+// Keep the reference independent of the candidate's numeric-storage handoff.
+const supportBaseline = `
+        function stableSupportPoint(index, x, y, z, depth, right, up) {
+            const q = _stableSupport[index], m = q.maxima, p = _stableViewPoints;
+            let slot = index * 15, value = right + q.horizontal * depth;
+            if (value > m[0]) { m[0] = value; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+            slot += 3; value = -right + q.horizontal * depth;
+            if (value > m[1]) { m[1] = value; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+            slot += 3; value = up + q.top * depth;
+            if (value > m[2]) { m[2] = value; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+            slot += 3; value = -up + q.bottom * depth;
+            if (value > m[3]) { m[3] = value; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+            slot += 3;
+            if (depth > m[4]) { m[4] = depth; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
+        }
+
+        function stableCollectViewPoint(x, y, z) {
+            const b = _stableViewBasis;
+            const dz = Math.max(z, Math.min(0, z + _stableSupport[0].prediction)) - z;
+            const depth = b.bx * x + b.by * y + b.bz * z;
+            const right = b.rx * x + b.rz * z, up = b.ux * x + b.uy * y + b.uz * z;
+            stableSupportPoint(0, x, y, z, depth + b.bz * dz, right + b.rz * dz, up + b.uz * dz);
+            stableSupportPoint(1, x, y, z, depth, right, up);
+        }
+`;
 let referenceSource = source;
 for (const name of ['stableSupportReset', 'stableAddPoint', 'stableAddSegment', 'stableCollectObject']) {
     referenceSource = referenceSource.replace(extractFunction(name), extractFunction(name, collectionBaseline));
+}
+for (const name of ['stableSupportPoint', 'stableCollectViewPoint']) {
+    referenceSource = referenceSource.replace(extractFunction(name), extractFunction(name, supportBaseline));
 }
 const realThree = import(pathToFileURL(path.join(__dirname, '../../static/vendor/three/three.module.min.js')).href);
 
@@ -998,6 +1027,20 @@ function collectionBox(T, minZ, maxZ) {
     geometry.boundingBox = new T.Box3(new T.Vector3(-3, 1, minZ), new T.Vector3(7, 9, maxZ));
     return new T.Mesh(geometry, new T.MeshBasicMaterial());
 }
+
+test('support handoff preserves exact extrema and tie order across repeated point collections', () => {
+    for (const preset of ['straight','angled']) for (const lefty of [false,true]) {
+        const pair = collectionPair(null, {preset,lefty,rate:.75});
+        const points = [[-0,-0,-0],[0,0,0],[20,13,-25.875],[20,13,-25.875],
+            [-37.25,18.125,-155.25],[77.5,-13.5,-155.25+1e-7],
+            [120,80,8],[-60,-15,-90],[NaN,0,0],[0,Infinity,0],[0,0,-Infinity]];
+        for (const sequence of [points,points.slice().reverse(),[],[[1,2,3]],points]) {
+            const fits = pair.map(h => h.compareSupportedGeometry(sequence));
+            assert.deepEqual(fits[0],fits[1],`${preset}/${lefty} fits`);
+            assert.deepEqual(pair[0].collection(),pair[1].collection(),`${preset}/${lefty} support`);
+        }
+    }
+});
 
 test('collection matches ordered legacy support at clipping, fading and prediction boundaries', async () => {
     const T = await realThree;

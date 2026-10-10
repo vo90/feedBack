@@ -22661,6 +22661,7 @@
         }));
         const _stablePoints = new Float64Array(32 * 8 * 3);
         const _stableViewPoints = new Float64Array(2 * 5 * 3);
+        const _stableSupportInput = new Float64Array(6);
         let _stablePointSamples = 0;
         const _stableRegionPoints = new Float64Array(16 * 3);
         const _stableViewRegionPoints = new Float64Array(24 * 3);
@@ -22704,7 +22705,9 @@
             }
         }
 
-        function stableSupportPoint(index, x, y, z, depth, right, up) {
+        function stableSupportPoint(index, input) {
+            const x = input[0], y = input[1], z = input[2];
+            const depth = input[3], right = input[4], up = input[5];
             const q = _stableSupport[index], m = q.maxima, p = _stableViewPoints;
             let slot = index * 15, value = right + q.horizontal * depth;
             if (value > m[0]) { m[0] = value; p[slot] = x; p[slot + 1] = y; p[slot + 2] = z; }
@@ -22723,8 +22726,13 @@
             const dz = Math.max(z, Math.min(0, z + _stableSupport[0].prediction)) - z;
             const depth = b.bx * x + b.by * y + b.bz * z;
             const right = b.rx * x + b.rz * z, up = b.ux * x + b.uy * y + b.uz * z;
-            stableSupportPoint(0, x, y, z, depth + b.bz * dz, right + b.rz * dz, up + b.uz * dz);
-            stableSupportPoint(1, x, y, z, depth, right, up);
+            // Keep the support handoff numeric even when this call is not inlined.
+            const input = _stableSupportInput;
+            input[0] = x; input[1] = y; input[2] = z;
+            input[3] = depth + b.bz * dz; input[4] = right + b.rz * dz; input[5] = up + b.uz * dz;
+            stableSupportPoint(0, input);
+            input[3] = depth; input[4] = right; input[5] = up;
+            stableSupportPoint(1, input);
         }
 
         function stableAddPoint(x, y, z) {
