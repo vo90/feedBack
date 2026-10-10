@@ -16101,8 +16101,9 @@
                 for (let _i = 0; _i < nStr; _i++) _scrGhostLastT[_i] = -Infinity;
                 const _gLastT = _scrGhostLastT;
                 let _gni = notes ? lowerBoundT(notes, now - 1) : 0;
-                let _gci = 0;
-                if (chords) while (_gci < chords.length && chords[_gci].t < now - 1) _gci++;
+                // Both streams are time-sorted. Skip historical chords just
+                // like notes so this prepass does not grow with song progress.
+                let _gci = chords ? lowerBoundT(chords, now - 1) : 0;
                 while (true) {
                     const nt = (notes && _gni < notes.length) ? notes[_gni].t : Infinity;
                     const ct = (chords && _gci < chords.length) ? chords[_gci].t : Infinity;
