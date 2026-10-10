@@ -7,10 +7,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
-const start = source.indexOf('// ── Beat lines ');
-const end = source.indexOf('const refs=[bundle.wah', start);
-assert.ok(start >= 0 && end > start, 'production beat-line pass must exist');
-const pass = new vm.Script(`'use strict';\n${source.slice(start, end)}`);
+const start = source.indexOf('function updateBeatLines(');
+const end = source.indexOf('function updateFretColumnMarkers(', start);
+assert.ok(start >= 0 && end > start, 'production beat-line helper must exist');
+const pass = new vm.Script(`'use strict';\n${source.slice(start, end)}\nupdateBeatLines(beats, now, t0, t1);`);
 
 function renderer() {
     const lines = [];
