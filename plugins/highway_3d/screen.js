@@ -7546,7 +7546,7 @@
         let _canvasReplacedHandler = null;
         let ambLight = null, dirLight = null;
         let fretG = null, tuningLblG = null, noteG = null, beatG = null, lblG = null;
-        let gNote = null, gNoteGhost = null, gSus = null, gBeat = null, gTapChevron = null;
+        let gNote = null, gNoteEdge = null, gNoteGhost = null, gSus = null, gBeat = null, gTapChevron = null;
         // Per-string gradient gem geometries (index 0..5). Built in initScene
         // from sampled colour PNGs; each carries a per-vertex colour attribute.
         let gNoteGrad = [], gNoteGhostGrad = [];
@@ -7608,9 +7608,9 @@
         // uses per-string mHitBright[s] for the cyan-shifted flash.
         let mMissOutline = null;
         // Per-string hit verdict material used for outline + lateral face fill.
-        // Built in initScene() after mGlow. Array share the same material
-        // instances so outline and face fill always match exactly.
-        let mHitBright = [], mHitBrightArrays = [];
+        // Built in initScene() after mGlow. Outline and lateral face fill
+        // share the same material instances so their colour matches exactly.
+        let mHitBright = [];
         // Gem-rim hit flash ("just the rims"): per-string materials that flash
         // in the STRING'S OWN colour with the same intensity treatment as the
         // fret wires (FRET_WIRE_HIT_INTENSITY ramp, provider-alpha fade). Shared
@@ -7627,9 +7627,7 @@
         // path or when note_detect is off.
         let _ndVerdictMaxAlpha = 0;
         let _ndVerdictSawAlpha = false;
-        // Magenta-red face fill for miss — see initScene() for construction
-        // (uses mMissOutline ×4 + mEdgeTransparent ×2).
-        let mMissEdgeArrays = null;
+        // Dormant side-fill pool material; visible sides use the verdict material.
         let mEdgeTransparent = null;
         let pSusOutline = null, pNoteEdge = null;
         let projMeshArr = null;
@@ -11075,6 +11073,13 @@
 
             // Rectangular note geometry
             gNote = new T.BoxGeometry(NW, NH, ND);
+            // BoxGeometry's first four faces are +X, -X, +Y, -Y (24 indices).
+            // Keep those exact vertices/normals/triangles for verdict side fill,
+            // but submit them together. The former six material groups drew
+            // four identical side materials plus two zero-alpha front/back faces.
+            gNoteEdge = gNote.clone();
+            gNoteEdge.clearGroups();
+            gNoteEdge.setDrawRange(0, 24);
             // The parentheses are part of the same outline mesh, not a label
             // or extra overlay. They inherit its rotation, movement, material,
             // pool lifetime and every physical trail-order correction.
@@ -11291,16 +11296,9 @@
             // swaps its outline.material between mWhiteOutline / per-string
             // mHitBright[s] / mMissOutline based on recent notedetect events.
             mMissOutline = new T.MeshLambertMaterial({ color: 0xff0066, emissive: 0xff0066, emissiveIntensity: 1.2, transparent: true, opacity: 1.0, depthTest: false, depthWrite: false });
-            // Transparent placeholder for front (+Z, group 4) and back (-Z, group 5)
-            // of the lateral face-fill material array. Also the default material for
-            // the pNoteEdge pool: pool consumers reassign .material before render, so
-            // the placeholder is never displayed — using an explicitly-invisible
-            // material makes that intent obvious.
-            // BoxGeometry group order: 0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z(front), 5=-Z(back)
+            // Pool consumers assign the verdict material before render. Keep
+            // an invisible default so an unused side-fill slot cannot show.
             mEdgeTransparent = new T.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
-            // mMissEdgeArrays: use mMissOutline (same Lambert+emissive material as the gem
-            // border) so the lateral face fill matches the outline colour exactly.
-            mMissEdgeArrays = [mMissOutline, mMissOutline, mMissOutline, mMissOutline, mEdgeTransparent, mEdgeTransparent];
 
             // Hit: fixed neon spring-green on every string — 0x22ff88 is cyan-shifted
             // enough to be readable even on the green string (0x30d040). The outline
@@ -11309,7 +11307,6 @@
                 color: 0x22ff88, emissive: 0x22ff88, emissiveIntensity: 4.0 * glowMul,
                 transparent: true, opacity: 1.0, depthTest: false, depthWrite: false,
             }));
-            mHitBrightArrays = mHitBright.map(m => [m, m, m, m, mEdgeTransparent, mEdgeTransparent]);
 
             // Rim flash: string-coloured, wire-fashion intensity. Colour and
             // emissive both take the palette colour so the rim reads as the
@@ -11369,8 +11366,8 @@
             pNote = pool(noteG, () => new T.Mesh(gNote, mStr[0]), () => _stableNoteRelevant);
             // Pool default is the always-invisible mEdgeTransparent — every
             // consumer reassigns .material before render (to a verdict edge
-            // material array), so the placeholder is never displayed.
-            pNoteEdge = pool(noteG, () => new T.Mesh(gNote, mEdgeTransparent));
+            // material), so the placeholder is never displayed.
+            pNoteEdge = pool(noteG, () => new T.Mesh(gNoteEdge, mEdgeTransparent));
             pAccentHalo = pool(noteG, () => new T.Mesh(gNote, mAccentHaloFar[0]));
             pSus = pool(noteG, () => new T.Mesh(gSus, mSus[0]));
             pSusOutline = pool(noteG, () => new T.Mesh(gSus, mSusOutline));
@@ -15518,7 +15515,7 @@
             // frame's capture in the gem path below. vg = 1 when no provider
             // alpha was seen (legacy event path / note_detect off), leaving the
             // authored 4.0/0.7 × glowMul brightness from _applyGlow() untouched.
-            // Only the verdict-only materials (mHitBright + its face-fill arrays,
+            // Only the verdict-only materials (mHitBright and its side fills,
             // and the hit sustain outline) are scaled — never mStrHitOutline,
             // which is the default rim for every fretted note.
             {
@@ -20805,7 +20802,7 @@
             let _ndState = null;    // 'hit'|'active'|'miss'|null; null → fall back to proximity heuristic
             let _ndCs = null;       // raw provider response — truthy when provider returned a verdict
             let _ndCsIsObj = false; // typeof _ndCs === 'object'
-            let _ndFaceMat = null;  // [mat×4, transparent×2] array for lateral face fill, or null
+            let _ndFaceMat = null;  // shared verdict material for lateral face fill, or null
             if (!guidanceOnly && !scrape && _ndGetNoteState) {
                 // Reuse the smart-cull probe result if we already called
                 // _ndGetNoteState for this gem above; otherwise probe now.
@@ -21015,7 +21012,7 @@
                     for (let i = 0; i < _ndHitMarks.length; i++) {
                         const m = _ndHitMarks[i];
                         if (m.s === n.s && m.f === sourceNote.f && Math.abs(m.noteTime - n.t) < _ND_TIME_EPS) {
-                            _ndOutline = mHitBright[s] ?? mGlow[s]; _ndFaceMat = mHitBrightArrays[s] ?? null; _ndMatchedMark = m; _ndHadHitMark = true; break;
+                            _ndOutline = mHitBright[s] ?? mGlow[s]; _ndFaceMat = mHitBright[s] ?? null; _ndMatchedMark = m; _ndHadHitMark = true; break;
                         }
                     }
                 }
@@ -21023,7 +21020,7 @@
                     for (let i = 0; i < _ndMissMarks.length; i++) {
                         const m = _ndMissMarks[i];
                         if (m.s === n.s && m.f === sourceNote.f && Math.abs(m.noteTime - n.t) < _ND_TIME_EPS) {
-                            _ndOutline = mMissOutline; _ndFaceMat = mMissEdgeArrays; _ndMatchedMark = m; break;
+                            _ndOutline = mMissOutline; _ndFaceMat = mMissOutline; _ndMatchedMark = m; break;
                         }
                     }
                 }
@@ -21047,14 +21044,14 @@
                     const _vAlpha = (_ndCsIsObj && typeof _ndCs.alpha === 'number') ? _ndCs.alpha : 1;
                     if (_ndState === 'miss') {
                         _ndOutline = mMissOutline;
-                        _ndFaceMat = mMissEdgeArrays;
+                        _ndFaceMat = mMissOutline;
                         _streakHits = 0;            // #7 break the streak (heat eases down)
                         if (_verdictMarks) _ndLabels.push({ x, y: y + NH * 1.7, z: noteZ + 0.02, labels: [{ text: '✗', color: '#ff5a7a' }] });  // #6
                     } else if (_ndGood) {
                         // Rim flashes in the string's own colour, wire-fashion
                         // (intensity applied per string in the flash pass).
                         _ndOutline = mRimFlash[s] ?? mHitBright[s] ?? mGlow[s];
-                        _ndFaceMat = mHitBrightArrays[s] ?? null;
+                        _ndFaceMat = mHitBright[s] ?? null;
                         // Clamp like the wire path does — a provider returning
                         // alpha > 1 must not over-drive emissiveIntensity.
                         const _rimA = Math.max(0, Math.min(1, _vAlpha));
@@ -21201,9 +21198,8 @@
                 }
 
                 // ── Lateral face fill (top / bottom / left / right only) ─────
-                // Material array: groups 0-3 (±X ±Y) get the verdict colour;
-                // groups 4-5 (+Z front / -Z back) are transparent so the large
-                // front face shows only the core body's string colour beneath.
+                // Geometry contains only the ±X / ±Y faces, so the large
+                // front face still shows the core body's string colour beneath.
                 let noteFaceMesh = null;
                 if (_ndFaceMat) {
                     const edges = pNoteEdge.get();
@@ -23682,7 +23678,7 @@
                 chordFrameGradTexRs?.dispose?.();
                 chordFrameGradTexArp?.dispose?.();
             }
-            gNote?.dispose?.(); gSus?.dispose?.(); gBeat?.dispose?.(); gSusRail?.dispose?.(); gTapChevron?.dispose?.();
+            gNote?.dispose?.(); gNoteEdge?.dispose?.(); gSus?.dispose?.(); gBeat?.dispose?.(); gSusRail?.dispose?.(); gTapChevron?.dispose?.();
             mSusRailBase?.dispose?.(); mSusRailBase = null; gSusRail = null; pSusRail = null;
             gTechPlane?.dispose?.(); gTechPlane = null; pTechPlane = null;
             // InstancedMesh disposal — .dispose() releases instanceMatrix / instanceColor
@@ -23734,7 +23730,7 @@
             mMissOutline?.dispose?.();
             mHitSusOutline?.dispose?.();
             mEdgeTransparent?.dispose?.(); mEdgeTransparent = null;
-            for (const m of mHitBright) m?.dispose?.(); mHitBright = []; mHitBrightArrays = [];
+            for (const m of mHitBright) m?.dispose?.(); mHitBright = [];
             for (const m of mRimFlash) m?.dispose?.(); mRimFlash = [];
             for (const k in txtCache) {
                 const tm = txtCache[k];
@@ -23831,7 +23827,7 @@
             chordFrameGradTex = chordFrameGradTexRs = chordFrameGradTexArp = null;
             pFretColMarker = null;
             _fretMarkerWaveCache.clear();
-            gNote = gNoteGhost = gSus = gBeat = gTapChevron = null;
+            gNote = gNoteEdge = gNoteGhost = gSus = gBeat = gTapChevron = null;
             gNoteGrad = []; gNoteGhostGrad = [];
             tgtX = curX = xFretMid(CAM_LOCK_CENTER_FRET); tgtDist = curDist = CAM_DIST_BASE; tgtLookY = curLookY = 0; _fretRowFitBoost = 1; nStr = NSTR; _oobStringWarned = false;
             _lookaheadCamX = xFretMid(CAM_LOCK_CENTER_FRET);
