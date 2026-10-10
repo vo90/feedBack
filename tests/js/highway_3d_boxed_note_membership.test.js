@@ -37,6 +37,7 @@ function membershipHarness() {
             'filterValidNotes', 'mergeChordShape', 'truthyChartFlag', 'hsStart', 'hsEnd',
             'hsChordIdNorm', 'chordTemplateMarkedArpeggio', 'handShapeMarkedArpeggio',
             'chordUsesArpeggioFrame', 'suppressSynthChordForNotes', 'chordHasFrameShape',
+            'chordTemplateLabel', 'chordNotesFromTemplate', 'mergeHandShapeSynthChords',
             '_ensureBoxedChordMembership', '_resetStringDependentCaches'].map(fn).join('\n')}
         ${between('const _HINT_NONE =', '// Hold timing and position guidance')}
         return {
@@ -48,6 +49,7 @@ function membershipHarness() {
             },
             strings(count) { nStr=count; _resetStringDependentCaches(); },
             membership() { return _boxedChordMembership; },
+            synthesize:mergeHandShapeSynthChords,
             release() { _boxedChordMembership=null; }
         };
     `)();
@@ -319,10 +321,36 @@ test('chart-static cache reuses its index and refreshes every membership input',
     assert.equal(h.ensure(notes,one,hs,{1:{frets:[3,5]}}).size,1);
     assert.equal(h.ensure(notes,one,hs,{1:{frets:[3]}}).size,0);
     const synthetic=[{...ch,h3dSynth:true}];
-    assert.equal(h.ensure([],synthetic,hs,tpl).size,2);
+    assert.equal(h.ensure([],synthetic,hs,tpl).size,0,'a hand position cannot create an ordinary box');
     assert.equal(h.ensure(notes,synthetic,hs,tpl).size,0);
+    const arpHs=[{chord_id:1,start_time:10,end_time:11,arp:true}];
+    h.ensure([],synthetic,arpHs,tpl);
+    assert.equal(h.membership().arpeggioKeys.size,2);
+    h.ensure(notes,synthetic,arpHs,tpl);
+    assert.equal(h.membership().arpeggioKeys.size,0,'note changes still invalidate explicit preview membership');
     h.release();
     assert.notEqual(h.ensure(notes,chords,hs,tpl),a);
+});
+
+test('synthesized ordinary hand positions never own attacks or standalone stems',()=>{
+    for(const frets of [[3,-1,-1,-1,-1,-1],[3,5,-1,-1,-1,-1]]) {
+        const h=membershipHarness(),templates=[{name:'',frets}];
+        const handShapes=[{chord_id:0,start_time:38.869999,end_time:39.266998}];
+        const chords=h.synthesize([],handShapes,templates);
+        assert.equal(chords.length,1,'retain the synthetic row for hand-position guidance');
+        assert.equal(chords[0].h3dSynth,true);
+        for(const notes of [[],[{t:38.869999,s:4,f:1}],
+            [{t:38.869999,s:0,f:3}],[{t:39.324001,s:0,f:3,sus:.34}]]) {
+            const snapshot=structuredClone(notes);
+            assert.equal(h.ensure(notes,chords,handShapes,templates).size,0);
+            assert.equal(h.membership().arpeggioKeys.size,0);
+            for(const style of ['current','rsplus'])for(const n of notes) {
+                const r=render(h,n,chords,{notes,handShapes,templates,style});
+                assert.equal(r.connectors+r.drops,1,'each actual fretted note keeps its stem');
+            }
+            assert.deepEqual(notes,snapshot,'hand-position policy cannot rewrite played notes');
+        }
+    }
 });
 
 test('string-count changes discard filtered shapes and restore extended-range membership',()=>{

@@ -41,6 +41,13 @@ if(served.includes('function hwyBuildChordHoldGuidance(chords, handShapes, templ
     'function hwyBuildChordHoldGuidance(chords, handShapes, templates, anchors, stringCount = 6, notes = []) { if(window.__holdBuilds!==undefined)window.__holdBuilds++;');
 served = once(served, 'const core = pNote.get();', `const core = pNote.get();
  if(window.__holdProbe)window.__holdProbe.notes.push({note:{...n},fromChord,mesh:core});`);
+served = once(served, 'const proj = projMeshArr[s][0];', `const proj = projMeshArr[s][0];
+ if(window.__holdProbe)window.__holdProbe.positions.push({note:{...n},fromChord,mesh:proj});`);
+for (const anchor of ['const line = pConnectorLine.get();', 'const dl = pDropLine.get();']) {
+  const mesh = anchor.includes('const line') ? 'line' : 'dl';
+  served = once(served, anchor, `${anchor}
+   if(window.__holdProbe)window.__holdProbe.stems.push({note:{...n},mesh:${mesh}});`);
+}
 served = once(served, 'const fill = pChordFrameFill.get();', `const fill = pChordFrameFill.get();
  if(window.__holdProbe)window.__holdProbe.frames.push({t:ch.t,isRepeat,isArpeggioFrame,compactRepeatFrame,outerWidth:width,borderWidth:ftSide,mesh:fill});`);
 served = once(served, 'const tr = pSus.get();', `const tr = pSus.get();
@@ -75,6 +82,34 @@ function base(extra={}) {
 }
 const scenarios=[];
 function add(name,b,expected,extra={}) { scenarios.push({name,b,expected,...extra}); }
+// A hand position is not an attack. This reduced Away from the Sun passage
+// includes the reported false low-E 3 at 38.87 and the real sustained 3 later.
+const handshapePassage = base({currentTime:38.2,anchors:[{time:0,fret:1,width:4}],
+  notes:[note({t:38.869999,s:4,f:0}),note({t:39.097,s:3,f:0}),
+    note({t:39.324001,s:0,f:3,sus:.34}),note({t:39.778,s:4,f:3})],
+  chordTemplates:[{name:'',frets:[3,-1,-1,-1,-1,-1]},
+    {name:'',frets:[3,-1,-1,-1,3,-1]}],
+  handShapes:[shape(38.869999,39.266998),shape(39.324001,40.175999,1)]});
+add('handshape-reported',handshapePassage,[],{image:true,
+  absentGems:[{t:38.869999,s:0,f:3}],presentGems:[{t:39.324001,s:0,f:3}],
+  stemNotes:[{t:39.324001,s:0,f:3}],wantTrailOnsets:[39.324001],
+  sampleTimes:[38.2,38.7,38.869999,38.90,39.324001,39.45,39.8,38.2]});
+for (const members of [[3,-1,-1,-1,-1,-1],[3,5,-1,-1,-1,-1]]) {
+  const phantom=members.flatMap((f,s)=>f<0?[]:[{t:10,s,f}]);
+  add('handshape-unplayed-'+phantom.length,base({notes:[note({t:10,s:4,f:1})],
+    chordTemplates:[{name:'',frets:members}],handShapes:[shape(10,12)]}),[],
+    {image:true,absentGems:phantom,presentGems:[{t:10,s:4,f:1}],stemNotes:[{t:10,s:4,f:1}],
+      exactFrames:0,positionNotes:phantom,sampleTimes:[9.7,10,10.03,10.5,9.7]});
+}
+add('handshape-coincident',base({notes:[note({t:10,s:1,f:3,sus:.6})],
+  handShapes:[shape(10,12)]}),[],{image:true,absentGems:[{t:10,s:2,f:5}],
+  presentGems:[{t:10,s:1,f:3}],stemNotes:[{t:10,s:1,f:3}],exactFrames:0,
+  wantTrailOnsets:[10],sampleTimes:[9.7,10,10.03,10.3,9.7]});
+add('handshape-explicit-preview',base({chordTemplates:[{...template,arp:true}],
+  handShapes:[shape(10,12,0,{arp:true})]}),[],{image:true,
+  presentGems:[{t:10,s:1,f:3},{t:10,s:2,f:5}],exactFrames:1});
+add('handshape-real-chord',base({chords:[chord(10,.6)],handShapes:[shape(10,12)]}),[[10,10.6]],
+  {image:true,presentGems:[{t:10,s:1,f:3},{t:10,s:2,f:5}],exactFrames:1});
 for (const origin of ['source', 'user', 'generated', 'unknown']) {
   for (const cameraMode of ['lookahead', 'stable']) for (const lefty of [false, true]) {
     const lo = 1, hi = 5;
@@ -206,7 +241,7 @@ async function main() {
       window.__mesh=m=>({position:m.position.toArray(),scale:m.scale.toArray(),visible:m.visible,renderOrder:m.renderOrder,
         material:{color:m.material.color?.getHexString(),opacity:m.material.opacity,type:m.material.type,depthTest:m.material.depthTest,depthWrite:m.material.depthWrite,fog:m.material.fog}});
       window.__capture=()=>{
-        const a=r.__holdAudit();window.__holdProbe={notes:[],frames:[],trails:[],ribbons:[],rails:[],caps:[],legacyRails:[],positionRails:[]};
+        const a=r.__holdAudit();window.__holdProbe={notes:[],stems:[],positions:[],frames:[],trails:[],ribbons:[],rails:[],caps:[],legacyRails:[],positionRails:[]};
         a.ren.info.autoReset=false;a.ren.info.reset();r.draw(bundle);
         const p=window.__holdProbe;window.__holdProbe=null;
         const result={style:a.style,time:bundle.currentTime,modelBuilds:window.__holdBuilds,renderer:{calls:a.ren.info.render.calls,triangles:a.ren.info.render.triangles,memory:{...a.ren.info.memory}}};
@@ -227,6 +262,14 @@ async function main() {
       await init(scenario.b);
       const proof=await page.evaluate(()=>__capture());
       results.push({name:scenario.name,expected:scenario.expected,realFileSha:scenario.realFileSha,...proof});
+      const sameNote=(a,b)=>Math.abs(a.t-b.t)<1e-6&&a.s===b.s&&a.f===b.f;
+      if(!reference) {
+        for(const n of scenario.absentGems||[])check(!proof.notes.some(g=>sameNote(g.note,n)),scenario.name+': phantom gem '+JSON.stringify(n));
+        for(const n of scenario.presentGems||[])check(proof.notes.filter(g=>sameNote(g.note,n)).length===1,scenario.name+': missing/duplicate gem '+JSON.stringify(n));
+        for(const n of scenario.stemNotes||[])check(proof.stems.filter(g=>sameNote(g.note,n)).length===1,scenario.name+': missing/duplicate stem '+JSON.stringify(n));
+        for(const n of scenario.positionNotes||[])check(proof.positions.some(g=>sameNote(g.note,n)&&g.mesh.visible&&g.mesh.material.opacity>0),scenario.name+': missing hand-position ghost '+JSON.stringify(n));
+        if(scenario.exactFrames!==undefined)check(proof.frames.length===scenario.exactFrames,scenario.name+': unexpected frame count');
+      }
       check(proof.renderer.calls>0,scenario.name+': no draw calls');
       if(!reference)check(proof.modelBuilds===1,scenario.name+': model must build once, got '+proof.modelBuilds);
       if(!reference)check(proof.legacyRails.length===0,scenario.name+': old ambiguous thick rails remain');
@@ -283,6 +326,21 @@ async function main() {
         }
       }
       if(scenario.image)await page.screenshot({path:path.join(out,scenario.name+'.png')});
+      if(scenario.sampleTimes) {
+        const samples=[];
+        for(const time of scenario.sampleTimes) {
+          const sample=await page.evaluate(time=>{bundle.currentTime=time;bundle.isPlaying=true;return __capture();},time);
+          samples.push(sample);
+          if(!reference)for(const n of scenario.absentGems||[])
+            check(!sample.notes.some(g=>sameNote(g.note,n)),`${scenario.name}: phantom gem at playback/seek ${time}`);
+          if(!reference)for(const n of scenario.presentGems||[]) {
+            const authored=scenario.b.notes.find(a=>sameNote(a,n));
+            if(authored&&time<=n.t+(authored.sus||0))check(sample.notes.filter(g=>sameNote(g.note,n)).length===1,
+              `${scenario.name}: missing/duplicate real gem at playback/seek ${time}`);
+          }
+        }
+        results.push({name:scenario.name+'-playback-seek',samples});
+      }
       console.log(`${scenario.name}: ${proof.rails.length} rails, ${proof.trails.length} trails, ${proof.ribbons.length} ribbons`);
     }
     if(!option('--case')&&!args.includes('--perf-only')) {
