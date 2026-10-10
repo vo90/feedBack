@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { createHash } = require('node:crypto');
 
 const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 
@@ -53,6 +54,8 @@ function harness(subject = source, three = null) {
             lookAt(...values) { this.target = values; }, updateMatrixWorld() {} };
         const T = Three || { Vector3: class {} }; // sprite-only tests need no vector methods
         const performance = { now: () => wall * 1000 };
+        ${extract('createPresentationClock')}
+        const _presentationClock = createPresentationClock();
         const sY = string => (3 + (nStr - 1 - string) * 4) * K;
         const xFretMid = fret => fret * 10 - 5, xFret = fret => fret * 10;
         const fretLabelScaleForFret = () => 1;
@@ -151,6 +154,21 @@ function harness(subject = source, three = null) {
                 wall += elapsed; bundle.currentTime = time; bundle.isPlaying = playing;
                 stableCamUpdate(bundle, frameTime); return { ..._stableCam };
             },
+            clockFrame(raw, wallMs, timestamp, options = {}, frameTime) {
+                wall = wallMs / 1000;
+                bundle.currentTime = raw;
+                bundle.transport = options.transport === null ? null : {
+                    epoch: 1, generation: 1, state: 'playing', rate: 1,
+                    position: raw, sampledAt: wallMs, freshAt: wallMs,
+                    endTime: Infinity, ...options,
+                };
+                bundle.isPlaying = !bundle.transport || bundle.transport.state === 'playing';
+                const time = bundle.transport
+                    ? _presentationClock.sample(raw, wallMs, bundle.transport, timestamp) : raw;
+                stableCamUpdate(bundle, frameTime ?? time);
+                return {state: {..._stableCam}, time, motionDt: _presentationClock.frameMotionDelta()};
+            },
+            resetClock() { _presentationClock.reset(); },
             solve(x, distance, prediction = 0, margin = .90, fixed = false) {
                 stableCollectGeometry(); return { ...stableSolve(x, distance, prediction, margin, fixed) };
             },
@@ -220,6 +238,156 @@ function harness(subject = source, three = null) {
         };
     `)(three);
 }
+
+const cameraFrameDtSelection = `// Share the normal visual frame interval, but retain wall timing
+            // for every clock fallback and all freshness/rate/seek bookkeeping.
+            const frameDt = bundle.transport ? _presentationClock.frameMotionDelta() : NaN;
+            const dt = Number.isFinite(frameDt) && frameDt > 0 ? frameDt : Math.min(0.25, elapsed);`;
+const wallCameraSource = source.replace(cameraFrameDtSelection, 'const dt = Math.min(0.25, elapsed);');
+
+test('camera changes only its damping interval relative to frozen 1fbc598', () => {
+    assert.notEqual(wallCameraSource, source);
+    const body = extractFunction('stableCamUpdate', wallCameraSource).replace(/\r\n/g, '\n');
+    assert.equal(createHash('sha256').update(body).digest('hex'),
+        '6f03a4997bf0fc0c024badbcceab761d9caeed56cce40ebd9ff56b1aa17fac82');
+});
+
+test('camera retains exact wall-clamped behavior on every clock fallback and legacy transport', () => {
+    const cases = [
+        ['absent', 20, undefined, {}], ['invalid', 20, NaN, {}],
+        ['repeated', 20, 110, {}], ['backward', 20, 100, {}],
+        ['origin jump', 20, 220, {}], ['long frame', 20, 400, {}],
+        ['wall stall', 400, 500, {}], ['rate', 20, 120, {rate: 2}],
+        ['generation', 20, 120, {generation: 2}], ['epoch/seek', 20, 120, {epoch: 2}],
+        ['stale', 20, 120, {freshAt: -250}], ['end clamp', 20, 120, {endTime: 10.015}],
+        ['legacy', 20, 120, {transport: null}], ['reset', 20, 120, {}],
+        ...['paused', 'count-in', 'rewind', 'buffering', 'seeking', 'ended']
+            .map(state => [state, 20, 120, {state}]),
+    ];
+    for (const preset of ['straight', 'angled']) for (const [name, wall, stamp, options] of cases) {
+        const current = harness(), old = harness(wallCameraSource);
+        for (const h of [current, old]) {
+            h.settings({preset, rate: 1}); h.setRegion(20, 60);
+            h.clockFrame(10, 0, 100); h.clockFrame(10.01, 10, 110);
+            h.setRegion(100, 140);
+            if (name === 'reset') h.resetClock();
+        }
+        const a = current.clockFrame(10.02, wall, stamp, options);
+        const b = old.clockFrame(10.02, wall, stamp, options);
+        assert.deepEqual(a, b, `${preset}/${name}`);
+        assert.deepEqual(current.renderedPose(), old.renderedPose(), `${preset}/${name}: pose`);
+        if (name !== 'legacy') assert.ok(Number.isNaN(a.motionDt), name);
+    }
+});
+
+test('stable camera rejoin, safety, zoom and rest widening follow the same frame grid under callback jitter', () => {
+    // Isolate damping from the clock's intentional audio phase correction:
+    // sample the real clock, but supply identical already-rendered chart times.
+    const scenarios = {
+        settled(h, i) { if (!i) { h.setRegion(20, 60); h.setPoints([[20,13,0],[60,13,0]]); } },
+        rejoin(h, i) { if (!i) h.setRegion(20, 60); if (i === 100) h.setRegion(100, 140); },
+        safety(h, i) {
+            if (!i) h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:2,minX:55,maxX:95}]);
+            if (i === 100) h.setPoints([[150,13,0]]);
+            if (i === 140) h.setPoints([]);
+        },
+        zoom(h, i) {
+            if (!i) { h.setRegion(20, 60); h.setPoints([[-240,-18,0],[240,100,0]]); }
+            if (i === 100) h.setPoints([[20,13,0],[60,13,0]]);
+        },
+        rest(h, i) {
+            if (!i) { h.noRegion(); h.setPoints([[20,13,0],[60,13,0]]); }
+            if (i === 100) h.setPoints([[200,100,0]]);
+        },
+    };
+    for (const preset of ['straight', 'angled']) for (const rate of [.5, 1, 2]) {
+        for (const [name, setup] of Object.entries(scenarios)) {
+            const uniform = harness(), jittered = harness(), old = harness(wallCameraSource);
+            for (const h of [uniform, jittered, old]) {
+                h.settings({preset, rate, aspect: 3440/1420}); setup(h, 0);
+                h.clockFrame(0, 0, 100, {rate}, 0);
+            }
+            let legacyDifference = 0;
+            for (let i = 1; i <= 200; ++i) {
+                const grid = i * 10, wall = grid + (i % 2 ? 3 : 0);
+                for (const h of [uniform, jittered, old]) setup(h, i);
+                const a = uniform.clockFrame(grid/1000*rate, grid, grid+100, {rate}, grid/1000*rate);
+                const b = jittered.clockFrame(wall/1000*rate, wall, grid+100, {rate}, grid/1000*rate);
+                const c = old.clockFrame(wall/1000*rate, wall, grid+100, {rate}, grid/1000*rate);
+                assert.equal(b.motionDt, .01);
+                assert.deepEqual(jittered.renderedPose(), uniform.renderedPose(), `${preset}/${rate}/${name}/${i}`);
+                for (const field of ['lastWall', 'lastTime', 'rateWall', 'rateTime', 'rate', 'epoch', 'clockReset']) {
+                    assert.equal(b.state[field], c.state[field], `wall bookkeeping ${field}`);
+                }
+                legacyDifference = Math.max(legacyDifference, Math.abs(c.state.x-a.state.x));
+            }
+            if (name === 'rejoin') assert.ok(legacyDifference > .1, `${preset}/${rate}: fixture must expose old jitter`);
+        }
+    }
+});
+
+test('uniform and dropped-frame clocks bound decimal rounding at the zoom quiet-time threshold', () => {
+    function project(pose) {
+        const dot = (a,b) => a.reduce((sum,n,i) => sum+n*b[i], 0);
+        const norm = a => { const n = Math.hypot(...a); return a.map(v => v/n); };
+        const forward = norm(pose.target.map((n,i) => n-pose.position[i]));
+        const right = norm([-forward[2],0,forward[0]]);
+        const up = [right[1]*forward[2]-right[2]*forward[1],
+            right[2]*forward[0]-right[0]*forward[2], right[0]*forward[1]-right[1]*forward[0]];
+        const relative = [40,13,0].map((n,i) => n-pose.position[i]);
+        // Project one common world point at 1420px height. The unchanged lens
+        // shift cancels in this same-preset comparison.
+        const scale = 1420/2/(dot(relative,forward)*Math.tan(pose.fov*Math.PI/360));
+        return [dot(relative,right)*scale, -dot(relative,up)*scale];
+    }
+    for (const preset of ['straight', 'angled']) for (const intervalMs of [10, 15.625]) {
+        const current = harness(), old = harness(wallCameraSource);
+        for (const h of [current, old]) {
+            h.settings({preset, rate: 1}); h.setRegion(20, 60);
+            h.setPoints([[-100,13,0],[150,13,0]]);
+        }
+        let wallMs = 0;
+        for (let i = 0; i < 300; ++i) {
+            if (i) wallMs += intervalMs * (i % 30 ? 1 : 3);
+            for (const h of [current, old]) {
+                if (i === 60) h.setRegion(100, 140);
+                if (i === 100) h.setPoints([]);
+                h.clockFrame(wallMs/1000, wallMs, wallMs+100);
+            }
+            const a = current.renderedPose(), b = old.renderedPose();
+            // .01 summed across frames can cross the existing .5s quiet-time
+            // threshold one rounding step earlier than wall subtraction.
+            // Keep that camera math unchanged, with a subpixel regression bound.
+            for (const key of ['position', 'target']) for (let j = 0; j < 3; ++j) {
+                assert.ok(Math.abs(a[key][j]-b[key][j]) < .002, `${preset}/${intervalMs}/${i}/${key}/${j}`);
+            }
+            const pa = project(a), pb = project(b);
+            assert.ok(Math.hypot(pa[0]-pb[0],pa[1]-pb[1]) < .01, `${preset}/${intervalMs}/${i}: pixels`);
+            if (intervalMs === 15.625) assert.deepEqual(a, b, 'binary-exact uniform interval');
+        }
+    }
+});
+
+test('camera keeps first-frame and recovery fallback independent across renderer instances', () => {
+    const a = harness(), b = harness(), wall = harness(wallCameraSource);
+    for (const h of [a, b, wall]) { h.settings({rate: 1}); h.setRegion(20, 60); }
+    assert.deepEqual(a.clockFrame(10, 0, 100), wall.clockFrame(10, 0, 100));
+    b.clockFrame(10, 0, 100);
+    for (const h of [a, b, wall]) h.clockFrame(10.01, 10, 110);
+    for (const h of [a, b, wall]) h.setRegion(100, 140);
+    a.resetClock(); wall.resetClock();
+    assert.deepEqual(a.clockFrame(10.02, 23, 120), wall.clockFrame(10.02, 23, 120));
+    assert.equal(b.clockFrame(10.02, 23, 120).motionDt, .01);
+    for (const [time, wallMs, stamp, options] of [
+        [10.4, 400, 500, {freshAt: 0}],
+        [10.41, 410, 510, {}],
+    ]) {
+        const current = a.clockFrame(time, wallMs, stamp, options);
+        assert.deepEqual(current, wall.clockFrame(time, wallMs, stamp, options));
+        assert.ok(Number.isNaN(current.motionDt));
+    }
+    assert.equal(a.clockFrame(10.42, 420, 520).motionDt, .01);
+});
 
 test('explicit transport epoch prevents raw correction from snapping the stable camera', () => {
     const h = harness();

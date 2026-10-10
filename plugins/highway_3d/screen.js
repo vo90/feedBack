@@ -194,6 +194,7 @@
     function createPresentationClock() {
         let time = NaN, lastPerf = NaN, epoch = null;
         let lastFrame = NaN, lastRate = NaN, lastGeneration;
+        let frameMotionDt = NaN;
         let gapRecovery = false;
         let trace = null, traceCount = 0;
         const fields = ['wallMs', 'time', 'target', 'raw', 'epoch', 'reason',
@@ -202,9 +203,11 @@
         return {
             reset() {
                 time = lastPerf = lastFrame = lastRate = NaN;
+                frameMotionDt = NaN;
                 epoch = null; lastGeneration = undefined; gapRecovery = false; traceCount = 0;
             },
             trace(enabled) { trace = enabled ? new Float64Array(4096 * fields.length) : null; traceCount = 0; },
+            frameMotionDelta() { return frameMotionDt; },
             diagnostics() {
                 if (!trace) return null;
                 const count = Math.min(traceCount, 4096), rows = [];
@@ -215,6 +218,7 @@
                 return {fields, reasons, count: traceCount, rows};
             },
             sample(raw, now, transport, frameTimestampMs) {
+                frameMotionDt = NaN;
                 const t = transport;
                 const rate = Number.isFinite(t.rate) && t.rate > 0 ? t.rate : 1;
                 const position = Number.isFinite(t.position) ? t.position : raw;
@@ -262,11 +266,13 @@
                         // the second half of a delayed callback. Accept that
                         // catch-up only when it improves audio alignment more
                         // than the wall interval would; otherwise reanchor.
-                        const motionDt = frameDt > 0 && frameDt <= 0.25
+                        const useFrameDt = frameDt > 0 && frameDt <= 0.25
                             && rate === lastRate && t.generation === lastGeneration
                             && (Math.abs(frameDt - dt) <= 0.05
                                 || (frameDt > dt && Math.abs(target - (time + frameDt * rate))
-                                    < Math.abs(target - (time + dt * rate)))) ? frameDt : dt;
+                                    < Math.abs(target - (time + dt * rate))));
+                        const motionDt = useFrameDt ? frameDt : dt;
+                        if (useFrameDt) frameMotionDt = frameDt;
                         const advance = motionDt * rate;
                         const predicted = time + advance;
                         // Match the gain to motion, so late callbacks do not
@@ -276,6 +282,7 @@
                     }
                     if (time >= end) { time = end; reason = 6; }
                 }
+                if (reason !== 0) frameMotionDt = NaN;
                 // Paused/stale/absent samples cannot bridge animation deltas
                 // into a later active frame. Invalid pairs use the wall path.
                 lastFrame = playing && age <= 250 && Number.isFinite(frameTimestampMs) ? frameTimestampMs : NaN;
@@ -23368,7 +23375,10 @@
             const previousDistance = s.distance;
             const wall = performance.now() / 1000;
             const elapsed = Number.isFinite(s.lastWall) ? Math.max(0, wall - s.lastWall) : 0;
-            const dt = Math.min(0.25, elapsed);
+            // Share the normal visual frame interval, but retain wall timing
+            // for every clock fallback and all freshness/rate/seek bookkeeping.
+            const frameDt = bundle.transport ? _presentationClock.frameMotionDelta() : NaN;
+            const dt = Number.isFinite(frameDt) && frameDt > 0 ? frameDt : Math.min(0.25, elapsed);
             const now = bundle.transport ? frameTime : Number(bundle.currentTime) || 0;
             const advance = now - s.lastTime;
             const seek = bundle.transport ? s.epoch !== bundle.transport.epoch

@@ -95,6 +95,65 @@ function sample(clock, now, position, frameTimestampMs, options = {}) {
 }
 const rms = values => Math.sqrt(values.reduce((sum, n) => sum + n * n, 0) / values.length);
 
+test('private camera interval is published only for a selected normal frame advance', () => {
+    const cases = [
+        ['absent', 20, undefined, {}], ['invalid', 20, NaN, {}],
+        ['infinite', 20, Infinity, {}], ['repeated', 20, 110, {}],
+        ['backward', 20, 100, {}], ['origin jump', 20, 220, {}],
+        ['long frame', 20, 400, {}], ['wall gap', 300, 120, {}],
+        ['rate', 20, 120, {rate: 2}], ['generation', 20, 120, {generation: 2}],
+        ['epoch', 20, 120, {epoch: 2}], ['stale', 20, 120, {freshAt: -250}],
+        ['end clamp', 20, 120, {endTime: 10.015}],
+        ...['paused', 'buffering', 'seeking', 'ended', 'rewind', 'count-in']
+            .map(state => [state, 20, 120, {state}]),
+    ];
+    for (const [name, wall, frame, options] of cases) {
+        const clock = make();
+        assert.ok(Number.isNaN(clock.frameMotionDelta()), `${name}: new`);
+        sample(clock, 0, 10, 100);
+        assert.ok(Number.isNaN(clock.frameMotionDelta()), `${name}: first`);
+        const time = sample(clock, 10, 10.01, 110);
+        assert.equal(typeof time, 'number');
+        assert.equal(clock.frameMotionDelta(), .01, `${name}: prior normal`);
+        sample(clock, wall, 10.02, frame, options);
+        assert.ok(Number.isNaN(clock.frameMotionDelta()), name);
+    }
+});
+
+test('camera interval is the selected frame delta, not the corrected time or wall delta', () => {
+    const clock = make();
+    sample(clock, 0, 10, 100);
+    const time = sample(clock, 13, 10.013, 110);
+    assert.equal(clock.frameMotionDelta(), .01);
+    assert.notEqual(time - 10, .01, 'audio phase correction remains part of display time');
+    sample(clock, 20, 10.02, 120);
+    assert.equal(clock.frameMotionDelta(), .01);
+    // The accepted delayed-callback catch-up is also a valid visual interval.
+    sample(clock, 89, 10.089, 140.1);
+    sample(clock, 98, 10.098, 200);
+    assert.equal(clock.frameMotionDelta(), (200 - 140.1) / 1000);
+});
+
+test('camera interval clears on reset, failed samples, and stale recovery, independently per clock', () => {
+    const a = make(), b = make();
+    for (const clock of [a, b]) { sample(clock, 0, 10, 100); sample(clock, 10, 10.01, 110); }
+    a.reset();
+    assert.ok(Number.isNaN(a.frameMotionDelta()));
+    assert.equal(b.frameMotionDelta(), .01);
+    sample(a, 20, 10.02, 120);
+    assert.ok(Number.isNaN(a.frameMotionDelta()), 'first sample after reset');
+    sample(a, 30, 10.03, 130);
+    assert.equal(a.frameMotionDelta(), .01);
+    assert.throws(() => a.sample(10, 40, {get rate() { throw Error('fixture'); }}, 140), /fixture/);
+    assert.ok(Number.isNaN(a.frameMotionDelta()));
+    sample(b, 300, 10.3, 400, {freshAt: 0});
+    assert.ok(Number.isNaN(b.frameMotionDelta()));
+    sample(b, 310, 10.31, 410);
+    assert.ok(Number.isNaN(b.frameMotionDelta()), 'source recovery');
+    sample(b, 320, 10.32, 420);
+    assert.equal(b.frameMotionDelta(), .01);
+});
+
 test('missing metadata preserves the complete old clock through transport transitions', () => {
     const a = make(), b = reference();
     const times = [0, 7, 22, 30, 51, 100, 150, 450, 460, 500, 520, 600];
