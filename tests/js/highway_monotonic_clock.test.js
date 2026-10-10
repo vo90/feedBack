@@ -403,7 +403,7 @@ test('transport rate survives a legacy one-argument offset wrapper', () => {
         assert.equal(sb.getTime(), 12.1);
     }
     const src = fs.readFileSync(HIGHWAY_JS, 'utf8');
-    assert.match(extractBlock(src, 'function _makeBundle()'), /b\.playbackRate\s*=\s*hwState\._playbackRate/);
+    assert.match(extractBlock(src, 'function _makeBundle('), /b\.playbackRate\s*=\s*hwState\._playbackRate/);
     assert.match(extractBlock(src, 'stop() {'), /hwState\._playbackRate\s*=\s*undefined/);
 });
 

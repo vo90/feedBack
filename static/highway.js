@@ -551,7 +551,7 @@ function createHighway() {
     // (e.g. highway_3d's merge caches) rely on that invariant.
     const _bundleReused = {};
 
-    function _makeBundle() {
+    function _makeBundle(frameTimestampMs) {
         // Snapshot of current factory state passed to each renderer call.
         // Arrays and songInfo are LIVE references, not copies — the
         // bundle's `notes`, `chords`, `anchors`, `beats`, etc. point at
@@ -559,6 +559,9 @@ function createHighway() {
         // read-only. We don't Object.freeze or deep-copy for per-frame
         // cost reasons.
         const b = _bundleReused;
+        // Diagnostic metadata only. Init/manual calls clear the reused field.
+        // The rAF clock may differ from performance.now(); do not mix anchors.
+        b.frameTimestampMs = Number.isFinite(frameTimestampMs) ? frameTimestampMs : NaN;
         // Timing
         b.currentTime = api.getPresentationTime();
         b.playbackRate = hwState._playbackRate;
@@ -1273,7 +1276,7 @@ function createHighway() {
         try { return r.needsContinuousFrames() === true; } catch (_) { return false; }
     }
 
-    function draw() {
+    function draw(frameTimestampMs) {
         hwState.animFrame = requestAnimationFrame(draw);
         if (!hwState.canvas || !hwState._renderer) return;
         hwState._frameIdx = (hwState._frameIdx + 1) | 0;
@@ -1357,7 +1360,7 @@ function createHighway() {
         // it reads closure state directly and ignores the bundle.
         // _makeBundle at 60fps was a steady GC churn for the common
         // case where no custom renderer is installed.
-        const bundle = hwState._renderer === _defaultRenderer ? undefined : _makeBundle();
+        const bundle = hwState._renderer === _defaultRenderer ? undefined : _makeBundle(frameTimestampMs);
         try {
             const _drawStart = performance.now();
             hwState._renderer.draw(bundle);
