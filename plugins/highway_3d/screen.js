@@ -4358,6 +4358,7 @@
 
     // Private synchronous ribbon handoff; avoids boxing each sampled centre.
     const _sustainCenterResult = new Float64Array(1);
+    const _sustainYResult = new Float64Array(1);
 
     /**
      * Lateral slide offset along the fretboard during sustain — easing
@@ -18809,7 +18810,9 @@
                     sustainTrailCenterXAt(n, strandBaseX, Tk, slideSt, bodyTw, _sustainCenterResult);
                     bodyX = _sustainCenterResult[0];
                 }
-                const yc = y + techniqueYOffsetWorld(n, Tk);
+                const baseY = y;
+                techniqueYOffsetWorld(n, Tk, _sustainYResult);
+                const yc = baseY + _sustainYResult[0];
                 const yieldAmount = Math.max(Number.isFinite(sameStringTargetTime) ? hwySameStringTrailYieldAmountAt(
                     Tk, sameStringTargetTime, sameStringTrailStart, trailEnd, yieldSettings) : 0, yieldCount > 0
                     ? hwyTrailYieldAmountAt(
@@ -19206,8 +19209,11 @@
             return bendVisualDirY(n.s) * BEND_HALFSTEP_WORLD_Y * bendSemisAtTime(n, n.t);
         }
 
-        function techniqueYOffsetWorld(n, chartTime) {
-            if (!(n?.sus > 0)) return 0;
+        function techniqueYOffsetWorld(n, chartTime, out) {
+            if (!(n?.sus > 0)) {
+                if (out) { out[0] = 0; return; }
+                return 0;
+            }
             const bendSemi = bendSemisAtTime(n, chartTime);
             const vibratoSemi = vibratoSemisAtTime(n, chartTime);
             const barSemi = n.whammy?.version === 1 ? (window.feedBackWhammy?.visual(n,chartTime-n.t) || 0) : 0;
@@ -19215,10 +19221,17 @@
             // separately, not additively. Show the bar contour while it is
             // active; retain the existing bend cue without inventing a sum.
             if (n.whammy?.version === 1 && window.feedBackWhammy?.segment(n,chartTime-n.t)?.curve?.length) {
-                return BEND_HALFSTEP_WORLD_Y * barSemi;
+                const value = BEND_HALFSTEP_WORLD_Y * barSemi;
+                if (out) { out[0] = value; return; }
+                return value;
             }
-            if (bendSemi === 0 && vibratoSemi === 0 && barSemi === 0) return 0;
-            return BEND_HALFSTEP_WORLD_Y * (bendVisualDirY(n.s) * (bendSemi + vibratoSemi) + barSemi);
+            if (bendSemi === 0 && vibratoSemi === 0 && barSemi === 0) {
+                if (out) { out[0] = 0; return; }
+                return 0;
+            }
+            const value = BEND_HALFSTEP_WORLD_Y * (bendVisualDirY(n.s) * (bendSemi + vibratoSemi) + barSemi);
+            if (out) { out[0] = value; return; }
+            return value;
         }
 
         function sustainMotionWidth(trailW) {

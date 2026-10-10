@@ -58,7 +58,7 @@ function helpers(original, lefty = false) {
         const _slideRibbonTimesScratch=[];
         // Deterministic motion makes every changed sample visible in geometry.
         // It stands in for unrelated technique providers; ribbon/contour code is real.
-        const techniqueYOffsetWorld=(n,t)=>Math.sin(t)*2, tremoloOffsetWorldX=(n,t,w)=>n.tr?Math.cos(t)*w:0;
+        const techniqueYOffsetWorld=(n,t,out)=>{const value=Math.sin(t)*2;if(out){out[0]=value;return;}return value;}, tremoloOffsetWorldX=(n,t,w)=>n.tr?Math.cos(t)*w:0;
         const window={feedBackHarmonicContacts:{events:n=>n.harmonic_changes.events}};
         const TRAIL_YIELD_DEFAULTS={enabled:true,sameStringEnabled:true,minScale:.3,
             leadTime:.5,taperDuration:.05,holdAfter:.05,recoverDuration:.05,
