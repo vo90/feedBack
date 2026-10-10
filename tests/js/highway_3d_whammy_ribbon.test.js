@@ -12,7 +12,7 @@ async function harness() {
  return new Function('window',`
   const BEND_HALFSTEP_WORLD_Y=1,BEND_ENV_RISE_FRAC=.35,BEND_ENV_RELEASE_FRAC=.3,VIBRATO_HALF_WAVE_S=.08,SLIDE_RIBBON_SAMPLES=8;
   const _linkedBendStarts=new WeakMap(),_linkedBendEnds=new WeakMap(),_linkedVibratoRuns=new WeakMap(),_slideRibbonTimesScratch=[];
-  const bendVisualDirY=()=>1,TRAIL_YIELD_DEFAULTS={minScale:.3},dZ=t=>-10*t,sustainTrailCenterXAt=(n,x)=>x;
+  const bendVisualDirY=()=>1,TRAIL_YIELD_DEFAULTS={minScale:.3},dZ=t=>-10*t,sustainTrailCenterXAt=(n,x,t,st,w,out)=>{if(out){out[0]=x;return;}return x;};
   ${src.slice(src.indexOf('    function slideTrailEnd('),src.indexOf('    // Camera tgtDist building blocks'))}
   ${['noteHasVibrato','bnvSampleAt','bendCurveStartSemis','bendCurveSemisAt','bendSemisAtElapsed','bendSemisAtTime','vibratoSemisAtTime','techniqueYOffsetWorld','ensureSlideRibbonCapacity','slideRibbonUpdatePair'].map(fn).join('\n')}
   return n=>{

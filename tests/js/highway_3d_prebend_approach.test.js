@@ -42,7 +42,7 @@ const alignment = new Function('n', 'now', 'nStr', '_invertedCached', `
     const _linkedVibratoRuns=new WeakMap(), _slideRibbonTimesScratch=[];
     ${src.slice(src.indexOf('    function slideTrailEnd('), src.indexOf('    // Camera tgtDist building blocks'))}
     const TRAIL_YIELD_DEFAULTS={minScale:.3};
-    const dZ=t=>-t*10, sustainTrailCenterXAt=(n,x)=>x;
+    const dZ=t=>-t*10, sustainTrailCenterXAt=(n,x,t,st,w,out)=>{if(out){out[0]=x;return;}return x;};
     ${extract('bendVisualDirY')}
     ${extract('noteHasVibrato')}
     ${extract('bnvSampleAt')}
