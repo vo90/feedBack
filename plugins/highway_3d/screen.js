@@ -4621,9 +4621,11 @@
         }
     }
     function slideRibbonSampleTimes(n, start, duration, out) {
-        out.length = 0;
         const end = start + duration;
-        for (let i = 0; i <= SLIDE_RIBBON_SAMPLES; i++) out.push(start + duration * i / SLIDE_RIBBON_SAMPLES);
+        // Refill the base samples without discarding the scratch array's storage.
+        // Remove the previous contour tail before appending this note's samples.
+        for (let i = 0; i <= SLIDE_RIBBON_SAMPLES; i++) out[i] = start + duration * i / SLIDE_RIBBON_SAMPLES;
+        out.length = SLIDE_RIBBON_SAMPLES + 1;
         appendSlideOutContourTimes(n, start, end, out);
         appendTargetedSlideContourTimes(n, start, end, out);
         appendSlideInContourTimes(n, start, end, out);
