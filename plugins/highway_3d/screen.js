@@ -196,7 +196,7 @@
         let gapRecovery = false;
         let trace = null, traceCount = 0;
         const fields = ['wallMs', 'time', 'target', 'raw', 'epoch', 'reason',
-            'sampleAgeMs', 'sequence', 'generation', 'rate', 'deltaMs'];
+            'sampleAgeMs', 'sequence', 'generation', 'rate', 'deltaMs', 'frameTimestampMs'];
         const reasons = ['advance', 'epoch', 'hold', 'stale', 'rewind', 'frame-gap', 'end', 'source-recovery'];
         return {
             reset() { time = lastPerf = NaN; epoch = null; gapRecovery = false; traceCount = 0; },
@@ -210,7 +210,7 @@
                 }
                 return {fields, reasons, count: traceCount, rows};
             },
-            sample(raw, now, transport) {
+            sample(raw, now, transport, frameTimestampMs) {
                 const t = transport;
                 const rate = Number.isFinite(t.rate) && t.rate > 0 ? t.rate : 1;
                 const position = Number.isFinite(t.position) ? t.position : raw;
@@ -264,6 +264,7 @@
                     trace[at + 6] = age; trace[at + 7] = t.sequence;
                     trace[at + 8] = t.generation; trace[at + 9] = rate;
                     trace[at + 10] = Number.isFinite(previous) ? (time - previous) * 1000 : 0;
+                    trace[at + 11] = Number.isFinite(frameTimestampMs) ? frameTimestampMs : NaN;
                 }
                 return time;
             },
@@ -15172,7 +15173,7 @@
         // notes and camera share one clock. See the _clk* state block above.
         function smoothNow(bundle) {
             if (bundle.transport) {
-                return (_frameNow = _presentationClock.sample(bundle.currentTime, performance.now(), bundle.transport));
+                return (_frameNow = _presentationClock.sample(bundle.currentTime, performance.now(), bundle.transport, bundle.frameTimestampMs));
             }
             const raw = bundle.currentTime;
             const p = performance.now();

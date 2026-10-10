@@ -54,7 +54,7 @@ test('highway declares the paused-render throttle state', () => {
 
 test('draw() throttles full renders while the audio clock is stalled', () => {
     const src = highwaySources();
-    const fn = extractBlock(src, 'function draw()');
+    const fn = extractBlock(src, 'function draw(');
     // Reuse getTime()'s pause signal rather than inventing a parallel one.
     assert.match(fn, /_chartLastAdvanceAt/, 'throttle must key off _chartLastAdvanceAt (the advance timestamp)');
     assert.match(fn, /_CHART_MAX_INTERP_MS/, 'throttle must reuse the _CHART_MAX_INTERP_MS pause threshold');
@@ -64,7 +64,7 @@ test('draw() throttles full renders while the audio clock is stalled', () => {
 
 test('throttle runs after the ready gate, before bundle/draw', () => {
     const src = highwaySources();
-    const fn = extractBlock(src, 'function draw()');
+    const fn = extractBlock(src, 'function draw(');
     // Regex landmarks (not exact-string indexOf) so harmless spacing /
     // semicolon changes don't break the ordering guard — matches the
     // search-based style of the other highway source-guard tests.
@@ -91,7 +91,7 @@ test('throttle runs after the ready gate, before bundle/draw', () => {
 
 test('paused throttle defers to a renderer that needs continuous frames', () => {
     const src = highwaySources();
-    const fn = extractBlock(src, 'function draw()');
+    const fn = extractBlock(src, 'function draw(');
     assert.match(fn, /_rendererNeedsContinuousFrames\s*\(\s*\)/,
         'the paused throttle must consult the renderer capability');
     // The capability must GATE the early-return, not merely be called near it:
