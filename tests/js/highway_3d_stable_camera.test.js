@@ -2,10 +2,12 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 
-function extractFunction(name) {
+function extractFunction(name, input = source) {
+    const source = input;
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start >= 0, name);
     const open = source.indexOf('{', start);
@@ -19,23 +21,27 @@ function extractFunction(name) {
     return source.slice(start, end);
 }
 
-function harness() {
+function harness(subject = source, three = null) {
+    const source = subject;
+    const extract = name => extractFunction(name, subject);
     const constants = ['STABLE_CAMERA_FOV', 'STABLE_CAMERA_PITCH', 'STABLE_CAMERA_YAW', 'STABLE_CAMERA_SHIFT', 'STABLE_CAMERA_VIEWS']
         .map(name => source.match(new RegExp(`const ${name} = [^;]+;`))[0]).join('\n');
     const stateStart = source.indexOf('const _stableCam = {');
     const stateEnd = source.indexOf('function stableAddPoint(', stateStart);
     assert.ok(stateStart >= 0 && stateEnd > stateStart);
-    return new Function(`
+    return new Function('Three', `
         const K = 1, TS = 230, AHEAD = 3, CAM_LOCK_CENTER_FRET = 6, NFRETS = 24;
-        ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote'].map(extractFunction).join('\n')}
+        ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote'].map(extract).join('\n')}
         const rawPoints = [];
         ${constants}
         ${source.slice(stateStart, stateEnd).replace('function stableSupportReset() {', 'function stableSupportReset() { rawPoints.length = 0;')}
         let _stableCameraResetSerial = 0, stableCameraPreset = 'straight', stableCameraFollow = true;
         let _leftyCached = false, _songKey = 'song', nStr = 6, cameraSmoothing = .5, zoomSmoothing = .5;
-        let wall = 0, fixturePoints = [], regionFixture = null, regionRows = null, lastRegionTime = NaN, curX = 60;
+        let wall = 0, fixturePoints = [], fixtureObjects = null, segmentCalls = 0, depthCalls = 0,
+            regionFixture = null, regionRows = null, lastRegionTime = NaN, curX = 60;
         const S_GAP = 4, NH = 3, _textSizeMul = 1, _frameNow = 0;
-        const pNote = null, pSus = null, pSusRibbon = null, pChordBox = null,
+        const pNote = {forEachActive(visitor) { fixtureObjects?.forEach(visitor); }},
+            pSus = null, pSusRibbon = null, pChordBox = null,
             pRsChordFrame = null, pArpBracket = null, pSusRail = null, pTechPlane = null;
         const _incomingFloorLabelCount = 0, _incomingFloorLabels = [];
         let _incomingFixedFretLabels = {};
@@ -45,23 +51,24 @@ function harness() {
             projectionMatrix: {elements: Object.assign([], {9: STABLE_CAMERA_SHIFT})},
             position: {set(...values) { this.values = values; }}, up: {set() {}},
             lookAt(...values) { this.target = values; }, updateMatrixWorld() {} };
-        const T = { Vector3: class {} }; // sprite collection uses matrix scalars only
+        const T = Three || { Vector3: class {} }; // sprite-only tests need no vector methods
         const performance = { now: () => wall * 1000 };
         const sY = string => (3 + (nStr - 1 - string) * 4) * K;
         const xFretMid = fret => fret * 10 - 5, xFret = fret => fret * 10;
         const fretLabelScaleForFret = () => 1;
         const _stablePlan = {rows:null,key:'',stops:[],revision:0,result:{}};
         let mockRegionKey='', mockRegionAnchors=[];
-        const dZ = time => -time * TS;
-        ${extractFunction('stableAddPoint').replace('_stablePointSamples++;', 'rawPoints.push([x,y,z]); _stablePointSamples++;')}
-        ${extractFunction('stableAddSegment')}
-        ${extractFunction('stableCollectObject')}
-        ${extractFunction('stableConstrain')}
-        ${extractFunction('stableIntervalAt')}
-        ${extractFunction('stableSolve')}
-        ${['hwyBuildCameraStops','hwyPrepareCameraStops','hwyCameraPlanAt','hwyCameraRejoin','hwyCameraZoom','stableRegionFitDistance','stableRegionFootprint','stableRegionFraming','stableRegionViewDistance','stableCameraPlan','stableCamUpdate'].map(extractFunction).join('\n')}
-        ${extractFunction('stableCollectGeometry').replace('function stableCollectGeometry(', 'function collectRealRegionGeometry(')}
-        function stableCollectGeometry() {
+        const dZ = time => { depthCalls++; return -time * TS; };
+        ${extract('stableAddPoint').replace('_stablePointSamples++;', 'rawPoints.push([x,y,z]); _stablePointSamples++;')}
+        ${extract('stableAddSegment').replace('{', '{ segmentCalls++;')}
+        ${extract('stableCollectObject')}
+        ${extract('stableConstrain')}
+        ${extract('stableIntervalAt')}
+        ${extract('stableSolve')}
+        ${['hwyBuildCameraStops','hwyPrepareCameraStops','hwyCameraPlanAt','hwyCameraRejoin','hwyCameraZoom','stableRegionFitDistance','stableRegionFootprint','stableRegionFraming','stableRegionViewDistance','stableCameraPlan','stableCamUpdate'].map(extract).join('\n')}
+        ${extract('stableCollectGeometry').replace('function stableCollectGeometry(', 'function collectRealRegionGeometry(')}
+        function stableCollectGeometry(region) {
+            if (fixtureObjects) return collectRealRegionGeometry(region);
             stableSupportReset();
             _stableCam.pointCount = fixturePoints.length * 3;
             _stableCam.viewPointCount = fixturePoints.length ? _stableViewPoints.length : 0;
@@ -96,9 +103,21 @@ function harness() {
             return mockRegionAnchors;
         }
         function stableApplyPose() { curX = _stableCam.x; }
-        ${extractFunction('stableApplyPose').replace('function stableApplyPose(', 'function applyRealPose(')}
+        ${extract('stableApplyPose').replace('function stableApplyPose(', 'function applyRealPose(')}
         const bundle = { currentTime: 0, isPlaying: true, notes: [], chords: [], anchors: [] };
         return {
+            setObjects(objects) { fixtureObjects = objects; },
+            collection() {
+                return { raw:rawPoints.map(p=>p.slice()), points:Array.from(_stablePoints.slice(0,_stableCam.pointCount)),
+                    view:Array.from(_stableViewPoints), maxima:_stableSupport.map(q=>Array.from(q.maxima)),
+                    bins:_stableBins.map(b=>({...b})), sampleCount:_stablePointSamples,
+                    pointCount:_stableCam.pointCount, viewPointCount:_stableCam.viewPointCount,
+                    minX:_stableCam.minX, maxX:_stableCam.maxX };
+            },
+            collectObjects() {
+                segmentCalls = depthCalls = 0; collectRealRegionGeometry(null);
+                return {segmentCalls, depthCalls};
+            },
             setPoints(points) { fixturePoints = points; },
             setRegion(minX, maxX, time = 0) {
                 regionFixture = { valid: true, x: (minX + maxX) / 2, minX, maxX,
@@ -191,7 +210,7 @@ function harness() {
             reset() { ++_stableCameraResetSerial; },
             changeSong() { _songKey += '-next'; bundle.notes = []; bundle.chords = []; bundle.anchors = []; },
         };
-    `)();
+    `)(three);
 }
 
 test('explicit transport epoch prevents raw correction from snapping the stable camera', () => {
@@ -946,5 +965,135 @@ test('near geometry cannot turn a suppressed detour into an opposing safety pan'
         assert.ok(state.x <= previous + 1e-7, 'visibility correction must not reintroduce right/left movement');
         if (time >= 1.2 && time < 2.4) assertFits(h, [[160,13,0]], state, 0, .96);
         previous = state.x;
+    }
+});
+
+// A frozen pre-optimization collector is the numerical oracle: compare ordered
+// samples, support arrays and the actual controller, not a duplicate of the guard.
+const collectionBaseline = fs.readFileSync(path.join(__dirname,
+    'fixtures/highway_3d_stable_collection.baseline.txt'), 'utf8');
+let referenceSource = source;
+for (const name of ['stableSupportReset', 'stableAddPoint', 'stableAddSegment', 'stableCollectObject']) {
+    referenceSource = referenceSource.replace(extractFunction(name), extractFunction(name, collectionBaseline));
+}
+const realThree = import(pathToFileURL(path.join(__dirname, '../../static/vendor/three/three.module.min.js')).href);
+
+function collectionPair(T, settings = {}) {
+    const pair = [harness(source, T), harness(referenceSource, T)];
+    for (const h of pair) { h.settings(settings); h.setRegion(20, 60); h.frame(0, 0); }
+    return pair;
+}
+
+function assertCollectionParity(pair, objects, label) {
+    const counts = pair.map(h => { h.setObjects(objects); return h.collectObjects(); });
+    assert.deepEqual(pair[0].collection(), pair[1].collection(), label);
+    return counts;
+}
+
+function collectionBox(T, minZ, maxZ) {
+    const geometry = new T.BufferGeometry();
+    // Explicit bounds let the test include exact near/fade/kink endpoints.
+    geometry.boundingBox = new T.Box3(new T.Vector3(-3, 1, minZ), new T.Vector3(7, 9, maxZ));
+    return new T.Mesh(geometry, new T.MeshBasicMaterial());
+}
+
+test('collection matches ordered legacy support at clipping, fading and prediction boundaries', async () => {
+    const T = await realThree;
+    for (const rate of [.1, .5, .75, 1, 2, 4]) {
+        const horizon = Math.min(3, .9 * rate), far = -horizon * 230;
+        const full = -Math.max(0, horizon - .3 * rate) * 230;
+        const predicted = -Math.min(3, .15 * rate) * 230;
+        const planes = [far, full, predicted, 0, 8];
+        const objects = [];
+        for (const plane of planes) for (const epsilon of [0, 1e-11, 1e-7, .25]) {
+            objects.push(collectionBox(T, plane-epsilon, plane+epsilon));
+            objects.push(collectionBox(T, plane, plane+epsilon));
+            objects.push(collectionBox(T, plane-epsilon, plane));
+        }
+        objects.push(collectionBox(T, far-100, 20), collectionBox(T, far-20, far-1),
+            collectionBox(T, 9, 100), collectionBox(T, predicted-2, -1),
+            collectionBox(T, NaN, NaN));
+        for (const preset of ['straight', 'angled']) for (const lefty of [false, true]) {
+            const pair = collectionPair(T, {rate, preset, lefty, aspect:3440/1440});
+            assertCollectionParity(pair, objects, `${rate}/${preset}/${lefty}`);
+        }
+    }
+});
+
+test('only full unclipped boxes without a prediction crossing omit their twelve edge checks', async () => {
+    const T = await realThree, pair = collectionPair(T);
+    // Negative full-strength slab, post-strike slab, exact kink endpoint,
+    // and a zero-depth slab: legacy edges add no samples for these bounds.
+    for (const [lo, hi] of [[-100,-60], [1,8], [-34.5,-10], [0,0]]) {
+        const counts = assertCollectionParity(pair, [collectionBox(T, lo, hi)], `${lo}/${hi}`);
+        assert.equal(counts[0].segmentCalls, 0);
+        assert.equal(counts[1].segmentCalls, 12);
+        assert.equal(counts[0].depthCalls, 3, 'planes computed once per collection');
+        assert.ok(counts[1].depthCalls > counts[0].depthCalls);
+    }
+    for (const [lo, hi] of [[-160,-150], [-35,-34], [-1,1], [7,9], [-220,20]]) {
+        const counts = assertCollectionParity(pair, [collectionBox(T, lo, hi)], `${lo}/${hi}`);
+        assert.equal(counts[0].segmentCalls, 12, 'faded, crossed or clipped bounds retain edges');
+        assert.equal(counts[1].segmentCalls, 12);
+    }
+});
+
+test('rotated parents, sprites and mutable pooled ribbons retain exact current-vertex support', async () => {
+    const T = await realThree, pair = collectionPair(T, {preset:'angled', lefty:true});
+    const parent = new T.Group(), box = collectionBox(T, -110, -80);
+    const sprite = new T.Sprite(new T.SpriteMaterial()); sprite.scale.set(16, 8, 1);
+    sprite.position.set(90, 20, -10); sprite.center.set(.2, 1);
+    const geometry = new T.BufferGeometry();
+    const positions = new Float32Array(4 * 7 * 3);
+    geometry.setAttribute('position', new T.BufferAttribute(positions, 3));
+    // Deliberately stale/extreme bounds and unused pooled capacity must not enter.
+    geometry.boundingBox = new T.Box3(new T.Vector3(-9999,-9999,-9999), new T.Vector3(9999,9999,9999));
+    const ribbon = new T.Mesh(geometry, new T.MeshBasicMaterial());
+    parent.add(box, sprite, ribbon);
+    const irrelevant = collectionBox(T,-100,-60); irrelevant.userData.stableCameraRelevant=false;
+    const transparent = collectionBox(T,-100,-60); transparent.material.opacity=0;
+    const halo = collectionBox(T,-100,-60); halo.material.uniforms={uHalo:{value:1}};
+    const hidden = collectionBox(T,-100,-60); hidden.visible=false;
+    for (let step=0; step<12; step++) {
+        parent.position.set(step*3, -step, step*2);
+        parent.rotation.set(step*.02, step*.07, -step*.03);
+        parent.scale.set(1+step*.04, .8+step*.01, 1-step*.02);
+        geometry.userData.ribbonSlices = step%4;
+        positions.fill(99999);
+        for (let i=0; i<(geometry.userData.ribbonSlices+1)*4; i++) {
+            positions[i*3]=30+(i%4)*6+step;
+            positions[i*3+1]=2+(i%2)*10;
+            positions[i*3+2]=10-Math.floor(i/4)*95-step*7;
+        }
+        const counts = assertCollectionParity(pair, [box,sprite,ribbon,irrelevant,transparent,halo,hidden], `step${step}`);
+        assert.ok(counts[0].segmentCalls >= geometry.userData.ribbonSlices*4,
+            'ribbon always visits populated longitudinal segments');
+        assert.ok(pair[0].collection().raw.every(p=>Math.abs(p[0])<1000), 'unused/stale vertices excluded');
+    }
+});
+
+test('legacy and optimized collection drive identical camera poses across playback transitions', async () => {
+    const T = await realThree;
+    for (const preset of ['straight','angled']) for (const lefty of [false,true]) {
+        const pair = collectionPair(T, {preset,lefty});
+        const parent = new T.Group(), box = collectionBox(T,-110,-80);
+        parent.add(box);
+        for (const h of pair) h.setObjects([box]);
+        let time=0;
+        for (let frame=0; frame<42; frame++) {
+            const rate=[1,.75,2,.1,4,.5][Math.floor(frame/7)];
+            const elapsed=[.01,.016,.033,.007][frame%4];
+            time += elapsed*rate;
+            if (frame===16) time=20;
+            if (frame===29) time=2;
+            parent.position.set(Math.sin(frame*.3)*120, frame%5, frame%3===0 ? 95 : -frame);
+            parent.rotation.set(.01*frame,.02*frame,-.015*frame);
+            for (const h of pair) h.settings({rate,follow:frame<33,aspect:frame<23?16/9:.72,
+                strings:frame<12?6:7,epoch:frame<16?1:frame<29?2:3});
+            const states = pair.map(h=>h.frame(time,elapsed,frame!==8&&frame!==9,time+.004));
+            assert.deepEqual(states[0],states[1], `${preset}/${lefty}/frame${frame}`);
+            assert.deepEqual(pair[0].collection(),pair[1].collection());
+            assert.deepEqual(pair[0].renderedPose(),pair[1].renderedPose());
+        }
     }
 });
