@@ -170,6 +170,80 @@ test('invalid pairs and gross offset steps use wall time, then establish a new f
     }
 });
 
+test('the recorded delayed callback retains its following animation catch-up', () => {
+    // Frozen Twilight capture rows 1882-1885. The 69/20.1ms delayed callback
+    // is followed by 9/59.9ms catch-up, straddling the 50ms offset-step guard.
+    // Seed the exact previous visual time; the following targets retain their
+    // independently observed audio values rather than assuming perfect audio.
+    const rows = [
+        [132784.60000000894, 140.22180112199135, 132874.9],
+        [132853.60000000894, 140.299763333344, 132895],
+        [132862.60000000894, 140.30909438333904, 132954.9],
+        [132868.70000000298, 140.31519438333308, 132965],
+    ];
+    const a = make(), values = rows.map(([wall, target, frame]) => sample(a, wall, target, frame));
+    assert.equal(values[0], rows[0][1]);
+    assert.equal(values[1], 140.24592112199136, 'ordinary first half remains unchanged');
+    assert.ok(Math.abs(values[2] - rows[2][1]) < .002, 'catch-up restores phase in the next frame');
+    assert.ok(Math.abs(values[3] - rows[3][1]) < .003);
+    const rejectedCatchUp = 140.25672112199135;
+    assert.ok(rows[2][1] - rejectedCatchUp > .05, 'frozen old guard stranded over 50ms of debt');
+    for (let i = 1; i < values.length; i++) assert.ok(values[i] > values[i - 1]);
+});
+
+test('phase-restoring gross deltas work at each rate without accepting aligned origin jumps', () => {
+    for (const rate of [.25, 1, 2]) {
+        const a = make();
+        sample(a, 1000, 10, 1100, { rate });
+        const delayed = sample(a, 1069, 10 + .069 * rate, 1120.1, { rate });
+        const caughtUp = sample(a, 1078, 10 + .078 * rate, 1180, { rate });
+        assert.ok((10 + .069 * rate - delayed) / rate > .04);
+        assert.ok(Math.abs(caughtUp - (10 + .078 * rate)) / rate < .004);
+        assert.ok(caughtUp > delayed);
+        for (const [wallDt, frameDt] of [[10, 110], [120, 10], [10, 250], [10, 251]]) {
+            const x = make(), y = reference();
+            sample(x, 1000, 10, 1100, { rate }); sample(y, 1000, 10, 1100, { rate });
+            const target = 10 + wallDt / 1000 * rate;
+            assert.equal(sample(x, 1000 + wallDt, target, 1100 + frameDt, { rate }),
+                sample(y, 1000 + wallDt, target, 1100 + frameDt, { rate }),
+                'an origin change from alignment must retain the wall path');
+        }
+    }
+});
+
+test('gross-step phase selection keeps the interval bound and correction cannot cross its target', () => {
+    for (const rate of [.25, 1, 2]) {
+        // A frame prediction may cross the target while still being closer
+        // than the wall prediction. Its correction moves only toward target,
+        // never through it, and total advance retains the existing 20% cap.
+        const a = make();
+        sample(a, 1000, 10, 1100, { rate });
+        const target = 10 + .13 * rate, framePrediction = 10 + .24 * rate;
+        const actual = sample(a, 1010, target, 1340, { rate });
+        assert.ok(actual > target && actual < framePrediction);
+        assert.ok(Math.abs(actual - target) < .12 * rate);
+        assert.ok(actual - 10 >= .24 * rate * .8 - 1e-14);
+        assert.ok(actual - 10 <= .24 * rate * 1.2 + 1e-14);
+        // Beyond 250ms is rejected even if it would perfectly repay phase debt.
+        const x = make(), y = reference();
+        sample(x, 1000, 10, 1100, { rate }); sample(y, 1000, 10, 1100, { rate });
+        assert.equal(sample(x, 1010, 10 + .251 * rate, 1351, { rate }),
+            sample(y, 1010, 10 + .251 * rate, 1351, { rate }));
+        // Equal prediction errors do not establish a phase improvement.
+        const tie = make(), legacy = reference();
+        sample(tie, 0, 0, 0, { rate }); sample(legacy, 0, 0, 0, { rate });
+        assert.equal(sample(tie, 0, .0625 * rate, 125, { rate }),
+            sample(legacy, 0, .0625 * rate, 125, { rate }));
+        // A shorter frame step can predict closer yet finish farther away:
+        // at 1x, frame10ms predicts 40ms lag but corrects only to 38ms lag;
+        // wall100ms predicts 50ms lead and corrects to 30ms lead. Keep wall.
+        const shorter = make(), wall = reference();
+        sample(shorter, 0, 0, 100, { rate }); sample(wall, 0, 0, 100, { rate });
+        assert.equal(sample(shorter, 100, .05 * rate, 110, { rate }),
+            sample(wall, 100, .05 * rate, 110, { rate }));
+    }
+});
+
 test('pause, rate, generation and epoch changes do not bridge incompatible frame intervals', () => {
     const a = make(), b = reference();
     const rows = [

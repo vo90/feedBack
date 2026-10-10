@@ -258,12 +258,15 @@
                         // freshness and gap recovery above keep the wall clock.
                         const frameDt = Number.isFinite(frameTimestampMs)
                             ? (frameTimestampMs - lastFrame) / 1000 : NaN;
-                        // Reject discontinuities, not ordinary callback jitter.
-                        // A >50ms change between the clock offsets is a gross
-                        // mismatch; resume from this frame on the next sample.
+                        // A large offset step can be a clock discontinuity or
+                        // the second half of a delayed callback. Accept that
+                        // catch-up only when it improves audio alignment more
+                        // than the wall interval would; otherwise reanchor.
                         const motionDt = frameDt > 0 && frameDt <= 0.25
-                            && Math.abs(frameDt - dt) <= 0.05
-                            && rate === lastRate && t.generation === lastGeneration ? frameDt : dt;
+                            && rate === lastRate && t.generation === lastGeneration
+                            && (Math.abs(frameDt - dt) <= 0.05
+                                || (frameDt > dt && Math.abs(target - (time + frameDt * rate))
+                                    < Math.abs(target - (time + dt * rate)))) ? frameDt : dt;
                         const advance = motionDt * rate;
                         const predicted = time + advance;
                         // Match the gain to motion, so late callbacks do not
