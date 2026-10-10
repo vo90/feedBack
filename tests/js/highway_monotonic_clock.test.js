@@ -89,6 +89,11 @@ function buildClockSandbox(perfNowImpl) {
             ${src.slice(src.indexOf('        b.transport = null;'), src.indexOf('        // Chart content (filter-aware'))}
             return b;
         };
+        globalThis.drawTimingBundle = function() {
+            ${src.slice(src.indexOf('        // Both renderers use the output presentation clock'),
+                src.indexOf('        // Skip bundle allocation when the default renderer is active'))}
+            return timingBundle();
+        };
     `, sandbox);
     return sandbox;
 }
@@ -225,6 +230,62 @@ test('browser/stems anchors carry explicit state and calibration resets the epoc
     sb.setAvOffset(-50);
     assert.equal(sb.timingBundle().transport.epoch, 1);
     assert.equal(sb.timingBundle().transport.position, 9.975); // 50 physical ms at half speed
+});
+
+test('browser draw and renderer interpolate each anchored sample exactly once', () => {
+    for (const rate of [1, .75]) for (const avMs of [-120, 0, 80]) for (const songOffset of [0, .3]) {
+        let now = 0, nextPoll = 0, poll = 0, frame = 0;
+        const sb = buildClockSandbox(() => now), clock = rendererClock();
+        sb.hwState.songOffset = songOffset;
+        sb.setPlaybackRate(rate); sb.setAvOffset(avMs);
+        let previous, lastFrame = 0;
+        const frames = [6, 14, 9, 20, 7, 10, 11], polls = [17, 31, 12, 29, 16];
+        for (let frameAt = 0; frameAt < 3000; frameAt += frames[frame++ % frames.length]) {
+            while (nextPoll <= frameAt) {
+                now = nextPoll;
+                sb.setTime(10 + now * rate / 1000); sb.setPlaybackSample(null, true);
+                nextPoll += polls[poll++ % polls.length];
+            }
+            now = frameAt;
+            const bundle = sb.drawTimingBundle(), t = bundle.transport;
+            assert.ok(Math.abs(t.position - (10 + t.sampledAt * rate / 1000 + songOffset + avMs * rate / 1000)) < 1e-10,
+                'position must describe the timestamped audio anchor, even after draw updated currentTime');
+            const raw = sb.api.getPresentationTime();
+            const shown = clock.sample(raw, now, t);
+            const expected = 10 + now * rate / 1000 + songOffset + avMs * rate / 1000;
+            assert.ok(Math.abs(shown - expected) < 1e-10, `${rate}x browser presentation drift at ${now}ms`);
+            if (previous !== undefined) assert.ok(Math.abs((shown - previous) * 1000 / (now - lastFrame) - rate) < 1e-8);
+            assert.equal(sb.getTime(), raw - avMs * rate / 1000, 'visual correction does not change judgment time');
+            previous = shown; lastFrame = now;
+        }
+    }
+});
+
+test('browser anchored presentation preserves pause, explicit seek, tempo changes and source-loss bounds', () => {
+    let now = 0;
+    const sb = buildClockSandbox(() => now), clock = rendererClock();
+    sb.hwState.songOffset = .2; sb.setPlaybackRate(1); sb.setAvOffset(-100);
+    const draw = () => clock.sample(sb.api.getPresentationTime(), now, sb.drawTimingBundle().transport);
+    sb.setTime(10); sb.setPlaybackSample(null, true); assert.equal(draw(), 10.1);
+    now = 80; sb.setTime(10.08); const beforePause = draw();
+    sb.setPlaybackSample(null, false); now = 180;
+    assert.equal(draw(), beforePause);
+    now = 1000; assert.equal(draw(), beforePause);
+    sb.api.resetPresentation('seek'); sb.setTime(20); sb.setPlaybackState('paused');
+    assert.ok(Math.abs(draw() - 20.1) < 1e-10, 'explicit paused seek repositions once');
+    now = 1010; sb.setTime(20.01); sb.setPlaybackSample(null, true); draw();
+    now = 1110; sb.setTime(20.11); draw();
+    sb.setPlaybackRate(.75); sb.setAvOffset(0); sb.setTime(20.11);
+    const changed = draw();
+    for (const frameAt of [1117, 1130, 1141, 1160]) {
+        now = frameAt;
+        assert.ok(Math.abs(draw() - changed - (now - 1110) * .75 / 1000) < 1e-10);
+    }
+    now = 1360; const lastFresh = draw();
+    now = 1500; assert.equal(draw(), lastFresh, 'source loss retains the finite 250 ms extrapolation cap');
+    now = 3000; assert.equal(draw(), lastFresh);
+    now = 3010; sb.setTime(21.5); sb.setPlaybackSample(null, true);
+    assert.ok(Math.abs(draw() - 21.7) < 1e-10, 'fresh source recovery clears accumulated hold lag');
 });
 
 

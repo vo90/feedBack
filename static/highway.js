@@ -584,7 +584,11 @@ function createHighway() {
             const offset = hwState.songOffset + hwState.avOffsetSec * (hwState._playbackRate || 1);
             t.epoch = hwState._presentationEpoch;
             t.state = hwState._playbackState;
-            t.position = n ? n.position + offset : hwState.currentTime;
+            // draw() has already extrapolated currentTime for the default
+            // renderer. Pair the original browser sample with its anchor;
+            // custom renderers must not extrapolate that elapsed time twice.
+            t.position = n ? n.position + offset
+                : hwState.chartTime + hwState.avOffsetSec * (hwState._playbackRate || 1);
             t.sampledAt = n ? n.sampledAt : hwState._chartAnchorPerfNow;
             t.freshAt = n ? n.freshAt : hwState._chartLastAdvanceAt;
             t.rate = n ? n.rate : hwState._playbackRate;
