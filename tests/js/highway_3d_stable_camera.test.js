@@ -75,7 +75,9 @@ function harness(subject = source, three = null) {
             _stableCam.minX = Infinity; _stableCam.maxX = -Infinity;
             fixturePoints.forEach((point, index) => {
                 _stablePoints.set(point, index * 3);
-                stableCollectViewPoint(...point);
+                ${extract('stableCollectViewPoint').startsWith('function stableCollectViewPoint(point)')
+                    ? '_stablePointInput.set(point); stableCollectViewPoint(_stablePointInput);'
+                    : 'stableCollectViewPoint(...point);'}
                 _stableCam.minX = Math.min(_stableCam.minX, point[0]);
                 _stableCam.maxX = Math.max(_stableCam.maxX, point[0]);
             });
@@ -1072,6 +1074,27 @@ function assertCollectionParity(pair, objects, label) {
     assert.deepEqual(pair[0].collection(), pair[1].collection(), label);
     return counts;
 }
+
+test('weighted view handoff preserves consecutive accepted and rejected point support', async () => {
+    const T = await realThree;
+    const points = [[90,40,-172.5], [NaN,2,-100], [-0,-0,-0],
+        [12,9,8], [12,9,8 + 1e-10], [1,2,-207 - 2e-7],
+        [1,2,-207 - 5e-8], [Infinity,2,-100], [1e308,1e308,-100],
+        [-50,-12,-170], [90,40,-172.5], [10,13,-34.5], [2,3,-Infinity]];
+    const originals = points.map(p => p.slice());
+    for (const preset of ['straight', 'angled']) for (const lefty of [false, true]) {
+        const pair = collectionPair(T, {preset, lefty});
+        for (const sequence of [points, points.slice().reverse(), points, [[3,4,-100]], points]) {
+            const fits = pair.map(h => h.compareSupportedGeometry(sequence));
+            assert.deepEqual(fits[0], fits[1], `${preset}/${lefty}: fitted support`);
+            assert.deepEqual(pair[0].collection(), pair[1].collection(),
+                `${preset}/${lefty}: ordered weighted points, bins and support`);
+        }
+        assert.ok(pair[0].collection().raw.some(p => p[2] === -172.5 && p[0] !== 90),
+            'the comparison exercises weighted coordinates, not only unchanged inputs');
+    }
+    assert.deepEqual(points, originals, 'reusing private scratch cannot alter caller geometry');
+});
 
 function collectionBox(T, minZ, maxZ) {
     const geometry = new T.BufferGeometry();
