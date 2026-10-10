@@ -412,7 +412,7 @@ function drawLabelPath(h, path, options = {}) {
         code = sourceBetween('if (!guidanceOnly && skipBody && fromChord && !skipLabel && n.f > 0 && dt >= 0)',
             '// ── Drop line for chord / arpeggio notes');
     } else if (path === 'grey') {
-        const from = source.indexOf('// ── Fret-column reference markers');
+        const from = source.indexOf('function updateFretColumnMarkers(');
         code = sourceBetween('const color = ', 'sp.scale.set(sz, sz, 1);', from, true);
     } else {
         code = sourceBetween('const _flFrameKey = Math.round(n.t * 25)', '// Teaching marks');

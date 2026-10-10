@@ -15499,6 +15499,143 @@
             highwayIntensity: 0, camWX: 0, camWSum: 0,
             camDistMin: 99, camDistMax: 0, camDistGot: false,
         };
+        function updateBeatLines(beats, now, t0, t1) {
+            if (beats) {
+                const board = boardSpanX();
+                const bw2 = board.width + 4 * K;
+                for (const b of beats) {
+                    if (b.time < t0 || b.time > t1) continue;
+                    // Only explicit bar starts are bright. Ordinary beats use
+                    // measure=-1, including the beat immediately after a bar.
+                    const isMeasure = Number.isInteger(b.measure) && b.measure >= 0;
+                    const bl2 = pBeat.get();
+                    bl2.material = isMeasure ? mBeatM : mBeatQ;
+                    bl2.scale.set(bw2, 1, 1);
+                    bl2.position.set(board.min - 2 * K, S_BASE - NH / 2 - 1.5 * K, dZ(b.time - now));
+                }
+            }
+        }
+
+        function updateFretColumnMarkers(beats, notes, chords, anchors, now, t1, hwyLaneFretClipMin, hwyLaneFretClipMax) {
+            if (beats && fretColumnMarkerCadence > 0) {
+                // Prune stale wave cache entries (wave already past now).
+                if (_fretMarkerWaveCache.size > 0) {
+                    for (const k of _fretMarkerWaveCache.keys()) {
+                        if (k < now) _fretMarkerWaveCache.delete(k);
+                    }
+                }
+                const minStringY = Math.min(sY(0), sY(nStr - 1));
+                const labelY = minStringY - S_GAP * 0.8;
+                for (const b of beats) {
+                    // Non-downbeats are encoded as measure=-1; only actual
+                    // measure starts (measure >= 0) can spawn marker waves.
+                    if (b.measure < 0) continue;
+                    if (b.time < 0 || b.time > t1) continue;
+                    if (b.time <= now) continue;
+                    if ((b.measure | 0) % fretColumnMarkerCadence !== 0) continue;
+
+                    // Snapshot the active-range gate at first sight of this
+                    // wave. We scan notes/chords in a 2s window starting at
+                    // b.time rather than activeFrets, because activeFrets only
+                    // covers now+2s and waves first become visible up to
+                    // AHEAD (3s) ahead — using activeFrets would cache
+                    // {hasLow:false, hasHigh:false} for far waves and suppress
+                    // the entire row for its full flight.
+                    let cached = _fretMarkerWaveCache.get(b.time);
+                    if (!cached) {
+                        let hasLow = false, hasHigh = false;
+                        const wT0 = b.time, wT1 = b.time + 2;
+                        // notes and chords are time-sorted; binary-search to the
+                        // first entry >= wT0, then break once past wT1 to avoid
+                        // O(song_length) work per newly-seen wave.
+                        if (notes) {
+                            const startI = lowerBoundT(notes, wT0);
+                            for (let i = startI; i < notes.length; i++) {
+                                const n = notes[i];
+                                if (n.t > wT1) break;
+                                if (!validString(n.s) || !isPlayableFret(n.f) || n.f <= 0) continue;
+                                if (n.f <= 12) hasLow = true; else hasHigh = true;
+                                if (hasLow && hasHigh) break;
+                            }
+                        }
+                        if ((!hasLow || !hasHigh) && chords) {
+                            const startI = lowerBoundT(chords, wT0);
+                            outer: for (let i = startI; i < chords.length; i++) {
+                                const ch = chords[i];
+                                if (ch.t > wT1) break outer;
+                                if (!ch.notes) continue;
+                                for (const cn of ch.notes) {
+                                    if (!validString(cn.s) || !isPlayableFret(cn.f) || cn.f <= 0) continue;
+                                    if (cn.f <= 12) hasLow = true; else hasHigh = true;
+                                    if (hasLow && hasHigh) break outer;
+                                }
+                            }
+                        }
+                        const anc = anchors && anchors.length ? getChartAnchorAt(anchors, b.time) : null;
+                        const anchorFret = anc != null ? Number(anc.fret) : NaN;
+                        const anchorKeyed = Number.isFinite(anchorFret) && anchorFret >= 0;
+                        const fretList = anchorKeyed
+                            ? fretColumnMarkersForAnchor(anchorFret, DOTS)
+                            : DOTS.slice();
+                        cached = { hasLow, hasHigh, fretList, anchorKeyed };
+                        _fretMarkerWaveCache.set(b.time, cached);
+                    }
+                    if (!cached.hasLow && !cached.hasHigh && !cached.anchorKeyed) continue;
+
+                    const dt = b.time - now;
+                    // Fade in over 0.35 s from the maximum lookahead distance so
+                    // the label appears at its correct final size the moment it
+                    // becomes visible, rather than gradually emerging as a tiny
+                    // dim spec through scene fog (fog is disabled on the sprite
+                    // material; this manual ramp replaces it).
+                    const _colFadeIn = Math.min(1.0, (AHEAD - dt) / 0.35);
+                    if (_colFadeIn <= 0) continue;
+
+                    const z = dZ(dt);
+                    // Sprite scale matches the per-note connector fret label
+                    // (drawNote → pNoteFretLabel) so cadence markers read the
+                    // same size at a given Z — no extra world-scale boost.
+                    const clipMin = hwyLaneFretClipMin;
+                    const clipMax = hwyLaneFretClipMax;
+                    const fretList = cached.fretList || DOTS;
+                    const anchorKeyedRow = !!cached.anchorKeyed;
+                    for (const f of fretList) {
+                        let show;
+                        if (anchorKeyedRow) {
+                            show = true;
+                        } else {
+                            if (f === 12) show = cached.hasLow || cached.hasHigh;
+                            else if (f < 12) show = cached.hasLow;
+                            else show = cached.hasHigh;
+                        }
+                        if (!show) continue;
+                        if (!anchorKeyedRow && clipMin != null && (f <= clipMin || f > clipMax)) continue;
+                        // Fixed colour — avoids mid-flight colour flips caused by
+                        // activeFrets only covering now+2s while waves appear at
+                        // AHEAD (3s), which made each marker start dark then
+                        // suddenly jump to light when its note entered the 2s window.
+                        const color = _highwayReferenceLabelColor('#888888');
+                        const sp = pFretColMarker.get();
+                        const m = txtMat(f, color, false, 'noteFret');
+                        _setLabelMap(sp, m);
+                        _registerFretColumnMarker(sp, f, b.time);
+                        sp.material.opacity = 0.85 * _colFadeIn;
+                        sp.position.set(xFretMid(f), labelY, z);
+                        // Z-proportional: sits between chord frame and note gem
+                        // at the same depth, so chord frames never overdraw the
+                        // marker and the marker never overdraws gems.
+                        sp.renderOrder = renderOrderForLayerAtZ(z, 'FRET_COLUMN');
+                        // Scale grows linearly from 2× at max lookahead to 1× at hit line,
+                        // combined with natural perspective attenuation the label starts
+                        // visibly larger and converges to the row-label size at z=0.
+                        const sz = 7.0 * K * (1 + 0.4 * dt / AHEAD) * _textSizeMul * fretLabelScaleForFret(f);
+                        sp.scale.set(sz, sz, 1);
+                    }
+
+                }
+            }
+        }
+
         function update(bundle) {
             bundle = letRingView(bundle);
             const effectiveAnchors = cameraMode === 'stable' ? stableRegionAnchors(bundle) : resolvedGuidanceAnchors(bundle);
@@ -17068,20 +17205,7 @@
             }
 
             // ── Beat lines ────────────────────────────────────────────────
-            if (beats) {
-                const board = boardSpanX();
-                const bw2 = board.width + 4 * K;
-                for (const b of beats) {
-                    if (b.time < t0 || b.time > t1) continue;
-                    // Only explicit bar starts are bright. Ordinary beats use
-                    // measure=-1, including the beat immediately after a bar.
-                    const isMeasure = Number.isInteger(b.measure) && b.measure >= 0;
-                    const bl2 = pBeat.get();
-                    bl2.material = isMeasure ? mBeatM : mBeatQ;
-                    bl2.scale.set(bw2, 1, 1);
-                    bl2.position.set(board.min - 2 * K, S_BASE - NH / 2 - 1.5 * K, dZ(b.time - now));
-                }
-            }
+            updateBeatLines(beats, now, t0, t1);
 
             // Pedal guidance stays above the musical position inside the lanes.
             const refs=[bundle.wah,notes,bundle.chords,bundle.anchors];
@@ -17129,123 +17253,7 @@
             // the wave's full flight. Without this, activeFrets shifting
             // mid-song would drop markers mid-flight (user-reported bug:
             // "numbers disappear before they get all the way towards me").
-            if (beats && fretColumnMarkerCadence > 0) {
-                // Prune stale wave cache entries (wave already past now).
-                if (_fretMarkerWaveCache.size > 0) {
-                    for (const k of _fretMarkerWaveCache.keys()) {
-                        if (k < now) _fretMarkerWaveCache.delete(k);
-                    }
-                }
-                const minStringY = Math.min(sY(0), sY(nStr - 1));
-                const labelY = minStringY - S_GAP * 0.8;
-                for (const b of beats) {
-                    // Non-downbeats are encoded as measure=-1; only actual
-                    // measure starts (measure >= 0) can spawn marker waves.
-                    if (b.measure < 0) continue;
-                    if (b.time < 0 || b.time > t1) continue;
-                    if (b.time <= now) continue;
-                    if ((b.measure | 0) % fretColumnMarkerCadence !== 0) continue;
-
-                    // Snapshot the active-range gate at first sight of this
-                    // wave. We scan notes/chords in a 2s window starting at
-                    // b.time rather than activeFrets, because activeFrets only
-                    // covers now+2s and waves first become visible up to
-                    // AHEAD (3s) ahead — using activeFrets would cache
-                    // {hasLow:false, hasHigh:false} for far waves and suppress
-                    // the entire row for its full flight.
-                    let cached = _fretMarkerWaveCache.get(b.time);
-                    if (!cached) {
-                        let hasLow = false, hasHigh = false;
-                        const wT0 = b.time, wT1 = b.time + 2;
-                        // notes and chords are time-sorted; binary-search to the
-                        // first entry >= wT0, then break once past wT1 to avoid
-                        // O(song_length) work per newly-seen wave.
-                        if (notes) {
-                            const startI = lowerBoundT(notes, wT0);
-                            for (let i = startI; i < notes.length; i++) {
-                                const n = notes[i];
-                                if (n.t > wT1) break;
-                                if (!validString(n.s) || !isPlayableFret(n.f) || n.f <= 0) continue;
-                                if (n.f <= 12) hasLow = true; else hasHigh = true;
-                                if (hasLow && hasHigh) break;
-                            }
-                        }
-                        if ((!hasLow || !hasHigh) && chords) {
-                            const startI = lowerBoundT(chords, wT0);
-                            outer: for (let i = startI; i < chords.length; i++) {
-                                const ch = chords[i];
-                                if (ch.t > wT1) break outer;
-                                if (!ch.notes) continue;
-                                for (const cn of ch.notes) {
-                                    if (!validString(cn.s) || !isPlayableFret(cn.f) || cn.f <= 0) continue;
-                                    if (cn.f <= 12) hasLow = true; else hasHigh = true;
-                                    if (hasLow && hasHigh) break outer;
-                                }
-                            }
-                        }
-                        const anc = anchors && anchors.length ? getChartAnchorAt(anchors, b.time) : null;
-                        const anchorFret = anc != null ? Number(anc.fret) : NaN;
-                        const anchorKeyed = Number.isFinite(anchorFret) && anchorFret >= 0;
-                        const fretList = anchorKeyed
-                            ? fretColumnMarkersForAnchor(anchorFret, DOTS)
-                            : DOTS.slice();
-                        cached = { hasLow, hasHigh, fretList, anchorKeyed };
-                        _fretMarkerWaveCache.set(b.time, cached);
-                    }
-                    if (!cached.hasLow && !cached.hasHigh && !cached.anchorKeyed) continue;
-
-                    const dt = b.time - now;
-                    // Fade in over 0.35 s from the maximum lookahead distance so
-                    // the label appears at its correct final size the moment it
-                    // becomes visible, rather than gradually emerging as a tiny
-                    // dim spec through scene fog (fog is disabled on the sprite
-                    // material; this manual ramp replaces it).
-                    const _colFadeIn = Math.min(1.0, (AHEAD - dt) / 0.35);
-                    if (_colFadeIn <= 0) continue;
-
-                    const z = dZ(dt);
-                    // Sprite scale matches the per-note connector fret label
-                    // (drawNote → pNoteFretLabel) so cadence markers read the
-                    // same size at a given Z — no extra world-scale boost.
-                    const clipMin = hwyLaneFretClipMin;
-                    const clipMax = hwyLaneFretClipMax;
-                    const fretList = cached.fretList || DOTS;
-                    const anchorKeyedRow = !!cached.anchorKeyed;
-                    for (const f of fretList) {
-                        let show;
-                        if (anchorKeyedRow) {
-                            show = true;
-                        } else {
-                            if (f === 12) show = cached.hasLow || cached.hasHigh;
-                            else if (f < 12) show = cached.hasLow;
-                            else show = cached.hasHigh;
-                        }
-                        if (!show) continue;
-                        if (!anchorKeyedRow && clipMin != null && (f <= clipMin || f > clipMax)) continue;
-                        // Fixed colour — avoids mid-flight colour flips caused by
-                        // activeFrets only covering now+2s while waves appear at
-                        // AHEAD (3s), which made each marker start dark then
-                        // suddenly jump to light when its note entered the 2s window.
-                        const color = _highwayReferenceLabelColor('#888888');
-                        const sp = pFretColMarker.get();
-                        const m = txtMat(f, color, false, 'noteFret');
-                        _setLabelMap(sp, m);
-                        _registerFretColumnMarker(sp, f, b.time);
-                        sp.material.opacity = 0.85 * _colFadeIn;
-                        sp.position.set(xFretMid(f), labelY, z);
-                        // Z-proportional: sits between chord frame and note gem
-                        // at the same depth, so chord frames never overdraw the
-                        // marker and the marker never overdraws gems.
-                        sp.renderOrder = renderOrderForLayerAtZ(z, 'FRET_COLUMN');
-                        // Scale grows linearly from 2× at max lookahead to 1× at hit line,
-                        // combined with natural perspective attenuation the label starts
-                        // visibly larger and converges to the row-label size at z=0.
-                        const sz = 7.0 * K * (1 + 0.4 * dt / AHEAD) * _textSizeMul * fretLabelScaleForFret(f);
-                        sp.scale.set(sz, sz, 1);
-                    }
-
-                }
-            }
+            updateFretColumnMarkers(beats, notes, chords, anchors, now, t1, hwyLaneFretClipMin, hwyLaneFretClipMax);
 
             // ── Camera target ─────────────────────────────────────────────
             let lockActive;
