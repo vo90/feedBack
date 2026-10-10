@@ -7664,6 +7664,78 @@
         let _fpsEma = 0;
         let _fpsDisplay = 0;
         let _fpsLastSampleT = 0;
+        let _fpsTextCache = null;
+        const _FPS_FONT = 'bold 14px ui-monospace, Menlo, Consolas, monospace';
+        const _FPS_TEXT_STATE = ['direction', 'fontKerning', 'fontStretch', 'fontVariantCaps',
+            'letterSpacing', 'wordSpacing', 'textRendering'];
+        function _invalidateFpsTextCache() { _fpsTextCache = null; }
+        function _drawFpsCounter(ctx, value, right, y) {
+            const text = value.toFixed(1) + ' fps';
+            const color = value >= 55 ? '#7fff9a' : value >= 30 ? '#ffe84d' : '#ff6b6b';
+            const padX = 8, padY = 4, height = 22;
+            // The overlay normally uses an untransformed source-over context.
+            // Keep direct text for effects/transforms whose rasterization cannot
+            // be reproduced by scaling or filtering an already-rendered bitmap.
+            const cacheable = ctx.getTransform().isIdentity
+                && ctx.globalAlpha === 1
+                && ctx.globalCompositeOperation === 'source-over'
+                && (!ctx.filter || ctx.filter === 'none')
+                && ctx.shadowColor === 'rgba(0, 0, 0, 0)';
+            let entry = _fpsTextCache;
+            if (cacheable) {
+                let changed = !entry || entry.text !== text || entry.color !== color;
+                if (!changed) for (const key of _FPS_TEXT_STATE) {
+                    if (entry.state[key] !== ctx[key]) { changed = true; break; }
+                }
+                if (changed) {
+                    let canvas;
+                    try { canvas = new OffscreenCanvas(1, 1); }
+                    catch (_) { canvas = document.createElement('canvas'); }
+                    const glyphs = canvas.getContext('2d', {
+                        willReadFrequently: !!ctx.getContextAttributes?.().willReadFrequently,
+                    });
+                    const state = {};
+                    for (const key of _FPS_TEXT_STATE) state[key] = ctx[key];
+                    const prepare = () => {
+                        for (const key of _FPS_TEXT_STATE) if (state[key] !== undefined) glyphs[key] = state[key];
+                        glyphs.font = _FPS_FONT;
+                        glyphs.textAlign = 'right';
+                        glyphs.textBaseline = 'top';
+                    };
+                    prepare();
+                    const metrics = glyphs.measureText(text);
+                    const width = Math.ceil(metrics.width) + padX * 2;
+                    // Include any glyph overhang rather than clipping it to the
+                    // background card (including a newly loaded fallback font).
+                    const left = Math.floor(Math.min(0, width - padX - metrics.actualBoundingBoxLeft));
+                    const top = Math.floor(Math.min(0, padY - metrics.actualBoundingBoxAscent));
+                    canvas.width = Math.ceil(Math.max(width, width - padX + metrics.actualBoundingBoxRight)) - left;
+                    canvas.height = Math.ceil(Math.max(height, padY + metrics.actualBoundingBoxDescent)) - top;
+                    prepare();
+                    glyphs.fillStyle = color;
+                    glyphs.fillText(text, width - padX - left, padY - top);
+                    entry = _fpsTextCache = { text, color, state, canvas, width, left, top };
+                }
+            }
+            ctx.save();
+            if (!cacheable) {
+                ctx.font = _FPS_FONT;
+                ctx.textAlign = 'right';
+                ctx.textBaseline = 'top';
+            }
+            const width = cacheable ? entry.width : Math.ceil(ctx.measureText(text).width) + padX * 2;
+            ctx.fillStyle = 'rgba(0,0,0,0.55)';
+            ctx.fillRect(right - width, y, width, height);
+            // Keep the translucent card separate from the glyph bitmap so its
+            // background blending stays unchanged. Non-unit alpha draws direct.
+            if (cacheable) ctx.drawImage(entry.canvas, right - width + entry.left, y + entry.top);
+            else {
+                ctx.fillStyle = color;
+                ctx.fillText(text, right - padX, y + padY);
+            }
+            ctx.restore();
+            return height;
+        }
         // The FPS readout is pinned top-right of the highway overlay — the same
         // corner the v3 player chrome stacks its persistent "Up Next" pill and
         // live-performance HUD into, on a higher layer that paints over the
@@ -10968,6 +11040,7 @@
             lyricsCanvas = document.createElement('canvas');
             lyricsCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:1;';
             lyricsCtx = lyricsCanvas.getContext('2d');
+            document.fonts?.addEventListener('loadingdone', _invalidateFpsTextCache);
             wrap.appendChild(lyricsCanvas);
 
             scene = new T.Scene();
@@ -23511,6 +23584,7 @@
             if (lyricsCanvas) { lyricsCanvas.width = w; lyricsCanvas.height = h; }
             _diagRenderCache.clear();
             cam.aspect = w / h;
+            _invalidateFpsTextCache();
             cam.updateProjectionMatrix();
             aspectScale = Math.max(1, REF_ASPECT / Math.max(cam.aspect, 0.5));
             // Cache the pane aspect for the horizontal-FOV-hold in camUpdate.
@@ -23522,6 +23596,8 @@
 
         /* ── Teardown ────────────────────────────────────────────────────── */
         function teardown() {
+            document.fonts?.removeEventListener('loadingdone', _invalidateFpsTextCache);
+            _invalidateFpsTextCache();
             _stableCam.active = _stableCam.initialized = false;
             _stableCam.lastTime = _stableCam.lastWall = NaN;
             _stableCam.rate = 1; _stableCam.rateTime = _stableCam.rateWall = NaN;
@@ -24202,15 +24278,6 @@
                         }
                         const W = lyricsCanvas.width;
                         const H = lyricsCanvas.height;
-                        const txt = _fpsDisplay.toFixed(1) + ' fps';
-                        lyricsCtx.save();
-                        lyricsCtx.font = 'bold 14px ui-monospace, Menlo, Consolas, monospace';
-                        lyricsCtx.textAlign = 'right';
-                        lyricsCtx.textBaseline = 'top';
-                        const _fpsPadX = 8, _fpsPadY = 4;
-                        const _fpsMetrics = lyricsCtx.measureText(txt);
-                        const _fpsBoxW = Math.ceil(_fpsMetrics.width) + _fpsPadX * 2;
-                        const _fpsBoxH = 14 + _fpsPadY * 2;
                         const _fpsE = 8;
                         // Keep it top-right but below the v3 Up Next pill / live HUD
                         // (whichever is showing) so the readout is never occluded.
@@ -24219,14 +24286,8 @@
                             lyricsBottom + _fpsE,
                             _v3TopRightChromeBottom() + _fpsE,
                         ));
-                        const _fpsX = W - 8 - _fpsBoxW;
                         const _fpsY = _fpsBaseY + cornerStack['tr'];
-                        lyricsCtx.fillStyle = 'rgba(0,0,0,0.55)';
-                        lyricsCtx.fillRect(_fpsX, _fpsY, _fpsBoxW, _fpsBoxH);
-                        lyricsCtx.fillStyle = _fpsDisplay >= 55 ? '#7fff9a'
-                            : _fpsDisplay >= 30 ? '#ffe84d' : '#ff6b6b';
-                        lyricsCtx.fillText(txt, _fpsX + _fpsBoxW - _fpsPadX, _fpsY + _fpsPadY);
-                        lyricsCtx.restore();
+                        const _fpsBoxH = _drawFpsCounter(lyricsCtx, _fpsDisplay, W - 8, _fpsY);
                         stackPush('tr', _fpsBoxH);
                     }
 
