@@ -22640,9 +22640,20 @@
         const _stableViewBasis = { ..._stableBasis };
         const _stableInterval = { min: 0, max: 0, valid: true };
         const _stableFit = { x: 0, distance: 0 };
+        const _stableCollect = { horizon: 0, near: 0, far: 0, fullZ: 0,
+            fadeDuration: 0, predictionZ: 0, binDepth: 0 };
         let _stableVector = null;
 
         function stableSupportReset() {
+            // Playback rate and clipping planes stay fixed throughout one
+            // collection. Keep the original arithmetic order at each point.
+            const c = _stableCollect;
+            c.horizon = Math.min(AHEAD, 0.9 * _stableCam.rate);
+            c.near = 8 * K; c.far = dZ(c.horizon);
+            c.fadeDuration = 0.3 * _stableCam.rate;
+            c.fullZ = dZ(Math.max(0, c.horizon - c.fadeDuration));
+            const prediction = Math.min(AHEAD, .15 * _stableCam.rate);
+            c.predictionZ = dZ(prediction); c.binDepth = TS * AHEAD;
             _stablePointSamples = 0;
             _stableCam.minX = Infinity; _stableCam.maxX = -Infinity;
             for (const bin of _stableBins) {
@@ -22657,7 +22668,7 @@
                 const top = tan * (Math.max(.90, margin) + STABLE_CAMERA_SHIFT);
                 const bottom = tan * (Math.max(.90, margin) - STABLE_CAMERA_SHIFT);
                 q.horizontal = horizontal; q.top = top; q.bottom = bottom;
-                q.prediction = i ? 0 : Math.min(AHEAD, .15 * _stableCam.rate) * TS;
+                q.prediction = i ? 0 : prediction * TS;
                 q.maxima.fill(-Infinity);
             }
         }
@@ -22686,18 +22697,18 @@
         }
 
         function stableAddPoint(x, y, z) {
-            const horizon = Math.min(AHEAD, 0.9 * _stableCam.rate);
-            if (!Number.isFinite(x + y + z) || z > 8 * K || z < dZ(horizon) - 1e-7) return;
+            const c = _stableCollect;
+            if (!Number.isFinite(x + y + z) || z > c.near || z < c.far - 1e-7) return;
             // Constraints enter over 300ms and become complete 600ms before
             // playing. Far-away scenery cannot change the close view. This
             // affects framing only; rendered objects retain their real shape.
-            const u = Math.max(0, Math.min(1, (horizon + z / TS) / (0.3 * _stableCam.rate)));
+            const u = Math.max(0, Math.min(1, (c.horizon + z / TS) / c.fadeDuration));
             const weight = u * u * (3 - 2 * u);
             x = _stableCam.collectCentre + (x - _stableCam.collectCentre) * weight;
             y = _stableBasis.y + (y - _stableBasis.y) * weight;
             _stablePointSamples++;
             _stableCam.minX = Math.min(_stableCam.minX, x); _stableCam.maxX = Math.max(_stableCam.maxX, x);
-            const bin = _stableBins[Math.max(0, Math.min(31, Math.floor(-z / (TS * AHEAD) * 32)))];
+            const bin = _stableBins[Math.max(0, Math.min(31, Math.floor(-z / c.binDepth * 32)))];
             bin.minX = Math.min(bin.minX, x); bin.maxX = Math.max(bin.maxX, x);
             bin.minY = Math.min(bin.minY, y); bin.maxY = Math.max(bin.maxY, y);
             bin.minZ = Math.min(bin.minZ, z); bin.maxZ = Math.max(bin.maxZ, z);
@@ -22707,7 +22718,7 @@
         // A long hold can cross the near window with both endpoints outside.
         // Clip edges so its relevant portion still participates in the fit.
         function stableAddSegment(ax, ay, az, bx, by, bz, endpointsAdded = false) {
-            const near = 8 * K, far = dZ(Math.min(AHEAD, 0.9 * _stableCam.rate));
+            const c = _stableCollect, near = c.near, far = c.far;
             let lo = 0, hi = 1;
             const dz = bz - az;
             if (Math.abs(dz) < 1e-10) {
@@ -22717,7 +22728,7 @@
                 lo = Math.max(0, Math.min(a, b)); hi = Math.min(1, Math.max(a, b));
                 if (lo > hi) return;
             }
-            const fullZ = dZ(Math.max(0, Math.min(AHEAD, 0.9 * _stableCam.rate) - 0.3 * _stableCam.rate));
+            const fullZ = c.fullZ;
             const full = Math.abs(dz) > 1e-10 ? (fullZ - az) / dz : lo;
             if (!endpointsAdded || az < fullZ || bz < fullZ || lo > 0 || hi < 1) {
                 for (let i = 0; i < 3; i++) {
@@ -22728,7 +22739,7 @@
             // Within full strength, affine planes attain extrema at corners.
             // Predicted depth has two kinks, so retain their intersections too.
             if (Math.abs(dz) > 1e-10) for (let i = 0; i < 2; i++) {
-                const plane = i ? 0 : dZ(Math.min(AHEAD, .15 * _stableCam.rate));
+                const plane = i ? 0 : c.predictionZ;
                 const t = (plane - az) / dz;
                 if (t > lo && t < hi) stableAddPoint(ax + (bx - ax) * t, ay + (by - ay) * t, plane);
             }
@@ -22777,6 +22788,7 @@
             if (!box) return;
             // Static mesh bounds are cached, but their current transform is
             // always used (open slabs, pre-bent gems and chord frames included).
+            let fullBounds = true, minZ = Infinity, maxZ = -Infinity;
             for (let i = 0; i < 8; i++) {
                 v.set(i & 1 ? box.max.x : box.min.x,
                     i & 2 ? box.max.y : box.min.y,
@@ -22784,7 +22796,15 @@
                 stableAddPoint(v.x, v.y, v.z);
                 _stableBoxPoints[i * 3] = v.x; _stableBoxPoints[i * 3 + 1] = v.y;
                 _stableBoxPoints[i * 3 + 2] = v.z;
+                if (!(v.z >= _stableCollect.fullZ && v.z <= _stableCollect.near)) fullBounds = false;
+                if (v.z < minZ) minZ = v.z;
+                if (v.z > maxZ) maxZ = v.z;
             }
+            // In full strength, unclipped edges add no points unless they
+            // cross a predicted-depth kink. Keep edges when clipping, fading
+            // or either kink can add points; ribbons stay on their own path.
+            if (fullBounds && !(minZ < _stableCollect.predictionZ && maxZ > _stableCollect.predictionZ)
+                && !(minZ < 0 && maxZ > 0)) return;
             for (let i = 0; i < 8; i++) for (let bit = 1; bit <= 4; bit *= 2) {
                 if (i & bit) continue;
                 const a = i * 3, b = (i | bit) * 3, p = _stableBoxPoints;
