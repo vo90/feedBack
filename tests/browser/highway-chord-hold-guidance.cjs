@@ -107,7 +107,8 @@ add('handshape-coincident',base({notes:[note({t:10,s:1,f:3,sus:.6})],
   wantTrailOnsets:[10],sampleTimes:[9.7,10,10.03,10.3,9.7]});
 add('handshape-explicit-preview',base({chordTemplates:[{...template,arp:true}],
   handShapes:[shape(10,12,0,{arp:true})]}),[],{image:true,
-  presentGems:[{t:10,s:1,f:3},{t:10,s:2,f:5}],exactFrames:1});
+  absentGems:[{t:10,s:1,f:3},{t:10,s:2,f:5}],
+  positionNotes:[{t:10,s:1,f:3},{t:10,s:2,f:5}],exactFrames:1});
 add('handshape-real-chord',base({chords:[chord(10,.6)],handShapes:[shape(10,12)]}),[[10,10.6]],
   {image:true,presentGems:[{t:10,s:1,f:3},{t:10,s:2,f:5}],exactFrames:1});
 for (const origin of ['source', 'user', 'generated', 'unknown']) {
