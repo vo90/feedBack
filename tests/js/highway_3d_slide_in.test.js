@@ -305,7 +305,7 @@ test('dense mixed lead-ins use actual attack order and cannot create mode-3 prop
         'later real attacks retain front priority over earlier attacks');
     const noIncoming=notes.map(({slide_in_marks,...n})=>n);
     assert.deepEqual(h.orderDense(noIncoming).map(e=>[e.t,e.s]),result.map(e=>[e.t,e.s]));
-    assert.match(fn('renderNote'),/hwyFillTrailOcclusionTargets\([\s\S]*?hasLeadIn,\s*n\.t,/,
+    assert.match(fn('drawNote'),/hwyFillTrailOcclusionTargets\([\s\S]*?hasLeadIn,\s*n\.t,/,
         'the actual rendering call passes authored onset separately from visual extent');
 });
 

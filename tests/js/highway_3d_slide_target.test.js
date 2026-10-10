@@ -299,7 +299,7 @@ test('standalone and chord render paths pass explicit target membership separate
 });
 
 test('explicit suppression skips attack/drop-line but leaves the continuation trail', () => {
-    const drawNote = extractFn(src, 'renderNote');
+    const drawNote = extractFn(src, 'drawNote');
     assert.match(
         drawNote,
         /hwyShouldSuppressNoteBody\(skipBody,\s*explicitLinkTarget,\s*dt\)/,
