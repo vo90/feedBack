@@ -18788,9 +18788,11 @@
                 const outlineX = sustainTrailCenterXAt(
                     n, strandBaseX, Tk, slideSt, outlineTw,
                 );
-                const bodyX = sustainTrailCenterXAt(
+                // Only tremolo's horizontal motion depends on strand width.
+                // Reuse this sample's exact centre for all other techniques.
+                const bodyX = n.tr ? sustainTrailCenterXAt(
                     n, strandBaseX, Tk, slideSt, bodyTw,
-                );
+                ) : outlineX;
                 const yc = y + techniqueYOffsetWorld(n, Tk);
                 const yieldAmount = Math.max(Number.isFinite(sameStringTargetTime) ? hwySameStringTrailYieldAmountAt(
                     Tk, sameStringTargetTime, sameStringTrailStart, trailEnd, yieldSettings) : 0, yieldCount > 0
