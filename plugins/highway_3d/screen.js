@@ -103,6 +103,92 @@
         return result;
     }
 
+    // Opt-in renderer wall-time evidence, separate from the presentation clock.
+    // ?h3dbench=ring allocates this once per renderer. The public start method
+    // resets/arms it after warmup; take() freezes BEFORE allocating its snapshot.
+    // Rows retain only scalars from the caller-owned, reusable frame bundle.
+    // Nested update phases are inclusive; do not add them to update's duration.
+    // Inter-draw gaps are not rAF dispatch latency, and wall time is not CPU/GPU time.
+    function createPhaseRing(capacity = 4096) {
+        const stride = 28;
+        let data = new Float64Array(capacity * stride);
+        let recording = false, total = 0, base = -1;
+        let startedAt = NaN, stoppedAt = NaN;
+        const timeOrigin = performance.timeOrigin;
+        function stop() {
+            if (!recording) return;
+            recording = false;
+            base = -1;
+            stoppedAt = performance.now();
+        }
+        return {
+            start() {
+                if (!data) return false;
+                total = 0;
+                base = -1;
+                stoppedAt = NaN;
+                startedAt = performance.now();
+                recording = true;
+                return true;
+            },
+            frameBegin(bundle) {
+                if (!recording) return;
+                base = (total % capacity) * stride;
+                data.fill(NaN, base, base + stride);
+                data[base] = total++;
+                data[base + 1] = performance.now();
+                data[base + 3] = 0; // Remains incomplete if draw throws or capture stops in a hook.
+                data[base + 4] = bundle.currentTime;
+                const t = bundle.transport;
+                data[base + 5] = t ? t.epoch : NaN;
+                data[base + 6] = t ? t.sequence : NaN;
+                data[base + 7] = t ? t.generation : NaN;
+                data[base + 8] = bundle.playbackRate;
+                data[base + 9] = bundle.isPlaying ? 1 : 0;
+                data[base + 10] = 0; // 1: direct Three.js render; 2: composer render.
+                data[base + 27] = t ? t.freshAt : NaN;
+            },
+            begin(index, renderMode) {
+                if (!recording || base < 0) return;
+                data[base + 11 + index * 2] = performance.now();
+                if (index === 6) data[base + 10] = renderMode;
+            },
+            end(index) {
+                if (!recording || base < 0) return;
+                data[base + 12 + index * 2] = performance.now();
+            },
+            frameEnd() {
+                if (!recording || base < 0) return;
+                data[base + 2] = performance.now();
+                data[base + 3] = 1;
+                base = -1;
+            },
+            take() {
+                stop();
+                if (!data) return null;
+                const count = Math.min(total, capacity), rows = new Array(count);
+                const first = total - count;
+                for (let i = 0; i < count; i++) {
+                    const offset = ((first + i) % capacity) * stride;
+                    rows[i] = Array.from(data.subarray(offset, offset + stride));
+                }
+                return {
+                    version: 1, timeOrigin, capacity, totalFrames: total,
+                    overwritten: first, startedAtMs: startedAt, stoppedAtMs: stoppedAt,
+                    columns: ['frame', 'drawBeginMs', 'drawEndMs', 'complete', 'chartTime',
+                        'epoch', 'sequence', 'generation', 'rate', 'playing', 'renderMode',
+                        'updateBeginMs', 'updateEndMs', 'stateBeginMs', 'stateEndMs',
+                        'nextBeginMs', 'nextEndMs', 'matBeginMs', 'matEndMs',
+                        'noteDrawBeginMs', 'noteDrawEndMs', 'chordDrawBeginMs', 'chordDrawEndMs',
+                        'renderBeginMs', 'renderEndMs', 'cameraBeginMs', 'cameraEndMs', 'freshAtMs'],
+                    rows,
+                };
+            },
+            dispose() { recording = false; base = -1; data = null; },
+        };
+    }
+    // End renderer phase ring.
+
     // Explicit transport epochs separate genuine repositioning from clock
     // measurement corrections. This clock is visual only; scoring reads audio.
     function createPresentationClock() {
@@ -9926,11 +10012,23 @@
         // Copilot review on #413.) Inlining is a JIT heuristic, not a
         // language guarantee.
         const _perfBench = (() => {
-            try { return new URLSearchParams(location.search).get('h3dbench') === '1'; }
-            catch (_) { return false; }
+            try { return new URLSearchParams(location.search).get('h3dbench'); }
+            catch (_) { return null; }
         })();
         let pbBeg, pbEnd, pbReportTick;
-        if (_perfBench) {
+        let pbFrameBeg, pbFrameEnd, pbCameraBeg, pbCameraEnd;
+        pbFrameBeg = pbFrameEnd = pbCameraBeg = pbCameraEnd = function () {};
+        let _phaseRing = null;
+        if (_perfBench === 'ring') {
+            _phaseRing = createPhaseRing();
+            pbBeg = _phaseRing.begin;
+            pbEnd = _phaseRing.end;
+            pbReportTick = function () {};
+            pbFrameBeg = _phaseRing.frameBegin;
+            pbFrameEnd = _phaseRing.frameEnd;
+            pbCameraBeg = function () { _phaseRing.begin(7); };
+            pbCameraEnd = function () { _phaseRing.end(7); };
+        } else if (_perfBench === '1') {
             const _PB_NAMES = ['frame', 'state', 'next', 'mat', 'noteDraw', 'chordDraw', 'render'];
             const _pbStart = new Float64Array(_PB_NAMES.length);
             const _pbAcc = _PB_NAMES.map(() => []);
@@ -24143,6 +24241,7 @@
             draw(bundle) {
                 if (!_isReady) return;
                 if (_ctxLost) return;   // GPU context lost (alt-tab / reset) — skip until restored
+                pbFrameBeg(bundle);
                 if (!_chartPrewarmed) {
                     _chartPrewarmed = true;
                     _prewarmChart(bundle);
@@ -24228,7 +24327,9 @@
                     }
                 }
                 update(bundle);
+                pbCameraBeg();
                 camUpdate(bundle);
+                pbCameraEnd();
                 _layoutIncomingFretLabels();
 
                 // Background animations (#13). Compute frame dt once,
@@ -24333,10 +24434,10 @@
                         const bsz = canvasSize(highwayCanvas);
                         if (bsz) _bloomResize(bsz.w, bsz.h);
                         if (ren.toneMapping !== T.ACESFilmicToneMapping) ren.toneMapping = T.ACESFilmicToneMapping;
-                        pbBeg(6); comp.render(); pbEnd(6);
+                        pbBeg(6, 2); comp.render(); pbEnd(6);
                     } else {
                         if (ren.toneMapping !== T.NoToneMapping) ren.toneMapping = T.NoToneMapping;
-                        pbBeg(6); ren.render(scene, cam); pbEnd(6);
+                        pbBeg(6, 1); ren.render(scene, cam); pbEnd(6);
                     }
                 }
                 drawTimedContactLabels();
@@ -24475,8 +24576,12 @@
                         lyricsCtx, lyricsCanvas.width, lyricsCanvas.height
                     );
                 }
+                pbFrameEnd();
             },
 
+            // Explicit start after warmup; get freezes before copying. Off mode returns false/null.
+            startPhaseDiagnostics() { return _phaseRing ? _phaseRing.start() : false; },
+            getPhaseDiagnostics() { return _phaseRing ? _phaseRing.take() : null; },
             setClockDiagnostics(enabled) { _presentationClock.trace(enabled); },
             getClockDiagnostics() { return _presentationClock.diagnostics(); },
             resize(w, h) {
@@ -24486,6 +24591,7 @@
             },
 
             destroy() {
+                if (_phaseRing) _phaseRing.dispose();
                 _presentationClock.trace(false);
                 _presentationClock.reset();
                 _destroyed = true; _isReady = false; _diagChord = null; _diagPrev = null; _diagLastKey = null; _diagRenderCache.clear();

@@ -2566,6 +2566,8 @@ function createHighway() {
         },
         setClockDiagnostics(enabled) { hwState._renderer?.setClockDiagnostics?.(enabled); },
         getClockDiagnostics() { return hwState._renderer?.getClockDiagnostics?.() || null; },
+        startPhaseDiagnostics() { return hwState._renderer?.startPhaseDiagnostics?.() || false; },
+        getPhaseDiagnostics() { return hwState._renderer?.getPhaseDiagnostics?.() || null; },
         setTime(t) {
             // chartTime is what getTime() exposes to plugins — bake the
             // per-song offset in here so plugins (scoring, note detect,
