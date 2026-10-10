@@ -22665,7 +22665,7 @@
         const _stableRegionPoints = new Float64Array(16 * 3);
         const _stableViewRegionPoints = new Float64Array(24 * 3);
         const _stableViewFuturePlan = {};
-        const _stableRibbonPrevious = new Float64Array(4 * 3);
+        const _stableRibbonPrevious = new Float64Array(4 * 3 + 3);
         const _stableBoxPoints = new Float64Array(8 * 3);
         const _stableBasis = { bx: 0, by: 0, bz: 1, rx: 1, rz: 0, ux: 0, uy: 1, uz: 0, x: 0, y: 0, distanceMul: 1 };
         const _stableViewBasis = { ..._stableBasis };
@@ -22748,7 +22748,11 @@
 
         // A long hold can cross the near window with both endpoints outside.
         // Clip edges so its relevant portion still participates in the fit.
-        function stableAddSegment(ax, ay, az, bx, by, bz, endpointsAdded = false) {
+        function stableAddSegment(points, a, b, endpointsAdded = false) {
+            // Keep coordinates in reusable numeric storage across this call.
+            // Six floating arguments can otherwise require transient boxed numbers.
+            const ax = points[a], ay = points[a + 1], az = points[a + 2];
+            const bx = points[b], by = points[b + 1], bz = points[b + 2];
             const c = _stableCollect, near = c.near, far = c.far;
             let lo = 0, hi = 1;
             const dz = bz - az;
@@ -22806,9 +22810,11 @@
                 for (let i = 0; i < count; i++) {
                     v.fromBufferAttribute(attr, i).applyMatrix4(object.matrixWorld);
                     const j = (i % 4) * 3;
-                    if (i >= 4) stableAddSegment(_stableRibbonPrevious[j], _stableRibbonPrevious[j + 1],
-                        _stableRibbonPrevious[j + 2], v.x, v.y, v.z);
-                    else stableAddPoint(v.x, v.y, v.z);
+                    if (i >= 4) {
+                        _stableRibbonPrevious[12] = v.x; _stableRibbonPrevious[13] = v.y;
+                        _stableRibbonPrevious[14] = v.z;
+                        stableAddSegment(_stableRibbonPrevious, j, 12);
+                    } else stableAddPoint(v.x, v.y, v.z);
                     _stableRibbonPrevious[j] = v.x; _stableRibbonPrevious[j + 1] = v.y;
                     _stableRibbonPrevious[j + 2] = v.z;
                 }
@@ -22839,7 +22845,7 @@
             for (let i = 0; i < 8; i++) for (let bit = 1; bit <= 4; bit *= 2) {
                 if (i & bit) continue;
                 const a = i * 3, b = (i | bit) * 3, p = _stableBoxPoints;
-                stableAddSegment(p[a], p[a + 1], p[a + 2], p[b], p[b + 1], p[b + 2], true);
+                stableAddSegment(p, a, b, true);
             }
         }
 

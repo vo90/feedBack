@@ -195,7 +195,9 @@ function harness(subject = source, three = null) {
             },
             segmentPoints(a, b) {
                 stableSupportReset();
-                stableAddSegment(...a, ...b);
+                ${extract('stableAddSegment').startsWith('function stableAddSegment(points,')
+                    ? 'stableAddSegment(Float64Array.from([...a, ...b]), 0, 3);'
+                    : 'stableAddSegment(...a, ...b);'}
                 return rawPoints.map(([x,y,z])=>({minX:x,maxX:x,minY:y,maxY:y,minZ:z,maxZ:z}));
             },
             projected(point, x, distance, prediction = 0) {
@@ -1095,5 +1097,44 @@ test('legacy and optimized collection drive identical camera poses across playba
             assert.deepEqual(pair[0].collection(),pair[1].collection());
             assert.deepEqual(pair[0].renderedPose(),pair[1].renderedPose());
         }
+    }
+});
+
+test('shared ribbon coordinate storage preserves ordered output between ribbons and changing draw ranges', async () => {
+    const T = await realThree, pair = collectionPair(T, {preset:'angled',lefty:true,rate:.75});
+    const parent = new T.Group();
+    parent.rotation.set(.13,-.21,.08); parent.scale.set(-1.1,.7,1.2);
+    const ribbons=[];
+    for (let r=0;r<3;r++) {
+        const geometry=new T.BufferGeometry();
+        geometry.setAttribute('position',new T.BufferAttribute(new Float32Array(4*9*3),3));
+        const ribbon=new T.Mesh(geometry,new T.MeshBasicMaterial());
+        ribbon.position.set(r*31,-r*3,r*5); parent.add(ribbon); ribbons.push(ribbon);
+    }
+    for (const slices of [[8,1,0],[0,8,1],[1,0,8],[3,2,4],[0,0,0]]) {
+        for (let r=0;r<ribbons.length;r++) {
+            const geometry=ribbons[r].geometry, p=geometry.attributes.position.array;
+            geometry.userData.ribbonSlices=slices[r]; p.fill(123456);
+            for(let i=0;i<(slices[r]+1)*4;i++) {
+                p[i*3]=(i%4-1.5)*7+r;
+                p[i*3+1]=(i%2)*5-r;
+                p[i*3+2]=17-Math.floor(i/4)*43+r*11;
+            }
+        }
+        assertCollectionParity(pair,ribbons,`slices ${slices}`);
+        assertCollectionParity(pair,[ribbons[2],ribbons[0],ribbons[1]],`reordered ${slices}`);
+    }
+    const invalid=[collectionBox(T,-Infinity,Infinity),collectionBox(T,NaN,8)];
+    assertCollectionParity(pair,[...invalid,...ribbons],'non-finite objects must not poison subsequent ribbons');
+    const partial=ribbons[0], positions=new Float32Array(19*3);
+    partial.geometry.setAttribute('position',new T.BufferAttribute(positions,3));
+    partial.geometry.userData.ribbonSlices=30;
+    for (const value of [NaN,Infinity,-Infinity,-0]) {
+        for(let i=0;i<19;i++) {
+            positions[i*3]=i%4; positions[i*3+1]=i%2;
+            positions[i*3+2]=6-Math.floor(i/4)*45;
+        }
+        positions[7*3+2]=value;
+        assertCollectionParity(pair,[partial,ribbons[1]],`partial ribbon with ${String(value)}`);
     }
 });
