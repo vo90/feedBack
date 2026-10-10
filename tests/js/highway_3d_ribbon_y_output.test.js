@@ -6,6 +6,7 @@ function fn(name,input=source){
  let depth=1,end=open+1;while(depth){if(input[end]==='{')depth++;else if(input[end]==='}')depth--;end++;}
  return input.slice(start,end);
 }
+// Retained scalar Y/geometry regression coverage from the output-storage experiment.
 // Complete, frozen functions from 168c12bed22d9a463d1d3a962fc505056405e2c3.
 const yBaseline=`function techniqueYOffsetWorld(n, chartTime) {
             if (!(n?.sus > 0)) return 0;
@@ -129,26 +130,9 @@ const ribbonBaseline=`function slideRibbonUpdatePair(
         }`;
 
 const baseline=source.replace(fn('techniqueYOffsetWorld'),yBaseline).replace(fn('slideRibbonUpdatePair'),ribbonBaseline);
-test('complete helper and ribbon preserve frozen math, branch order and left operand evaluation',()=>{
- const expected=yBaseline.replace('n, chartTime)', 'n, chartTime, out)')
-  .replace('if (!(n?.sus > 0)) return 0;',`if (!(n?.sus > 0)) {
-                if (out) { out[0] = 0; return; }
-                return 0;
-            }`)
-  .replace('return BEND_HALFSTEP_WORLD_Y * barSemi;',`const value = BEND_HALFSTEP_WORLD_Y * barSemi;
-                if (out) { out[0] = value; return; }
-                return value;`)
-  .replace('if (bendSemi === 0 && vibratoSemi === 0 && barSemi === 0) return 0;',`if (bendSemi === 0 && vibratoSemi === 0 && barSemi === 0) {
-                if (out) { out[0] = 0; return; }
-                return 0;
-            }`)
-  .replace('return BEND_HALFSTEP_WORLD_Y * (bendVisualDirY(n.s) * (bendSemi + vibratoSemi) + barSemi);',`const value = BEND_HALFSTEP_WORLD_Y * (bendVisualDirY(n.s) * (bendSemi + vibratoSemi) + barSemi);
-            if (out) { out[0] = value; return; }
-            return value;`);
- assert.equal(fn('techniqueYOffsetWorld'),expected);
- assert.equal(fn('slideRibbonUpdatePair'),ribbonBaseline.replace('const yc = y + techniqueYOffsetWorld(n, Tk);',`const baseY = y;
-                techniqueYOffsetWorld(n, Tk, _sustainYResult);
-                const yc = baseY + _sustainYResult[0];`));
+test('scalar Y helper and ribbon retain the established sampling expressions',()=>{
+ assert.equal(fn('techniqueYOffsetWorld'),yBaseline);
+ assert.equal(fn('slideRibbonUpdatePair'),ribbonBaseline);
 });
 
 function helpers(input=source,window={},scale=4.8){
@@ -162,10 +146,10 @@ function helpers(input=source,window={},scale=4.8){
  `)(window,scale);
 }
 
-test('all return branches preserve scalar and output results including nonfinite and signed zero inputs',async()=>{
+test('scalar Y branches preserve finite, nonfinite and signed zero behavior',async()=>{
  const {whammyApi}=await import('../../static/js/whammy.js');
  const a=helpers(baseline,{feedBackWhammy:whammyApi}),b=helpers(source,{feedBackWhammy:whammyApi});
- const out=new Float64Array(1),variants=[{}, {bn:1.5},{bn:-0},{bn:NaN},{bn:Infinity},
+ const variants=[{}, {bn:1.5},{bn:-0},{bn:NaN},{bn:Infinity},
   {bnv:[{t:0,v:1},{t:.7,v:2},{t:1.7,v:0}]},{bnv:[{t:0,v:NaN},{t:1,v:Infinity}]},
   {vb:true},{bn:1,vb:true},{vibrato_marks:[{start:0,end:1.8,intensity:'wide'}]},
   {whammy:{version:1,policy:'optional',segments:[{start:0,end:1.8,curve:[{t:0,v:0},{t:1.8,v:-4}]}]}},
@@ -175,38 +159,37 @@ test('all return branches preserve scalar and output results including nonfinite
  for(const time of [-Infinity,-0,0,.2,.7,1.2,1.8,Infinity,NaN])for(const inverted of [false,true]){
   const n={t:0,s:3,f:7,sus,...attrs};a.inverted(inverted);b.inverted(inverted);
   const expected=a.y(n,time);assert.equal(b.y(n,time),expected);
-  out[0]=123456;assert.equal(b.y(n,time,out),undefined);assert.equal(out[0],expected);
   if(Object.is(time,-0)||Object.is(sus,-0))negativeZeroInputCases++;
  }
  assert.ok(negativeZeroInputCases>0);
- for(const n of [null,undefined]){out[0]=123456;assert.equal(a.y(n,0),0);b.y(n,0,out);assert.equal(out[0],0);}
- // Explicit arithmetic signed-zero output guards the numeric storage contract.
+ for(const n of [null,undefined]){assert.equal(a.y(n,0),0);assert.equal(b.y(n,0),0);}
+ // A zero scale also preserves the arithmetic expression's signed zero.
  const window={feedBackWhammy:{visual:()=>1,segment:()=>({curve:[1]})}},n={t:0,sus:1,whammy:{version:1}};
  const oldZ=helpers(baseline,window,-0),newZ=helpers(source,window,-0);
- assert.ok(Object.is(oldZ.y(n,.5),-0));newZ.y(n,.5,out);assert.ok(Object.is(out[0],-0));
+ assert.ok(Object.is(oldZ.y(n,.5),-0));assert.ok(Object.is(newZ.y(n,.5),-0));
 });
 
-test('linked bend and vibrato context, edits and seeks retain exact scalar/output parity',()=>{
- const a=helpers(baseline),b=helpers(),out=new Float64Array(1),n={t:10,s:2,f:7,sus:1.8,bn:2,vb:true};
+test('scalar Y follows linked bend and vibrato context, edits and seeks',()=>{
+ const a=helpers(baseline),b=helpers(),n={t:10,s:2,f:7,sus:1.8,bn:2,vb:true};
  for(const h of [a,b]){h.starts.set(n,.5);h.ends.set(n,1.25);h.runs.set(n,{offset:1,onset:10,run:{duration:3.2,fadeIn:.08,fadeOut:.08}});}
- for(const t of [9.8,10,10.5,11.7,10.2]){b.y(n,t,out);assert.equal(out[0],a.y(n,t));}
- for(const sus of [0,1.8,-1,2]){n.sus=sus;n.bn+=.25;b.y(n,10.3,out);assert.equal(out[0],a.y(n,10.3));}
+ for(const t of [9.8,10,10.5,11.7,10.2]){assert.equal(b.y(n,t),a.y(n,t));}
+ for(const sus of [0,1.8,-1,2]){n.sus=sus;n.bn+=.25;assert.equal(b.y(n,10.3),a.y(n,10.3));}
  for(const h of [a,b]){h.starts.delete(n);h.ends.delete(n);h.runs.delete(n);}
- b.y(n,10.3,out);assert.equal(out[0],a.y(n,10.3));
+ assert.equal(b.y(n,10.3),a.y(n,10.3));
 });
 
-test('nested same-slot whammy callbacks, property effects and throwing callbacks preserve order',()=>{
- function run(input,buffered,throws=false){
-  const events=[],out=new Float64Array(1);let h,nested=false;
-  function call(n,t){if(buffered){h.y(n,t,out);return out[0];}const value=h.y(n,t);out[0]=value;return value;}
+test('nested whammy callbacks, property effects and thrown exceptions preserve order',()=>{
+ function run(input,throws=false){
+  const events=[];let h,nested=false;
+  function call(n,t){return h.y(n,t);}
   const provider={visual(n,t){events.push(['visual',t]);if(!nested){nested=true;h.inverted(true);events.push(['nested',call({t:0,s:0,sus:1,bn:2},.3)]);}if(throws)throw Error('visual');return -1.25;},
    segment(n,t){events.push(['segment',t]);return {curve:[1]};}};
   h=helpers(input,{get feedBackWhammy(){events.push('provider');return provider;}});
   const whammy={get version(){events.push('version');return 1;}};
   const n=new Proxy({t:0,s:3,sus:1.8,bn:1,whammy},{get(o,k){events.push(String(k));return o[k];}});
-  try{return {value:call(n,.5),events};}catch(e){return {error:e.message,scratch:out[0],events};}
+  try{return {value:call(n,.5),events};}catch(e){return {error:e.message,events};}
  }
- for(const throws of [false,true])assert.deepEqual(run(source,true,throws),run(baseline,false,throws));
+ for(const throws of [false,true])assert.deepEqual(run(source,throws),run(baseline,throws));
 });
 
 async function ribbonHarness(input){
@@ -221,7 +204,7 @@ async function ribbonHarness(input){
  return mod.exports(false);
 }
 
-test('optional Y storage preserves ordered Float32 geometry for all techniques and state changes',async()=>{
+test('scalar Y sampling preserves ordered Float32 geometry for all techniques and state changes',async()=>{
  const a=await ribbonHarness(baseline),b=await ribbonHarness(source);
  const variants=[{}, {tr:false}, {sl:12},{slu:2},{sl:12,slide_interval:{start:1.3,end:1.8}},
   {sl:12,tr:true},{sl:12,bn:1.5,vb:true},{sl:2,hm:true,hn:12},
