@@ -4356,6 +4356,9 @@
         return null;
     }
 
+    // Private synchronous ribbon handoff; avoids boxing each sampled centre.
+    const _sustainCenterResult = new Float64Array(1);
+
     /**
      * Lateral slide offset along the fretboard during sustain — easing
      * mirrors the pitched/unpitched slide offset convention above.
@@ -18795,14 +18798,17 @@
             for (let k = 0; k <= S; k++) {
                 const Tk = times[k];
                 const zk = dZ(Tk - now);
-                const outlineX = sustainTrailCenterXAt(
-                    n, strandBaseX, Tk, slideSt, outlineTw,
+                sustainTrailCenterXAt(
+                    n, strandBaseX, Tk, slideSt, outlineTw, _sustainCenterResult,
                 );
+                const outlineX = _sustainCenterResult[0];
                 // Only tremolo's horizontal motion depends on strand width.
                 // Reuse this sample's exact centre for all other techniques.
-                const bodyX = n.tr ? sustainTrailCenterXAt(
-                    n, strandBaseX, Tk, slideSt, bodyTw,
-                ) : outlineX;
+                let bodyX = outlineX;
+                if (n.tr) {
+                    sustainTrailCenterXAt(n, strandBaseX, Tk, slideSt, bodyTw, _sustainCenterResult);
+                    bodyX = _sustainCenterResult[0];
+                }
                 const yc = y + techniqueYOffsetWorld(n, Tk);
                 const yieldAmount = Math.max(Number.isFinite(sameStringTargetTime) ? hwySameStringTrailYieldAmountAt(
                     Tk, sameStringTargetTime, sameStringTrailStart, trailEnd, yieldSettings) : 0, yieldCount > 0
@@ -19268,13 +19274,15 @@
         }
 
         /** Rendered X centre of one sustain strand at a chart time. */
-        function sustainTrailCenterXAt(n, strandBaseX, chartTime, slideSt, trailW) {
-            return strandBaseX
+        function sustainTrailCenterXAt(n, strandBaseX, chartTime, slideSt, trailW, out) {
+            const value = strandBaseX
                 + (_leftyCached ? -1 : 1) * (slideSt ? slideOffsetWorldX(n, chartTime, slideSt) : 0)
                 + (_leftyCached ? -1 : 1) * (n.slide_out_marks?.length ? slideOutOffsetWorldX(n, chartTime) : 0)
                 + (_leftyCached ? -1 : 1) * (n.slide_in_marks?.length ? slideInOffsetWorldX(n, chartTime) : 0)
                 + (n.tr ? tremoloOffsetWorldX(n, chartTime, trailW) : 0)
                 + ((n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) ? (_leftyCached ? -1 : 1) * pickScrapeOffset(n, chartTime) : 0);
+            if (out) { out[0] = value; return; }
+            return value;
         }
 
         // Shared, allocation-free footprint matcher. Candidate discovery has

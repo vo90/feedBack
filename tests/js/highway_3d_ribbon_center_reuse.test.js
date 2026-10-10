@@ -19,11 +19,12 @@ function fn(name) {
 // Keep the reference's original two evaluations, using the same production
 // geometry writer and motion functions to isolate this sample-local reuse.
 const ribbon = fn('slideRibbonUpdatePair');
-const reusedCenter = /const bodyX = n\.tr \? sustainTrailCenterXAt\(\s*n, strandBaseX, Tk, slideSt, bodyTw,\s*\) : outlineX;/;
+const reusedCenter = /let bodyX = outlineX;\s*if \(n\.tr\) \{\s*sustainTrailCenterXAt\(n, strandBaseX, Tk, slideSt, bodyTw, _sustainCenterResult\);\s*bodyX = _sustainCenterResult\[0\];\s*\}/;
 assert.match(ribbon, reusedCenter);
-const referenceRibbon = ribbon.replace(reusedCenter, `const bodyX = sustainTrailCenterXAt(
-                    n, strandBaseX, Tk, slideSt, bodyTw,
-                );`);
+const referenceRibbon = ribbon.replace(reusedCenter, `sustainTrailCenterXAt(
+                    n, strandBaseX, Tk, slideSt, bodyTw, _sustainCenterResult,
+                );
+                const bodyX = _sustainCenterResult[0];`);
 
 class Attribute {
     constructor(array, itemSize) { this.array = array; this.count = array.length / itemSize; }
@@ -68,7 +69,7 @@ async function harness(original = false) {
         ${source.slice(source.indexOf('    function slideTrailEnd('), source.indexOf('    // Camera tgtDist building blocks'))}
         ${helpers}
         let centerCalls=0;
-        ${fn('sustainTrailCenterXAt').replace('return strandBaseX', 'centerCalls++; return strandBaseX')}
+        ${fn('sustainTrailCenterXAt').replace('{', '{ centerCalls++;')}
         ${original ? referenceRibbon : ribbon}
         const outline=new T.Geometry(), body=new T.Geometry();
         return (n, options={}) => {
