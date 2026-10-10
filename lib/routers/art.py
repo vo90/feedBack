@@ -87,6 +87,13 @@ def _file_art_response(path: Path, media_type: str, request: Request | None):
 
 @router.get("/api/song/{filename:path}/art")
 async def get_song_art(filename: str, request: Request = None, source: str = ""):
+    # Path checks (including missing files on network libraries), archive reads,
+    # and cache lookup are blocking I/O. Keep ALL of them off the event loop so
+    # one slow cover cannot stall library queries, scans, or playback messages.
+    return await asyncio.to_thread(_get_song_art, filename, request, source)
+
+
+def _get_song_art(filename: str, request: Request = None, source: str = ""):
     """Serve album art for a song, walking the R3 override chain:
 
       1. USER OVERRIDE (upload / URL-fetch, {safe_name}.gif|.png in the art
@@ -134,7 +141,7 @@ async def get_song_art(filename: str, request: Request = None, source: str = "")
         # is correct for both dir- and zip-form. Raw byte Response lacks
         # FileResponse's validators, so we attach the ETag + honor If-None-Match.
         try:
-            art = await asyncio.to_thread(sloppak_mod.read_cover_bytes, song_path)
+            art = sloppak_mod.read_cover_bytes(song_path)
         except Exception:
             art = None
         if art is not None:

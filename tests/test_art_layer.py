@@ -77,6 +77,36 @@ def b64(data):
 
 # ── the serve chain: user > pack > CAA ────────────────────────────────────────
 
+def test_slow_art_path_does_not_block_event_loop(monkeypatch):
+    import asyncio
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_dlc():
+        entered.set()
+        assert release.wait(3), "event loop could not run while artwork was waiting"
+        return None
+
+    monkeypatch.setattr(art, "_get_dlc_dir", slow_dlc)
+
+    async def check():
+        task = asyncio.create_task(art.get_song_art("missing.feedpak"))
+        try:
+            for _ in range(100):
+                if entered.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert entered.is_set()
+            assert not task.done(), "artwork should still be waiting on the filesystem"
+        finally:
+            release.set()
+        assert (await task).status_code == 404
+
+    asyncio.run(check())
+
+
 def test_user_override_beats_pack_art(server, client):
     make_sloppak(server, "a.sloppak", with_cover=True)
     r = client.get("/api/song/a.sloppak/art")
