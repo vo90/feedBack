@@ -49,7 +49,7 @@ const dispatch = new Function('chordNotes', 'options', `
     const _linkedVibratoRuns = new WeakMap();
     const _linkedTrailPaths = { byNote: new WeakMap() };
     const now = 186, chDtEarly = options.dt ?? .460999;
-    const ch = { t: now + chDtEarly, id: 1 };
+    const ch = { t: now + chDtEarly, id: 1, h3dSynth: !!options.synth };
     const chordCX = 0, chordTailHoldS = 0.75, laneWForOpenStrings = 40;
     const chordFrameBounds = {dMin:2,dMax:6};
     const chordTailFadeS = .15, chordNextSoon = false, AHEAD = 3;
@@ -63,9 +63,9 @@ const dispatch = new Function('chordNotes', 'options', `
     const lastFretForString = [], cameraMode = 'lookahead', drawn = [], drawCalls = [];
     function drawNote(note, at, openX, skipLabel, skipBody, linger, openWidth,
         fromChord, id, sustainFrame, arpBounds, previous, dropLine, linked,
-        sharedHold, belongsToBoxedChord) {
+        sharedHold, belongsToBoxedChord, frameBounds, sourceIdentity, guidanceOnly) {
         const stemVisible = noteStemVisible(note, belongsToBoxedChord, options.noteStems !== false, options.openStems !== false);
-        drawCalls.push({note:{...note},skipBody,linked,fromChord,belongsToBoxedChord,stemVisible,dropLine});
+        drawCalls.push({note:{...note},skipBody,linked,fromChord,belongsToBoxedChord,stemVisible,dropLine,guidanceOnly});
         if (!skipBody && !linked) drawn.push({ ...note });
     }
     ${between('const chDt = chDtEarly;', 'const suppressRepeatGems = repeatChordMaySuppressGems(')}
@@ -566,5 +566,29 @@ test('dead-string and fret changes restore full chord instructions before anothe
         const notes=original.map(n=>({...n,f:n.mt?f:n.f}));
         assert.equal(sameChordRepeat({t:10,notes:original},{t:10.2,notes}),true,
             'hidden dead-string fret is not a changed playing instruction');
+    }
+});
+
+
+test('synthetic dispatch is guidance-only through arrival and rewind; real attacks are not', () => {
+    const notes = [{s:1,f:3},{s:2,f:2},{s:3,f:0},{s:4,f:1}];
+    for (const dt of [.5, .032, 0, -.01, -.1, .5]) {
+        const synth = dispatch(notes, {synth:true, repeat:false, dt});
+        assert.equal(synth.chordFrameEligible, false);
+        assert.equal(synth.drawCalls.length, 4, 'all fingering positions remain available');
+        assert.ok(synth.drawCalls.every(c => c.guidanceOnly === true));
+        const real = dispatch([notes[0],notes[3]], {repeat:false, dt});
+        assert.ok(real.drawCalls.every(c => c.guidanceOnly === false));
+    }
+});
+
+test('explicit arpeggio guidance keeps its enclosure without creating attacks', () => {
+    const notes = [{s:1,f:3},{s:2,f:2},{s:3,f:0},{s:4,f:1}];
+    for (const dt of [.5, 0, -.1]) {
+        const result = dispatch(notes, {synth:true, arpeggio:true, repeat:false, dt});
+        assert.equal(result.chordFrameEligible, true);
+        assert.equal(result.belongsToBoxedChord, false, 'guidance is not a strum');
+        assert.ok(result.drawCalls.every(c => c.guidanceOnly));
+        assert.equal(result.drawn.length, 0);
     }
 });

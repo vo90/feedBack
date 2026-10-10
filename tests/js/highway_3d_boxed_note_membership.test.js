@@ -243,11 +243,14 @@ test('arpeggio membership requires a renderable box and exact occurrence members
     const n={t:10,s:0,f:0},later={t:12.5,s:0,f:0},wrong={t:11,s:1,f:7};
     const ch={t:10,id:1,notes:[{s:0,f:0},{s:1,f:5}]};
     const hs={chord_id:1,start_time:10,end_time:12,arp:true};
-    for(const chords of [[],[{...ch,notes:[{s:0,f:0}]}],[{...ch,h3dSynth:true}]]) {
+    for(const chords of [[],[{...ch,notes:[{s:0,f:0}]}]]) {
         const r=render(membershipHarness(),n,chords,{notes:[{...n,t:10},n],handShapes:[hs]});
         assert.equal(r.belongsToBoxedArpeggio,false);
         assert.equal(r.openStem,true);
     }
+    const guide=render(membershipHarness(),n,[{...ch,h3dSynth:true}],{handShapes:[hs]});
+    assert.equal(guide.belongsToBoxedArpeggio,true,'explicit hand-shape arpeggio keeps its guide enclosure');
+    assert.equal(guide.openStem,false);
     for(const note of [later,wrong]) {
         const r=render(membershipHarness(),note,[ch],{handShapes:[hs]});
         assert.equal(r.belongsToBoxedArpeggio,false);
@@ -319,7 +322,7 @@ test('chart-static cache reuses its index and refreshes every membership input',
     assert.equal(h.ensure(notes,one,hs,{1:{frets:[3,5]}}).size,1);
     assert.equal(h.ensure(notes,one,hs,{1:{frets:[3]}}).size,0);
     const synthetic=[{...ch,h3dSynth:true}];
-    assert.equal(h.ensure([],synthetic,hs,tpl).size,2);
+    assert.equal(h.ensure([],synthetic,hs,tpl).size,0, 'a shape without nearby notes is still only guidance');
     assert.equal(h.ensure(notes,synthetic,hs,tpl).size,0);
     h.release();
     assert.notEqual(h.ensure(notes,chords,hs,tpl),a);

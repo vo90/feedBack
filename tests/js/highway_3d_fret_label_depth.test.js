@@ -398,7 +398,7 @@ function drawLabelPath(h, path, options = {}) {
         chShape: new Map([[0, fret], [1, fret], [2, 7], [3, 0]]),
         isRepeat: !!options.hidden, chDt: 0.7, chordTailMul: 1,
         fromChord: path !== 'single', arpBounds: path === 'arp' ? {} : null,
-        skipBody: path === 'synthetic', skipLabel: !!options.hidden,
+        skipBody: path === 'synthetic', skipLabel: !!options.hidden, guidanceOnly: !!options.guidanceOnly,
         _isArpNote: path === 'arp',
         _fretLabelAllowed: new Set(options.hidden ? [] : [Math.round(time * 25) * 100 + fret]),
         _frameLabeledKeys: new Set(), alpha: 1, dt: 0.7,
@@ -409,7 +409,7 @@ function drawLabelPath(h, path, options = {}) {
         const from = source.indexOf('// ── Chord fret numbers at the base of the highway');
         code = sourceBetween('if (!isRepeat) {', '// ── Palm-mute strum indicator', from);
     } else if (path === 'synthetic') {
-        code = sourceBetween('if (skipBody && fromChord && !skipLabel && n.f > 0 && dt >= 0)',
+        code = sourceBetween('if (!guidanceOnly && skipBody && fromChord && !skipLabel && n.f > 0 && dt >= 0)',
             '// ── Drop line for chord / arpeggio notes');
     } else if (path === 'grey') {
         const from = source.indexOf('// ── Fret-column reference markers');
@@ -633,4 +633,11 @@ test('camera fit retains its deadband, gradual relaxation and manual-camera opt-
     const manual = fitGuard([inBand], { boost: 1.4, freeCamera: true });
     assert.equal(manual.boost, 1);
     assert.equal(manual.projections, 0, 'automatic fitting does not fight Camera Director');
+});
+
+
+test('hand-shape guidance never registers an incoming attack fret number', () => {
+    const h = registrationHarness();
+    drawLabelPath(h, 'synthetic', {guidanceOnly:true});
+    assert.equal(h.context._incomingFloorLabelCount, 0);
 });

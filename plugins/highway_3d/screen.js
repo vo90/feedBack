@@ -13921,23 +13921,17 @@
             return hint.explicit && !isNaN(start) && Math.abs(ch.t - start) <= 0.1;
         }
 
-        function suppressSynthChordForNotes(ch, shape, notes) {
-            if (!ch.h3dSynth || !notes || shape.size === 0) return false;
-            const lo = ch.t - ARP_FRAME_ONSET_PAD_S;
-            const hi = ch.t + ARP_FRAME_ONSET_CLUSTER_S;
-            for (let i = lowerBoundT(notes, lo - 0.02); i < notes.length; i++) {
-                const n = notes[i];
-                if (n.t > hi) break;
-                if (n.t >= lo && shape.get(n.s) === n.f) return true;
-            }
-            return false;
+        function suppressSynthChordForNotes(ch) {
+            // Fingering metadata is never an authored attack, even when the
+            // first picked note is outside the onset-cluster window.
+            return ch.h3dSynth === true;
         }
 
         // Structural frame eligibility is shared by both note streams. Width
         // and time-window checks remain in the chord geometry pass.
-        function chordHasFrameShape(ch, shape, suppressSynthChord, templates) {
+        function chordHasFrameShape(ch, shape, suppressSynthChord, templates, authoredArpeggio = false) {
             return shape.size > 1
-                && (!suppressSynthChord || chordTemplateMarkedArpeggio(ch.id, templates));
+                && (!suppressSynthChord || authoredArpeggio || chordTemplateMarkedArpeggio(ch.id, templates));
         }
 
         function _ensureBoxedChordMembership(notes, chords, handShapes, templates) {
@@ -13956,8 +13950,8 @@
                 if (!members.length) continue;
                 const shape = mergeChordShape(ch, members, templates);
                 const hint = chordHandShapeArpeggioHint(ch, handShapes, templates);
-                const suppressed = suppressSynthChordForNotes(ch, shape, notes);
-                if (!chordHasFrameShape(ch, shape, suppressed, templates)) continue;
+                const suppressed = suppressSynthChordForNotes(ch);
+                if (!chordHasFrameShape(ch, shape, suppressed, templates, chordUsesArpeggioFrame(ch, hint))) continue;
                 if (!ch.h3dStrum && chordUsesArpeggioFrame(ch, hint)) {
                     // Only attacks on the leading box share its stem policy.
                     // Later plucks keep stems throughout their approach, even
@@ -16938,17 +16932,9 @@
                         }
                     }
 
-                    // Suppress gems AND frame for hand-shape-synthesized chords whose
-                    // notes are already rendered individually via the note stream. Showing
-                    // chord gems or a framebox for a synth chord that duplicates the note
-                    // stream looks like phantom notes/chords. Check: any standalone note
-                    // matching any shape string in the onset window → player is already
-                    // guided by the note stream. Weaker than chordShapeCoveredByStandaloneNotes
-                    // (all strings covered) to handle patterns where one shape string only
-                    // appears well after the onset cluster (e.g. Walk intro, string 5 at
-                    // +0.7 s outside the 0.26 s window). Share this decision with
-                    // the standalone-note membership index.
-                    const suppressSynthChord = suppressSynthChordForNotes(ch, chShape, notes);
+                    // Synthetic hand shapes are guidance only, independently of
+                    // which strings happen to be picked near the shape onset.
+                    const suppressSynthChord = suppressSynthChordForNotes(ch);
 
                     // suppressSynthChord: skip gems + frame but still call drawNote with
                     // skipBody=true so the board projection (fret ghost on fretboard) renders
@@ -16988,7 +16974,7 @@
                         return hwyPostHitTailFadeMul(chDt, chordTailHoldS, chordNextSoon, chordTailFadeS);
                     })();
                     const chordHasFrame = chordOpenBoxW != null
-                        && chordHasFrameShape(ch, chShape, suppressSynthChord, bundle.chordTemplates);
+                        && chordHasFrameShape(ch, chShape, suppressSynthChord, bundle.chordTemplates, chordHighwayLavenderArpVisual);
                     // An arpeggio enclosure is hand-position guidance, not a
                     // strum cue. Ordinary frames require at least one attack.
                     const chordFrameEligible = chordHasFrame && chDt > -chordTailHoldS && chDt < AHEAD
@@ -17107,6 +17093,7 @@
                                 belongsToBoxedChord,
                                 chordFrameBounds,
                                 cn,
+                                ch.h3dSynth === true,
                             );
                             // Frame height follows the gems this path actually retains,
                             // including arpeggio deferral and linked continuation skips.
@@ -17184,6 +17171,22 @@
                                     : null;
                                 drawArpBrackets(_bx, sY(cn.s), _arpBracketDt, _arpEnd, now, cn.s, usesUnfrettedPosition(cn), _openHalfW);
                             }
+                        }
+                    }
+
+                    // Preserve the shape name without a second strum enclosure.
+                    if (ch.h3dSynth && !chordFrameEligible && chordOpenBoxW != null
+                        && firstInShapeRun && chDt > -chordTailHoldS && chDt < AHEAD) {
+                        const name = chordTemplateLabel(bundle.chordTemplates?.[ch.id]);
+                        if (name) {
+                            const lbl = pChordLbl.get();
+                            _setLabelMap(lbl, txtMat(name, '#aebbc5', true, 'chord'));
+                            const w = 28 * K * _textSizeMul, h = 9 * K * _textSizeMul;
+                            lbl.material.opacity = Math.min(1, (AHEAD - chDt) / 0.35) * chordTailMul;
+                            lbl.position.set(chordFrameXL - w / 2 + NW * 0.94,
+                                Math.max(sY(0), sY(nStr - 1)) + S_GAP * 0.8 + h / 2,
+                                Math.min(0, dZ(chDt)));
+                            lbl.scale.set(w, h, 1);
                         }
                     }
 
@@ -17265,7 +17268,7 @@
                         // standalone notes judged at their own times, so the
                         // scan's query at `ch.t` finds nothing for them and
                         // the frame keeps its lavender default.
-                        if (chDt <= 0 && _ndHasProvider && !isArpeggioFrame) {
+                        if (chDt <= 0 && _ndHasProvider && !ch.h3dSynth && !isArpeggioFrame) {
                             const latched = _chordVerdicts.get(verdictKey);
                             if (latched === 'green') {
                                 rimHex = CHORD_BOX_HIT_BRIGHT_HEX;
@@ -20488,6 +20491,7 @@
         // skipLabel: don't draw per-note connector label (repeated fret)
         // skipBody:  don't draw the approaching 3D note mesh (repeat chord — still shows projection)
         // showDropLine: draw a white vertical drop line from note to below board (arpeggio / synth chord notes)
+        // guidanceOnly: retain fingering projections without attacks, trails or verdicts.
         // explicitLinkTarget: suppress this continuation's attack at every phase
         // A pre-onset flourish can enter the far edge just before its authored
         // head. Visit only that short suffix, without adding it to camera,
@@ -20524,7 +20528,7 @@
             }
         }
 
-        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, belongsToBoxedChord = false, chordFrameBounds = null, sourceIdentity = n) {
+        function drawNote(n, now, openX, skipLabel, skipBody, linger = 0.10, openChordBoxWidth, fromChord = false, chordId, susTrailMatchArpFrame = false, arpBounds = null, prevOnsetT = -Infinity, showDropLine = false, explicitLinkTarget = false, sharedChordHold = false, belongsToBoxedChord = false, chordFrameBounds = null, sourceIdentity = n, guidanceOnly = false) {
             if (_collectNoteDraws) {
                 if (!validString(n.s) || !isRenderableNote(n)) return;
                 const scrape = n.mt === true && n.pick_scrape_marks?.length > 0;
@@ -20551,9 +20555,9 @@
                 }
                 hwyNoteVisualParts(n, now, AHEAD, linger,
                     _firstEventTimeGreaterThan(n.t + 1e-6), slideInVisualStart(n),
-                    scrape || hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, n.t - now),
-                    sharedChordHold, record.parts);
-                const event = record.event = trailYieldEventForNote(n, sourceIdentity);
+                    guidanceOnly || scrape || hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, n.t - now),
+                    guidanceOnly || sharedChordHold, record.parts);
+                const event = record.event = guidanceOnly ? null : trailYieldEventForNote(n, sourceIdentity);
                 if (event && (record.parts.head || record.parts.trail)) {
                     if (!event.gemVisible && !event.trailVisible) _visibleTrailEvents.push(event);
                     event.gemVisible ||= record.parts.head;
@@ -20622,7 +20626,7 @@
                 // teardown/seek clears the Map. !hasSus notes never wrote to
                 // the latch, so Map.delete is a harmless no-op there.
                 if (hasSus) _susVerdictLatch.delete(Math.round(n.t * 1e4) * 10 + n.s);
-                if (!_ndHasProvider || dt < -NOTEDETECT_GEM_VERDICT_WINDOW) return;
+                if (guidanceOnly || !_ndHasProvider || dt < -NOTEDETECT_GEM_VERDICT_WINDOW) return;
                 let _ndProbe = null;
                 try { _ndProbe = _ndGetNoteState(sourceNote, sourceNote.t); } catch (e) { _ndProbe = null; }
                 _ndProbed = true;
@@ -20638,7 +20642,7 @@
             // Legacy skipBody applies only to the pre-hit approach. An explicit
             // linkNext target is not re-struck, so its attack remains hidden at
             // and after onset; its sustain and any outgoing slide still render.
-            const effSkipBody = scrape || hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, dt);
+            const effSkipBody = guidanceOnly || scrape || hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, dt);
             const hasTechniqueVibrato = noteHasVibrato(n);
             // A short sustain can leave its gem visible until the linger
             // deadline. Hold the final bend/vibrato pose for that remainder,
@@ -20707,7 +20711,7 @@
             let _ndCs = null;       // raw provider response — truthy when provider returned a verdict
             let _ndCsIsObj = false; // typeof _ndCs === 'object'
             let _ndFaceMat = null;  // [mat×4, transparent×2] array for lateral face fill, or null
-            if (!scrape && _ndGetNoteState) {
+            if (!guidanceOnly && !scrape && _ndGetNoteState) {
                 // Reuse the smart-cull probe result if we already called
                 // _ndGetNoteState for this gem above; otherwise probe now.
                 let _raw = null;
@@ -20748,7 +20752,7 @@
             // re-inject it so hit/miss color persists for the full hold.
             // Works with both the modern provider path and the legacy event
             // path — vibrato and other long-sustain notes benefit equally.
-            if (hasSus && !scrape) {
+            if (!guidanceOnly && hasSus && !scrape) {
                 const _sk = Math.round(n.t * 1e4) * 10 + n.s;
                 // Resolve current verdict: provider takes priority, then
                 // fall back to scanning the legacy mark arrays so a hit or
@@ -20822,9 +20826,9 @@
                 if (now >= susEnd) _susVerdictLatch.delete(_sk);
             }
 
-            const _showHit = (_ndState === 'miss') ? false
+            const _showHit = !guidanceOnly && ((_ndState === 'miss') ? false
                 : (_ndState ? _ndGood
-                : (hit || (n.f > 0 && inGhostWin)));
+                : (hit || (n.f > 0 && inGhostWin))));
 
             // ── Fret-wire hit flash ───────────────────────────────────────
             // A confirmed note lights the wires that bracket it:
@@ -21974,7 +21978,7 @@
             // gate. Applies the same measure-based + frame-dedup rules so that if
             // the corresponding standalone arpeggio note already showed a label this
             // frame, we don't duplicate it.
-            if (skipBody && fromChord && !skipLabel && n.f > 0 && dt >= 0) {
+            if (!guidanceOnly && skipBody && fromChord && !skipLabel && n.f > 0 && dt >= 0) {
                 const _fl2FrameKey = Math.round(n.t * 25) * 100 + n.f;
                 if (_fretLabelAllowed.has(_fl2FrameKey)
                     && !_frameLabeledKeys.has(_fl2FrameKey)) {
