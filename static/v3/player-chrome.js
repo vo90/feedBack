@@ -279,8 +279,9 @@
         // Keep the transport up while paused, hovering it, or a popover is open.
         if (openPop || overControls || !playing) { lastMove = now(); return; }
         if (now() - lastMove > IDLE_MS) {
-            p.classList.remove('chrome-active');
-            p.classList.add('chrome-idle');
+            // No-op token writes still notify the player class observer.
+            if (p.classList.contains('chrome-active')) p.classList.remove('chrome-active');
+            if (!p.classList.contains('chrome-idle')) p.classList.add('chrome-idle');
         }
     }
 
