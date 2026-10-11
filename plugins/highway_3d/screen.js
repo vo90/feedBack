@@ -12986,13 +12986,21 @@
                 geo.setAttribute('color', new T.BufferAttribute(new Float32Array(geo.attributes.position.count * 3), 3));
                 return geo;
             });
+            // Flat rims use white vertex colors so they share the adjacent
+            // gradient body's shader variant without changing draw order.
+            // Build after the gradient clones: their authored colors stay private.
+            for (const geometry of [gRsNote, gRsNoteGhost]) {
+                const colors = new Float32Array(geometry.attributes.position.count * 3);
+                colors.fill(1);
+                geometry.setAttribute('color', new T.BufferAttribute(colors, 3));
+            }
             const basic = (color, extra = {}) => new T.MeshBasicMaterial({
                 color, transparent: true, opacity: 1, depthWrite: false,
                 fog: false, toneMapped: false, ...extra,
             });
             mRsBody = activePalette.map(() => basic(0xffffff, { vertexColors: true }));
-            mRsRim = activePalette.map(c => basic(c));
-            mRsAccentRim = activePalette.map(c => basic(c));
+            mRsRim = activePalette.map(c => basic(c, { vertexColors: true }));
+            mRsAccentRim = activePalette.map(c => basic(c, { vertexColors: true }));
             mRsHitRim = activePalette.map(c => basic(c));
             mRsSus = activePalette.map(c => basic(c, { depthTest: false, opacity: 0.62 }));
             mRsSusHit = activePalette.map(c => basic(c, { depthTest: false, opacity: 0.82 }));
