@@ -17658,6 +17658,7 @@
             // Must run after all drawNote() / chord-loop writes are done.
             if (imPMTech) {
                 imPMTech.count = _imPMTechCount;
+                imPMTech.visible = imPMTech.count > 0;
                 if (_imPMTechCount > 0) {
                     imPMTech.instanceMatrix.needsUpdate = true;
                     imPMTech.geometry.getAttribute('instanceAlpha').needsUpdate = true;
@@ -17665,6 +17666,7 @@
             }
             if (imFHTech) {
                 imFHTech.count = _imFHTechCount;
+                imFHTech.visible = imFHTech.count > 0;
                 if (_imFHTechCount > 0) {
                     imFHTech.instanceMatrix.needsUpdate = true;
                     imFHTech.geometry.getAttribute('instanceAlpha').needsUpdate = true;
@@ -17673,10 +17675,22 @@
             // These IMs are kept alive but always empty (count=0) — rendering
             // is now handled by the pPMXFill / pMuteXLines / pFHXFill / pFHXLines
             // pools which support per-chord Z-proportional renderOrder.
-            if (imPMXFill)  imPMXFill.count  = 0;
-            if (imPMXLines) imPMXLines.count = 0;
-            if (imFHXFill)  imFHXFill.count  = 0;
-            if (imFHXLines) imFHXLines.count = 0;
+            if (imPMXFill) {
+                imPMXFill.count = 0;
+                imPMXFill.visible = imPMXFill.count > 0;
+            }
+            if (imPMXLines) {
+                imPMXLines.count = 0;
+                imPMXLines.visible = imPMXLines.count > 0;
+            }
+            if (imFHXFill) {
+                imFHXFill.count = 0;
+                imFHXFill.visible = imFHXFill.count > 0;
+            }
+            if (imFHXLines) {
+                imFHXLines.count = 0;
+                imFHXLines.visible = imFHXLines.count > 0;
+            }
 
             pbEnd(5);
             pbEnd(0);
