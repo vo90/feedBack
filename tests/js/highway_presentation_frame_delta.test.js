@@ -170,7 +170,7 @@ test('missing metadata preserves the complete old clock through transport transi
     }
 });
 
-test('matching frame and wall deltas preserve exact legacy output at different origins and rates', () => {
+test('matching frame and wall deltas preserve legacy output within roundoff at different origins and rates', () => {
     for (const origin of [0, 100, 100000]) for (const rate of [.25, 1, 2]) {
         const a = make(), b = reference();
         let wall = 1000;
@@ -179,8 +179,11 @@ test('matching frame and wall deltas preserve exact legacy output at different o
             const raw = 10 + wall / 1000 * rate;
             const options = { rate, state: i >= 60 && i < 80 ? 'paused' : 'playing',
                 epoch: i < 120 ? 1 : 2, freshAt: i >= 160 && i < 200 ? 2000 : wall };
-            assert.equal(sample(a, wall, raw, wall + origin, options),
-                sample(b, wall, raw, wall + origin, options));
+            const actual = sample(a, wall, raw, wall + origin, options);
+            const expected = sample(b, wall, raw, wall + origin, options);
+            // Filtering tiny floating-point correction velocities can change
+            // the final rounding. Missing-metadata paths remain exact above.
+            assert.ok(Math.abs(actual - expected) <= 4 * Number.EPSILON * Math.max(1, Math.abs(expected)));
         }
     }
 });
@@ -359,4 +362,176 @@ test('frame history is per clock and disabled diagnostics allocate no ring stora
             sample(isolated, i * 10, 20 + i * .01, i * 10 + 900));
     }
     assert.equal(arrays, 0); assert.equal(a.diagnostics(), null);
+});
+
+// Recover the complete pre-filter clock, and pin its body to fef2502. The hash
+// makes this an independent frozen reference even though the unchanged code is
+// shared with the candidate, rather than embedding a second large clock body.
+const velocitySource = currentSource.replace(/\r\n/g, '\n');
+let unfilteredSource = velocitySource
+    .replace('        let correctionVelocity = NaN;\n', '')
+    .replace('                correctionVelocity = NaN;\n', '')
+    .replace(/                        const boundedCorrection = [\s\S]*?                        time = predicted \+ appliedCorrection;/,
+        '                        time = predicted + Math.max(-advance * 0.2, Math.min(advance * 0.2, correction));')
+    .replace('                if (reason !== 0) { frameMotionDt = NaN; correctionVelocity = NaN; }',
+        '                if (reason !== 0) frameMotionDt = NaN;');
+const unfiltered = factory(unfilteredSource);
+const inspectVelocity = factory(velocitySource.replace(
+    '            frameMotionDelta() { return frameMotionDt; },',
+    '            frameMotionDelta() { return frameMotionDt; },\n            testVelocity() { return correctionVelocity; },'));
+
+test('velocity filtering changes only its scalar state and normal correction in the frozen clock', () => {
+    assert.equal(require('node:crypto').createHash('sha256').update(unfilteredSource).digest('hex'),
+        '586dae3699cd09c090692bcd30fb72ff4e9ef65c42930df2b14ea418bd89a9fb');
+    assert.notEqual(unfilteredSource, velocitySource);
+});
+
+test('a short correction-velocity filter reduces known-truth callback jitter without moving the audio target', () => {
+    for (const rate of [.25, 1, 2]) {
+        const a = make(), b = unfiltered();
+        a.trace(true); b.trace(true);
+        const filteredMotion = [], oldMotion = [], filteredSteps = [], oldSteps = [];
+        const filteredPhase = [], oldPhase = [];
+        let prior, oldPrior, priorSpeed, oldPriorSpeed;
+        for (let i = 0; i <= 2000; i++) {
+            const nominal = i * 10, jitter = 3 * Math.sin(i * .7) + 1.5 * Math.sin(i * 1.9);
+            const wall = nominal + 5 + jitter, frame = nominal + 100;
+            const target = 10 + wall * rate / 1000, truth = 10 + (nominal + 5) * rate / 1000;
+            const actual = sample(a, wall, target, frame, {rate});
+            const old = sample(b, wall, target, frame, {rate});
+            if (i > 100) {
+                const speed = (actual - prior) / rate / .01, oldSpeed = (old - oldPrior) / rate / .01;
+                filteredMotion.push((actual - prior) / rate * 1000 - 10);
+                oldMotion.push((old - oldPrior) / rate * 1000 - 10);
+                filteredPhase.push((actual - truth) / rate * 1000);
+                oldPhase.push((old - truth) / rate * 1000);
+                if (priorSpeed != null) { filteredSteps.push(speed - priorSpeed); oldSteps.push(oldSpeed - oldPriorSpeed); }
+                priorSpeed = speed; oldPriorSpeed = oldSpeed;
+            }
+            prior = actual; oldPrior = old;
+        }
+        assert.ok(rms(filteredMotion) < rms(oldMotion) * .6);
+        assert.ok(rms(filteredSteps) < rms(oldSteps) * .5);
+        assert.ok(rms(filteredPhase) < rms(oldPhase) * .75);
+        assert.ok(Math.abs(filteredPhase.reduce((sum, n) => sum + n, 0) / filteredPhase.length) < .003);
+        // Target/raw/source metadata are unchanged, including the independent
+        // animation-clock origin. Only the returned visual time/delta may differ.
+        const currentRows = a.diagnostics().rows, referenceRows = b.diagnostics().rows;
+        for (let i = 0; i < currentRows.length; i++) for (const column of [0,2,3,4,5,6,7,8,9,11])
+            assert.equal(currentRows[i][column], referenceRows[i][column]);
+    }
+});
+
+test('true source steps retain bounded response, and clock drift gains no persistent filter bias', () => {
+    for (const sign of [-1, 1]) {
+        const a = make(), b = unfiltered();
+        const halfResponse = [null, null];
+        let maximumExtraError = 0;
+        for (let i = 0; i <= 1000; i++) {
+            const wall = i * 10 + 5, target = 10 + wall / 1000 + (i >= 500 ? sign * .01 : 0);
+            const actual = sample(a, wall, target, i * 10 + 100);
+            const old = sample(b, wall, target, i * 10 + 100);
+            if (i >= 500) {
+                const errors = [Math.abs(actual - target), Math.abs(old - target)];
+                maximumExtraError = Math.max(maximumExtraError, errors[0] - errors[1]);
+                errors.forEach((error, index) => { if (halfResponse[index] == null && error <= .005) halfResponse[index] = (i - 500) * 10; });
+                assert.ok(errors[0] <= .01, 'source-step correction must not amplify the 10ms phase step');
+            }
+        }
+        assert.equal(halfResponse[0], 80); assert.equal(halfResponse[1], 70);
+        assert.ok(maximumExtraError < .0009, 'bound the additional transient source-step lag');
+    }
+    for (const kind of ['audio', 'frame']) {
+        const a = make(), b = unfiltered();
+        const errors = [], differences = [];
+        for (let i = 0; i <= 2000; i++) {
+            const nominal = i * 10, wall = nominal + 5;
+            const target = 10 + wall / 1000 + (kind === 'audio' ? nominal * .000001 : 0);
+            const frame = nominal + 100 + (kind === 'frame' ? nominal * .002 : 0);
+            const actual = sample(a, wall, target, frame), old = sample(b, wall, target, frame);
+            if (i > 1900) { errors.push(actual - target); differences.push(actual - old); }
+        }
+        assert.ok(Math.max(...errors.map(Math.abs)) < .0003);
+        assert.ok(Math.max(...differences.map(Math.abs)) < 1e-10, 'no extra steady bias from the velocity pole');
+    }
+});
+
+test('velocity state clears at all transport boundaries and wall fallbacks, independently per clock', () => {
+    function warm() {
+        const c = inspectVelocity();
+        sample(c, 0, 10, 100); sample(c, 10, 10.013, 110); sample(c, 20, 10.017, 120);
+        assert.ok(Number.isFinite(c.testVelocity())); return c;
+    }
+    const cases = [
+        ['absent', 30, undefined, {}], ['invalid', 30, NaN, {}], ['infinite', 30, Infinity, {}],
+        ['repeated', 30, 120, {}], ['backward', 30, 119, {}], ['origin jump', 30, 230, {}],
+        ['long wall gap', 400, 500, {}], ['rate', 30, 130, {rate: 2}],
+        ['generation', 30, 130, {generation: 2}], ['epoch', 30, 130, {epoch: 2}],
+        ['stale', 30, 130, {freshAt: -230}], ['end', 30, 130, {endTime: 10.025}],
+        ...['paused', 'buffering', 'seeking', 'ended', 'rewind', 'count-in']
+            .map(state => [state, 30, 130, {state}]),
+    ];
+    for (const [name, wall, frame, options] of cases) {
+        const c = warm(); sample(c, wall, 10.03, frame, options);
+        assert.ok(Number.isNaN(c.testVelocity()), name);
+    }
+    const recovery = warm();
+    sample(recovery, 30, 10.03, 130, {freshAt: -230}); sample(recovery, 40, 10.04, 140);
+    assert.ok(Number.isNaN(recovery.testVelocity()), 'source recovery must not reuse an old velocity');
+    sample(recovery, 50, 10.05, 150); assert.ok(Number.isFinite(recovery.testVelocity()));
+    const a = warm(), b = warm(); a.reset();
+    assert.ok(Number.isNaN(a.testVelocity())); assert.ok(Number.isFinite(b.testVelocity()));
+});
+
+test('accepted gross catch-up preserves its frame interval and leaves no correction-velocity impulse', () => {
+    const rows = [
+        [132784.60000000894, 140.22180112199135, 132874.9],
+        [132853.60000000894, 140.299763333344, 132895],
+        [132862.60000000894, 140.30909438333904, 132954.9],
+        [132868.70000000298, 140.31519438333308, 132965],
+    ];
+    const c = inspectVelocity(), old = unfiltered();
+    for (let i = 0; i < rows.length; i++) {
+        const actual = sample(c, ...rows[i]), expected = sample(old, ...rows[i]);
+        assert.equal(actual, expected, 'the catch-up and first following correction stay unfiltered');
+        if (i === 1) assert.ok(c.testVelocity() > 0);
+        if (i === 2) {
+            assert.ok(Number.isNaN(c.testVelocity()));
+            assert.equal(c.frameMotionDelta(), (rows[2][2] - rows[1][2]) / 1000);
+            assert.ok(Math.abs(actual - rows[i][1]) < .002);
+        }
+        if (i === 3) { assert.ok(c.testVelocity() < 0); assert.ok(Math.abs(actual - rows[i][1]) < .003); }
+    }
+});
+
+test('filtered correction remains rate-capped and monotonic across extreme target reversals', () => {
+    for (const rate of [.25, 1, 2, 4]) {
+        const c = make(); let previous = sample(c, 0, 10, 100, {rate});
+        for (let i = 1; i < 400; i++) {
+            const target = 10 + i * .01 * rate + (i % 7 < 3 ? 10 : -10);
+            const actual = sample(c, i * 10, target, i * 10 + 100, {rate});
+            const delta = actual - previous, advance = .01 * rate;
+            assert.ok(delta >= advance * .8 - 1e-12 && delta <= advance * 1.2 + 1e-12);
+            previous = actual;
+        }
+    }
+});
+
+test('retained correction velocity can briefly cross an aligned target, within the existing speed cap', () => {
+    const c = inspectVelocity();
+    sample(c, 0, 0, 100);
+    const first = sample(c, 10, .034, 110);
+    assert.equal(first, .012);
+    assert.equal(c.testVelocity(), .2);
+    const alignedTarget = first + .01;
+    const actual = sample(c, 20, alignedTarget, 120);
+    const expectedResidual = .002 * Math.exp(-.5);
+    assert.ok(Math.abs(actual - alignedTarget - expectedResidual) < 1e-17);
+    assert.ok(actual - alignedTarget < .001214);
+    assert.ok(actual - first <= .012);
+    // This is an explicit transient tradeoff, not a claim of exact instantaneous
+    // target tracking. Subsequent corrections converge with no lasting offset.
+    let last = actual;
+    for (let i = 3; i <= 100; i++) last = sample(c, i * 10, alignedTarget + (i - 2) * .01, i * 10 + 100);
+    assert.ok(Math.abs(last - (alignedTarget + .98)) < 1e-6);
 });

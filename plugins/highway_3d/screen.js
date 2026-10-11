@@ -195,6 +195,7 @@
         let time = NaN, lastPerf = NaN, epoch = null;
         let lastFrame = NaN, lastRate = NaN, lastGeneration;
         let frameMotionDt = NaN;
+        let correctionVelocity = NaN;
         let gapRecovery = false;
         let trace = null, traceCount = 0;
         const fields = ['wallMs', 'time', 'target', 'raw', 'epoch', 'reason',
@@ -204,6 +205,7 @@
             reset() {
                 time = lastPerf = lastFrame = lastRate = NaN;
                 frameMotionDt = NaN;
+                correctionVelocity = NaN;
                 epoch = null; lastGeneration = undefined; gapRecovery = false; traceCount = 0;
             },
             trace(enabled) { trace = enabled ? new Float64Array(4096 * fields.length) : null; traceCount = 0; },
@@ -278,11 +280,25 @@
                         // Match the gain to motion, so late callbacks do not
                         // receive extra correction weight from wall jitter.
                         const correction = (target - predicted) * Math.min(1, motionDt / 0.12);
-                        time = predicted + Math.max(-advance * 0.2, Math.min(advance * 0.2, correction));
+                        const boundedCorrection = Math.max(-advance * 0.2, Math.min(advance * 0.2, correction));
+                        let appliedCorrection = boundedCorrection;
+                        // Callback-time noise in the audio target can still
+                        // modulate motion. Smooth only correction velocity;
+                        // keep the target and its existing rate cap unchanged.
+                        // Phase-restoring catch-up uses the original correction
+                        // and clears its impulse before the next normal frame.
+                        if (useFrameDt && motionDt > 0 && Math.abs(frameDt - dt) <= 0.05) {
+                            const desiredVelocity = boundedCorrection / motionDt;
+                            if (Number.isFinite(correctionVelocity)) {
+                                correctionVelocity += (desiredVelocity - correctionVelocity) * (-Math.expm1(-motionDt / 0.02));
+                                appliedCorrection = correctionVelocity * motionDt;
+                            } else correctionVelocity = desiredVelocity;
+                        } else correctionVelocity = NaN;
+                        time = predicted + appliedCorrection;
                     }
                     if (time >= end) { time = end; reason = 6; }
                 }
-                if (reason !== 0) frameMotionDt = NaN;
+                if (reason !== 0) { frameMotionDt = NaN; correctionVelocity = NaN; }
                 // Paused/stale/absent samples cannot bridge animation deltas
                 // into a later active frame. Invalid pairs use the wall path.
                 lastFrame = playing && age <= 250 && Number.isFinite(frameTimestampMs) ? frameTimestampMs : NaN;
