@@ -45,7 +45,7 @@ test('FPS bitmap preserves pixels, live layout, sampling, canvas state and cache
                 const lyricsCtx = lyricsCanvas.getContext('2d', { willReadFrequently: false });
                 return new Function('lyricsCanvas', 'lyricsCtx', 'state',
                     (cached ? cacheSource : 'let _fpsTextCache = null; function _invalidateFpsTextCache() {} ' + referenceDraw)
-                    + `\nlet _fpsLastT = 0, _fpsEma = 100, _fpsDisplay = 100, _fpsLastSampleT = 100;
+                    + `\nlet _fpsLastT = 0, _fpsFrameMsEma = 10, _fpsDisplay = 100, _fpsLastSampleT = 100;
                     let cornerStack;
                     const performance = { now: () => state.clock };
                     const _v3TopRightChromeBottom = () => state.chrome;

@@ -7798,7 +7798,7 @@
         // Legacy 'h3d_showFps' localStorage key and window.h3dShowFps are no longer
         // consulted — use the Settings → 3D Highway — Camera → Show FPS counter checkbox.
         let _fpsLastT = 0;
-        let _fpsEma = 0;
+        let _fpsFrameMsEma = 0;
         let _fpsDisplay = 0;
         let _fpsLastSampleT = 0;
         let _fpsTextCache = null;
@@ -24544,14 +24544,15 @@
                     if (_fpsLastT > 0) {
                         const dt = _fpsNowMs - _fpsLastT;
                         if (dt > 0) {
-                            const inst = 1000 / dt;
-                            _fpsEma = _fpsEma === 0 ? inst : _fpsEma + (inst - _fpsEma) * (1 / 30);
+                            // Average intervals first: averaging instantaneous rates
+                            // overstates FPS when short and long frames alternate.
+                            _fpsFrameMsEma = _fpsFrameMsEma === 0 ? dt : _fpsFrameMsEma + (dt - _fpsFrameMsEma) * (1 / 30);
                         }
                     }
                     _fpsLastT = _fpsNowMs;
                     if (fpsVisible) {
                         if (_fpsNowMs - _fpsLastSampleT > 250) {
-                            _fpsDisplay = _fpsEma;
+                            _fpsDisplay = _fpsFrameMsEma > 0 ? 1000 / _fpsFrameMsEma : 0;
                             _fpsLastSampleT = _fpsNowMs;
                         }
                         const W = lyricsCanvas.width;
