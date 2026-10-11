@@ -1460,9 +1460,12 @@
     function _contributeDiagnostics() {
         if (contributing) return;
         const diagnostics = window.feedBack && window.feedBack.diagnostics;
-        if (diagnostics && typeof diagnostics.contribute === 'function') {
+        if (diagnostics && (typeof diagnostics.contributeProvider === 'function' || typeof diagnostics.contribute === 'function')) {
             contributing = true;
-            try { diagnostics.contribute('capabilities', snapshotDiagnostics()); }
+            try {
+                if (typeof diagnostics.contributeProvider === 'function') diagnostics.contributeProvider('capabilities', snapshotDiagnostics);
+                else diagnostics.contribute('capabilities', snapshotDiagnostics());
+            }
             catch (_err) { /* diagnostics must never break plugin behavior */ }
             finally { contributing = false; }
         }

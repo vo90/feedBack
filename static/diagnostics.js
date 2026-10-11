@@ -15,6 +15,8 @@
     const _bufferSizes = []; // parallel array — serialized byte length per entry
     let _bufferBytes = 0;
     const contributions = {};
+    const contributionProviders = new Map();
+    let readingContributionProviders = false;
 
     function _ua() {
         return (typeof navigator !== 'undefined' && navigator.userAgent) || '';
@@ -303,11 +305,45 @@
 
     function contribute(pluginId, payload) {
         if (typeof pluginId !== 'string' || !pluginId) return;
+        contributionProviders.delete(pluginId);
         contributions[pluginId] = payload;
     }
 
+    // Opt-in current-state snapshots. Unlike contribute(), no payload is built
+    // or retained until requested. Providers must be synchronous and return
+    // their own detached, bounded, redacted diagnostics value.
+    function contributeProvider(pluginId, snapshot) {
+        if (typeof pluginId !== 'string' || !pluginId || typeof snapshot !== 'function') return;
+        delete contributions[pluginId];
+        contributionProviders.set(pluginId, snapshot);
+    }
+
+    function _asyncContribution(value) {
+        if (!value || (typeof value !== 'object' && typeof value !== 'function')) return false;
+        // Observe native Promise rejections even if its .then getter is broken.
+        // Do not invoke arbitrary thenables; this API never waits for a result.
+        try { Promise.prototype.then.call(value, undefined, () => {}); return true; }
+        catch (_e) { /* not a native Promise */ }
+        return typeof value.then === 'function';
+    }
+
     function snapshotContributions() {
-        return Object.assign({}, contributions);
+        const snapshot = Object.assign({}, contributions);
+        // A provider's recursive read gets eager values only, not a chain of
+        // provider calls. Freeze the entry list so mutations apply next read.
+        if (readingContributionProviders) return snapshot;
+        const providers = Array.from(contributionProviders);
+        readingContributionProviders = true;
+        try {
+            for (const [pluginId, provider] of providers) {
+                try {
+                    const value = provider();
+                    if (_asyncContribution(value)) continue;
+                    Object.defineProperty(snapshot, pluginId, { value, enumerable: true, configurable: true, writable: true });
+                } catch (_e) { /* one failed provider must not break an export */ }
+            }
+        } finally { readingContributionProviders = false; }
+        return snapshot;
     }
 
 
@@ -365,5 +401,6 @@
         snapshotContributions,
         summarizeRuntimeDomains,
         contribute,
+        contributeProvider,
     };
 })();
