@@ -15792,6 +15792,70 @@
             }
         }
 
+        function accumulateFrameNoteState(notes, chords, now, noteState) {
+            // Compute sustain / anticipation / fret heat / per-string glow.
+            // Use lowerBoundT to skip notes far in the past (>30s sustain is
+            // unrealistic); break once notes are >2s ahead (nothing beyond
+            // contributes to fretHeat/anticipation/strGlow).
+            if (notes) {
+                const _fsLo = lowerBoundT(notes, now - 30);
+                for (let _ni = _fsLo; _ni < notes.length; _ni++) {
+                    const n = notes[_ni];
+                    if (!validString(n.s) || !isRenderableNote(n)) continue;
+                    const dt = n.t - now;
+                    if (dt > 2.0) break;
+                    const susEnd = n.t + (n.sus || 0);
+                    if (dt > 0 && dt < 0.6)
+                        noteState.stringAnticipation[n.s] = Math.max(noteState.stringAnticipation[n.s], 1 - dt / 0.6);
+                    if (isPlayableFret(n.f) && n.f > 0 && !isUnpitchedMute(n)) {
+                        if (now >= n.t && now <= susEnd) noteState.fretHeat[n.f] = 1;
+                        else if (n.t > now) noteState.fretHeat[n.f] = Math.max(noteState.fretHeat[n.f], Math.max(0, 1 - dt / 2));
+                    }
+                    if (now >= n.t && now <= susEnd) noteState.stringSustain[n.s] = true;
+                    const sustained = dt < 0 && (n.sus || 0) > 0 && now <= susEnd;
+                    const hitDist = Math.abs(dt);
+                    if (hitDist < 0.15 || sustained) {
+                        const hitFade = sustained ? 0.7 : (1 - hitDist / 0.15);
+                        noteState.strGlow[n.s] = Math.max(noteState.strGlow[n.s], 1.0 + hitFade * 1.5);
+                    }
+                }
+            }
+            if (chords) {
+                // Skip chords further than 30s in the past (covers any sustained chord).
+                const _cfsLo = lowerBoundT(chords, now - 30);
+                for (let _cni = _cfsLo; _cni < chords.length; _cni++) {
+                    const ch = chords[_cni];
+                    if (!ch.notes) continue;
+                    const dt = ch.t - now;
+                    if (dt > 2.0) break;
+                    const chordNotes = filterValidNotes(ch.notes);
+                    if (chordNotes.length === 0) continue;
+                    let maxSus = 0;
+                    for (const n of chordNotes) if ((n.sus || 0) > maxSus) maxSus = n.sus;
+                    const susEnd = ch.t + maxSus;
+                    for (const cn of chordNotes) {
+                        if (dt > 0 && dt < 0.6)
+                            noteState.stringAnticipation[cn.s] = Math.max(noteState.stringAnticipation[cn.s], 1 - dt / 0.6);
+                        if (isPlayableFret(cn.f) && cn.f > 0 && !isUnpitchedMute(cn)) {
+                            if (now >= ch.t && now <= susEnd) { noteState.fretHeat[cn.f] = 1; continue; }
+                            if (ch.t > now) noteState.fretHeat[cn.f] = Math.max(noteState.fretHeat[cn.f], Math.max(0, 1 - dt / 2));
+                        }
+                    }
+                    if (now >= ch.t && now <= susEnd)
+                        for (const cn of chordNotes) noteState.stringSustain[cn.s] = true;
+                    const sustained = dt < 0 && maxSus > 0 && now <= susEnd;
+                    const hitDist = Math.abs(dt);
+                    if (hitDist < 0.15 || sustained) {
+                        const hitFade = sustained ? 0.7 : (1 - hitDist / 0.15);
+                        for (const cn of chordNotes) {
+                            noteState.strGlow[cn.s] = Math.max(noteState.strGlow[cn.s], 1.0 + hitFade * 1.5);
+                        }
+                    }
+                }
+            }
+
+        }
+
         function update(bundle) {
             bundle = letRingView(bundle);
             const effectiveAnchors = cameraMode === 'stable' ? stableRegionAnchors(bundle) : resolvedGuidanceAnchors(bundle);
@@ -16274,67 +16338,7 @@
             };
 
             pbBeg(1);
-            // Compute sustain / anticipation / fret heat / per-string glow.
-            // Use lowerBoundT to skip notes far in the past (>30s sustain is
-            // unrealistic); break once notes are >2s ahead (nothing beyond
-            // contributes to fretHeat/anticipation/strGlow).
-            if (notes) {
-                const _fsLo = lowerBoundT(notes, now - 30);
-                for (let _ni = _fsLo; _ni < notes.length; _ni++) {
-                    const n = notes[_ni];
-                    if (!validString(n.s) || !isRenderableNote(n)) continue;
-                    const dt = n.t - now;
-                    if (dt > 2.0) break;
-                    const susEnd = n.t + (n.sus || 0);
-                    if (dt > 0 && dt < 0.6)
-                        noteState.stringAnticipation[n.s] = Math.max(noteState.stringAnticipation[n.s], 1 - dt / 0.6);
-                    if (isPlayableFret(n.f) && n.f > 0 && !isUnpitchedMute(n)) {
-                        if (now >= n.t && now <= susEnd) noteState.fretHeat[n.f] = 1;
-                        else if (n.t > now) noteState.fretHeat[n.f] = Math.max(noteState.fretHeat[n.f], Math.max(0, 1 - dt / 2));
-                    }
-                    if (now >= n.t && now <= susEnd) noteState.stringSustain[n.s] = true;
-                    const sustained = dt < 0 && (n.sus || 0) > 0 && now <= susEnd;
-                    const hitDist = Math.abs(dt);
-                    if (hitDist < 0.15 || sustained) {
-                        const hitFade = sustained ? 0.7 : (1 - hitDist / 0.15);
-                        noteState.strGlow[n.s] = Math.max(noteState.strGlow[n.s], 1.0 + hitFade * 1.5);
-                    }
-                }
-            }
-            if (chords) {
-                // Skip chords further than 30s in the past (covers any sustained chord).
-                const _cfsLo = lowerBoundT(chords, now - 30);
-                for (let _cni = _cfsLo; _cni < chords.length; _cni++) {
-                    const ch = chords[_cni];
-                    if (!ch.notes) continue;
-                    const dt = ch.t - now;
-                    if (dt > 2.0) break;
-                    const chordNotes = filterValidNotes(ch.notes);
-                    if (chordNotes.length === 0) continue;
-                    let maxSus = 0;
-                    for (const n of chordNotes) if ((n.sus || 0) > maxSus) maxSus = n.sus;
-                    const susEnd = ch.t + maxSus;
-                    for (const cn of chordNotes) {
-                        if (dt > 0 && dt < 0.6)
-                            noteState.stringAnticipation[cn.s] = Math.max(noteState.stringAnticipation[cn.s], 1 - dt / 0.6);
-                        if (isPlayableFret(cn.f) && cn.f > 0 && !isUnpitchedMute(cn)) {
-                            if (now >= ch.t && now <= susEnd) { noteState.fretHeat[cn.f] = 1; continue; }
-                            if (ch.t > now) noteState.fretHeat[cn.f] = Math.max(noteState.fretHeat[cn.f], Math.max(0, 1 - dt / 2));
-                        }
-                    }
-                    if (now >= ch.t && now <= susEnd)
-                        for (const cn of chordNotes) noteState.stringSustain[cn.s] = true;
-                    const sustained = dt < 0 && maxSus > 0 && now <= susEnd;
-                    const hitDist = Math.abs(dt);
-                    if (hitDist < 0.15 || sustained) {
-                        const hitFade = sustained ? 0.7 : (1 - hitDist / 0.15);
-                        for (const cn of chordNotes) {
-                            noteState.strGlow[cn.s] = Math.max(noteState.strGlow[cn.s], 1.0 + hitFade * 1.5);
-                        }
-                    }
-                }
-            }
-
+            accumulateFrameNoteState(notes, chords, now, noteState);
             pbEnd(1);
             pbBeg(2);
             // ── Next-note-by-string lookahead (for anticipation projection) ──
