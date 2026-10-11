@@ -13537,6 +13537,13 @@
             }).catch((e) => console.warn('[3D-Hwy] bloom modules failed', e));
             return null;
         }
+        function freezeBoardLocalMatrix(object) {
+            // Only explicitly owned immutable board leaves use this helper.
+            // Keep world updates enabled so moving parents still apply.
+            object.updateMatrix();
+            object.matrixAutoUpdate = false;
+            return object;
+        }
         function buildBoard() {
             // Dispose before clearing (traverse: nut/headstock may live in a Group).
             while (fretG.children.length) {
@@ -13581,7 +13588,7 @@
             const p = new T.Mesh(pg, pm);
             p.rotation.x = -Math.PI / 2;
             p.position.set(board.center, S_BASE - NH / 2 - 2 * K, -blAhead / 2);
-            fretG.add(p);
+            fretG.add(freezeBoardLocalMatrix(p));
 
             // Thin Line strings (glow layer). Retained in stringLineGlows[]
             // so vibrancy slider changes can mutate opacity in place
@@ -13607,7 +13614,7 @@
                 const g = new T.BufferGeometry().setFromPoints(pts);
                 const line = new T.Line(g, new T.LineBasicMaterial({ color: activePalette[s], transparent: true, opacity: lineGlowOp }));
                 line.renderOrder = 7; // above sus rails (4/5), below chord fill (10)
-                fretG.add(line);
+                fretG.add(freezeBoardLocalMatrix(line));
                 stringLineGlows.push(line);
             }
 
@@ -13667,7 +13674,7 @@
                     mapleDark,
                 );
                 headCore.position.set(coreCX, yMidN, zBack - headCoreD * 0.35);
-                nutHeadstockGroup.add(headCore);
+                nutHeadstockGroup.add(freezeBoardLocalMatrix(headCore));
 
                 const xs = 14;
                 const ys = 12;
@@ -13704,7 +13711,7 @@
                 rampGeo.setAttribute('position', new T.BufferAttribute(posR, 3));
                 rampGeo.setIndex(idxR);
                 rampGeo.computeVertexNormals();
-                nutHeadstockGroup.add(new T.Mesh(rampGeo, mapleMat));
+                nutHeadstockGroup.add(freezeBoardLocalMatrix(new T.Mesh(rampGeo, mapleMat)));
 
                 const boneMat = new T.MeshStandardMaterial({
                     color: nutBase, roughness: 0.38, metalness: 0.02,
@@ -13721,7 +13728,7 @@
                     boneMat,
                 );
                 nutBody.position.set(nutXC, yMidN, nutZc);
-                nutHeadstockGroup.add(nutBody);
+                nutHeadstockGroup.add(freezeBoardLocalMatrix(nutBody));
 
                 const crownR = nutLenX * 0.52;
                 const crownSeg = new T.CylinderGeometry(
@@ -13735,7 +13742,7 @@
                     yMidN + nutHalfH - 0.02 * K,
                     nutZc + nutD * 0.22,
                 );
-                nutHeadstockGroup.add(crown);
+                nutHeadstockGroup.add(freezeBoardLocalMatrix(crown));
 
                 const slotDrop = 0.11 * K;
                 const slotHalfW = STR_THICK * 1.15;
@@ -13746,7 +13753,7 @@
                         grooveMat,
                     );
                     gr.position.set(nutXC, sY(st), slotZ);
-                    nutHeadstockGroup.add(gr);
+                    nutHeadstockGroup.add(freezeBoardLocalMatrix(gr));
                 }
                 nutHeadstockGroup.visible = nutHeadstockVisible;
                 fretG.add(nutHeadstockGroup);
@@ -13802,7 +13809,7 @@
                 const fw = new T.Mesh(fretTubeGeo, mat);
                 fw.position.set(x, wireMidY, 0);
                 fw.renderOrder = renderOrderForLayerAtZ(0, 'BOARD_FRET_WIRE');
-                fretG.add(fw);
+                fretG.add(freezeBoardLocalMatrix(fw));
                 fretWireMats[f] = mat;
             }
 
@@ -13830,7 +13837,7 @@
                 // inlay; still well below strings / wires / notes,
                 // so those keep drawing on top of the inlay.
                 d.renderOrder = 3;
-                fretG.add(d);
+                fretG.add(freezeBoardLocalMatrix(d));
             };
             for (const f of DOTS) {
                 const cx = xFretMid(f);
