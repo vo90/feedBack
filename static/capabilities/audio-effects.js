@@ -41,6 +41,29 @@ const LEGACY_PLAN_SCHEMA = 'slopsmith.audio_effects.chain_plan.v1';
     // it clear its own stale roles without clobbering the plugin's manifest declaration.
     const manifestParticipants = new Map();
     const recentOutcomes = [];
+    const pendingToneLoads = new Set();
+    // OFF drains already-issued executor calls before Desktop's final clear.
+    // This never stops the shared audio input or native backing owner.
+    window.feedBack.ampSims?.subscribe(policy => {
+        if (policy.applicable && (!policy.ready || !policy.enabled)) {
+            return Promise.allSettled(Array.from(pendingToneLoads));
+        }
+    });
+
+    function _tonePolicy() {
+        return window.feedBack.ampSims?.snapshot() || {
+            applicable: !!window.feedBackDesktop, ready: false, enabled: false, generation: 0,
+        };
+    }
+
+    function _tonePolicyRefusal(initial) {
+        const policy = _tonePolicy();
+        if (!policy.applicable) return null;
+        const stale = initial && initial.generation !== policy.generation;
+        if (!stale && policy.ready && policy.enabled) return null;
+        return { outcome: stale ? 'stale' : 'denied', status: 'disabled', code: 'amp-sims-disabled',
+            reason: 'In-app amp simulations are disabled', payload: { policy } };
+    }
 
     function _now() { return new Date().toISOString(); }
 
@@ -867,7 +890,17 @@ const LEGACY_PLAN_SCHEMA = 'slopsmith.audio_effects.chain_plan.v1';
         return { outcome: 'handled', status: 'handled', reason: 'Audio-effects chain plan resolved', payload: { route: _publicRoute(route), provider: _publicProvider(provider), plan: validation.plan } };
     }
 
-    async function loadPlan(payload = {}, requester = '') {
+    function loadPlan(payload = {}, requester = '') {
+        const work = _loadPlan(payload, requester);
+        pendingToneLoads.add(work);
+        work.then(() => pendingToneLoads.delete(work), () => pendingToneLoads.delete(work));
+        return work;
+    }
+
+    async function _loadPlan(payload = {}, requester = '') {
+        const policyAtStart = _tonePolicy();
+        const refused = _tonePolicyRefusal();
+        if (refused) return refused;
         const authorization = _safeId(payload.authorization || '', '');
         const routeKey = _safeRoute(payload.routeKey || payload.route);
         if (!LOAD_AUTHORIZATIONS.has(authorization)) {
@@ -931,6 +964,8 @@ const LEGACY_PLAN_SCHEMA = 'slopsmith.audio_effects.chain_plan.v1';
         route.state = 'resolving';
         _touchRoute(route);
         const invoked = await _invokeWithTimeout(handler, request, payload.timeoutMs);
+        const staleResolution = _tonePolicyRefusal(policyAtStart);
+        if (staleResolution) return staleResolution;
         if (invoked.timedOut) {
             const outcome = _recordOutcome({ operation: 'load-plan', outcome: 'failed', status: 'timeout', providerId: provider.providerId, pluginId: provider.pluginId, routeKey, reason: 'Provider chain resolution timed out' });
             route.state = 'fallback';
@@ -985,11 +1020,23 @@ const LEGACY_PLAN_SCHEMA = 'slopsmith.audio_effects.chain_plan.v1';
                 target: request.target,
                 planRequest: request.planRequest,
             };
-            const _ex = await _invokeWithTimeout((r) => executor.operationHandlers.loadChainPlan(r), _exReq, payload.timeoutMs);
+            const staleCommit = _tonePolicyRefusal(policyAtStart);
+            if (staleCommit) return staleCommit;
+            const issued = Promise.resolve().then(() => {
+                const staleInvocation = _tonePolicyRefusal(policyAtStart);
+                return staleInvocation || executor.operationHandlers.loadChainPlan(_exReq);
+            });
+            // A host timeout does not cancel a native/plugin promise. Keep the
+            // actual call in the OFF barrier until it really settles.
+            pendingToneLoads.add(issued);
+            issued.then(() => pendingToneLoads.delete(issued), () => pendingToneLoads.delete(issued));
+            const _ex = await _invokeWithTimeout(() => issued, _exReq, payload.timeoutMs);
             executorResult = _ex.timedOut
                 ? { outcome: 'failed', status: 'timeout', reason: 'Executor loadChainPlan timed out' }
                 : _ex.value;
         }
+        const staleExecution = _tonePolicyRefusal(policyAtStart);
+        if (staleExecution) return staleExecution;
         const executorOutcome = _plainObject(executorResult);
         const executorOutcomeName = _string(executorOutcome.outcome || executorOutcome.status || 'failed', 'failed');
         const normalizedOutcome = VALID_OUTCOMES.has(executorOutcomeName) ? executorOutcomeName : 'failed';
@@ -1121,6 +1168,11 @@ const LEGACY_PLAN_SCHEMA = 'slopsmith.audio_effects.chain_plan.v1';
         const routeKey = _safeRoute(payload.routeKey || payload.route);
         const route = routes.get(routeKey);
         if (!route) return _noTarget('No active audio-effects route was selected', { routeKey });
+        const expectedProvider = _safeId(payload.providerId || '', '');
+        if (expectedProvider && expectedProvider !== route.providerId) {
+            return { ..._decision('denied', 'Audio-effects route belongs to another provider', { route: _publicRoute(route) }),
+                code: 'audio-effects-owner-mismatch' };
+        }
         const authorization = _safeId(payload.authorization || '', '');
         if (!LOAD_AUTHORIZATIONS.has(authorization)) {
             return _decision('user-action-required', 'Releasing an audio-effects route requires user-action, restore-selection, or playback-session authorization', { route: _publicRoute(route) });

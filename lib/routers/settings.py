@@ -36,6 +36,17 @@ router = APIRouter()
 _settings_lock = threading.Lock()
 
 
+def _prepare_amp_sims_policy(cfg):
+    policy = appstate.amp_sims_policy
+    return (policy, policy.prepare(cfg)) if policy is not None else (None, None)
+
+
+def _notify_amp_sims_policy(notification):
+    policy, value = notification
+    if policy is not None:
+        policy.notify(value)
+
+
 @router.get("/api/settings")
 def get_settings():
     cfg = _load_config(appstate.config_dir / "config.json")
@@ -345,6 +356,8 @@ def save_settings(data: dict):
                 return {"error": str(exc)}
             cfg = settings_with_instrument_profiles(cfg)
         _atomic_write_file(config_file, json.dumps(cfg, indent=2).encode("utf-8"))
+        notification = _prepare_amp_sims_policy(cfg)
+    _notify_amp_sims_policy(notification)
     resp = {"message": ". ".join(messages) if messages else "Settings saved"}
     if dlc_warnings:
         # `warnings` is an additive response field (existing clients read
@@ -383,9 +396,9 @@ def reset_settings(data: dict):
     config_file = appstate.config_dir / "config.json"
     with _settings_lock:
         cfg = _load_config(config_file)
+        missing = cfg is None
         if cfg is None:
-            # Nothing persisted yet — already at defaults.
-            return {"message": "Settings reset", "reset": []}
+            cfg = {}
         removed = [k for k in keys if k in cfg]
         for k in removed:
             del cfg[k]
@@ -399,7 +412,10 @@ def reset_settings(data: dict):
                     prof["pathway"] = "songs"
             if "pathway" not in removed:
                 removed.append("pathway")
-        _atomic_write_file(config_file, json.dumps(cfg, indent=2).encode("utf-8"))
+        if not missing:
+            _atomic_write_file(config_file, json.dumps(cfg, indent=2).encode("utf-8"))
+        notification = _prepare_amp_sims_policy(cfg)
+    _notify_amp_sims_policy(notification)
     return {"message": "Settings reset", "reset": removed}
 
 
@@ -425,6 +441,8 @@ def _validate_server_config_types(cfg: dict) -> str | None:
     Unknown keys are passed through so future settings (and per-plugin
     keys that may be added later) round-trip without code changes
     here."""
+    if "use_amp_sims" in cfg and cfg["use_amp_sims"] is not None and not isinstance(cfg["use_amp_sims"], bool):
+        return "server_config.use_amp_sims must be a boolean"
     if "dlc_dir" in cfg:
         v = cfg["dlc_dir"]
         if v is not None and not isinstance(v, str):
@@ -1102,6 +1120,7 @@ def import_settings(bundle: dict):
                 appstate.config_dir / "config.json",
                 json.dumps(settings_with_instrument_profiles(server_config), indent=2).encode("utf-8"),
             )
+            notification = _prepare_amp_sims_policy(server_config)
     except OSError as e:
         # Phase-1 validation should have caught all foreseeable
         # failures; an OSError here means disk-level trouble (ENOSPC,
@@ -1127,6 +1146,7 @@ def import_settings(bundle: dict):
             status_code=500,
         )
 
+    _notify_amp_sims_policy(notification)
     return {
         "ok": True,
         "warnings": warnings,

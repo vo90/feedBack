@@ -101,8 +101,18 @@ export async function loadSettings() {
     // setupAppUpdates() is idempotent via _appUpdatesWired.
     setupAppUpdates();
     setupWindowOptions();
-    const resp = await fetch('/api/settings');
-    const data = await resp.json();
+    const policy = window.feedBack?.ampSims;
+    const policyGeneration = policy?.snapshot().generation;
+    let data;
+    try {
+        const resp = await fetch('/api/settings');
+        if (resp.ok === false) throw new Error('Could not load settings');
+        data = await resp.json();
+    } catch (error) {
+        await policy?.applySettings(null, { generation: policyGeneration, error });
+        throw error;
+    }
+    await policy?.applySettings(data, { generation: policyGeneration });
     // Null-guard the form fields: on the v3 tabbed settings page the markup is
     // rendered by settings.js, so a control may be absent if that render hasn't
     // run yet (or on a follower window). The optional-chaining keeps loadSettings

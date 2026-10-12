@@ -2,6 +2,108 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { loadAudioEffects, diagnosticsSnapshot } = require('./audio_effects_test_harness');
 
+function policyFixture(enabled = true) {
+    let value = { ready: true, enabled, generation: 1, applicable: true, error: null };
+    const handlers = [];
+    return {
+        snapshot: () => ({ ...value }),
+        subscribe(handler) { handlers.push(handler); handler(value); return () => {}; },
+        change(enabled) { value = { ...value, enabled, generation: value.generation + 1 }; return Promise.all(handlers.map(fn => fn(value))); },
+    };
+}
+
+test('desktop disabled or unknown policy denies load before provider resolution', async () => {
+    const policy = policyFixture(false), window = loadAudioEffects({ ampSims: policy });
+    let resolutions = 0;
+    window.feedBackDesktop = {};
+    await registerProvider(window.feedBack.capabilities, { operationHandlers: { 'chain.resolve': () => { resolutions++; } } });
+    for (const missing of [false, true]) {
+        if (missing) delete window.feedBack.ampSims;
+        const result = await window.feedBack.audioEffects.loadPlan({ authorization: 'playback-session' });
+        assert.equal(result.outcome, 'denied');
+        assert.equal(result.code, 'amp-sims-disabled');
+    }
+    assert.equal(resolutions, 0);
+});
+
+test('disabled generation rejects deferred resolution before executor and permits route release', async () => {
+    const policy = policyFixture(), window = loadAudioEffects({ ampSims: policy });
+    let resolve, issued = 0, released = 0;
+    const deferred = new Promise(r => { resolve = r; });
+    window.feedBackDesktop = { audioEffects: {
+        loadChainPlan() { issued++; return { outcome: 'handled' }; },
+        releaseRoute() { released++; return { outcome: 'handled' }; },
+    } };
+    await registerProvider(window.feedBack.capabilities, { operationHandlers: { 'chain.resolve': () => deferred } });
+    const work = window.feedBack.audioEffects.loadPlan({ authorization: 'playback-session' });
+    const stopped = policy.change(false);
+    resolve({ outcome: 'handled', plan: {} });
+    assert.equal((await work).code, 'amp-sims-disabled');
+    await stopped;
+    assert.equal(issued, 0);
+    assert.equal((await window.feedBack.audioEffects.releaseRoute({ authorization: 'playback-session' })).outcome, 'handled');
+    assert.equal(released, 1);
+});
+
+test('OFF barrier drains issued executor and late completion cannot report loaded', async () => {
+    const policy = policyFixture(), window = loadAudioEffects({ ampSims: policy });
+    let finish, entered;
+    const enteredPromise = new Promise(r => { entered = r; });
+    const deferred = new Promise(r => { finish = r; });
+    window.feedBackDesktop = { audioEffects: { loadChainPlan() { entered(); return deferred; } } };
+    await registerProvider(window.feedBack.capabilities);
+    const work = window.feedBack.audioEffects.loadPlan({ authorization: 'playback-session' });
+    await enteredPromise;
+    let drained = false; const stopped = policy.change(false).then(() => { drained = true; });
+    await Promise.resolve(); assert.equal(drained, false);
+    finish({ outcome: 'handled' });
+    const result = await work; await stopped;
+    assert.equal(result.outcome, 'stale'); assert.equal(result.code, 'amp-sims-disabled');
+    assert.notEqual(window.feedBack.audioEffects.inspectRoute().payload.route.state, 'loaded');
+});
+
+test('pure web keeps effects behavior when desktop policy is not applicable', async () => {
+    const policy = { snapshot: () => ({ ready: false, enabled: false, generation: 0, applicable: false }), subscribe: () => () => {} };
+    const window = loadAudioEffects({ ampSims: policy });
+    await registerProvider(window.feedBack.capabilities);
+    const result = await window.feedBack.audioEffects.loadPlan({ authorization: 'playback-session' });
+    assert.notEqual(result.code, 'amp-sims-disabled');
+});
+
+test('OFF in the executor scheduling microtask gap prevents native invocation', async () => {
+    const policy = policyFixture(), window = loadAudioEffects({ ampSims: policy });
+    let issued = 0, stopped;
+    window.feedBackDesktop = { audioEffects: { loadChainPlan() { issued++; return { outcome: 'handled' }; } } };
+    await registerProvider(window.feedBack.capabilities);
+    const result = await window.feedBack.audioEffects.loadPlan({
+        authorization: 'playback-session',
+        get options() {
+            // Queue OFF while the synchronous executor request is being built.
+            // It runs after the current stack's guard, before scheduled invocation.
+            queueMicrotask(() => { stopped = policy.change(false); });
+            return {};
+        },
+    });
+    await stopped;
+    assert.equal(issued, 0); assert.equal(result.code, 'amp-sims-disabled');
+});
+
+test('provider-scoped release cannot clear a different selected owner and still works while disabled', async () => {
+    const policy = policyFixture(), window = loadAudioEffects({ ampSims: policy }); let releases = 0;
+    window.feedBackDesktop = { audioEffects: {
+        loadChainPlan() { return { outcome: 'handled' }; },
+        releaseRoute() { releases++; return { outcome: 'handled' }; },
+    } };
+    await registerProvider(window.feedBack.capabilities, { providerId: 'nam-tone' });
+    await window.feedBack.audioEffects.selectChain({ providerId: 'nam-tone', authorization: 'user-action' });
+    await policy.change(false);
+    const denied = await window.feedBack.audioEffects.releaseRoute({ providerId: 'rig-builder', authorization: 'playback-session' });
+    assert.equal(denied.code, 'audio-effects-owner-mismatch'); assert.equal(releases, 0);
+    assert.equal(window.feedBack.audioEffects.inspectRoute().payload.route.providerId, 'nam-tone');
+    const released = await window.feedBack.audioEffects.releaseRoute({ providerId: 'nam-tone', authorization: 'playback-session' });
+    assert.equal(released.outcome, 'handled'); assert.equal(releases, 1);
+});
+
 function registerProvider(api, overrides = {}) {
     return api.dispatch({
         capability: 'audio-effects',

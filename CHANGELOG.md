@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The desktop amp simulation opt-out now provides a shared suspension policy
+  for tone plugins, rejects stale effects loads, and wakes backend workers only
+  after a saved preference change. Backing audio and instrument input remain
+  independent; saved tone choices are retained for re-enabling.
+
 ### Added
 - **Independent RS+ stem controls.** Toggle stems for individual fretted gems
   and open-string/muted bars separately in Note appearance or per split-screen

@@ -108,6 +108,7 @@ art_safe_name = None
 # The canonical settings-defaults builder — stays in server.py (shared with the
 # scan/artist-links code) but the settings router calls it through the seam.
 default_settings = None
+amp_sims_policy = None
 # Scan/ingest seam for the song routes (routers/song.py). kick_scan/
 # invalidate_song_caches/stat_for_cache stay in server.py (scan lifecycle owns
 # them); scan_status is a GETTER (the underlying dict is reassigned, so a value
@@ -135,7 +136,7 @@ _SLOTS = frozenset({
     "get_progression_content", "builtin_diagnostic_filename",
     "running_version",
     "art_cache_dir", "song_pack_art_exists", "art_override_paths", "art_safe_name",
-    "default_settings",
+    "default_settings", "amp_sims_policy",
     "kick_scan", "invalidate_song_caches", "stat_for_cache", "scan_status",
     "server_root",
 })

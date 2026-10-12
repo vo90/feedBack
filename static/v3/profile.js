@@ -727,18 +727,19 @@
             }
             if (step === 5) {
                 // Step 5 (desktop only) — persist the amp-sim opt-in (default OFF
-                // / own-rig). Best-effort: a failed write must not block onboarding;
-                // it's settable later from the desktop Audio settings.
+                // / own-rig). A failed transition stays off and is shown here;
+                // it can also be changed later in desktop Audio settings.
                 submit.disabled = true;
                 try {
                     const ampEl = overlay.querySelector('#v3-ob-ampsims');
                     const useAmpSims = !!(ampEl && ampEl.checked);
                     try {
-                        await fetch('/api/settings', {
-                            method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ use_amp_sims: useAmpSims }),
-                        });
-                    } catch (e) { /* best-effort — settable later */ }
+                        if (!window.feedBack?.ampSims) throw new Error('Amp simulation preference is unavailable');
+                        await window.feedBack.ampSims.setEnabled(useAmpSims);
+                    } catch (e) {
+                        showErr(e.message || 'Could not save amp simulation preference. It remains off.');
+                        return;
+                    }
                     setStep(6);
                 } finally { refreshSubmit(); }
                 return;

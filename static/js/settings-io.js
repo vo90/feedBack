@@ -121,6 +121,22 @@ export async function importSettings(file) {
         return;
     }
 
+    // Suspend/resume tone policy even if applying localStorage later fails and
+    // prevents the scheduled reload. Read the committed config, not bundle data.
+    const policy = window.feedBack?.ampSims;
+    if (policy) {
+        const generation = policy.snapshot().generation;
+        try {
+            const response = await fetch('/api/settings');
+            if (!response.ok) throw new Error('Could not load imported amp simulation preference');
+            await policy.applySettings(await response.json(), { generation });
+        } catch (error) {
+            try { await policy.applySettings(null, { generation, error }); } catch (_) { /* remain suspended */ }
+            status.textContent = `Server applied, but tone policy could not be refreshed: ${error.message}`;
+            return;
+        }
+    }
+
     // Server applied successfully. Now apply the localStorage portion as
     // a MERGE (not clear+restore): keys in the bundle overwrite, keys
     // present locally but absent from the bundle are preserved. This

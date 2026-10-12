@@ -32,6 +32,7 @@ PLUGINS_PY = Path(__file__).resolve().parents[1] / "plugins" / "__init__.py"
 
 # The keys server.py puts in the shared context handed to register_plugin_api().
 BASE_CONTEXT_KEYS = {
+    "amp_sims_policy",  # Additive opt-in snapshot/subscription; docs/amp-sims-policy.md.
     "config_dir",
     "get_dlc_dir",
     "extract_meta",

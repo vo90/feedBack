@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from safepath import safe_join
 from appconfig import _load_config
+from amp_sims_policy import AmpSimsPolicy
 from tunings import (
     DEFAULT_REFERENCE_PITCH, DEFAULT_TUNINGS,
     apply_reference_pitch, tuning_name,
@@ -132,6 +133,8 @@ def _env_flag(name: str) -> bool:
 
 meta_db = MetadataDB(CONFIG_DIR)
 audio_effect_mappings = AudioEffectsMappingDB(CONFIG_DIR)
+amp_sims_policy = AmpSimsPolicy(applicable=os.environ.get("FEEDBACK_DESKTOP") == "1")
+amp_sims_policy.prepare(_load_config(CONFIG_DIR / "config.json"))
 
 # Publish the singletons to the router seam. server.py stays their owner — a
 # `sys.modules.pop("server")` + re-import must keep rebuilding them under a
@@ -140,6 +143,7 @@ audio_effect_mappings = AudioEffectsMappingDB(CONFIG_DIR)
 appstate.configure(
     meta_db=meta_db,
     audio_effect_mappings=audio_effect_mappings,
+    amp_sims_policy=amp_sims_policy,
     config_dir=CONFIG_DIR,
     dlc_dir=DLC_DIR,
     dlc_dir_env=_DLC_DIR_ENV,
@@ -697,6 +701,7 @@ async def startup_events():
     )
 
     plugin_context = {
+        "amp_sims_policy": amp_sims_policy.context(),
         "config_dir": CONFIG_DIR,
         "get_dlc_dir": _get_dlc_dir,
         # Pass the DLC-root resolver (not its result) so loose-folder
