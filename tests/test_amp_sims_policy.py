@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 
@@ -37,6 +38,50 @@ def test_superseded_notification_is_not_delivered_and_callback_failure_isolated(
     assert len(seen) == count
     assert seen[-1]["applicable"] is False
     assert policy.context()["snapshot"]()["enabled"] is False
+
+
+def test_concurrent_commit_cannot_deliver_old_on_after_new_off():
+    policy = AmpSimsPolicy(applicable=True)
+    entered, release, off_started, off_committed, off_delivered = (threading.Event() for _ in range(5))
+    seen = []
+
+    def observe(value):
+        # Snapshot calls remain available while delivery is serialized.
+        assert policy.snapshot()["generation"] >= value["generation"]
+        if value["enabled"]:
+            entered.set()
+            assert release.wait(1)
+        seen.append(value["enabled"])
+        if value["ready"] and not value["enabled"]:
+            off_delivered.set()
+
+    policy.subscribe(observe)
+    on = policy.prepare({"use_amp_sims": True})
+    old = threading.Thread(target=policy.notify, args=(on,))
+
+    def turn_off():
+        off_started.set()
+        value = policy.prepare({"use_amp_sims": False})
+        off_committed.set()
+        policy.notify(value)
+
+    newer = threading.Thread(target=turn_off)
+    old.start()
+    try:
+        assert entered.wait(1)
+        newer.start()
+        assert off_started.wait(1)
+        assert off_committed.wait(1), "callback must not hold the state lock across a settings commit"
+        # The previous implementation delivered OFF here, then stale ON.
+        off_delivered.wait(0.05)
+    finally:
+        release.set()
+        old.join(1)
+        if newer.ident is not None:
+            newer.join(1)
+    assert not old.is_alive() and not newer.is_alive()
+    assert seen == [False, True, False]
+    assert policy.snapshot()["enabled"] is False
 
 
 @pytest.fixture

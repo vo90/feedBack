@@ -15,6 +15,7 @@ class AmpSimsPolicy:
 
     def __init__(self, *, applicable=False):
         self._lock = threading.RLock()
+        self._notification_lock = threading.RLock()
         self._handlers = set()
         self._state = dict(ready=False, enabled=False, generation=0,
                            applicable=bool(applicable), error=None)
@@ -39,15 +40,18 @@ class AmpSimsPolicy:
     def notify(self, value):
         if value is None:
             return
-        with self._lock:
-            handlers = tuple(self._handlers)
-        for handler in handlers:
+        # Delivery is ordered separately from state commits. Never hold the
+        # state/settings lock across plugin callbacks: they may read settings.
+        with self._notification_lock:
             with self._lock:
-                if value["generation"] != self._state["generation"]:
-                    return  # A newer commit superseded this delayed notification.
-                if handler not in self._handlers:
-                    continue
-            self._invoke(handler, value)
+                handlers = tuple(self._handlers)
+            for handler in handlers:
+                with self._lock:
+                    if value["generation"] != self._state["generation"]:
+                        return  # A newer commit superseded this delayed notification.
+                    if handler not in self._handlers:
+                        continue
+                self._invoke(handler, value)
 
     @staticmethod
     def _invoke(handler, value):
@@ -59,10 +63,11 @@ class AmpSimsPolicy:
     def subscribe(self, handler):
         if not callable(handler):
             raise TypeError("A policy subscriber must be callable")
-        with self._lock:
-            self._handlers.add(handler)
-            value = dict(self._state)
-        self._invoke(handler, value)
+        with self._notification_lock:
+            with self._lock:
+                self._handlers.add(handler)
+                value = dict(self._state)
+            self._invoke(handler, value)
 
         def unsubscribe():
             with self._lock:
