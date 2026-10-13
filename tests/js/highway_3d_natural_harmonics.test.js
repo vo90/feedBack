@@ -31,3 +31,20 @@ test('fretted harmonic contact is guidance, not another fret position',()=>{
     for(const kind of ['pinch','semi','feedback'])
         assert.equal(h.harmonicContactLabel({f:7,harmonic_target:{kind,node:12}}),'');
 });
+
+test('fallback shows AH without a fabricated touch fret in both highways',async()=>{
+    const h=new Function(`const fretX=f=>10*f; const fretMid=f=>10*f-5; ${helpers}
+        return {harmonicContactLabel,notePositionX,harmonicLabel};`)();
+    const draw=await import('../../static/js/highway-draw.js');
+    const target=Object.freeze({kind:'artificial',node:null,interval:24,policy:'harmonic',basis:'source-playback-fallback'});
+    const n=Object.freeze({f:10,harmonic_target:target});
+    assert.equal(h.notePositionX(n),95);
+    assert.equal(h.harmonicLabel(n),10);
+    for(const label of [h.harmonicContactLabel,draw.harmonicContactLabel]) {
+        assert.equal(label(n),'AH');
+        assert.equal(label({...n,whammy:{version:1}}),'AH · BAR');
+        for(const patch of [{basis:'unknown'},{interval:12},{kind:'tapped'},{extra:true}])
+            assert.equal(label({...n,harmonic_target:{...target,...patch}}),'');
+    }
+    assert.equal(n.harmonic_target.node,null);
+});

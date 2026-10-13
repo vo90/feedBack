@@ -31,3 +31,13 @@ def test_invalid_extension_never_silently_becomes_ordinary(fault):
     if fault=='initial':n['harmonic_target']=deepcopy(e['target'])
     if fault=='mute':n['mt']=True
     with pytest.raises(ValueError):note_from_wire(n)
+
+
+def test_playback_fallback_cannot_invent_a_delayed_physical_contact():
+    n=contact()
+    n['harmonic_changes']['events'][0]['target']={
+        'kind':'artificial','node':None,'interval':24,'policy':'harmonic',
+        'basis':'source-playback-fallback'}
+    with pytest.raises(ValueError):note_from_wire(n)
+    del n['harmonic_changes']['events'][0]['target']['basis']
+    with pytest.raises(ValueError):note_from_wire(n)

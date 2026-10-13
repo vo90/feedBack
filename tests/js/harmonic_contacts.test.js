@@ -35,3 +35,19 @@ test('2D uses the contact offset and held fret without drawing a picked gem',asy
     assert.equal(calls.find(c=>c[0]==='label')[1].label,'AH 21');
     assert.ok(!calls.some(c=>c[0]==='fillRect'));
 });
+
+test('playback fallback cannot invent a physical contact or coerce null to zero',async()=>{
+    const h=await import('../../static/js/harmonic-contacts.js');
+    const n=note(10),e=n.harmonic_changes.events[0];
+    e.target={kind:'artificial',node:null,interval:24,policy:'harmonic',basis:'source-playback-fallback'};
+    assert.equal(h.harmonicContactAt(n,.15),null);
+    assert.equal(h.harmonicContactLabel(n,e),'');
+    assert.equal(h.harmonicAttackDeadline(n,10,.2),10.2);
+    for(const patch of [{basis:'unknown'},{interval:12},{kind:'tapped'},{extra:true},{node:5}]) {
+        const bad=structuredClone(n);Object.assign(bad.harmonic_changes.events[0].target,patch);
+        assert.deepEqual(h.harmonicContacts(bad),[]);
+    }
+    delete e.target.basis;
+    assert.deepEqual(h.harmonicContacts(n),[]);
+    assert.equal(h.harmonicContactLabel(n,e),'');
+});

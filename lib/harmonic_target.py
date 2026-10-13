@@ -8,16 +8,28 @@ POLICIES = {"pinch":"harmonic", "artificial":"harmonic", "tapped":"harmonic",
             "semi":"mixed", "feedback":"attack_either"}
 
 
+def _valid_shape(value):
+    if not isinstance(value, dict):
+        return False
+    if set(value) == {"kind", "node", "interval", "policy", "basis"}:
+        # Playback can define a pitch without defining the player's touch fret.
+        return (value["kind"] == "artificial" and value["node"] is None
+                and type(value["interval"]) is int and value["interval"] == 24
+                and value["policy"] == "harmonic"
+                and value["basis"] == "source-playback-fallback")
+    return (set(value) == {"kind", "node", "interval", "policy"}
+            and isinstance(value["kind"], str) and value["kind"] in POLICIES
+            and type(value["node"]) in (int, float) and math.isfinite(value["node"])
+            and type(value["interval"]) is int
+            and NODES.get(value["node"]) == value["interval"]
+            and POLICIES[value["kind"]] == value["policy"])
+
+
 def validate_target(note):
     if "harmonic_target" not in note:
         return None
     value = note["harmonic_target"]
-    if (not isinstance(value, dict) or set(value) != {"kind", "node", "interval", "policy"}
-            or not isinstance(value["kind"], str) or value["kind"] not in POLICIES
-            or type(value["node"]) not in (int, float) or not math.isfinite(value["node"])
-            or type(value["interval"]) is not int
-            or NODES.get(value["node"]) != value["interval"]
-            or POLICIES[value["kind"]] != value["policy"]
+    if (not _valid_shape(value)
             or type(note.get("f")) is not int or not 0 <= note["f"] <= 48
             or any(note.get(k) for k in ("hm", "mt", "fhm"))
             or any(k in note for k in ("hn", "hps", "harmonic_alias"))

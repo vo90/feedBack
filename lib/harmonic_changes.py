@@ -22,7 +22,10 @@ def validate_changes(note):
             or not 0 < event['start'] < event['end']
             or abs(event['end'] - note['sus']) > .0000011
             or not isinstance(event['source_id'], str) or not 0 < len(event['source_id']) <= 512
-            or not isinstance(event['target'], dict) or event['target'].get('kind') != 'artificial'):
+            or not isinstance(event['target'], dict) or event['target'].get('kind') != 'artificial'
+            # A timed physical contact requires an actual touch position.
+            # Playback-only pitch fallback cannot establish that gesture.
+            or not finite(event['target'].get('node'))):
         raise ValueError('Invalid delayed harmonic interval or target')
     validate_target({'f':note.get('f'), 'harmonic_target':event['target']})
     return deepcopy(value)

@@ -23,6 +23,7 @@ export function harmonicContactAt(note,elapsed) {
     return e && Number.isFinite(elapsed) && elapsed>=e.start-1e-9 && elapsed<=e.end+1e-9 ? e : null;
 }
 export function harmonicContactLabel(note,event) {
+    if (!Number.isFinite(note?.f) || !Number.isFinite(event?.target?.node)) return '';
     return `AH ${Number((note.f+event.target.node).toFixed(3))}`;
 }
 export function harmonicAttackDeadline(note,onset,tolerance,grace=0) {

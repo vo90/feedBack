@@ -45,7 +45,10 @@ function playingFret2D(n) {
 
 export function harmonicContactLabel(n) {
     const h = n?.harmonic_target;
-    const contact = h && ['artificial','tapped'].includes(h.kind) && Number.isFinite(h.node) && Number.isFinite(n.f)
+    const fallback = h?.node === null && h.kind === 'artificial' && h.interval === 24
+        && h.policy === 'harmonic' && h.basis === 'source-playback-fallback'
+        && Object.keys(h).sort().join(',') === 'basis,interval,kind,node,policy';
+    const contact = fallback ? 'AH' : h && ['artificial','tapped'].includes(h.kind) && Number.isFinite(h.node) && Number.isFinite(n.f)
         ? (h.kind === 'artificial' ? 'AH ' : 'TH ') + Number((n.f + h.node).toFixed(3)) : '';
     return [contact, n?.whammy?.version === 1 ? 'BAR' : ''].filter(Boolean).join(' · ');
 }
