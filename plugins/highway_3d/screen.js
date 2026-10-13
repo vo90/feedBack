@@ -1362,6 +1362,35 @@
             && a.minY <= b.maxY && a.maxY >= b.minY;
     }
 
+    const FRET_REFERENCE_CLEARANCE = 1 / 3;
+
+    // Lower bound on vertical anchor separation / projected sprite scale for
+    // a whole approach, including pan and any dolly >= minDistance. For a
+    // top-anchored same-column pair the separation is |dt|*TS*H/(D1*D2),
+    // H=cos(yaw)*(cameraY-labelY). Bound the larger depth using the horizontal
+    // viewport (including partially visible sprites), not a guessed pan range.
+    // FOV/resolution cancel from the final gap-to-ink-height comparison.
+    function hwyFretReferenceSeparationRatio(pitch, yaw, labelYOffset, minDistance,
+        farDepth, maxSize, aspect, fov) {
+        const sp = Math.sin(pitch), cp = Math.cos(pitch), cy = Math.cos(yaw);
+        const beta = Math.abs(Math.tan(yaw) * cp);
+        const c = 1 - beta * Math.tan(fov * Math.PI / 360) * aspect;
+        if (!(c > 0) || !(cy > 0) || !(sp > 0) || !(minDistance > 0)) return 0;
+        const denominator = minDistance - sp * labelYOffset + cp / cy * farDepth + beta * maxSize / 2;
+        return Math.max(0, Math.min(cy * sp * c,
+            cy * (sp * minDistance - labelYOffset) * c / denominator));
+    }
+
+    function hwyFretReferenceNeedsClearance(delta, ahead, speed, separationRatio, maxSize, ink, otherInk = ink) {
+        if (!Number.isFinite(delta) || Math.abs(delta) >= ahead) return false;
+        // Reserve the upper label's full ink descent and the requested gap.
+        // Ignoring the lower label's helpful top padding is conservative: a
+        // retained reference is clear throughout, rather than only at entry.
+        const extent = Math.max(1 - ink.minY, 1 - otherInk.minY)
+            + Math.max(ink.maxY - ink.minY, otherInk.maxY - otherInk.minY) * FRET_REFERENCE_CLEARANCE;
+        return Math.abs(delta) * speed * separationRatio <= maxSize * extent;
+    }
+
     /** Inclusive one-dimensional footprint overlap (centres + full sizes). */
     function hwyFootprintsOverlap1D(centerA, sizeA, centerB, sizeB) {
         if (!Number.isFinite(centerA) || !Number.isFinite(sizeA)
@@ -7971,10 +8000,12 @@
         let _diagLastKey          = null;  // chord identity: name + '|' + frets.join(',')
         // Per-wave cache for fret-column reference markers. Keyed by the
         // wave's beat timestamp. We snapshot { hasLow, hasHigh, fretList,
-        // anchorKeyed } at first sight of a wave so its render gate stays consistent through the
+        // anchorKeyed, hiddenFrets } at first sight of a wave so its render gate stays consistent through the
         // wave's flight even as activeFrets shifts mid-song. Entries are
         // pruned each frame once their wave has passed `now`.
         let _fretMarkerWaveCache = new Map();
+        let _fretMarkerGoldCache = null;
+        let _fretMarkerLastNow = NaN;
         // Per-frame booleans: handShapes[i] passes inferArpeggioFromNotePattern
         // once (see fillArpeggioGhostInferFlags) so the note loop skips O(hs×notes)
         // rescans — ref fillArpeggioGhostInferFlags in update().
@@ -8036,6 +8067,8 @@
         // the same fret for the following measure, then allow it again).
         let _fretLabelAllowed = new Set();
         let _fretLabelNotesRef = null;
+        let _fretLabelBeatsRef = null;
+        let _fretLabelNoteCount = -1, _fretLabelBeatCount = -1;
 
         // Plain standalone notes that exactly duplicate a member of a compact
         // repeat chord. Cached by chart-array identity; see the chart-static pre-pass.
@@ -8652,8 +8685,6 @@
         // Reused label-layout records; no per-frame geometry or texture creation.
         const _incomingFloorLabels = [], _incomingLabelOccluders = [];
         const _incomingFixedFretLabels = [];
-        const _incomingFretColumnMarkers = [];
-        let _incomingFretColumnMarkerCount = 0;
         let _incomingFloorLabelCount = 0, _incomingLabelOccluderCount = 0;
         let _incomingLabelLayoutFrame = 0;
         let _incomingLabelProbe = null;
@@ -15334,50 +15365,6 @@
             record.time = time;
         }
 
-        function _registerFretColumnMarker(sprite, fret, time) {
-            // Reference and played-fret numbers share the same floor baseline.
-            sprite.center.set(0.5, 1);
-            const i = _incomingFretColumnMarkerCount++;
-            const record = _incomingFretColumnMarkers[i]
-                || (_incomingFretColumnMarkers[i] = { sprite: null, fret: 0, time: NaN });
-            record.sprite = sprite;
-            record.fret = fret;
-            record.time = time;
-        }
-
-        function _suppressCoincidentFretColumnMarkers(record) {
-            // Called only for a gold label that will render (or hand off to the
-            // fixed row). A missing gold label never removes a reference number.
-            if (!Number.isInteger(record.fret) || record.fret <= 0 || !Number.isFinite(record.time)) return;
-            let goldInk = null;
-            for (let i = 0; i < _incomingFretColumnMarkerCount; i++) {
-                const marker = _incomingFretColumnMarkers[i];
-                if (marker.fret !== record.fret || !Number.isFinite(marker.time)
-                    || !marker.sprite.visible || marker.sprite.material.opacity <= 0) continue;
-                if (hwySameFretLabelBeat(record.fret, record.time, marker.fret, marker.time)) {
-                    marker.sprite.visible = false;
-                    continue;
-                }
-                // Authored beat/chord offsets can exceed the 1 ms identity
-                // tolerance while their digits still overlap. Rounded depth
-                // buckets then alternate which colour paints last. Gold owns
-                // the overlapping digit; keep distinct gold event identities
-                // and all gem/trail priorities unchanged.
-                if (!goldInk) {
-                    goldInk = record.inkRect || (record.inkRect = _newLabelRect());
-                    if (!_incomingLabelScreenRect(record.sprite, goldInk, true)) return;
-                }
-                if (marker.inkFrame !== _incomingLabelLayoutFrame) {
-                    marker.inkFrame = _incomingLabelLayoutFrame;
-                    marker.inkRect ||= _newLabelRect();
-                    marker.inkValid = _incomingLabelScreenRect(marker.sprite, marker.inkRect, true);
-                }
-                if (marker.inkValid && hwyScreenRectsOverlap(goldInk, marker.inkRect)) {
-                    marker.sprite.visible = false;
-                }
-            }
-        }
-
         function _registerIncomingLabelOccluder(mesh, z, outline = null) {
             const i = _incomingLabelOccluderCount++;
             const record = _incomingLabelOccluders[i]
@@ -15449,7 +15436,6 @@
                 }
                 if (!label.visible) continue;
                 record.layoutFrame = frame;
-                _suppressCoincidentFretColumnMarkers(record);
                 let display = label, displayRect = record.rect;
                 const eventZ = label.position.z;
                 // At arrival, combine duplicate fret identities only when they
@@ -15672,12 +15658,204 @@
             }
         }
 
+        function _ensureFretMarkerGoldIndex(bundle, notes, chords, beats, anchors) {
+            const old = _fretMarkerGoldCache;
+            const handShapes = bundle.handShapes, templates = bundle.chordTemplates;
+            const rawChords = bundle.chords;
+            if (old && old.notes === notes && old.noteCount === (notes?.length || 0)
+                && old.chords === chords && old.chordCount === (chords?.length || 0)
+                && old.rawChords === rawChords && old.rawChordCount === (rawChords?.length || 0)
+                && old.beats === beats && old.beatCount === (beats?.length || 0)
+                && old.anchors === anchors && old.anchorCount === (anchors?.length || 0)
+                && old.handShapes === handShapes && old.shapeCount === (handShapes?.length || 0)
+                && old.templates === templates && old.strings === nStr
+                && old.linkTargets === _linkNextTargetSet
+                && old.repeatNotes === _coincidentRepeatNoteSet
+                && old.allowed === _fretLabelAllowed
+                && old.holdModel === _chordGuideCache?.model
+                && old.strumFrames === _authoredStrumCache) return old.byFret;
+
+            const byFret = Array.from({ length: NFRETS + 1 }, () => []);
+            const seen = new Set();
+            function add(t, f, text, node = null) {
+                if (!Number.isFinite(t) || !isPlayableFret(f) || f <= 0) return;
+                const key = `${t}|${f}|${String(text)}`;
+                if (seen.has(key)) return;
+                seen.add(key);
+                byFret[f].push({ t, f, text, node });
+            }
+            function allowed(n, t = n.t) {
+                return _fretLabelAllowed.has(Math.round(t * 25) * 100 + n.f);
+            }
+
+            // Standalone approach labels; arpeggio membership controls the
+            // same fromChord gate used by drawNote.
+            for (const n of notes || []) {
+                if (!validString(n.s) || !isPlayableFret(n.f) || n.f <= 0
+                    || isUnpitchedMute(n) || (n.mt === true && n.pick_scrape_marks?.length > 0)
+                    || _coincidentRepeatNoteSet?.has(n)
+                    || _linkNextTargetSet?.has(n) || !allowed(n)) continue;
+                const strum = _authoredStrumCache?.byNote.has(n);
+                const cid = strum ? null : arpeggioChordIdForNoteWithInferCache(
+                    n, handShapes, templates, notes, _arpGhostHsInferScratch);
+                if (cid != null && arpHsBoundsForNote(n, handShapes, _arpGhostHsInferScratch) == null) continue;
+                add(n.t, n.f, harmonicLabel(n), naturalNode(n));
+            }
+
+            // Walk the same display-chord order once. Synthetic rows affect shape-run
+            // labels, but only non-synthetic rows advance the repeat-strum predecessor.
+            let runSigPrev = null, prevAnyChordTime = -Infinity;
+            let prevChordSig = null, prevChordTime = -1;
+            for (const ch of chords || []) {
+                const sig = chordShapeSignature(ch);
+                const firstInShapeRun = sig === null || sig !== runSigPrev || ch.t - prevAnyChordTime > 0.5;
+                if (sig !== null) { runSigPrev = sig; prevAnyChordTime = ch.t; }
+                if (!ch.notes) continue;
+                const members = filterValidNotes(ch.notes);
+                if (!members.length) continue;
+                const shape = mergeChordShape(ch, members, templates);
+                const isRepeat = !ch.h3dStrum && sig !== null && prevChordSig === sig
+                    && Math.abs(ch.t - prevChordTime) < 0.5;
+                if (!ch.h3dSynth) { prevChordSig = sig; prevChordTime = ch.t; }
+                const hint = chordHandShapeArpeggioHint(ch, handShapes, templates);
+                const lavender = !ch.h3dStrum && chordUsesArpeggioFrame(ch, hint);
+                const synth = suppressSynthChordForNotes(ch);
+                let bounds = ch.h3dStrum ? ch.bounds : null;
+                if (!ch.h3dStrum && shape.size > 1) {
+                    let lo = Infinity, hi = -Infinity;
+                    for (const f of shape.values()) if (f > 0) { lo = Math.min(lo, f); hi = Math.max(hi, f); }
+                    bounds = chordShapeLaneBounds(lo, hi, getChartAnchorAt(anchors, ch.t + CHORD_ANCHOR_TIME_EPS));
+                }
+                const hasFrame = bounds != null && chordHasFrameShape(ch, shape, synth, templates, lavender);
+                const frameEligible = hasFrame && (lavender || hwyChordHasNewAttack(members, _linkNextTargetSet));
+
+                // Chord-frame gold has no measure-density gate.
+                if (frameEligible && !isRepeat) for (const f of shape.values()) add(ch.t, f, f);
+
+                // Separate legacy skipBody label path. Synthetic member views
+                // are guidanceOnly=true and NEVER use it. Real compact repeats can,
+                // in the unusual case where an intervening synth restarted shape-run
+                // labels while the previous real strum still makes isRepeat=true.
+                if (synth || !isRepeat || !firstInShapeRun
+                    || !members.some(n => n.f > 0 && allowed(n, ch.t))) continue;
+                const timeWin = hint.hs ? { tLo: hsStart(hint.hs) - 0.06, tHi: hsEnd(hint.hs) + 0.06 } : null;
+                const inferred = !ch.h3dStrum && (!hint.hs || handShapeChartSpanSec(hint.hs) >= ARP_INFER_MIN_HAND_SHAPE_SPAN_S)
+                    && inferArpeggioFromNotePattern(ch, shape, notes, timeWin, handShapes,
+                        timeWin ? null : nextStrictlyLaterChordTime(rawChords, ch.t),
+                        timeWin ? null : hint.fallbackInferenceStopBefore);
+                const defer = inferred || (hint.explicit && hint.covered
+                    && chordShapeCoveredByStandaloneNotes(ch, shape, notes)) || !!ch.h3dStrum;
+                let fallback = false;
+                if (!ch.h3dStrum && defer) {
+                    fallback = true;
+                    const lo = ch.t - ARP_FRAME_ONSET_PAD_S, hi = ch.t + ARP_FRAME_ONSET_CLUSTER_S;
+                    for (let i = lowerBoundT(notes, lo - 0.02); i < notes.length && notes[i].t <= hi; i++) {
+                        const n = notes[i];
+                        if (n.t >= lo && shape.get(n.s) === n.f) { fallback = false; break; }
+                    }
+                }
+                if (defer && !fallback) continue;
+                let linksSlide = members.some(n => (Number.isFinite(n.sl) && n.sl >= 0)
+                    || (Number.isFinite(n.slu) && n.slu >= 0));
+                if (!linksSlide) outer: for (const n of members) {
+                    if (!(n.sus > 0)) continue;
+                    const end = ch.t + n.sus;
+                    for (let i = lowerBoundT(notes, end - NEXT_ON_STRING_T_EPS); i < notes.length; i++) {
+                        const next = notes[i];
+                        if (next.t > end + NEXT_ON_STRING_T_EPS) break;
+                        if (next.s !== n.s || Math.abs(next.t - end) >= NEXT_ON_STRING_T_EPS) continue;
+                        if ((Number.isFinite(next.sl) && next.sl >= 0) || (Number.isFinite(next.slu) && next.slu >= 0)) {
+                            linksSlide = true; break outer;
+                        }
+                    }
+                }
+                const hold = _chordGuideCache?.model.byChord.get(ch);
+                const skipBody = repeatChordMaySuppressGems(isRepeat, linksSlide, members,
+                    frameEligible && hasFrame && !lavender && !defer && hold?.suppressMemberTrails === true);
+                if (!skipBody) continue;
+                let firstArp = null, firstTime = Infinity;
+                if (lavender && !defer && hint.hs) {
+                    const hi = hsEnd(hint.hs) + 0.08;
+                    for (let i = lowerBoundT(notes, hsStart(hint.hs) - 0.08); i < notes.length && notes[i].t <= hi; i++) {
+                        const n = notes[i];
+                        if (!validString(n.s)) continue;
+                        for (const member of members) if (member.s === n.s && member.f === n.f && n.t < firstTime) {
+                            firstTime = n.t; firstArp = member; break;
+                        }
+                    }
+                }
+                for (const n of members) {
+                    if (!fallback && firstArp !== null && n !== firstArp) continue;
+                    if (n.f > 0 && !isUnpitchedMute(n) && allowed(n, ch.t)) add(ch.t, n.f, harmonicLabel(n), naturalNode(n));
+                }
+            }
+            for (const events of byFret) events.sort((a, b) => a.t - b.t);
+            _fretMarkerWaveCache.clear();
+            _fretMarkerGoldCache = {
+                notes, noteCount: notes?.length || 0, chords, chordCount: chords?.length || 0,
+                rawChords, rawChordCount: rawChords?.length || 0, beats, beatCount: beats?.length || 0,
+                anchors, anchorCount: anchors?.length || 0, handShapes, shapeCount: handShapes?.length || 0,
+                templates, strings: nStr, linkTargets: _linkNextTargetSet,
+                repeatNotes: _coincidentRepeatNoteSet, allowed: _fretLabelAllowed,
+                holdModel: _chordGuideCache?.model, strumFrames: _authoredStrumCache, byFret,
+            };
+            return byFret;
+        }
+
+        function _fretReferenceHiddenFrets(time, frets) {
+            const hidden = new Set();
+            const byFret = _fretMarkerGoldCache?.byFret;
+            if (!byFret) return hidden;
+            const labelY = Math.min(sY(0), sY(nStr - 1)) - S_GAP * 0.8;
+            const midY = (sY(0) + sY(nStr - 1)) / 2;
+            const baseDistance = Math.max(100 * K, (Math.abs(sY(0) - sY(nStr - 1)) + 14 * K) * 2.3);
+            for (const f of frets) {
+                const events = byFret[f];
+                if (!events?.length) continue;
+                const start = lowerBoundT(events, time - AHEAD);
+                if (start === events.length || events[start].t >= time + AHEAD) continue;
+                const grey = txtMat(f, _highwayReferenceLabelColor('#888888'), false, 'noteFret');
+                const greyInk = grey.map.userData.hwyLabelInk || { minY: 0, maxY: 1 };
+                const size = 7 * K * 1.4 * _textSizeMul * fretLabelScaleForFret(f);
+                for (let i = start; i < events.length && events[i].t < time + AHEAD; i++) {
+                    const event = events[i], delta = event.t - time;
+                    if (Math.abs(delta) >= AHEAD) continue;
+                    const gold = txtMat(event.text, FRET_LABEL_GOLD_HEX, false, 'noteFret');
+                    const goldInk = gold.map.userData.hwyLabelInk || { minY: 0, maxY: 1 };
+                    // Natural harmonics can have a wider caption and a different
+                    // contact X. Allow that lateral motion in the angled view.
+                    const width = size * Math.max(1, event.node != null ? gold.map.image.width / gold.map.image.height : 1);
+                    const dx = event.node != null ? Math.abs(xFret(event.node) - xFretMid(f)) : 0;
+                    let ratio = Infinity;
+                    for (const preset of STABLE_CAMERA_PRESETS) {
+                        const view = STABLE_CAMERA_VIEWS[preset];
+                        const pitch = STABLE_CAMERA_PITCH - Math.atan2(view.pitch, 100);
+                        const yaw = preset === 'angled' ? STABLE_CAMERA_YAW : 0;
+                        ratio = Math.min(ratio, hwyFretReferenceSeparationRatio(pitch, yaw,
+                            labelY - midY - view.panY * K, baseDistance * view.distMul,
+                            TS * AHEAD, width, cam.aspect, STABLE_CAMERA_FOV));
+                    }
+                    // The standard-preset envelope covers automatic pan/zoom.
+                    // Legacy tilt and manual cameras have no fixed orientation
+                    // envelope. Keep their decisions stable too, conservatively
+                    // omitting same-fret references with co-approaching gold.
+                    if (cameraMode !== 'stable' || _freeCamFor(highwayCanvas)?.enabled) ratio = 0;
+                    const effectiveGap = Math.max(0, Math.abs(delta) - Math.tan(STABLE_CAMERA_YAW) * dx / TS);
+                    if (hwyFretReferenceNeedsClearance(effectiveGap, AHEAD, TS, ratio, size, greyInk, goldInk)) {
+                        hidden.add(f);
+                        break;
+                    }
+                }
+            }
+            return hidden;
+        }
+
         function updateFretColumnMarkers(beats, notes, chords, anchors, now, t1, hwyLaneFretClipMin, hwyLaneFretClipMax) {
             if (beats && fretColumnMarkerCadence > 0) {
                 // Prune stale wave cache entries (wave already past now).
                 if (_fretMarkerWaveCache.size > 0) {
                     for (const k of _fretMarkerWaveCache.keys()) {
-                        if (k < now) _fretMarkerWaveCache.delete(k);
+                        if (k < now || k > t1) _fretMarkerWaveCache.delete(k);
                     }
                 }
                 const minStringY = Math.min(sY(0), sY(nStr - 1));
@@ -15733,7 +15911,14 @@
                         const fretList = anchorKeyed
                             ? fretColumnMarkersForAnchor(anchorFret, DOTS)
                             : DOTS.slice();
-                        cached = { hasLow, hasHigh, fretList, anchorKeyed };
+                        // Freeze all gates before allocating the first sprite,
+                        // including the legacy no-anchor clipping rule. Camera
+                        // movement cannot reveal/remove a digit half way in.
+                        const visibleFrets = fretList.filter(f => anchorKeyed
+                            || ((f === 12 ? hasLow || hasHigh : f < 12 ? hasLow : hasHigh)
+                                && (hwyLaneFretClipMin == null || (f > hwyLaneFretClipMin && f <= hwyLaneFretClipMax))));
+                        cached = { hasLow, hasHigh, fretList: visibleFrets, anchorKeyed,
+                            hiddenFrets: _fretReferenceHiddenFrets(b.time, visibleFrets) };
                         _fretMarkerWaveCache.set(b.time, cached);
                     }
                     if (!cached.hasLow && !cached.hasHigh && !cached.anchorKeyed) continue;
@@ -15751,21 +15936,9 @@
                     // Sprite scale matches the per-note connector fret label
                     // (drawNote → pNoteFretLabel) so cadence markers read the
                     // same size at a given Z — no extra world-scale boost.
-                    const clipMin = hwyLaneFretClipMin;
-                    const clipMax = hwyLaneFretClipMax;
                     const fretList = cached.fretList || DOTS;
-                    const anchorKeyedRow = !!cached.anchorKeyed;
                     for (const f of fretList) {
-                        let show;
-                        if (anchorKeyedRow) {
-                            show = true;
-                        } else {
-                            if (f === 12) show = cached.hasLow || cached.hasHigh;
-                            else if (f < 12) show = cached.hasLow;
-                            else show = cached.hasHigh;
-                        }
-                        if (!show) continue;
-                        if (!anchorKeyedRow && clipMin != null && (f <= clipMin || f > clipMax)) continue;
+                        if (cached.hiddenFrets.has(f)) continue;
                         // Fixed colour — avoids mid-flight colour flips caused by
                         // activeFrets only covering now+2s while waves appear at
                         // AHEAD (3s), which made each marker start dark then
@@ -15774,7 +15947,7 @@
                         const sp = pFretColMarker.get();
                         const m = txtMat(f, color, false, 'noteFret');
                         _setLabelMap(sp, m);
-                        _registerFretColumnMarker(sp, f, b.time);
+                        sp.center.set(0.5, 1);
                         sp.material.opacity = 0.85 * _colFadeIn;
                         sp.position.set(xFretMid(f), labelY, z);
                         // Z-proportional: sits between chord frame and note gem
@@ -15919,7 +16092,6 @@
             if (projMeshArr) for (const arr of projMeshArr) for (const m of arr) m.visible = false;
             _incomingFloorLabelCount = _incomingLabelOccluderCount = 0;
             _incomingFixedFretLabels.fill(null);
-            _incomingFretColumnMarkerCount = 0;
             pFretLbl.reset(); pLane.reset(); pLaneDivider.reset();
             if (pGhostFretLbl) pGhostFretLbl.reset();
             _scrGhostUpcomingCount.fill(0, 0, nStr);
@@ -16259,9 +16431,13 @@
 
             const beats = bundle.beats;
             // Rebuild the fret-label visibility set whenever the chart changes.
-            if (notes !== _fretLabelNotesRef) {
+            if (notes !== _fretLabelNotesRef || beats !== _fretLabelBeatsRef
+                || (notes?.length || 0) !== _fretLabelNoteCount || (beats?.length || 0) !== _fretLabelBeatCount) {
                 _fretLabelAllowed = _buildFretLabelSet(notes, chords, beats);
                 _fretLabelNotesRef = notes;
+                _fretLabelBeatsRef = beats;
+                _fretLabelNoteCount = notes?.length || 0;
+                _fretLabelBeatCount = beats?.length || 0;
             }
             // Rebuild the measure-start time cache whenever beats change. Only
             // beats that begin a measure carry measure >= 0; intra-measure beats
@@ -17413,6 +17589,11 @@
             // the wave's full flight. Without this, activeFrets shifting
             // mid-song would drop markers mid-flight (user-reported bug:
             // "numbers disappear before they get all the way towards me").
+            if (fretColumnMarkerCadence > 0) {
+                _ensureFretMarkerGoldIndex(bundle, notes, strumFrames.displayChords, beats, anchors);
+                if (now < _fretMarkerLastNow - 0.25) _fretMarkerWaveCache.clear();
+                _fretMarkerLastNow = now;
+            }
             updateFretColumnMarkers(beats, notes, chords, anchors, now, t1, hwyLaneFretClipMin, hwyLaneFretClipMax);
 
             // ── Camera target ─────────────────────────────────────────────
@@ -24083,8 +24264,6 @@
             _incomingLabelProbe = null;
             _incomingFloorLabels.length = _incomingLabelOccluders.length = 0;
             _incomingFixedFretLabels.length = 0;
-            _incomingFretColumnMarkers.length = 0;
-            _incomingFretColumnMarkerCount = 0;
             _incomingFloorLabelCount = _incomingLabelOccluderCount = 0;
             _drawNextByString = null; _drawRecentByString = null;
             _susVerdictLatch.clear();
@@ -24110,6 +24289,8 @@
             chordFrameGradTex = chordFrameGradTexRs = chordFrameGradTexArp = null;
             pFretColMarker = null;
             _fretMarkerWaveCache.clear();
+            _fretMarkerGoldCache = null;
+            _fretMarkerLastNow = NaN;
             gNote = gNoteEdge = gNoteGhost = gSus = gBeat = gTapChevron = null;
             gNoteGrad = []; gNoteGhostGrad = [];
             tgtX = curX = xFretMid(CAM_LOCK_CENTER_FRET); tgtDist = curDist = CAM_DIST_BASE; tgtLookY = curLookY = 0; _fretRowFitBoost = 1; nStr = NSTR; _oobStringWarned = false;

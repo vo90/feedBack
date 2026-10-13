@@ -535,7 +535,7 @@ const sameChordRepeat = new Function('previous', 'ch', `
         'validString','filterValidNotes','chordShapeSignature'].map(fn).join('\n')}
     const prevChordSig=chordShapeSignature(previous), prevChordTime=previous.t;
     const runSig=chordShapeSignature(ch);
-    ${src.match(/const isRepeat = !ch\.h3dStrum[^;]+;/)[0]}
+    ${src.slice(src.indexOf('function updateChordPhase(')).match(/const isRepeat = !ch\.h3dStrum[^;]+;/)[0]}
     return isRepeat;
 `);
 

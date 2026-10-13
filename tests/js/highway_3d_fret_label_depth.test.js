@@ -182,8 +182,7 @@ function runHandoff(row, fret = 9, options = {}) {
         FRET_LABEL_GOLD_HEX: '#D8A636',
         txtMat: (text, color, wide, style) => ({ text, color, wide, style, opacity: 0.55 }),
     };
-    vm.runInNewContext(extractFunction('_suppressCoincidentFretColumnMarkers') + '\n'
-        + extractFunction('_layoutIncomingFretLabels')
+    vm.runInNewContext(extractFunction('_layoutIncomingFretLabels')
         + '\n_layoutIncomingFretLabels();', context);
     return label;
 }
@@ -221,97 +220,19 @@ test('only the same fret and beat within wire rounding tolerance identify a dupl
     }
 });
 
-function columnMarker(fret = 9, time = 12.345) {
-    return { fret, time, sprite: visual({ minX: -0.2, maxX: 0.2, minY: -0.9, maxY: -0.7 }) };
-}
-
-test('a visible gold label replaces its coincident grey reference but keeps separated references', () => {
-    const matching = columnMarker(), otherFret = columnMarker(7), nextBeat = columnMarker(9, 12.595);
-    const nearButDistinct = columnMarker(9, 12.365);
-    for (const marker of [nextBeat, nearButDistinct]) {
-        marker.sprite.rect = marker.sprite.inkRect = { minX: -0.2, maxX: 0.2, minY: -0.5, maxY: -0.3 };
+test('gold layout does not revisit a grey wave decision when ink or camera projection changes', () => {
+    const retained = visual({minX:-.2,maxX:.2,minY:-.9,maxY:-.7});
+    const hidden = visual(retained.rect, retained.inkRect, {visible:false});
+    for (let frame=0;frame<12;frame++) {
+        retained.inkRect = frame%2 ? {minX:5,maxX:6,minY:5,maxY:6} : {minX:-.2,maxX:.2,minY:-.9,maxY:-.7};
+        runHandoff(null,3,{time:220.597,layoutFrame:frame,
+            // Retain obsolete fields deliberately: gold layout must never reach
+            // back into a frame registry and reverse the marker's wave decision.
+            markers:[{fret:3,time:220.673996,sprite:retained},{fret:3,time:220.673996,sprite:hidden}],
+            gold:{inkRect:retained.inkRect}});
+        assert.equal(retained.visible,true);
+        assert.equal(hidden.visible,false);
     }
-    const markers = [matching, otherFret, nextBeat, nearButDistinct];
-    const label = runHandoff(null, 9, { time: 12.345, markers });
-    assert.equal(label.visible, true);
-    assert.equal(matching.sprite.visible, false);
-    for (const marker of [otherFret, nextBeat, nearButDistinct]) assert.equal(marker.sprite.visible, true);
-});
-
-test('Acacia 3 ms beat/chord offset keeps gold visible across rounded-depth order flips', () => {
-    const context = vm.createContext({ K: 0.015 });
-    vm.runInContext(source.slice(source.indexOf('    const RENDER_ORDER_LAYER_STACK ='),
-        source.indexOf('    /** Labels yield')), context);
-    const beat = 23.707001, chord = 23.709999;
-    assert.equal(sameFretBeat(7, beat, 7, chord), false);
-    const oldWinners = new Set();
-    const marker = columnMarker(7, beat);
-    for (let frame = 0; frame < 240; frame++) {
-        const now = 21 + frame / 120;
-        const greyOrder = context.renderOrderForLayerAtZ(-230 * 0.015 * (beat - now), 'FRET_COLUMN');
-        const goldOrder = context.renderOrderForLayerAtZ(-230 * 0.015 * (chord - now), 'CHORD_FRET_LABEL');
-        oldWinners.add(greyOrder > goldOrder ? 'grey' : 'gold');
-        marker.sprite.visible = true; // pooled marker is restored every frame
-        marker.sprite.renderOrder = greyOrder;
-        const gold = runHandoff(null, 7, { time: chord, markers: [marker], layoutFrame: frame,
-            gold: { renderOrder: goldOrder } });
-        assert.equal(gold.visible, true);
-        assert.equal(marker.sprite.visible, false, 'grey must not return at frame ' + frame);
-        assert.equal(gold.renderOrder, goldOrder, 'global depth ordering is unchanged');
-    }
-    assert.equal(oldWinners.size, 2, 'fixture must reproduce both old colour winners');
-});
-
-test('overlapping grey references yield to gold for either timing direction and only matching frets', () => {
-    for (const delta of [-0.003, 0.003, -0.02, 0.02]) {
-        const marker = columnMarker(9, 12.345 + delta), other = columnMarker(7, marker.time);
-        runHandoff(null, 9, { time: 12.345, markers: [marker, other] });
-        assert.equal(marker.sprite.visible, false);
-        assert.equal(other.sprite.visible, true);
-    }
-});
-
-test('transparent padding does not hide separated grey ink and reused bounds refresh each frame', () => {
-    const marker = columnMarker(9, 12.348);
-    marker.sprite.inkRect = { minX: -0.1, maxX: 0.1, minY: -0.79, maxY: -0.71 };
-    const gold = { inkRect: { minX: -0.1, maxX: 0.1, minY: -1.05, maxY: -0.85 } };
-    runHandoff(null, 9, { time: 12.345, markers: [marker], gold, layoutFrame: 0 });
-    assert.equal(marker.sprite.visible, true, 'only canvas padding overlaps');
-    marker.sprite.inkRect = { ...gold.inkRect };
-    runHandoff(null, 9, { time: 12.345, markers: [marker], gold, layoutFrame: 1 });
-    assert.equal(marker.sprite.visible, false, 'updated ink overlaps');
-    marker.sprite.visible = true;
-    marker.sprite.inkRect = { minX: -0.1, maxX: 0.1, minY: -0.79, maxY: -0.71 };
-    runHandoff(null, 9, { time: 12.345, markers: [marker], gold, layoutFrame: 2 });
-    assert.equal(marker.sprite.visible, true, 'reference reappears after separation');
-});
-
-test('invisible, transparent, unprojectable and teaching gold entries cannot remove grey references', () => {
-    for (const options of [
-        { gold: { visible: false } },
-        { gold: { material: { opacity: 0 } } },
-        { gold: { material: { opacity: -0.01 } } },
-        { gold: { projectable: false } },
-        { time: NaN },
-    ]) {
-        const marker = columnMarker();
-        runHandoff(null, 9, { time: 12.345, markers: [marker], ...options });
-        assert.equal(marker.sprite.visible, true);
-    }
-    const teachingMatch = columnMarker(0);
-    runHandoff(null, 0, { time: 12.345, markers: [teachingMatch] });
-    assert.equal(teachingMatch.sprite.visible, true);
-});
-
-test('arrival handoff still leaves one gold identity after removing the matching grey marker', () => {
-    const marker = columnMarker();
-    const row = visual({ minX: -0.15, maxX: 0.15, minY: -0.97, maxY: -0.7 });
-    const label = runHandoff(row, 9, { time: 12.345, markers: [marker] });
-    assert.equal(marker.sprite.visible, false);
-    assert.equal(label.visible, false);
-    assert.equal(row.visible, true);
-    assert.equal(row.material.color, '#D8A636');
-    assert.equal(row.material.opacity, 1);
 });
 
 function registrationHarness() {
@@ -324,7 +245,6 @@ function registrationHarness() {
     };
     const context = vm.createContext({
         _incomingFloorLabels: [], _incomingFloorLabelCount: 0,
-        _incomingFretColumnMarkers: [], _incomingFretColumnMarkerCount: 0,
         _incomingFixedFretLabels: [], _incomingLabelOccluderCount: 0,
         _newLabelRect: () => ({}), hwySameFretLabelBeat: sameFretBeat,
         _setLabelMap(sprite, mat) { sprite.material = { ...mat }; },
@@ -337,8 +257,7 @@ function registrationHarness() {
         renderOrderForLayerAtZ: () => 700, fretLabelScaleForFret: () => 1,
         AHEAD: 3, K: 1, S_GAP: 4, nStr: 6, _textSizeMul: 1,
     });
-    vm.runInContext(['naturalNode', 'harmonicLabel', '_setIncomingFloorLabelMap', '_registerFretColumnMarker',
-        '_suppressCoincidentFretColumnMarkers'].map(extractFunction).join('\n'), context);
+    vm.runInContext(['naturalNode', 'harmonicLabel', '_setIncomingFloorLabelMap'].map(extractFunction).join('\n'), context);
     const updateStart = source.indexOf('function update(');
     const resetStart = source.indexOf('_incomingFloorLabelCount = _incomingLabelOccluderCount = 0;', updateStart);
     const resetEnd = source.indexOf('pFretLbl.reset();', resetStart);
@@ -354,35 +273,19 @@ function registrationHarness() {
     };
 }
 
-test('grey and gold registrations share a baseline and pooled records reset fret and time each frame', () => {
-    const h = registrationHarness(), c = h.context;
-    const gold = c.pNoteFretLabel.get(), grey = c.pFretColMarker.get();
-    c._setIncomingFloorLabelMap(gold, { opacity: 1 }, 5, 12.345);
-    c._registerFretColumnMarker(grey, 5, 12.345);
-    assert.equal(gold.center.x, grey.center.x);
-    assert.equal(gold.center.y, 1);
-    assert.equal(grey.center.y, 1, 'the grey digit also sits wholly below its floor anchor');
-    const goldRecord = c._incomingFloorLabels[0], greyRecord = c._incomingFretColumnMarkers[0];
-    c._suppressCoincidentFretColumnMarkers(goldRecord);
-    assert.equal(grey.visible, false);
+test('gold pooled records reset fret and authored time before reuse', () => {
+    const h=registrationHarness(), c=h.context, gold=c.pNoteFretLabel.get();
+    c._setIncomingFloorLabelMap(gold,{opacity:1},5,12.345);
+    const record=c._incomingFloorLabels[0];
+    assert.equal(gold.center.y,1);
     h.reset();
-    assert.equal(c._incomingFloorLabelCount, 0);
-    assert.equal(c._incomingFretColumnMarkerCount, 0, 'the actual update reset excludes previous frame markers');
-    assert.equal(c.pFretColMarker.get(), grey);
-    assert.equal(grey.visible, true, 'pool reuse restores a formerly suppressed reference');
-    assert.equal(grey.center.y, 0.5, 'normal pool defaults are still authoritative before registration');
-    c._registerFretColumnMarker(grey, 7, 12.595);
-    assert.equal(c._incomingFretColumnMarkers[0], greyRecord, 'records are reused without per-frame allocation');
-    assert.equal(greyRecord.fret, 7);
-    assert.equal(greyRecord.time, 12.595);
-    assert.equal(grey.center.y, 1);
-    assert.equal(c.pNoteFretLabel.get(), gold);
-    c._setIncomingFloorLabelMap(gold, { opacity: 1 });
-    assert.equal(c._incomingFloorLabels[0], goldRecord);
-    assert.equal(goldRecord.fret, 0);
-    assert.ok(Number.isNaN(goldRecord.time), 'a reused teaching label cannot retain a previous gold timestamp');
-    c._suppressCoincidentFretColumnMarkers(goldRecord);
-    assert.equal(grey.visible, true);
+    assert.equal(c._incomingFloorLabelCount,0);
+    assert.equal(c.pNoteFretLabel.get(),gold);
+    assert.equal(gold.center.y,.5);
+    c._setIncomingFloorLabelMap(gold,{opacity:1});
+    assert.equal(c._incomingFloorLabels[0],record);
+    assert.equal(record.fret,0);
+    assert.ok(Number.isNaN(record.time));
 });
 
 function sourceBetween(startText, endText, from = 0, includeEnd = false) {
@@ -421,24 +324,20 @@ function drawLabelPath(h, path, options = {}) {
     return time;
 }
 
-test('actual single, arpeggio, chord and synthetic label paths register authored times for grey dedup', () => {
-    for (const path of ['single', 'arp', 'chord', 'synthetic']) {
-        const h = registrationHarness(), c = h.context;
-        const time = drawLabelPath(h, path);
-        assert.equal(c._incomingFloorLabelCount, path === 'chord' ? 2 : 1, path);
-        for (const record of c._incomingFloorLabels) assert.equal(record.time, time, path + ' retains exact chart time');
-        drawLabelPath(h, 'grey');
-        assert.equal(c._incomingFretColumnMarkerCount, 1);
-        const marker = c._incomingFretColumnMarkers[0];
-        assert.equal(marker.time, time, 'grey registration uses the authored beat time');
-        c._suppressCoincidentFretColumnMarkers(c._incomingFloorLabels[0]);
-        assert.equal(marker.sprite.visible, false, path);
-        assert.equal(marker.sprite.center.y, 1);
+test('actual gold paths retain authored times and grey emission retains its floor baseline', () => {
+    for (const path of ['single','arp','chord','synthetic']) {
+        const h=registrationHarness(),c=h.context,time=drawLabelPath(h,path);
+        assert.equal(c._incomingFloorLabelCount,path==='chord'?2:1,path);
+        for(const record of c._incomingFloorLabels) assert.equal(record.time,time);
+        drawLabelPath(h,'grey');
+        let marker;
+        c.pFretColMarker.forEachActive(sprite=>{marker=sprite;});
+        assert.equal(marker.visible,true);
+        assert.equal(marker.center.x,.5);
+        assert.equal(marker.center.y,1);
         h.reset();
-        drawLabelPath(h, path, { hidden: true });
-        assert.equal(c._incomingFloorLabelCount, 0, path + ' hidden label creates no stale suppression record');
-        drawLabelPath(h, 'grey');
-        assert.equal(c._incomingFretColumnMarkers[0].sprite.visible, true);
+        drawLabelPath(h,path,{hidden:true});
+        assert.equal(c._incomingFloorLabelCount,0,path+' creates no stale gold record');
     }
 });
 
@@ -473,23 +372,20 @@ test('gold dedup retains nearby beats, other frets, and adjacent teaching marks'
 test('a non-drawable first gold label cannot suppress a drawable replacement', () => {
     for (const overrides of [{ visible: false }, { material: { opacity: 0 } }, { projectable: false }]) {
         const first = goldRecord(9, 12.345, overrides), second = goldRecord();
-        const grey = columnMarker();
-        runHandoff(null, 9, { labels: [first, second], markers: [grey] });
+        runHandoff(null, 9, { labels: [first, second] });
         assert.equal(second.sprite.visible, true);
         assert.equal(second.layoutFrame, 1);
         assert.equal(first.layoutFrame, -1, 'non-drawable entries do not claim this frame identity');
-        assert.equal(grey.sprite.visible, false, 'the surviving gold still replaces its grey reference');
     }
 });
 
 test('a gold label handed to the fixed row still prevents another incoming copy', () => {
-    const first = goldRecord(), second = goldRecord(), grey = columnMarker();
+    const first = goldRecord(), second = goldRecord();
     const row = visual({ minX: -0.15, maxX: 0.15, minY: -0.97, maxY: -0.7 });
-    runHandoff(row, 9, { labels: [first, second], markers: [grey] });
+    runHandoff(row, 9, { labels: [first, second] });
     assert.equal(first.sprite.visible, false, 'the first identity moved to the fixed row');
     assert.equal(first.layoutFrame, 1, 'the handoff still owns this frame identity');
     assert.equal(second.sprite.visible, false);
-    assert.equal(grey.sprite.visible, false);
     assert.equal(row.visible, true);
     assert.equal(row.material.color, '#D8A636');
     assert.equal(row.material.opacity, 1);
