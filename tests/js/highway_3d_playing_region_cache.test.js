@@ -22,7 +22,10 @@ function harness() {
         ${source.match(/const _guidanceLanes = [^;]+;/)[0]}
         ${extract('hwyResolveGuidanceAnchors')}
         ${['isPlayableFret', 'isPlainDeadNote', 'isRenderableNote', 'laneBoundsFromAnchor',
-            'chordFallbackLaneBounds', 'chordShapeLaneBounds', 'hwyBuildAuthoredStrumFrames', 'hwyResolveChordLanes'].map(extract).join('\n')}
+            'chordFallbackLaneBounds', 'chordShapeLaneBounds', 'hwyBuildAuthoredStrumFrames', 'hwyResolveChordLanes',
+            'hwyBuildLaneIntervalModel', 'createLaneIntervalCache'].map(extract).join('\n')}
+        const _laneIntervalCache=createLaneIntervalCache(), _laneSegments={length:0};
+        let _laneSegLen=0;
         ${extract('resolvedGuidanceAnchors')}
         ${source.slice(start, end)}
         const xFret=f=>(lefty?-1:1)*f*10;

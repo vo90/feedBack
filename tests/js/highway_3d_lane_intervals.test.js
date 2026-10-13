@@ -166,7 +166,7 @@ function emissionHarness() {
         const NFRETS=24, K=.0075, S_BASE=0, NH=.1, AHEAD=3, TS=1.725;
         const xFret=f=>f*.1, _highwayLaneOpacity=x=>x, _usesRsDefaultHighway=()=>true;
         const mLaneOdd={tag:'odd'}, mLaneEven={tag:'even'}, mLaneDivider={tag:'legacy'};
-        const mRsLaneDivider={tag:'gray'}, mHandPositionEdge={tag:'cyan'}, mLaneDividerExt=null;
+        const mRsLaneDivider={tag:'gray'}, mRsLaneEdge={tag:'analyticCyan'}, mHandPositionEdge={tag:'cyan'}, mLaneDividerExt=null;
         const gRsLaneDivider={}, gLaneDivider={}, highwayIntensity=.5, fretDividersVisible=false;
         function pool() { return { rows:[], get() {
             const position={set(x,y,z){Object.assign(this,{x,y,z});}};

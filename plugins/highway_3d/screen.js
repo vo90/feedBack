@@ -8747,13 +8747,14 @@
         // Shared materials/geometry for the lane stripes — see initScene().
         // Hoisted so draw() can reference them when assigning per-stripe.
         let mLaneOdd = null, mLaneEven = null, gLanePlane = null;
-        /** Lane fret dividers: default white vs arpeggio frame tint on outer wires only. */
+        /** Shared lane dividers and hand-position edges. */
         let mLaneDivider = null, mLaneDividerExt = null;
         let mHandPositionEdge = null, mHandPositionFill = null;
         let mRsLaneDivider = null, gLaneDivider = null, gRsLaneDivider = null;
+        let mRsLaneEdge = null;
 
         function setLaneDividerGeometry(div) {
-            const rs = div.material === mRsLaneDivider;
+            const rs = div.material === mRsLaneDivider || div.material === mRsLaneEdge;
             div.geometry = rs ? gRsLaneDivider : gLaneDivider;
             // The shader expands beyond the world-space strip's bounds.
             div.frustumCulled = !rs;
@@ -11827,7 +11828,13 @@
                 color: 0x62b9be, transparent: true, opacity: 0.07,
                 depthTest: false, depthWrite: false, fog: false, side: T.DoubleSide,
             });
-            _ownedSharedMats.push(mHandPositionEdge, mHandPositionFill);
+            // Keep the subdued cyan/depth policy, but stabilize subpixel coverage
+            // on RS+ default main lanes. Additional handshape guides stay boxes.
+            mRsLaneEdge = rsLaneDividerMaterial();
+            mRsLaneEdge.uniforms.uColor.value.copy(mHandPositionEdge.color);
+            mRsLaneEdge.uniforms.uOpacity.value = mHandPositionEdge.opacity;
+            mRsLaneEdge.depthTest = false;
+            _ownedSharedMats.push(mHandPositionEdge, mHandPositionFill, mRsLaneEdge);
 
             // Chord frame palette (frame alpha 128, fill gradient alpha 32; MeshBasic).
             const chR = CHORD_BOX_TEAL_HEX >> 16 & 255;
@@ -15453,9 +15460,10 @@
                     // Pool slots initially carry the ordinary box material.
                     // Compile the RS+ variant before its first visible frame too.
                     const dividerWarm = new T.Mesh(gRsLaneDivider, mRsLaneDivider);
-                    scene.add(dividerWarm);
+                    const edgeWarm = new T.Mesh(gRsLaneDivider, mRsLaneEdge);
+                    scene.add(dividerWarm, edgeWarm);
                     try { ren.compile(scene, cam); }
-                    finally { scene.remove(dividerWarm); }
+                    finally { scene.remove(dividerWarm, edgeWarm); }
                 }
             } catch (e) { console.warn('[3D-Hwy] prewarm compile:', e); }
             try {
@@ -17147,13 +17155,16 @@
                                 const div = pLaneDivider.get();
                                 div.position.set(xFret(f), yPos, zMid);
                                 div.material = f === fDiv0 || f === fDiv1
-                                    ? mHandPositionEdge
+                                    ? _usesRsDefaultHighway() ? mRsLaneEdge : mHandPositionEdge
                                     : _usesRsDefaultHighway() ? mRsLaneDivider : mLaneDivider;
                                 setLaneDividerGeometry(div);
                                 div.scale.set(1, 1, dz);
                                 // Always above coincident extension lines: transparent
                                 // distance sorting must not brighten a split segment.
-                                div.renderOrder = div.material === mRsLaneDivider ? 2.01 : 2;
+                                // Keep cyan above the gray rails/extensions even
+                                // when camera motion reverses their depth sort.
+                                div.renderOrder = div.material === mRsLaneEdge ? 2.02
+                                    : div.material === mRsLaneDivider ? 2.01 : 2;
                             }
                         }
                     }
@@ -17228,11 +17239,12 @@
                             const div = pLaneDivider.get();
                             div.position.set(xFret(f), yPos, -divLen * 0.5);
                             div.material = f === fDivA || f === fDivB
-                                ? mHandPositionEdge
+                                ? _usesRsDefaultHighway() ? mRsLaneEdge : mHandPositionEdge
                                 : _usesRsDefaultHighway() ? mRsLaneDivider : mLaneDivider;
                             setLaneDividerGeometry(div);
                             div.scale.set(1, 1, divLen);
-                            div.renderOrder = div.material === mRsLaneDivider ? 2.01 : 2;
+                            div.renderOrder = div.material === mRsLaneEdge ? 2.02
+                                : div.material === mRsLaneDivider ? 2.01 : 2;
                         }
                     }
                 }
@@ -24050,6 +24062,7 @@
             mLaneOdd = mLaneEven = mLaneDivider = mRsLaneDivider = gLanePlane = gGhostFretPlane = null;
             gLaneDivider = gRsLaneDivider = null;
             mHandPositionEdge = mHandPositionFill = null;
+            mRsLaneEdge = null;
             chordFrameGradTex = chordFrameGradTexRs = chordFrameGradTexArp = null;
             pFretColMarker = null;
             _fretMarkerWaveCache.clear();
@@ -24449,6 +24462,7 @@
                 {
                     if (_usesRsDefaultHighway()) {
                         ren.getDrawingBufferSize(mRsLaneDivider.uniforms.uViewport.value);
+                        mRsLaneEdge.uniforms.uViewport.value.copy(mRsLaneDivider.uniforms.uViewport.value);
                     }
                     const comp = (!rsPlusNotation && _bloom && !_ssActive()) ? _bloomEnsure() : null;
                     if (comp) {
