@@ -4934,10 +4934,12 @@
     let T = null;
     let threeLoadPromise = null;
     let scrapeGeometry = null;
+    let lyricLayout = null;
     function loadThree() {
         if (!threeLoadPromise) {
             threeLoadPromise = Promise.all([import('/static/js/pick-scrapes.js').then(m => { scrapeGeometry = m; }),
-                import(THREE_URL).catch(() => import(THREE_CDN))])
+                import(THREE_URL).catch(() => import(THREE_CDN)),
+                import('/static/js/lyric-lines.js').then(m => { lyricLayout = m; })])
                 .then(([, three]) => three)
                 .then(mod => { T = mod; return mod; })
                 .catch(e => {
@@ -11012,28 +11014,7 @@
         let _lyrRowsCache = null;
 
         function drawLyrics(lyrics, currentTime, ctx, W, H) {
-            if (!lyrics._lines) {
-                const lines = [];
-                let line = null, word = null;
-                const flushWord = () => { if (word && word.length) line.words.push(word); word = null; };
-                const flushLine = () => { flushWord(); if (line && line.words.length) lines.push(line); line = null; };
-                for (let i = 0; i < lyrics.length; i++) {
-                    const l = lyrics[i];
-                    const raw = l.w || '';
-                    const endsLine = raw.endsWith('+');
-                    const continuesWord = raw.endsWith('-');
-                    if (line && i > 0 && l.t - (lyrics[i - 1].t + lyrics[i - 1].d) > 4.0) flushLine();
-                    if (!line) line = { words: [], start: l.t, end: l.t + l.d };
-                    if (!word) word = [];
-                    word.push(l);
-                    line.end = Math.max(line.end, l.t + l.d);
-                    if (!continuesWord) flushWord();
-                    if (endsLine) flushLine();
-                }
-                flushLine();
-                lyrics._lines = lines;
-            }
-            const allLines = lyrics._lines;
+            const allLines = lyricLayout.getLyricLines(lyrics);
             if (!allLines.length) return 0;
 
             let currentIdx = -1;
@@ -11060,7 +11041,7 @@
             ctx.font = `bold ${fontSize}px sans-serif`;
             let rows, spaceWidth, bgWidth;
             const _lc = _lyrRowsCache;
-            if (_lc && _lc.lyricsRef === lyrics && _lc.idx === currentIdx
+            if (_lc && _lc.lyricsRef === lyrics && _lc.linesRef === allLines && _lc.idx === currentIdx
                 && _lc.shown === linesToShow.length
                 && _lc.fontSize === fontSize && _lc.W === W) {
                 rows = _lc.rows; spaceWidth = _lc.spaceWidth; bgWidth = _lc.bgWidth;
@@ -11095,7 +11076,7 @@
                 }
                 bgWidth = Math.min(bgWidth + 30, W * 0.85);
                 _lyrRowsCache = {
-                    lyricsRef: lyrics, idx: currentIdx,
+                    lyricsRef: lyrics, linesRef: allLines, idx: currentIdx,
                     shown: linesToShow.length, fontSize, W,
                     rows, spaceWidth, bgWidth,
                 };

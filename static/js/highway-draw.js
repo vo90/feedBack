@@ -25,6 +25,7 @@ import {
 } from './highway-state-primitives.js';
 import { isPickScrape, scrapeProgress, scrapePosition, scrapeFade } from './pick-scrapes.js';
 import { hasBar, barVisual, barBoundaries } from './whammy.js';
+import { getLyricLines } from './lyric-lines.js';
 import { harmonicContacts, harmonicContactLabel as timedContactLabel } from './harmonic-contacts.js';
 import {
     _shimmerNoise, bendToneLabel, bnvNormalizedPoints, chordHarmonyLabels, project, roundRect,
@@ -1242,52 +1243,7 @@ export function drawLyrics(hwState, W, H) {
     const fontSize = Math.max(18, H * 0.028) | 0;
     const lineY = H * 0.04;
 
-    // Vocal markers: a trailing "-" means the syllable joins the
-    // next one into a single word (no space); a trailing "+" marks the end
-    // of an authored line. Build a flat list of authored lines so we can
-    // cap rendering to a 2-line rolling window (current + upcoming).
-    if (!hwState.lyrics._lines) {
-        const lines = [];
-        let line = null, word = null;
-
-        const flushWord = () => {
-            if (word && word.length) line.words.push(word);
-            word = null;
-        };
-        const flushLine = () => {
-            flushWord();
-            if (line && line.words.length) lines.push(line);
-            line = null;
-        };
-
-        for (let i = 0; i < hwState.lyrics.length; i++) {
-            const l = hwState.lyrics[i];
-            const raw = l.w || '';
-            const endsLine = raw.endsWith('+');
-            const continuesWord = raw.endsWith('-');
-
-            // Safety fallback: if a song has no "+" markers at all, force a
-            // line break on any gap > 4s so we never build a single giant line.
-            if (line && i > 0) {
-                const prev = hwState.lyrics[i - 1];
-                if (l.t - (prev.t + prev.d) > 4.0) flushLine();
-            }
-
-            if (!line) line = { words: [], start: l.t, end: l.t + l.d };
-            if (!word) word = [];
-
-            word.push(l);
-            line.end = Math.max(line.end, l.t + l.d);
-
-            if (!continuesWord) flushWord();
-            if (endsLine) flushLine();
-        }
-        flushLine();
-
-        hwState.lyrics._lines = lines;
-    }
-
-    const allLines = hwState.lyrics._lines;
+    const allLines = getLyricLines(hwState.lyrics);
     if (!allLines.length) return;
 
     // Current line = most recently started line. Before the first line has

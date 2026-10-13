@@ -3,6 +3,7 @@
  * Receives note data via WebSocket, renders on requestAnimationFrame.
  */
 import { whammyApi } from './js/whammy.js';
+import { getLyricLines } from './js/lyric-lines.js';
 import { shouldUseNativeBacking } from './js/native-backing-route.js';
 import { loadCoreBackingTrack } from './js/transport.js';
 window.feedBackWhammy = whammyApi;
@@ -2452,6 +2453,9 @@ function createHighway() {
                         case 'chord_templates': hwState.chordTemplates = msg.data; break;
                         case 'lyrics':
                             hwState.lyrics = msg.data;
+                            // Prepare once on receipt, before renderer/overlay consumers.
+                            // The legacy cache shape also serves the camera bridge.
+                            hwState.lyrics._lines = getLyricLines(hwState.lyrics);
                             // Provenance: "xml" | "notechart" | "whisperx" | "user".
                             // Surfaced via the renderer bundle so visualization
                             // plugins can render an "auto-transcribed" badge
