@@ -64,7 +64,7 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
         ${draw.slice(0, cutoff)}
             return {
                 offset: techniqueYNow, sustained, hit, hitFade,
-                deadline: _lingerDeadline, bodyVisible: ${gate[1]},
+                deadline: _lingerDeadline, bodyVisible: ${gate[1]}, trailVisible: visualParts.trail,
                 arpGhostOnlyMode, effSkipBody,
             };
         }
@@ -190,6 +190,38 @@ test('a next event still truncates extra linger and long sustains gain no extra 
     assert.equal(h.pose(long, 10.4).bodyVisible, true);
     close(h.pose(long, 10.4).deadline, 10.5);
     assert.equal(h.pose(long, 10.500001), undefined);
+});
+
+test('drawNote admits an active continuation after its head deadline with or without a verdict', () => {
+    const n=held({t:221.449,s:1,f:5,sus:.393,bnv:undefined,ln:true});
+    for (const verdict of [undefined,null,'hit',{state:'active'},'miss']) {
+        const h=harness({eventTimes:[221.449005,221.842],verdict});
+        const pose=h.pose(n,221.5,{linger:.75,explicitLinkTarget:true});
+        assert.ok(pose,'active hold must bypass expired-head early culling');
+        assert.equal(pose.bodyVisible,false);
+        assert.equal(pose.trailVisible,true);
+        assert.equal(pose.arpGhostOnlyMode,false);
+        close(pose.deadline,221.449005);
+    }
+});
+
+test('short bend geometry survives a later attack without extending its head or terminal pose', () => {
+    const h=harness({eventTimes:[10.01]}),n=held({sus:.05});
+    const active=h.pose(n,10.025);
+    assert.equal(active.bodyVisible,false);
+    assert.equal(active.trailVisible,true);
+    close(active.offset,h.sample(n,10.025));
+    assert.equal(h.pose(n,10.051),undefined,'no new linger appears after the authored release');
+});
+
+test('chord-member trails retain their duration when another attack caps chord linger', () => {
+    const h=harness({eventTimes:[10.03]}),n=held({sus:.1});
+    const options={fromChord:true,linger:.15};
+    const active=h.pose(n,10.06,options);
+    assert.equal(active.bodyVisible,false);
+    assert.equal(active.trailVisible,true);
+    close(active.deadline,10.03);
+    assert.equal(h.pose(n,10.101,options),undefined);
 });
 
 test('note-state verdicts and arpeggio persistence cannot resurrect an expired gem', () => {

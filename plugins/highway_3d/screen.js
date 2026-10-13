@@ -3054,7 +3054,7 @@
         return explicitLinkTarget === true || (skipBody === true && dt > 0);
     }
 
-    /** One lifetime decision for the draw queue and its overlap candidates. */
+    /** Shared head/trail eligibility for the draw queue and overlap candidates. */
     function hwyNoteVisualParts(n, now, ahead, linger, nextT, visualStart,
         suppressHead, suppressTrail, out) {
         out = out || {};
@@ -3069,7 +3069,10 @@
         out.head = !suppressHead && !out.overLinger && n.t <= now + ahead;
         const start = Math.max(visualStart, now);
         const duration = Math.min(end - start, ahead, now + ahead - start);
-        out.trail = !suppressTrail && !out.overLinger
+        // A later event caps cosmetic head linger, never the authored hold.
+        // Rounded note times and unrounded handshape guides can differ by a
+        // few microseconds; that coincidence must not expire a real sustain.
+        out.trail = !suppressTrail
             && (hasSus || visualStart < n.t)
             && duration > (visualStart < n.t ? 1e-6 : 0.01);
         return out;
@@ -21095,7 +21098,7 @@
             const hasLeadIn = visualTrailStart < n.t;
             // Reuse the lifetime already resolved for overlap eligibility.
             // Short-head linger is capped by the next event on any string;
-            // a long held sustain keeps its complete authored duration.
+            // sustain trails independently keep their authored duration.
             const visualParts = _noteDrawParts;
             const _overLinger = visualParts.overLinger;
             const _lingerDeadline = visualParts.deadline;

@@ -33,6 +33,67 @@ test('short-head linger and long sustain lifetimes match their drawn geometry', 
     assert.equal(p.head,false); assert.equal(p.trail,false,'lead-in outside horizon');
     assert.equal(parts(note({sus:0}),7.95,true,false,Infinity,9.9).trail,true);
 });
+
+test('rounded continuation onset keeps its hold after the handshape caps head linger', () => {
+    // Playback notes round to milliseconds; handshape-derived chord times do not.
+    const n = note({t:221.449,s:1,f:5,sus:.393,ln:true});
+    const next = 221.449005;
+    for (const now of [221.44,221.449,221.449006,221.5,221.7,221.831]) {
+        const p = h.hwyNoteVisualParts(n,now,3,.75,next,n.t,true,false);
+        assert.equal(p.head,false,'a linked continuation never gains an attack');
+        assert.equal(p.trail,true,'the authored hold survives the near-coincident guide');
+        assert.equal(p.deadline,next,'head linger still uses the original cutoff');
+        assert.equal(p.overLinger,now>next);
+    }
+    for (const now of [221.84,221.842,221.85,222.2]) {
+        assert.equal(h.hwyNoteVisualParts(n,now,3,.75,next,n.t,true,false).trail,false,
+            'the existing final-10ms trail cutoff and authored end remain in force');
+    }
+});
+
+test('an intervening attack ends short-head linger without cutting the real hold', () => {
+    for (const [sus,linger,next,now] of [
+        [.393,.75,10.08,10.2], [.04,.1,10.005,10.02], [.15,.25,10.03,10.1],
+    ]) {
+        for (const s of [0,2,5]) {
+            const n=note({s,sus});
+            const p=h.hwyNoteVisualParts(n,now,3,linger,next,n.t,false,false);
+            assert.equal(p.head,false,'same-string or other-string attacks retain head priority');
+            assert.equal(p.trail,true,'a global next-event cutoff cannot truncate a sustain');
+            assert.equal(p.deadline,next);
+            assert.equal(p.overLinger,true);
+        }
+    }
+});
+
+test('trail suppression, dead notes and non-sustained attacks remain suppressed past head linger', () => {
+    for (const extra of [{sus:0}, {sus:undefined}, {sus:.393,mt:true}]) {
+        const n=note(extra);
+        const p=h.hwyNoteVisualParts(n,10.2,3,.75,10.000005,n.t,false,false);
+        assert.equal(p.head,false);
+        assert.equal(p.trail,false);
+    }
+    const n=note({sus:.393});
+    assert.equal(h.hwyNoteVisualParts(n,10.2,3,.75,10.000005,n.t,false,true).trail,false,
+        'shared-hold and guidance callers keep their explicit trail suppression');
+});
+
+test('independent trail lifetime stays bounded by the horizon and supports pooled output on rewind', () => {
+    const n=Object.freeze(note({sus:.393})), out={};
+    for (const [now,head,trail] of [
+        [6,false,false], [9.9,true,true], [10.2,false,true], [10.5,false,false],
+        [9.9,true,true], [10.3,false,true], [10.5,false,false],
+    ]) {
+        const p=h.hwyNoteVisualParts(n,now,3,.75,10.000005,n.t,false,false,out);
+        assert.equal(p,out,'the existing result record is reused');
+        assert.equal(p.head,head);
+        assert.equal(p.trail,trail);
+    }
+    const incoming=note({sus:0});
+    assert.equal(parts(incoming,9.95,true,false,10.000005,9.9).trail,true);
+    assert.equal(parts(incoming,10.01,true,false,10.000005,9.9).trail,false,
+        'incoming slide-only cues do not grow a post-onset tail');
+});
 test('separate duplicate origins cannot donate hidden duration or geometry', () => {
     const a=note({sus:.2}),b=note({sus:5,sl:9});
     const chord={t:10,notes:[b]};
