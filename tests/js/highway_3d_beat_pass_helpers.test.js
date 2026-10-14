@@ -1,4 +1,6 @@
-// Frozen unchanged beat passes from b48c31230c103e5d8e2d3569636aca4493e95dca.
+// Baseline beat passes from b48c31230c103e5d8e2d3569636aca4493e95dca.
+// Marker registration is replaced only by its unchanged sprite-center effect;
+// registry removal and the intentional wave-cache changes are tested separately.
 const ORIGINAL_BEAT_LINES = String.raw`
             if (beats) {
                 const board = boardSpanX();
@@ -116,7 +118,7 @@ const ORIGINAL_FRET_MARKERS = String.raw`
                         const sp = pFretColMarker.get();
                         const m = txtMat(f, color, false, 'noteFret');
                         _setLabelMap(sp, m);
-                        _registerFretColumnMarker(sp, f, b.time);
+                        sp.center.set(0.5, 1);
                         sp.material.opacity = 0.85 * _colFadeIn;
                         sp.position.set(xFretMid(f), labelY, z);
                         // Z-proportional: sits between chord frame and note gem
@@ -155,7 +157,8 @@ const markerCall = 'updateFretColumnMarkers(beats, notes, chords, anchors, now, 
 
 function fixture(original) {
     const log = [], materials = new Map(), rows = { beat: [], marker: [] };
-    const used = { beat: 0, marker: 0 }, state = { lefty: false, fail: null };
+    const used = { beat: 0, marker: 0 }, state = { lefty: false, fail: null, hidden: [] };
+    const decisions = [];
     const vec = label => ({ value: [0, 0, 0], set(x, y, z) {
         this.value = [x, y, z]; log.push([label, x, y, z]);
     } });
@@ -165,7 +168,7 @@ function fixture(original) {
         return rows[kind][used[kind]] ||= (() => {
             const index = used[kind];
             return { material: {}, position: vec(kind + index + '.position'),
-                scale: vec(kind + index + '.scale') };
+                scale: vec(kind + index + '.scale'), center: vec(kind + index + '.center') };
         })();
     } });
     // Advance after get, including on reuse, without hiding its call order.
@@ -190,7 +193,7 @@ function fixture(original) {
             return materials.get(key);
         },
         _setLabelMap: (sp, material) => { log.push(['map', material.key]); sp.map = material; },
-        _registerFretColumnMarker: (sp, f, t) => { log.push(['register', f, t]); sp.f = f; sp.t = t; },
+        _fretReferenceHiddenFrets: (time, frets) => { decisions.push({time,frets:frets.slice(),hidden:state.hidden.slice()}); return new Set(state.hidden); },
         xFretMid: f => (state.lefty ? -1 : 1) * f * 11,
         renderOrderForLayerAtZ: (z, layer) => { log.push(['order', z, layer]); return z + .5; },
         fretLabelScaleForFret: f => f === 12 ? .9 : 1,
@@ -221,19 +224,18 @@ function fixture(original) {
         pools: Object.fromEntries(Object.entries(rows).map(([key, values]) => [key,
             values.slice(0, used[key]).map(row => ({ material: row.material.name,
                 map: row.map?.key, opacity: row.material.opacity, f: row.f, t: row.t,
-                position: row.position.value.slice(), scale: row.scale.value.slice(),
+                position: row.position.value.slice(), scale: row.scale.value.slice(), center: row.center.value.slice(),
                 renderOrder: row.renderOrder }))])) });
-    return { log, cache: h.cache, snapshot,
+    return { log, cache: h.cache, snapshot, decisions, rows,
         draw(beats, options = {}) {
             log.length = 0; used.beat = used.marker = 0;
-            state.lefty = !!options.lefty; state.fail = options.fail;
+            state.lefty = !!options.lefty; state.fail = options.fail; state.hidden = options.hidden || [];
             h.draw(beats, options); return snapshot();
         } };
 }
 
-test('helpers retain exact original bodies and execute at the original update positions', () => {
-    for (const [name, frozen] of [['updateBeatLines', ORIGINAL_BEAT_LINES],
-        ['updateFretColumnMarkers', ORIGINAL_FRET_MARKERS]]) {
+test('beat lines retain their original body and both helpers keep their update positions', () => {
+    for (const [name, frozen] of [['updateBeatLines', ORIGINAL_BEAT_LINES]]) {
         const helper = extract(name);
         assert.equal(helper.slice(helper.indexOf('{') + 1, -1).replace(/\r\n/g, '\n').trim(), frozen.trim());
         assert.ok(source.indexOf('function ' + name + '(') < source.indexOf('function update(bundle)'));
@@ -248,24 +250,22 @@ test('helpers retain exact original bodies and execute at the original update po
     assert.ok(update.indexOf(markerCall) < update.indexOf('let lockActive;'));
 });
 
-test('full passes preserve pooled output and cold/warm/pruned wave state through seeks and settings', () => {
-    const beats = [0, -1, 1, -1, 2, 3, 4, -1].map((measure, i) => ({time:131+i*.5, measure}));
-    const configurations = [
-        {notes: [{t:133,s:0,f:5},{t:134,s:5,f:17}]},
-        {notes: [{t:133,s:0,f:5}], chords: [{t:134,notes:[{s:3,f:17}]}]},
-        {notes: [{t:133,s:-1,f:5},{t:134,s:0,f:0}], chords: [{t:134},{t:134.5,notes:[]}]},
-        {anchors: [{time:0,fret:7},{time:134,fret:17}]},
-        {anchors: [{time:0,fret:'bad'}], chords:[{t:133,notes:[{s:0,f:12}]}]},
+const output = snapshot => ({log:snapshot.log,pools:snapshot.pools});
+
+test('unobstructed first-wave sprites retain baseline positioning, fade, scale and draw order', () => {
+    const beats=[0,-1,1,-1,2,3,4,-1].map((measure,i)=>({time:131+i*.5,measure}));
+    const configurations=[
+        {notes:[{t:133,s:0,f:5},{t:134,s:5,f:17}]},
+        {notes:[{t:133,s:0,f:5}],chords:[{t:134,notes:[{s:3,f:17}]}]},
+        {notes:[{t:133,s:-1,f:5},{t:134,s:0,f:0}],chords:[{t:134},{t:134.5,notes:[]}]},
+        {anchors:[{time:0,fret:7},{time:134,fret:17}]},
+        {anchors:[{time:0,fret:'bad'}],chords:[{t:133,notes:[{s:0,f:12}]}]},
     ];
-    for (const config of configurations) for (const cadence of [0,1,4]) {
-        const pair = [fixture(true), fixture(false)];
-        for (const now of [131.5,132,132,132.35,133,134,131.5]) {
-            for (const variant of [{nStr:4,textSize:.5}, {nStr:7,textSize:1.5,lefty:true,
-                hwyLaneFretClipMin:5,hwyLaneFretClipMax:17}]) {
-                const options = {...config,...variant,now,cadence};
-                assert.deepEqual(pair[1].draw(beats,options),pair[0].draw(beats,options));
-            }
-        }
+    for(const config of configurations) for(const cadence of [0,1,4])
+    for(const now of [131.5,132,132.35,133,134])
+    for(const variant of [{nStr:4,textSize:.5},{nStr:7,textSize:1.5,lefty:true,hwyLaneFretClipMin:5,hwyLaneFretClipMax:17}]) {
+        const options={...config,...variant,now,cadence};
+        assert.deepEqual(output(fixture(false).draw(beats,options)),output(fixture(true).draw(beats,options)));
     }
 });
 
@@ -280,12 +280,12 @@ test('bounds, duplicates, unsorted and unusual beat values retain exact results 
     for (const beats of grids) for (const cadence of [0,1,4]) {
         const pair = [fixture(true),fixture(false)];
         const options = {cadence,anchors:[{time:0,fret:7}]};
-        assert.deepEqual(pair[1].draw(beats,options),pair[0].draw(beats,options));
+        assert.deepEqual(output(pair[1].draw(beats,options)),output(pair[0].draw(beats,options)));
     }
     for (const beats of [[null],[undefined],new Array(3)]) {
         const pair = [fixture(true),fixture(false)];
         for (const h of pair) assert.throws(()=>h.draw(beats),TypeError);
-        assert.deepEqual(pair[1].snapshot(),pair[0].snapshot());
+        assert.deepEqual(output(pair[1].snapshot()),output(pair[0].snapshot()));
     }
 });
 
@@ -306,10 +306,60 @@ test('custom iterator yields, closure on abrupt completion, and observable callb
             let error;
             try { h.draw(beats,{fail,anchors:[{time:0,fret:7}]}); }
             catch (e) { error=e.message; }
-            return {state:h.snapshot(),iteration,error};
+            return {state:output(h.snapshot()),iteration,error};
         });
         assert.deepEqual(results[1],results[0]);
         assert.equal(results[1].iteration.at(-1),'close');
         assert.equal(results[1].error,fail?'pool failed: '+fail:undefined);
     }
+});
+
+const markerFrets = result => result.pools.marker.map(row=>Number(row.map.split(':')[0]));
+
+test('a wave snapshots hidden frets before fade or allocation and retains them through camera/index changes', () => {
+    const h=fixture(false),beat={time:220.673996,measure:165},anchors=[{time:0,fret:3}];
+    const first=h.draw([beat],{now:beat.time-3,anchors,hidden:[3]});
+    const cached=h.cache.get(beat.time),hidden=cached.hiddenFrets;
+    assert.equal(first.pools.marker.length,0,'first lookahead frame has not faded in');
+    assert.equal(h.decisions.length,1,'clearance is queried before any visible sprite');
+    assert.equal(h.decisions[0].time,beat.time);
+    assert.ok(hidden.has(3));
+    for(const now of [beat.time-2.9,beat.time-1,beat.time-.01]) {
+        const result=h.draw([beat],{now,anchors,hidden:[5],lefty:true,textSize:1.5,hwyLaneFretClipMin:7,hwyLaneFretClipMax:9});
+        assert.equal(h.cache.get(beat.time),cached);
+        assert.equal(cached.hiddenFrets,hidden);
+        assert.equal(h.decisions.length,1,'midflight clearance is not recomputed');
+        assert.ok(!markerFrets(result).includes(3),'hidden fret never allocates a sprite');
+        assert.ok(markerFrets(result).includes(5),'retained fret cannot disappear midflight');
+        assert.equal(result.log.filter(row=>row[0]==='get'&&row[1]==='marker').length,cached.fretList.length-1);
+    }
+});
+
+test('no-anchor clipping is frozen per wave, then a new wave uses current gates and reuses sprites', () => {
+    const h=fixture(false),notes=[{t:11,s:0,f:5},{t:12,s:0,f:5}];
+    const first=h.draw([{time:11,measure:0}],{now:10,notes,hwyLaneFretClipMin:3,hwyLaneFretClipMax:9,hidden:[7]});
+    assert.deepEqual(markerFrets(first),[5,9]);
+    const row=h.rows.marker[0],cached=h.cache.get(11);
+    const next=h.draw([{time:11,measure:0}],{now:10.5,notes,hwyLaneFretClipMin:7,hwyLaneFretClipMax:12,hidden:[5]});
+    assert.deepEqual(markerFrets(next),[5,9]);
+    assert.equal(h.cache.get(11),cached);
+    const future=h.draw([{time:12,measure:1}],{now:11.1,notes,hwyLaneFretClipMin:7,hwyLaneFretClipMax:12,hidden:[9]});
+    assert.deepEqual(markerFrets(future),[12]);
+    assert.equal(h.cache.has(11),false,'expired wave is pruned');
+    assert.equal(h.rows.marker[0],row,'new-wave marker reuses the old pool slot');
+    assert.equal(future.pools.marker[0].center[1],1,'reused marker keeps the floor baseline');
+    assert.equal(h.decisions.length,2);
+});
+
+test('backward seek prunes future decisions and returning waves are evaluated again', () => {
+    const h=fixture(false),beat={time:20,measure:0},anchors=[{time:0,fret:3}];
+    h.draw([beat],{now:18,anchors,hidden:[3]});
+    const previous=h.cache.get(20);
+    h.draw([beat],{now:10,anchors});
+    assert.equal(h.cache.size,0,'future cache outside the new horizon is pruned');
+    const result=h.draw([beat],{now:18,anchors,hidden:[5]});
+    assert.notEqual(h.cache.get(20),previous);
+    assert.equal(h.decisions.length,2);
+    assert.ok(markerFrets(result).includes(3));
+    assert.ok(!markerFrets(result).includes(5));
 });

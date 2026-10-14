@@ -323,7 +323,7 @@ test('explicit suppression skips attack/drop-line but leaves the continuation tr
 test('LinkNext, repeat gems, and trail caches coexist across the renderer lifecycle', () => {
     const declarations = sourceBetween(
         'let _arpGhostInferRefHs = null;',
-        'let _laneRailFlagsRefTpl = null;',
+        'let _lastHwW = 0, _lastHwH = 0;',
     );
     assert.match(declarations, /let _linkNextTargetSet = null;/);
     assert.match(declarations, /let _trailYieldEventsByFret = \[\];/);
@@ -331,7 +331,7 @@ test('LinkNext, repeat gems, and trail caches coexist across the renderer lifecy
 
     const prepass = sourceBetween(
         '// ── Linked-target gem-suppression pre-pass',
-        '/** Arpeggio lane purple rails',
+        '// ── Coincident repeat-note deduplication',
     );
     const linkNextIndex = prepass.indexOf('_linkNextTargetSet = hwyLinkNextTargetNotes');
     const trailIndex = prepass.indexOf('if (_trailYieldNotesRef !== notes');

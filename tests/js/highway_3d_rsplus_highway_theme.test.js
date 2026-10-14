@@ -96,31 +96,49 @@ test('live Current / RS+ / Current restores existing shared materials and divide
     assert.deepEqual(themed,h.apply(false,'forest'),'leaving default restores ordinary dot and divider styling');
 });
 
-test('both lane layouts use subdued positional edges and grey RS+ default interior dividers', () => {
+test('both lane layouts use analytic RS+ default edges while preserving other styles', () => {
     const assignments=[...src.matchAll(/div\.material = f === fDiv(?:0|A)[\s\S]*?;/g)].map(m=>m[0]);
     assert.equal(assignments.length,2,'anchor segments and fallback lane must share the rule');
     for (const assignment of assignments) {
         const choose=new Function('rsPlusNotation','hwThemeId','f',`
             ${fn('_usesRsDefaultHighway')}
             const fDiv0=2,fDiv1=6,fDivA=2,fDivB=6;
-            const div={},mLaneDivider='cyan',mRsLaneDivider='grey',mHandPositionEdge='position';
+            const div={},mLaneDivider='cyan',mRsLaneDivider='grey',mRsLaneEdge='rs-position',mHandPositionEdge='position';
             ${assignment}
             return div.material;
         `);
         for (let f=2;f<=6;f++) {
-            assert.equal(choose(true,'default',f),f===2||f===6?'position':'grey');
+            assert.equal(choose(true,'default',f),f===2||f===6?'rs-position':'grey');
             assert.equal(choose(false,'default',f),f===2||f===6?'position':'cyan');
             assert.equal(choose(true,'forest',f),f===2||f===6?'position':'cyan');
         }
     }
 });
 
-test('the additional divider uses cached shared ownership and is released on teardown', () => {
+test('analytic divider and edge materials have shared ownership and are released on teardown', () => {
     assert.ok(/_ownedSharedMats\.push\(mLaneDivider, mLaneDividerExt, mRsLaneDivider\)/.test(src));
-    assert.ok(/_ownedSharedMats\.push\(mHandPositionEdge, mHandPositionFill\)/.test(src));
+    assert.ok(/_ownedSharedMats\.push\(mHandPositionEdge, mHandPositionFill, mRsLaneEdge\)/.test(src));
     assert.ok(/for \(const m of _ownedSharedMats\) m\?\.dispose\?\.\(\)/.test(src));
     assert.ok(/mLaneDivider = mRsLaneDivider = gLanePlane/.test(src));
     assert.ok(/mHandPositionEdge = mHandPositionFill = null/.test(src));
+    assert.ok(/mRsLaneEdge = null/.test(src));
+});
+
+test('pooled lane rails switch geometry and culling in both style directions', () => {
+    const h=new Function(`
+        const mRsLaneDivider={},mRsLaneEdge={},mHandPositionEdge={};
+        const gRsLaneDivider={},gLaneDivider={};
+        ${fn('setLaneDividerGeometry')}
+        return {mRsLaneDivider,mRsLaneEdge,mHandPositionEdge,gRsLaneDivider,gLaneDivider,setLaneDividerGeometry};
+    `)();
+    const mesh={};
+    for(const material of [h.mHandPositionEdge,h.mRsLaneEdge,h.mRsLaneDivider,h.mHandPositionEdge]) {
+        mesh.material=material;
+        h.setLaneDividerGeometry(mesh);
+        const analytic=material!==h.mHandPositionEdge;
+        assert.equal(mesh.geometry,analytic?h.gRsLaneDivider:h.gLaneDivider);
+        assert.equal(mesh.frustumCulled,!analytic,'shader-expanded planes must not use local box culling');
+    }
 });
 
 test('idle and scrolling reference numbers are light grey only for the RS+ default highway', () => {

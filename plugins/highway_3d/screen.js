@@ -1255,13 +1255,6 @@
     // in detect mode); placing it at 0.55 s leaves ~0.2 s of the visible
     // window for the latch to fire and skip subsequent scans.
     const _ND_UNMATCHED_LATCH_AFTER = 0.55;
-    // Sample approach offsets dt in [0, AHEAD] into strips. Lane quads use
-    // z = dZ(dt) + TS*BEHIND = TS*(BEHIND - dt), while notes use z = dZ(n.t-now).
-    // So note hit line (z=0) aligns with dt=BEHIND, not dt=0. Chart time at
-    // lane parameter dt is now + dt - BEHIND (same z as a note at that time).
-    // Each strip’s <anchor> uses that chart time so the blue lane doesn’t
-    // switch ~BEHIND seconds before the XML <anchor time="…"/>.
-    const HWY_LANE_TIME_SLICES = 96;
     /** Odd columns (1st/3rd/…) darker teal; even columns brighter blue. */
     const HWY_LANE_STRIPE_ODD_HEX  = 0x103B5C;
     const HWY_LANE_STRIPE_EVEN_HEX = 0x08283C;
@@ -1360,6 +1353,35 @@
     function hwyScreenRectsOverlap(a, b) {
         return a.minX <= b.maxX && a.maxX >= b.minX
             && a.minY <= b.maxY && a.maxY >= b.minY;
+    }
+
+    const FRET_REFERENCE_CLEARANCE = 1 / 3;
+
+    // Lower bound on vertical anchor separation / projected sprite scale for
+    // a whole approach, including pan and any dolly >= minDistance. For a
+    // top-anchored same-column pair the separation is |dt|*TS*H/(D1*D2),
+    // H=cos(yaw)*(cameraY-labelY). Bound the larger depth using the horizontal
+    // viewport (including partially visible sprites), not a guessed pan range.
+    // FOV/resolution cancel from the final gap-to-ink-height comparison.
+    function hwyFretReferenceSeparationRatio(pitch, yaw, labelYOffset, minDistance,
+        farDepth, maxSize, aspect, fov) {
+        const sp = Math.sin(pitch), cp = Math.cos(pitch), cy = Math.cos(yaw);
+        const beta = Math.abs(Math.tan(yaw) * cp);
+        const c = 1 - beta * Math.tan(fov * Math.PI / 360) * aspect;
+        if (!(c > 0) || !(cy > 0) || !(sp > 0) || !(minDistance > 0)) return 0;
+        const denominator = minDistance - sp * labelYOffset + cp / cy * farDepth + beta * maxSize / 2;
+        return Math.max(0, Math.min(cy * sp * c,
+            cy * (sp * minDistance - labelYOffset) * c / denominator));
+    }
+
+    function hwyFretReferenceNeedsClearance(delta, ahead, speed, separationRatio, maxSize, ink, otherInk = ink) {
+        if (!Number.isFinite(delta) || Math.abs(delta) >= ahead) return false;
+        // Reserve the upper label's full ink descent and the requested gap.
+        // Ignoring the lower label's helpful top padding is conservative: a
+        // retained reference is clear throughout, rather than only at entry.
+        const extent = Math.max(1 - ink.minY, 1 - otherInk.minY)
+            + Math.max(ink.maxY - ink.minY, otherInk.maxY - otherInk.minY) * FRET_REFERENCE_CLEARANCE;
+        return Math.abs(delta) * speed * separationRatio <= maxSize * extent;
     }
 
     /** Inclusive one-dimensional footprint overlap (centres + full sizes). */
@@ -2539,10 +2561,6 @@
     const CHORD_HWY_FADE_S = 0.32;
     const GHOST_HOLD_AFTER_ONSET = CHORD_HWY_LINGER_S;
     const GHOST_FRET_LBL_FADE_S = CHORD_HWY_FADE_S;
-    /** Purple lane rails: extend past last matched chord/note so Z reaches frame end. */
-    const ARP_HWY_RAIL_END_TAIL_S = 0.38;
-    /** Keep 0 — chord/note-based ``shapeLo`` already aligns to the visible frame. */
-    const ARP_HWY_RAIL_START_LEAD_S = 0;
     /** Drives emissive (`mGlow` / accent fill) for notes with `.ac`; matches drawNote `linger` cutoff (0.05). */
     const ACCENT_NOTE_STR_GLOW = 3.55;
     const ACCENT_NOTE_LINGER_EPS = 0.05;
@@ -3025,7 +3043,7 @@
         return explicitLinkTarget === true || (skipBody === true && dt > 0);
     }
 
-    /** One lifetime decision for the draw queue and its overlap candidates. */
+    /** Shared head/trail eligibility for the draw queue and overlap candidates. */
     function hwyNoteVisualParts(n, now, ahead, linger, nextT, visualStart,
         suppressHead, suppressTrail, out) {
         out = out || {};
@@ -3040,7 +3058,10 @@
         out.head = !suppressHead && !out.overLinger && n.t <= now + ahead;
         const start = Math.max(visualStart, now);
         const duration = Math.min(end - start, ahead, now + ahead - start);
-        out.trail = !suppressTrail && !out.overLinger
+        // A later event caps cosmetic head linger, never the authored hold.
+        // Rounded note times and unrounded handshape guides can differ by a
+        // few microseconds; that coincidence must not expire a real sustain.
+        out.trail = !suppressTrail
             && (hasSus || visualStart < n.t)
             && duration > (visualStart < n.t ? 1e-6 : 0.01);
         return out;
@@ -3421,6 +3442,77 @@
         const dMin = Math.max(0, fStart - 1);
         const dMax = Math.min(NFRETS, fLast);
         return { dMin, dMax };
+    }
+
+    // Chart-time boundaries are continuous, unlike note onsets rounded on the
+    // wire. Compile normalized bounds once per effective, sorted position model.
+    // Before the first timestamp the FIRST row applies; at duplicate timestamps
+    // the LAST row applies, matching getChartAnchorAt without a timing epsilon.
+    function hwyBuildLaneIntervalModel(anchors) {
+        const model = { times: [], dMin: [], dMax: [] };
+        if (!anchors?.length) return model;
+        const first = laneBoundsFromAnchor(anchors[0]);
+        if (!first) return model;
+        model.times.push(-Infinity);
+        model.dMin.push(first.dMin); model.dMax.push(first.dMax);
+        for (let i = 0; i < anchors.length;) {
+            const time = anchors[i]?.time;
+            let end = i + 1;
+            while (end < anchors.length && anchors[end]?.time === time) end++;
+            const bounds = laneBoundsFromAnchor(anchors[end - 1]);
+            if (Number.isFinite(time) && bounds
+                && (bounds.dMin !== model.dMin.at(-1) || bounds.dMax !== model.dMax.at(-1))) {
+                model.times.push(time);
+                model.dMin.push(bounds.dMin); model.dMax.push(bounds.dMax);
+            }
+            i = end;
+        }
+        return model;
+    }
+
+    function createLaneIntervalCache() {
+        let source = null, count = -1, model = null;
+        return {
+            get(anchors) {
+                // Effective timelines are immutable between region rebuilds.
+                // Their owner replaces the array on chart/mastery/spacing change;
+                // reset also supports deliberate in-place edits by that owner.
+                if (source !== anchors || count !== (anchors?.length || 0)) {
+                    model = hwyBuildLaneIntervalModel(anchors);
+                    source = anchors; count = anchors?.length || 0;
+                }
+                return model;
+            },
+            reset() { source = model = null; count = -1; },
+        };
+    }
+
+    // Reuse parallel output arrays. Work follows visible intervals, with no
+    // fixed segment cap or per-frame chart scan/bounds objects. A fresh upper
+    // bound search handles playback, seeks and reverse time identically.
+    function hwyFillLaneSegments(model, now, ahead, timeScale, out) {
+        out.length = 0;
+        if (!model?.times.length || !Number.isFinite(now) || !(ahead > 0)
+            || !Number.isFinite(ahead) || !(timeScale > 0) || !Number.isFinite(timeScale)) return out;
+        let lo = 0, hi = model.times.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (model.times[mid] <= now) lo = mid + 1; else hi = mid;
+        }
+        let index = Math.max(0, lo - 1), near = now;
+        const horizon = now + ahead;
+        while (near < horizon) {
+            const far = Math.min(horizon, model.times[index + 1] ?? Infinity);
+            if (far > near) {
+                const k = out.length++;
+                out.dMin[k] = model.dMin[index]; out.dMax[k] = model.dMax[index];
+                out.z0[k] = near === now ? 0 : -(near - now) * timeScale;
+                out.z1[k] = -(far - now) * timeScale;
+            }
+            if (far >= horizon) break;
+            near = far; index++;
+        }
+        return out;
     }
 
     /** Same horizontal span as the dynamic highway lane: anchor at chart time `t`. */
@@ -4845,10 +4937,12 @@
     let T = null;
     let threeLoadPromise = null;
     let scrapeGeometry = null;
+    let lyricLayout = null;
     function loadThree() {
         if (!threeLoadPromise) {
             threeLoadPromise = Promise.all([import('/static/js/pick-scrapes.js').then(m => { scrapeGeometry = m; }),
-                import(THREE_URL).catch(() => import(THREE_CDN))])
+                import(THREE_URL).catch(() => import(THREE_CDN)),
+                import('/static/js/lyric-lines.js').then(m => { lyricLayout = m; })])
                 .then(([, three]) => three)
                 .then(mod => { T = mod; return mod; })
                 .catch(e => {
@@ -7974,10 +8068,12 @@
         let _diagLastKey          = null;  // chord identity: name + '|' + frets.join(',')
         // Per-wave cache for fret-column reference markers. Keyed by the
         // wave's beat timestamp. We snapshot { hasLow, hasHigh, fretList,
-        // anchorKeyed } at first sight of a wave so its render gate stays consistent through the
+        // anchorKeyed, hiddenFrets } at first sight of a wave so its render gate stays consistent through the
         // wave's flight even as activeFrets shifts mid-song. Entries are
         // pruned each frame once their wave has passed `now`.
         let _fretMarkerWaveCache = new Map();
+        let _fretMarkerGoldCache = null;
+        let _fretMarkerLastNow = NaN;
         // Per-frame booleans: handShapes[i] passes inferArpeggioFromNotePattern
         // once (see fillArpeggioGhostInferFlags) so the note loop skips O(hs×notes)
         // rescans — ref fillArpeggioGhostInferFlags in update().
@@ -7985,10 +8081,6 @@
         // Handshape start-times where ghost fret numbers show but [ ] brackets are suppressed
         // (synth-chord onset-match cases — not genuine arpeggios).
         let _arpSynthOnsetHsSet = new Set();
-        /** Per-frame: ``handShapeIsArpeggioForLaneRail`` baked once — lane slices were O(96 × hs × infer). */
-        let _arpLaneRailHsScratch = [];
-        let _arpRailBoundLoScratch = [];
-        let _arpRailBoundHiScratch = [];
 
         // ── Cross-frame caches for chart-static derivations ──────────────
         // The merge + arp-flag fills below depend only on chart-static
@@ -8039,6 +8131,8 @@
         // the same fret for the following measure, then allow it again).
         let _fretLabelAllowed = new Set();
         let _fretLabelNotesRef = null;
+        let _fretLabelBeatsRef = null;
+        let _fretLabelNoteCount = -1, _fretLabelBeatCount = -1;
 
         // Plain standalone notes that exactly duplicate a member of a compact
         // repeat chord. Cached by chart-array identity; see the chart-static pre-pass.
@@ -8259,13 +8353,6 @@
             );
         }
 
-        let _laneRailFlagsRefHs = null;
-        let _laneRailFlagsRefTpl = null;
-
-        let _laneRailBoundsRefHs = null;
-        let _laneRailBoundsRefChords = null;
-        let _laneRailBoundsRefTpl = null;
-        let _laneRailBoundsRefNotes = null;
         let _lastHwW = 0, _lastHwH = 0;
         // Frame counter for throttling the CSS-box drift check in draw()
         // (getBoundingClientRect is a forced layout read; see the comment
@@ -8655,8 +8742,6 @@
         // Reused label-layout records; no per-frame geometry or texture creation.
         const _incomingFloorLabels = [], _incomingLabelOccluders = [];
         const _incomingFixedFretLabels = [];
-        const _incomingFretColumnMarkers = [];
-        let _incomingFretColumnMarkerCount = 0;
         let _incomingFloorLabelCount = 0, _incomingLabelOccluderCount = 0;
         let _incomingLabelLayoutFrame = 0;
         let _incomingLabelProbe = null;
@@ -8667,13 +8752,14 @@
         // Shared materials/geometry for the lane stripes — see initScene().
         // Hoisted so draw() can reference them when assigning per-stripe.
         let mLaneOdd = null, mLaneEven = null, gLanePlane = null;
-        /** Lane fret dividers: default white vs arpeggio frame tint on outer wires only. */
+        /** Shared lane dividers and hand-position edges. */
         let mLaneDivider = null, mLaneDividerExt = null;
         let mHandPositionEdge = null, mHandPositionFill = null;
         let mRsLaneDivider = null, gLaneDivider = null, gRsLaneDivider = null;
+        let mRsLaneEdge = null;
 
         function setLaneDividerGeometry(div) {
-            const rs = div.material === mRsLaneDivider;
+            const rs = div.material === mRsLaneDivider || div.material === mRsLaneEdge;
             div.geometry = rs ? gRsLaneDivider : gLaneDivider;
             // The shader expands beyond the world-space strip's bounds.
             div.frustumCulled = !rs;
@@ -8746,19 +8832,12 @@
         }
         /** Shared XY plane for ghost fret digits (lies on board like proj, not billboarding). */
         let gGhostFretPlane = null, pGhostFretLbl = null;
-        // Anchor-driven lane scratch buffers. Per-frame the loop builds up
-        // to HWY_LANE_TIME_SLICES segments, but consecutive slices that share
-        // an anchor (the common case) collapse into the same entry. Held as
-        // four parallel arrays so the per-frame work allocates nothing once
-        // the buffers reach their steady-state size.
-        const _laneSegDMin = [];
-        const _laneSegDMax = [];
-        const _laneSegZ0 = [];
-        const _laneSegZ1 = [];
-        /** Chart-time span per merged lane segment (for per-slice arpeggio rail tint). */
-        const _laneSegTLo = [];
-        const _laneSegTHi = [];
-        const _laneSegArp = [];
+        // Exact chart-time lane intervals, cached with the resolved position model.
+        // Arrays grow only on a new visible-density peak and are reused each frame.
+        const _laneIntervalCache = createLaneIntervalCache();
+        const _laneSegDMin = [], _laneSegDMax = [], _laneSegZ0 = [], _laneSegZ1 = [];
+        const _laneSegments = { dMin: _laneSegDMin, dMax: _laneSegDMax,
+            z0: _laneSegZ0, z1: _laneSegZ1, length: 0 };
         let _laneSegLen = 0;
         let pChordBox, pChordFrameFill, pChordLbl, pBarreLine, pArpBracket, pPMXFill, pFHXFill;
         let gPMXFill = null; // shared geometry for PM X fill — disposed in teardown
@@ -10938,28 +11017,7 @@
         let _lyrRowsCache = null;
 
         function drawLyrics(lyrics, currentTime, ctx, W, H) {
-            if (!lyrics._lines) {
-                const lines = [];
-                let line = null, word = null;
-                const flushWord = () => { if (word && word.length) line.words.push(word); word = null; };
-                const flushLine = () => { flushWord(); if (line && line.words.length) lines.push(line); line = null; };
-                for (let i = 0; i < lyrics.length; i++) {
-                    const l = lyrics[i];
-                    const raw = l.w || '';
-                    const endsLine = raw.endsWith('+');
-                    const continuesWord = raw.endsWith('-');
-                    if (line && i > 0 && l.t - (lyrics[i - 1].t + lyrics[i - 1].d) > 4.0) flushLine();
-                    if (!line) line = { words: [], start: l.t, end: l.t + l.d };
-                    if (!word) word = [];
-                    word.push(l);
-                    line.end = Math.max(line.end, l.t + l.d);
-                    if (!continuesWord) flushWord();
-                    if (endsLine) flushLine();
-                }
-                flushLine();
-                lyrics._lines = lines;
-            }
-            const allLines = lyrics._lines;
+            const allLines = lyricLayout.getLyricLines(lyrics);
             if (!allLines.length) return 0;
 
             let currentIdx = -1;
@@ -10986,7 +11044,7 @@
             ctx.font = `bold ${fontSize}px sans-serif`;
             let rows, spaceWidth, bgWidth;
             const _lc = _lyrRowsCache;
-            if (_lc && _lc.lyricsRef === lyrics && _lc.idx === currentIdx
+            if (_lc && _lc.lyricsRef === lyrics && _lc.linesRef === allLines && _lc.idx === currentIdx
                 && _lc.shown === linesToShow.length
                 && _lc.fontSize === fontSize && _lc.W === W) {
                 rows = _lc.rows; spaceWidth = _lc.spaceWidth; bgWidth = _lc.bgWidth;
@@ -11021,7 +11079,7 @@
                 }
                 bgWidth = Math.min(bgWidth + 30, W * 0.85);
                 _lyrRowsCache = {
-                    lyricsRef: lyrics, idx: currentIdx,
+                    lyricsRef: lyrics, linesRef: allLines, idx: currentIdx,
                     shown: linesToShow.length, fontSize, W,
                     rows, spaceWidth, bgWidth,
                 };
@@ -11698,9 +11756,8 @@
             // Dynamic fret number labels (heat-coloured, updated each frame)
             pFretLbl = pool(lblG, () => new T.Sprite(txtMat('0', '#888', false, 'fretRow')));
 
-            // Highlight lane plane over active fret range. With the anchor-driven
-            // segmented lanes we render up to fret-count × HWY_LANE_TIME_SLICES (96)
-            // pLane meshes per frame, so:
+            // Highlight lane plane over each exact visible hand-position interval.
+            // Each interval emits one pLane mesh per playable fret column, so:
             //   - geometry is a shared PlaneGeometry(1,1) (was per-mesh, never differed)
             //   - 2 shared MeshBasicMaterials (odd / even stripe colour) replace the
             //     per-mesh material clones; the per-frame opacity still travels via
@@ -11755,7 +11812,13 @@
                 color: 0x62b9be, transparent: true, opacity: 0.07,
                 depthTest: false, depthWrite: false, fog: false, side: T.DoubleSide,
             });
-            _ownedSharedMats.push(mHandPositionEdge, mHandPositionFill);
+            // Keep the subdued cyan/depth policy, but stabilize subpixel coverage
+            // on RS+ default main lanes. Additional handshape guides stay boxes.
+            mRsLaneEdge = rsLaneDividerMaterial();
+            mRsLaneEdge.uniforms.uColor.value.copy(mHandPositionEdge.color);
+            mRsLaneEdge.uniforms.uOpacity.value = mHandPositionEdge.opacity;
+            mRsLaneEdge.depthTest = false;
+            _ownedSharedMats.push(mHandPositionEdge, mHandPositionFill, mRsLaneEdge);
 
             // Chord frame palette (frame alpha 128, fill gradient alpha 32; MeshBasic).
             const chR = CHORD_BOX_TEAL_HEX >> 16 & 255;
@@ -15004,176 +15067,6 @@
             return result;
         }
 
-        function handShapeIsArpeggioForLaneRail(hs, chordTemplates) {
-            return handShapeMarkedArpeggio(hs, chordTemplates);
-        }
-
-        /**
-         * Chart-time window for purple rails: hand-shape span clipped to matching
-         * ``chords[].t`` and template notes in the passage — same times that drive
-         * the 3D arpeggio frame (``ch.t`` + note stream), avoiding rails that start
-         * before the box or end before the last arpeggiated note.
-         */
-        function effectiveArpRailChartBoundsForHandShape(hs, chords, chordTemplates, notesArr) {
-            let shapeLo = hsStart(hs);
-            const _hsEndOrig = hsEnd(hs);
-            let shapeHi = _hsEndOrig;
-            const cid = hsChordIdNorm(hs);
-            if (Number.isNaN(shapeLo) || Number.isNaN(shapeHi)) {
-                return { shapeLo: 1e9, shapeHi: -1e9 };
-            }
-            if (notesArr && notesArr.length > 0 && chordTemplates && cid != null) {
-                const tmpl = chordTemplates[cid] ?? chordTemplates[Number(cid)];
-                if (tmpl && Array.isArray(tmpl.frets)) {
-                    let tFirst = null;
-                    let tLast = null;
-                    for (let i = 0; i < notesArr.length; i++) {
-                        const n = notesArr[i];
-                        if (n.t + 1e-4 < shapeLo - 0.18 || n.t > shapeHi + 0.45) continue;
-                        if (!validString(n.s) || !isRenderableNote(n)) continue;
-                        const tf = tmpl.frets[n.s];
-                        if (typeof tf !== 'number' || tf < 0 || n.f !== tf) continue;
-                        if (tFirst === null || n.t < tFirst) tFirst = n.t;
-                        if (tLast === null || n.t > tLast) tLast = n.t;
-                    }
-                    if (tFirst != null) shapeLo = Math.max(shapeLo, tFirst);
-                    if (tLast != null) shapeHi = Math.max(shapeHi, tLast);
-                }
-            }
-            if (chords && chords.length && cid != null) {
-                let tMinC = null;
-                let tMaxC = null;
-                for (let j = 0; j < chords.length; j++) {
-                    const ch = chords[j];
-                    if (ch.id !== cid && Number(ch.id) !== Number(cid)) continue;
-                    if (ch.t + 1e-4 < shapeLo || ch.t > shapeHi + 0.28) continue;
-                    if (tMinC === null || ch.t < tMinC) tMinC = ch.t;
-                    if (tMaxC === null || ch.t > tMaxC) tMaxC = ch.t;
-                }
-                if (tMinC != null) shapeLo = Math.max(shapeLo, tMinC);
-                if (tMaxC != null) shapeHi = Math.max(shapeHi, tMaxC);
-            }
-            shapeLo -= ARP_HWY_RAIL_START_LEAD_S;
-            // Only extend past the handshape end when notes/chords genuinely reach
-            // beyond it — otherwise the tail would make the rail visually larger
-            // than the actual handshape duration (e.g. 0.38 s / 1.3 s ≈ 29% extra).
-            if (shapeHi > _hsEndOrig) shapeHi += ARP_HWY_RAIL_END_TAIL_S;
-            return { shapeLo, shapeHi };
-        }
-
-        /** Cache the authored arpeggio marker per hand shape. */
-        function fillLaneRailHandShapeFlags(handShapes, chordTemplates, outFlags) {
-            const nHs = handShapes.length;
-            for (let i = 0; i < nHs; i++) {
-                outFlags[i] = handShapeIsArpeggioForLaneRail(handShapes[i], chordTemplates);
-            }
-        }
-
-        function fillArpeggioRailShapeBoundsCaches(
-            handShapes, chords, chordTemplates, notesArr, laneRailFlags, loOut, hiOut,
-        ) {
-            const nHs = handShapes.length;
-            for (let i = 0; i < nHs; i++) {
-                if (!laneRailFlags[i]) continue;
-                const b = effectiveArpRailChartBoundsForHandShape(
-                    handShapes[i], chords, chordTemplates, notesArr,
-                );
-                loOut[i] = b.shapeLo;
-                hiOut[i] = b.shapeHi;
-            }
-        }
-
-        /** ``[tChartLo,tChartHi]`` chart times that a lane slice covers (see module ``BEHIND`` / approach ``dt``). */
-        function arpeggioLaneOuterRailChartIntervalOverlaps(
-            tChartLo,
-            tChartHi,
-            handShapes,
-            boundLo,
-            boundHi,
-            laneRailFlags,
-        ) {
-            if (!handShapes || handShapes.length === 0) return false;
-            if (!laneRailFlags) return false;
-            if (tChartHi < tChartLo) {
-                const s = tChartLo;
-                tChartLo = tChartHi;
-                tChartHi = s;
-            }
-            for (let i = 0; i < handShapes.length; i++) {
-                if (!laneRailFlags[i]) continue;
-                const shapeLo = boundLo[i];
-                const shapeHi = boundHi[i];
-                if (tChartHi < shapeLo - 1e-4 || tChartLo > shapeHi + 1e-4) continue;
-                return true;
-            }
-            return false;
-        }
-
-        function arpeggioLaneOuterRailLaneSlice(
-            dt0, dt1, nowClock,
-            handShapes, boundLo, boundHi, laneRailFlags,
-        ) {
-            const tLo = nowClock + Math.min(dt0, dt1) - BEHIND;
-            const tHi = nowClock + Math.max(dt0, dt1) - BEHIND;
-            return arpeggioLaneOuterRailChartIntervalOverlaps(
-                tLo, tHi, handShapes, boundLo, boundHi, laneRailFlags,
-            );
-        }
-
-        /**
-         * True when **chart time** ``chartT`` falls inside an arpeggio hand-shape.
-         * Uses a short end tail only — no ``CHORD_HWY_LINGER_S`` — so purple lane
-         * rails match visible highway slices and do not leak after shapes end.
-         */
-        function arpeggioLaneOuterRailAtChartTime(
-            chartT, handShapes, boundLo, boundHi, laneRailFlags,
-        ) {
-            return arpeggioLaneOuterRailChartIntervalOverlaps(
-                chartT, chartT, handShapes, boundLo, boundHi, laneRailFlags,
-            );
-        }
-
-        /**
-         * Same ``chordAccent ? ft *= 1.22`` as the 3D arpeggio chord rim so lane
-         * rails match an accented frame when the active hand shape links to a
-         * chord row that carries ``.ac`` notes.
-         */
-        function arpeggioLaneDividerFrameAccentMul(nowT, handShapes, chords, boundLo, boundHi, laneRailFlags) {
-            if (!handShapes || handShapes.length === 0 || !chords || chords.length === 0) return 1;
-            if (!laneRailFlags) return 1;
-            for (let i = 0; i < handShapes.length; i++) {
-                if (!laneRailFlags[i]) continue;
-                const shapeLo = boundLo[i];
-                const shapeHi = boundHi[i];
-                if (nowT + 1e-4 < shapeLo || nowT > shapeHi + 1e-4) continue;
-
-                const cid = hsChordIdNorm(handShapes[i]);
-                if (cid == null) return 1;
-                for (let j = 0; j < chords.length; j++) {
-                    const ch = chords[j];
-                    if (ch.id !== cid && Number(ch.id) !== Number(cid)) continue;
-                    if (Math.abs(ch.t - hsStart(handShapes[i])) > 0.12) continue;
-                    const chordNotes = ch.notes ? filterValidNotes(ch.notes) : [];
-                    if (chordNotes.some(cn => cn.ac)) return 1.22;
-                    return 1;
-                }
-                return 1;
-            }
-            return 1;
-        }
-
-        /** World-scale XY for purple lane rails = arpeggio ``ftSide`` / ``gLaneDivider`` edge (0.15×K). */
-        function arpeggioLaneDividerXYScaleMatchFrameRim(accentMul = 1) {
-            const yA = sY(0), yB = sY(nStr - 1);
-            const yMinF = Math.min(yA, yB) - S_GAP * 0.8;
-            const yMaxF = Math.max(yA, yB) + S_GAP * 0.8;
-            const fullChordBoxH = yMaxF - yMinF;
-            let ft = Math.max(CHORD_FRAME_RIM_MIN * K, fullChordBoxH * CHORD_FRAME_RIM_FRAC_H);
-            if (accentMul !== 1 && accentMul > 0) ft *= accentMul;
-            const ftSide = ft * 1.55;
-            return ftSide / (0.15 * K);
-        }
-
         /* ── Fret-label measure-skip rule ───────────────────────────────── */
         // For each (note_time, fret) pair across standalone notes and chord
         // notes, determine which ones are allowed to display their fret
@@ -15337,50 +15230,6 @@
             record.time = time;
         }
 
-        function _registerFretColumnMarker(sprite, fret, time) {
-            // Reference and played-fret numbers share the same floor baseline.
-            sprite.center.set(0.5, 1);
-            const i = _incomingFretColumnMarkerCount++;
-            const record = _incomingFretColumnMarkers[i]
-                || (_incomingFretColumnMarkers[i] = { sprite: null, fret: 0, time: NaN });
-            record.sprite = sprite;
-            record.fret = fret;
-            record.time = time;
-        }
-
-        function _suppressCoincidentFretColumnMarkers(record) {
-            // Called only for a gold label that will render (or hand off to the
-            // fixed row). A missing gold label never removes a reference number.
-            if (!Number.isInteger(record.fret) || record.fret <= 0 || !Number.isFinite(record.time)) return;
-            let goldInk = null;
-            for (let i = 0; i < _incomingFretColumnMarkerCount; i++) {
-                const marker = _incomingFretColumnMarkers[i];
-                if (marker.fret !== record.fret || !Number.isFinite(marker.time)
-                    || !marker.sprite.visible || marker.sprite.material.opacity <= 0) continue;
-                if (hwySameFretLabelBeat(record.fret, record.time, marker.fret, marker.time)) {
-                    marker.sprite.visible = false;
-                    continue;
-                }
-                // Authored beat/chord offsets can exceed the 1 ms identity
-                // tolerance while their digits still overlap. Rounded depth
-                // buckets then alternate which colour paints last. Gold owns
-                // the overlapping digit; keep distinct gold event identities
-                // and all gem/trail priorities unchanged.
-                if (!goldInk) {
-                    goldInk = record.inkRect || (record.inkRect = _newLabelRect());
-                    if (!_incomingLabelScreenRect(record.sprite, goldInk, true)) return;
-                }
-                if (marker.inkFrame !== _incomingLabelLayoutFrame) {
-                    marker.inkFrame = _incomingLabelLayoutFrame;
-                    marker.inkRect ||= _newLabelRect();
-                    marker.inkValid = _incomingLabelScreenRect(marker.sprite, marker.inkRect, true);
-                }
-                if (marker.inkValid && hwyScreenRectsOverlap(goldInk, marker.inkRect)) {
-                    marker.sprite.visible = false;
-                }
-            }
-        }
-
         function _registerIncomingLabelOccluder(mesh, z, outline = null) {
             const i = _incomingLabelOccluderCount++;
             const record = _incomingLabelOccluders[i]
@@ -15452,7 +15301,6 @@
                 }
                 if (!label.visible) continue;
                 record.layoutFrame = frame;
-                _suppressCoincidentFretColumnMarkers(record);
                 let display = label, displayRect = record.rect;
                 const eventZ = label.position.z;
                 // At arrival, combine duplicate fret identities only when they
@@ -15596,9 +15444,10 @@
                     // Pool slots initially carry the ordinary box material.
                     // Compile the RS+ variant before its first visible frame too.
                     const dividerWarm = new T.Mesh(gRsLaneDivider, mRsLaneDivider);
-                    scene.add(dividerWarm);
+                    const edgeWarm = new T.Mesh(gRsLaneDivider, mRsLaneEdge);
+                    scene.add(dividerWarm, edgeWarm);
                     try { ren.compile(scene, cam); }
-                    finally { scene.remove(dividerWarm); }
+                    finally { scene.remove(dividerWarm, edgeWarm); }
                 }
             } catch (e) { console.warn('[3D-Hwy] prewarm compile:', e); }
             try {
@@ -15675,12 +15524,204 @@
             }
         }
 
+        function _ensureFretMarkerGoldIndex(bundle, notes, chords, beats, anchors) {
+            const old = _fretMarkerGoldCache;
+            const handShapes = bundle.handShapes, templates = bundle.chordTemplates;
+            const rawChords = bundle.chords;
+            if (old && old.notes === notes && old.noteCount === (notes?.length || 0)
+                && old.chords === chords && old.chordCount === (chords?.length || 0)
+                && old.rawChords === rawChords && old.rawChordCount === (rawChords?.length || 0)
+                && old.beats === beats && old.beatCount === (beats?.length || 0)
+                && old.anchors === anchors && old.anchorCount === (anchors?.length || 0)
+                && old.handShapes === handShapes && old.shapeCount === (handShapes?.length || 0)
+                && old.templates === templates && old.strings === nStr
+                && old.linkTargets === _linkNextTargetSet
+                && old.repeatNotes === _coincidentRepeatNoteSet
+                && old.allowed === _fretLabelAllowed
+                && old.holdModel === _chordGuideCache?.model
+                && old.strumFrames === _authoredStrumCache) return old.byFret;
+
+            const byFret = Array.from({ length: NFRETS + 1 }, () => []);
+            const seen = new Set();
+            function add(t, f, text, node = null) {
+                if (!Number.isFinite(t) || !isPlayableFret(f) || f <= 0) return;
+                const key = `${t}|${f}|${String(text)}`;
+                if (seen.has(key)) return;
+                seen.add(key);
+                byFret[f].push({ t, f, text, node });
+            }
+            function allowed(n, t = n.t) {
+                return _fretLabelAllowed.has(Math.round(t * 25) * 100 + n.f);
+            }
+
+            // Standalone approach labels; arpeggio membership controls the
+            // same fromChord gate used by drawNote.
+            for (const n of notes || []) {
+                if (!validString(n.s) || !isPlayableFret(n.f) || n.f <= 0
+                    || isUnpitchedMute(n) || (n.mt === true && n.pick_scrape_marks?.length > 0)
+                    || _coincidentRepeatNoteSet?.has(n)
+                    || _linkNextTargetSet?.has(n) || !allowed(n)) continue;
+                const strum = _authoredStrumCache?.byNote.has(n);
+                const cid = strum ? null : arpeggioChordIdForNoteWithInferCache(
+                    n, handShapes, templates, notes, _arpGhostHsInferScratch);
+                if (cid != null && arpHsBoundsForNote(n, handShapes, _arpGhostHsInferScratch) == null) continue;
+                add(n.t, n.f, harmonicLabel(n), naturalNode(n));
+            }
+
+            // Walk the same display-chord order once. Synthetic rows affect shape-run
+            // labels, but only non-synthetic rows advance the repeat-strum predecessor.
+            let runSigPrev = null, prevAnyChordTime = -Infinity;
+            let prevChordSig = null, prevChordTime = -1;
+            for (const ch of chords || []) {
+                const sig = chordShapeSignature(ch);
+                const firstInShapeRun = sig === null || sig !== runSigPrev || ch.t - prevAnyChordTime > 0.5;
+                if (sig !== null) { runSigPrev = sig; prevAnyChordTime = ch.t; }
+                if (!ch.notes) continue;
+                const members = filterValidNotes(ch.notes);
+                if (!members.length) continue;
+                const shape = mergeChordShape(ch, members, templates);
+                const isRepeat = !ch.h3dStrum && sig !== null && prevChordSig === sig
+                    && Math.abs(ch.t - prevChordTime) < 0.5;
+                if (!ch.h3dSynth) { prevChordSig = sig; prevChordTime = ch.t; }
+                const hint = chordHandShapeArpeggioHint(ch, handShapes, templates);
+                const lavender = !ch.h3dStrum && chordUsesArpeggioFrame(ch, hint);
+                const synth = suppressSynthChordForNotes(ch);
+                let bounds = ch.h3dStrum ? ch.bounds : null;
+                if (!ch.h3dStrum && shape.size > 1) {
+                    let lo = Infinity, hi = -Infinity;
+                    for (const f of shape.values()) if (f > 0) { lo = Math.min(lo, f); hi = Math.max(hi, f); }
+                    bounds = chordShapeLaneBounds(lo, hi, getChartAnchorAt(anchors, ch.t + CHORD_ANCHOR_TIME_EPS));
+                }
+                const hasFrame = bounds != null && chordHasFrameShape(ch, shape, synth, templates, lavender);
+                const frameEligible = hasFrame && (lavender || hwyChordHasNewAttack(members, _linkNextTargetSet));
+
+                // Chord-frame gold has no measure-density gate.
+                if (frameEligible && !isRepeat) for (const f of shape.values()) add(ch.t, f, f);
+
+                // Separate legacy skipBody label path. Synthetic member views
+                // are guidanceOnly=true and NEVER use it. Real compact repeats can,
+                // in the unusual case where an intervening synth restarted shape-run
+                // labels while the previous real strum still makes isRepeat=true.
+                if (synth || !isRepeat || !firstInShapeRun
+                    || !members.some(n => n.f > 0 && allowed(n, ch.t))) continue;
+                const timeWin = hint.hs ? { tLo: hsStart(hint.hs) - 0.06, tHi: hsEnd(hint.hs) + 0.06 } : null;
+                const inferred = !ch.h3dStrum && (!hint.hs || handShapeChartSpanSec(hint.hs) >= ARP_INFER_MIN_HAND_SHAPE_SPAN_S)
+                    && inferArpeggioFromNotePattern(ch, shape, notes, timeWin, handShapes,
+                        timeWin ? null : nextStrictlyLaterChordTime(rawChords, ch.t),
+                        timeWin ? null : hint.fallbackInferenceStopBefore);
+                const defer = inferred || (hint.explicit && hint.covered
+                    && chordShapeCoveredByStandaloneNotes(ch, shape, notes)) || !!ch.h3dStrum;
+                let fallback = false;
+                if (!ch.h3dStrum && defer) {
+                    fallback = true;
+                    const lo = ch.t - ARP_FRAME_ONSET_PAD_S, hi = ch.t + ARP_FRAME_ONSET_CLUSTER_S;
+                    for (let i = lowerBoundT(notes, lo - 0.02); i < notes.length && notes[i].t <= hi; i++) {
+                        const n = notes[i];
+                        if (n.t >= lo && shape.get(n.s) === n.f) { fallback = false; break; }
+                    }
+                }
+                if (defer && !fallback) continue;
+                let linksSlide = members.some(n => (Number.isFinite(n.sl) && n.sl >= 0)
+                    || (Number.isFinite(n.slu) && n.slu >= 0));
+                if (!linksSlide) outer: for (const n of members) {
+                    if (!(n.sus > 0)) continue;
+                    const end = ch.t + n.sus;
+                    for (let i = lowerBoundT(notes, end - NEXT_ON_STRING_T_EPS); i < notes.length; i++) {
+                        const next = notes[i];
+                        if (next.t > end + NEXT_ON_STRING_T_EPS) break;
+                        if (next.s !== n.s || Math.abs(next.t - end) >= NEXT_ON_STRING_T_EPS) continue;
+                        if ((Number.isFinite(next.sl) && next.sl >= 0) || (Number.isFinite(next.slu) && next.slu >= 0)) {
+                            linksSlide = true; break outer;
+                        }
+                    }
+                }
+                const hold = _chordGuideCache?.model.byChord.get(ch);
+                const skipBody = repeatChordMaySuppressGems(isRepeat, linksSlide, members,
+                    frameEligible && hasFrame && !lavender && !defer && hold?.suppressMemberTrails === true);
+                if (!skipBody) continue;
+                let firstArp = null, firstTime = Infinity;
+                if (lavender && !defer && hint.hs) {
+                    const hi = hsEnd(hint.hs) + 0.08;
+                    for (let i = lowerBoundT(notes, hsStart(hint.hs) - 0.08); i < notes.length && notes[i].t <= hi; i++) {
+                        const n = notes[i];
+                        if (!validString(n.s)) continue;
+                        for (const member of members) if (member.s === n.s && member.f === n.f && n.t < firstTime) {
+                            firstTime = n.t; firstArp = member; break;
+                        }
+                    }
+                }
+                for (const n of members) {
+                    if (!fallback && firstArp !== null && n !== firstArp) continue;
+                    if (n.f > 0 && !isUnpitchedMute(n) && allowed(n, ch.t)) add(ch.t, n.f, harmonicLabel(n), naturalNode(n));
+                }
+            }
+            for (const events of byFret) events.sort((a, b) => a.t - b.t);
+            _fretMarkerWaveCache.clear();
+            _fretMarkerGoldCache = {
+                notes, noteCount: notes?.length || 0, chords, chordCount: chords?.length || 0,
+                rawChords, rawChordCount: rawChords?.length || 0, beats, beatCount: beats?.length || 0,
+                anchors, anchorCount: anchors?.length || 0, handShapes, shapeCount: handShapes?.length || 0,
+                templates, strings: nStr, linkTargets: _linkNextTargetSet,
+                repeatNotes: _coincidentRepeatNoteSet, allowed: _fretLabelAllowed,
+                holdModel: _chordGuideCache?.model, strumFrames: _authoredStrumCache, byFret,
+            };
+            return byFret;
+        }
+
+        function _fretReferenceHiddenFrets(time, frets) {
+            const hidden = new Set();
+            const byFret = _fretMarkerGoldCache?.byFret;
+            if (!byFret) return hidden;
+            const labelY = Math.min(sY(0), sY(nStr - 1)) - S_GAP * 0.8;
+            const midY = (sY(0) + sY(nStr - 1)) / 2;
+            const baseDistance = Math.max(100 * K, (Math.abs(sY(0) - sY(nStr - 1)) + 14 * K) * 2.3);
+            for (const f of frets) {
+                const events = byFret[f];
+                if (!events?.length) continue;
+                const start = lowerBoundT(events, time - AHEAD);
+                if (start === events.length || events[start].t >= time + AHEAD) continue;
+                const grey = txtMat(f, _highwayReferenceLabelColor('#888888'), false, 'noteFret');
+                const greyInk = grey.map.userData.hwyLabelInk || { minY: 0, maxY: 1 };
+                const size = 7 * K * 1.4 * _textSizeMul * fretLabelScaleForFret(f);
+                for (let i = start; i < events.length && events[i].t < time + AHEAD; i++) {
+                    const event = events[i], delta = event.t - time;
+                    if (Math.abs(delta) >= AHEAD) continue;
+                    const gold = txtMat(event.text, FRET_LABEL_GOLD_HEX, false, 'noteFret');
+                    const goldInk = gold.map.userData.hwyLabelInk || { minY: 0, maxY: 1 };
+                    // Natural harmonics can have a wider caption and a different
+                    // contact X. Allow that lateral motion in the angled view.
+                    const width = size * Math.max(1, event.node != null ? gold.map.image.width / gold.map.image.height : 1);
+                    const dx = event.node != null ? Math.abs(xFret(event.node) - xFretMid(f)) : 0;
+                    let ratio = Infinity;
+                    for (const preset of STABLE_CAMERA_PRESETS) {
+                        const view = STABLE_CAMERA_VIEWS[preset];
+                        const pitch = STABLE_CAMERA_PITCH - Math.atan2(view.pitch, 100);
+                        const yaw = preset === 'angled' ? STABLE_CAMERA_YAW : 0;
+                        ratio = Math.min(ratio, hwyFretReferenceSeparationRatio(pitch, yaw,
+                            labelY - midY - view.panY * K, baseDistance * view.distMul,
+                            TS * AHEAD, width, cam.aspect, STABLE_CAMERA_FOV));
+                    }
+                    // The standard-preset envelope covers automatic pan/zoom.
+                    // Legacy tilt and manual cameras have no fixed orientation
+                    // envelope. Keep their decisions stable too, conservatively
+                    // omitting same-fret references with co-approaching gold.
+                    if (cameraMode !== 'stable' || _freeCamFor(highwayCanvas)?.enabled) ratio = 0;
+                    const effectiveGap = Math.max(0, Math.abs(delta) - Math.tan(STABLE_CAMERA_YAW) * dx / TS);
+                    if (hwyFretReferenceNeedsClearance(effectiveGap, AHEAD, TS, ratio, size, greyInk, goldInk)) {
+                        hidden.add(f);
+                        break;
+                    }
+                }
+            }
+            return hidden;
+        }
+
         function updateFretColumnMarkers(beats, notes, chords, anchors, now, t1, hwyLaneFretClipMin, hwyLaneFretClipMax) {
             if (beats && fretColumnMarkerCadence > 0) {
                 // Prune stale wave cache entries (wave already past now).
                 if (_fretMarkerWaveCache.size > 0) {
                     for (const k of _fretMarkerWaveCache.keys()) {
-                        if (k < now) _fretMarkerWaveCache.delete(k);
+                        if (k < now || k > t1) _fretMarkerWaveCache.delete(k);
                     }
                 }
                 const minStringY = Math.min(sY(0), sY(nStr - 1));
@@ -15736,7 +15777,14 @@
                         const fretList = anchorKeyed
                             ? fretColumnMarkersForAnchor(anchorFret, DOTS)
                             : DOTS.slice();
-                        cached = { hasLow, hasHigh, fretList, anchorKeyed };
+                        // Freeze all gates before allocating the first sprite,
+                        // including the legacy no-anchor clipping rule. Camera
+                        // movement cannot reveal/remove a digit half way in.
+                        const visibleFrets = fretList.filter(f => anchorKeyed
+                            || ((f === 12 ? hasLow || hasHigh : f < 12 ? hasLow : hasHigh)
+                                && (hwyLaneFretClipMin == null || (f > hwyLaneFretClipMin && f <= hwyLaneFretClipMax))));
+                        cached = { hasLow, hasHigh, fretList: visibleFrets, anchorKeyed,
+                            hiddenFrets: _fretReferenceHiddenFrets(b.time, visibleFrets) };
                         _fretMarkerWaveCache.set(b.time, cached);
                     }
                     if (!cached.hasLow && !cached.hasHigh && !cached.anchorKeyed) continue;
@@ -15754,21 +15802,9 @@
                     // Sprite scale matches the per-note connector fret label
                     // (drawNote → pNoteFretLabel) so cadence markers read the
                     // same size at a given Z — no extra world-scale boost.
-                    const clipMin = hwyLaneFretClipMin;
-                    const clipMax = hwyLaneFretClipMax;
                     const fretList = cached.fretList || DOTS;
-                    const anchorKeyedRow = !!cached.anchorKeyed;
                     for (const f of fretList) {
-                        let show;
-                        if (anchorKeyedRow) {
-                            show = true;
-                        } else {
-                            if (f === 12) show = cached.hasLow || cached.hasHigh;
-                            else if (f < 12) show = cached.hasLow;
-                            else show = cached.hasHigh;
-                        }
-                        if (!show) continue;
-                        if (!anchorKeyedRow && clipMin != null && (f <= clipMin || f > clipMax)) continue;
+                        if (cached.hiddenFrets.has(f)) continue;
                         // Fixed colour — avoids mid-flight colour flips caused by
                         // activeFrets only covering now+2s while waves appear at
                         // AHEAD (3s), which made each marker start dark then
@@ -15777,7 +15813,7 @@
                         const sp = pFretColMarker.get();
                         const m = txtMat(f, color, false, 'noteFret');
                         _setLabelMap(sp, m);
-                        _registerFretColumnMarker(sp, f, b.time);
+                        sp.center.set(0.5, 1);
                         sp.material.opacity = 0.85 * _colFadeIn;
                         sp.position.set(xFretMid(f), labelY, z);
                         // Z-proportional: sits between chord frame and note gem
@@ -15922,7 +15958,6 @@
             if (projMeshArr) for (const arr of projMeshArr) for (const m of arr) m.visible = false;
             _incomingFloorLabelCount = _incomingLabelOccluderCount = 0;
             _incomingFixedFretLabels.fill(null);
-            _incomingFretColumnMarkerCount = 0;
             pFretLbl.reset(); pLane.reset(); pLaneDivider.reset();
             if (pGhostFretLbl) pGhostFretLbl.reset();
             _scrGhostUpcomingCount.fill(0, 0, nStr);
@@ -16201,50 +16236,6 @@
                 }
             }
 
-            /** Arpeggio lane purple rails — authored-marker cache + bounds cache. */
-            let laneRailArpHsFlags = null;
-            let laneRailBoundLo = null;
-            let laneRailBoundHi = null;
-            const hsLaneRail = bundle.handShapes;
-            const notesArrForRails = notes || [];
-            if (hsLaneRail && hsLaneRail.length) {
-                const nHsL = hsLaneRail.length;
-                while (_arpLaneRailHsScratch.length < nHsL) _arpLaneRailHsScratch.push(false);
-                while (_arpRailBoundLoScratch.length < nHsL) {
-                    _arpRailBoundLoScratch.push(0);
-                    _arpRailBoundHiScratch.push(0);
-                }
-                // Authored-marker flags depend only on (handShapes, templates).
-                if (_laneRailFlagsRefHs !== hsLaneRail
-                    || _laneRailFlagsRefTpl !== bundle.chordTemplates) {
-                    fillLaneRailHandShapeFlags(hsLaneRail, bundle.chordTemplates, _arpLaneRailHsScratch);
-                    _laneRailFlagsRefHs = hsLaneRail;
-                    _laneRailFlagsRefTpl = bundle.chordTemplates;
-                }
-                // Bounds cache depends on (handShapes, chords, templates, notes).
-                if (_laneRailBoundsRefHs !== hsLaneRail
-                    || _laneRailBoundsRefChords !== chords
-                    || _laneRailBoundsRefTpl !== bundle.chordTemplates
-                    || _laneRailBoundsRefNotes !== notesArrForRails) {
-                    fillArpeggioRailShapeBoundsCaches(
-                        hsLaneRail,
-                        chords ?? [],
-                        bundle.chordTemplates,
-                        notesArrForRails,
-                        _arpLaneRailHsScratch,
-                        _arpRailBoundLoScratch,
-                        _arpRailBoundHiScratch,
-                    );
-                    _laneRailBoundsRefHs = hsLaneRail;
-                    _laneRailBoundsRefChords = chords;
-                    _laneRailBoundsRefTpl = bundle.chordTemplates;
-                    _laneRailBoundsRefNotes = notesArrForRails;
-                }
-                laneRailArpHsFlags = _arpLaneRailHsScratch;
-                laneRailBoundLo = _arpRailBoundLoScratch;
-                laneRailBoundHi = _arpRailBoundHiScratch;
-            }
-
             // ── Coincident repeat-note deduplication (chart-static) ────────
             // Some charts author a plain standalone note on the same onset,
             // string and fret as a member of a repeated chord. The compact
@@ -16262,9 +16253,13 @@
 
             const beats = bundle.beats;
             // Rebuild the fret-label visibility set whenever the chart changes.
-            if (notes !== _fretLabelNotesRef) {
+            if (notes !== _fretLabelNotesRef || beats !== _fretLabelBeatsRef
+                || (notes?.length || 0) !== _fretLabelNoteCount || (beats?.length || 0) !== _fretLabelBeatCount) {
                 _fretLabelAllowed = _buildFretLabelSet(notes, chords, beats);
                 _fretLabelNotesRef = notes;
+                _fretLabelBeatsRef = beats;
+                _fretLabelNoteCount = notes?.length || 0;
+                _fretLabelBeatCount = beats?.length || 0;
             }
             // Rebuild the measure-start time cache whenever beats change. Only
             // beats that begin a measure carry measure >= 0; intra-measure beats
@@ -17007,7 +17002,6 @@
             // fret and stuck out past the lane whenever the camera narrowed.
             let hwyLaneFretClipMin = null, hwyLaneFretClipMax = null;
 
-            const handShapesRails = bundle.handShapes;
 
             // ── Fret-wire hit flash (apply) ───────────────────────────────
             // Runs here, after the note + chord draw loops, so it sees this
@@ -17086,87 +17080,18 @@
             // Chart <anchor> tags drive the lane whenever they exist — do not
             // require nearby notes (activeFrets) or camera-driven activity.
             const hasChartAnchors = positionAnchors && positionAnchors.length;
+            _laneSegLen = _laneSegments.length = 0;
             if (hasChartAnchors || activeFrets.size > 0) {
                 // Lane tint: one translucent quad per playable fret column, exact
                 // wire→wire span (no horizontal pad) — see HWY_LANE_STRIPE_*.
                 const boardY = S_BASE - NH / 2 - 2 * K;
 
                 if (hasChartAnchors) {
-                    const nearB = laneBoundsFromAnchor(getChartAnchorAt(positionAnchors, now));
-                    if (nearB) {
-                        hwyLaneFretClipMin = nearB.dMin;
-                        hwyLaneFretClipMax = nearB.dMax;
-                    }
-
-                    // Span the full (AHEAD + BEHIND) window so the lane's far edge
-                    // lands at dZ(AHEAD) = -AHEAD*TS, aligned with the note horizon.
-                    // Using just AHEAD here made the far edge stop at -TS*(AHEAD-BEHIND),
-                    // leaving the last BEHIND seconds of notes without a lane underneath.
-                    const sliceDt = (AHEAD + BEHIND) / HWY_LANE_TIME_SLICES;
-                    // Single-pass build-and-merge into the parallel-array
-                    // scratch buffers. Consecutive slices that resolve to the
-                    // same anchor bounds collapse into one segment by extending
-                    // its z1; otherwise a new entry appends. No per-frame array
-                    // or {b,z0,z1} object allocations.
-                    _laneSegLen = 0;
-                    for (let k = 0; k < HWY_LANE_TIME_SLICES; k++) {
-                        const dt0 = k * sliceDt;
-                        const dt1 = (k + 1) * sliceDt;
-                        // The slice clipped at the strike line represents the
-                        // current position, even if its original midpoint was
-                        // still in the past. Keep stable-area floor and gold
-                        // markers synchronized at an exact anchor boundary.
-                        const tC = cameraMode === 'stable' && dt0 <= BEHIND && dt1 > BEHIND
-                            ? now : now + (dt0 + dt1) * 0.5 - BEHIND;
-                        const b = laneBoundsFromAnchor(getChartAnchorAt(positionAnchors, tC));
-                        if (!b) continue;
-                        // The lane STOPS AT THE HIT LINE (z = 0) — issue #991. The
-                        // slice window starts BEHIND seconds in the past, so the
-                        // first slices map to positive z, i.e. past the hit line
-                        // toward the player. Nothing is ever drawn there: notes and
-                        // chord frames clamp to Math.min(0, dZ(dt)), so that strip
-                        // is lane with nothing on it. Clamp the NEAR edge only —
-                        // the far edge stays at dZ(AHEAD+BEHIND)+TS*BEHIND = -AHEAD*TS,
-                        // aligned with the note horizon, exactly as before.
-                        const z0 = Math.min(0, dZ(dt0) + TS * BEHIND);
-                        const z1 = Math.min(0, dZ(dt1) + TS * BEHIND);
-                        // Slice lies entirely past the hit line -> zero length, nothing
-                        // to draw. Skip before the arp probe so it costs nothing.
-                        if (z0 === z1) continue;
-                        const arpSlice = (laneRailArpHsFlags && handShapesRails && handShapesRails.length)
-                            ? arpeggioLaneOuterRailLaneSlice(
-                                dt0, dt1, now,
-                                handShapesRails, laneRailBoundLo, laneRailBoundHi, laneRailArpHsFlags,
-                            )
-                            : false;
-                        if (_laneSegLen > 0
-                            && _laneSegDMin[_laneSegLen - 1] === b.dMin
-                            && _laneSegDMax[_laneSegLen - 1] === b.dMax
-                            && arpSlice === _laneSegArp[_laneSegLen - 1]) {
-                            _laneSegZ1[_laneSegLen - 1] = z1;
-                            _laneSegTHi[_laneSegLen - 1] = tC;
-                        } else if (_laneSegLen > 0
-                            && _laneSegDMin[_laneSegLen - 1] === b.dMin
-                            && _laneSegDMax[_laneSegLen - 1] === b.dMax
-                            && arpSlice !== _laneSegArp[_laneSegLen - 1]) {
-                            _laneSegDMin[_laneSegLen] = b.dMin;
-                            _laneSegDMax[_laneSegLen] = b.dMax;
-                            _laneSegZ0[_laneSegLen] = z0;
-                            _laneSegZ1[_laneSegLen] = z1;
-                            _laneSegTLo[_laneSegLen] = tC;
-                            _laneSegTHi[_laneSegLen] = tC;
-                            _laneSegArp[_laneSegLen] = arpSlice;
-                            _laneSegLen++;
-                        } else {
-                            _laneSegDMin[_laneSegLen] = b.dMin;
-                            _laneSegDMax[_laneSegLen] = b.dMax;
-                            _laneSegZ0[_laneSegLen] = z0;
-                            _laneSegZ1[_laneSegLen] = z1;
-                            _laneSegTLo[_laneSegLen] = tC;
-                            _laneSegTHi[_laneSegLen] = tC;
-                            _laneSegArp[_laneSegLen] = arpSlice;
-                            _laneSegLen++;
-                        }
+                    hwyFillLaneSegments(_laneIntervalCache.get(positionAnchors), now, AHEAD, TS, _laneSegments);
+                    _laneSegLen = _laneSegments.length;
+                    if (_laneSegLen) {
+                        hwyLaneFretClipMin = _laneSegDMin[0];
+                        hwyLaneFretClipMax = _laneSegDMax[0];
                     }
                     {
                         const laneOp = _highwayLaneOpacity(highwayIntensity);
@@ -17177,7 +17102,8 @@
                         for (let s = 0; s < _laneSegLen; s++) {
                             const segZ0 = _laneSegZ0[s];
                             const segZ1 = _laneSegZ1[s];
-                            const stripLen = Math.max(Math.abs(segZ1 - segZ0), 1e-6);
+                            const stripLen = Math.abs(segZ1 - segZ0);
+                            if (!(stripLen > 0)) continue;
                             const zc = (segZ0 + segZ1) * 0.5;
                             const fLow = _laneSegDMin[s] + 1;
                             const fHi = _laneSegDMax[s];
@@ -17202,7 +17128,8 @@
                         for (let s = 0; s < _laneSegLen; s++) {
                             const segZ0 = _laneSegZ0[s];
                             const segZ1 = _laneSegZ1[s];
-                            const dz = Math.max(Math.abs(segZ1 - segZ0), 1e-6);
+                            const dz = Math.abs(segZ1 - segZ0);
+                            if (!(dz > 0)) continue;
                             const zMid = (segZ0 + segZ1) * 0.5;
                             const dMinSeg = _laneSegDMin[s];
                             const dMaxSeg = _laneSegDMax[s];
@@ -17212,13 +17139,16 @@
                                 const div = pLaneDivider.get();
                                 div.position.set(xFret(f), yPos, zMid);
                                 div.material = f === fDiv0 || f === fDiv1
-                                    ? mHandPositionEdge
+                                    ? _usesRsDefaultHighway() ? mRsLaneEdge : mHandPositionEdge
                                     : _usesRsDefaultHighway() ? mRsLaneDivider : mLaneDivider;
                                 setLaneDividerGeometry(div);
                                 div.scale.set(1, 1, dz);
                                 // Always above coincident extension lines: transparent
                                 // distance sorting must not brighten a split segment.
-                                div.renderOrder = div.material === mRsLaneDivider ? 2.01 : 2;
+                                // Keep cyan above the gray rails/extensions even
+                                // when camera motion reverses their depth sort.
+                                div.renderOrder = div.material === mRsLaneEdge ? 2.02
+                                    : div.material === mRsLaneDivider ? 2.01 : 2;
                             }
                         }
                     }
@@ -17293,11 +17223,12 @@
                             const div = pLaneDivider.get();
                             div.position.set(xFret(f), yPos, -divLen * 0.5);
                             div.material = f === fDivA || f === fDivB
-                                ? mHandPositionEdge
+                                ? _usesRsDefaultHighway() ? mRsLaneEdge : mHandPositionEdge
                                 : _usesRsDefaultHighway() ? mRsLaneDivider : mLaneDivider;
                             setLaneDividerGeometry(div);
                             div.scale.set(1, 1, divLen);
-                            div.renderOrder = div.material === mRsLaneDivider ? 2.01 : 2;
+                            div.renderOrder = div.material === mRsLaneEdge ? 2.02
+                                : div.material === mRsLaneDivider ? 2.01 : 2;
                         }
                     }
                 }
@@ -17416,6 +17347,11 @@
             // the wave's full flight. Without this, activeFrets shifting
             // mid-song would drop markers mid-flight (user-reported bug:
             // "numbers disappear before they get all the way towards me").
+            if (fretColumnMarkerCadence > 0) {
+                _ensureFretMarkerGoldIndex(bundle, notes, strumFrames.displayChords, beats, anchors);
+                if (now < _fretMarkerLastNow - 0.25) _fretMarkerWaveCache.clear();
+                _fretMarkerLastNow = now;
+            }
             updateFretColumnMarkers(beats, notes, chords, anchors, now, t1, hwyLaneFretClipMin, hwyLaneFretClipMax);
 
             // ── Camera target ─────────────────────────────────────────────
@@ -20917,7 +20853,7 @@
             const hasLeadIn = visualTrailStart < n.t;
             // Reuse the lifetime already resolved for overlap eligibility.
             // Short-head linger is capped by the next event on any string;
-            // a long held sustain keeps its complete authored duration.
+            // sustain trails independently keep their authored duration.
             const visualParts = _noteDrawParts;
             const _overLinger = visualParts.overLinger;
             const _lingerDeadline = visualParts.deadline;
@@ -23224,6 +23160,8 @@
         const _stablePlan = { rows: null, key: '', rate: 1, stops: [], regions: [], revision: 0, result: {} };
 
         function stableRegionReset() {
+            _laneIntervalCache.reset();
+            _laneSegLen = _laneSegments.length = 0;
             _guidanceLanes.notes = _guidanceLanes.chords = _guidanceLanes.anchors = _guidanceLanes.result = null;
             const cache = _stableRegions;
             cache.notes = cache.chords = cache.anchors = null;
@@ -24086,8 +24024,6 @@
             _incomingLabelProbe = null;
             _incomingFloorLabels.length = _incomingLabelOccluders.length = 0;
             _incomingFixedFretLabels.length = 0;
-            _incomingFretColumnMarkers.length = 0;
-            _incomingFretColumnMarkerCount = 0;
             _incomingFloorLabelCount = _incomingLabelOccluderCount = 0;
             _drawNextByString = null; _drawRecentByString = null;
             _susVerdictLatch.clear();
@@ -24110,9 +24046,12 @@
             mLaneOdd = mLaneEven = mLaneDivider = mRsLaneDivider = gLanePlane = gGhostFretPlane = null;
             gLaneDivider = gRsLaneDivider = null;
             mHandPositionEdge = mHandPositionFill = null;
+            mRsLaneEdge = null;
             chordFrameGradTex = chordFrameGradTexRs = chordFrameGradTexArp = null;
             pFretColMarker = null;
             _fretMarkerWaveCache.clear();
+            _fretMarkerGoldCache = null;
+            _fretMarkerLastNow = NaN;
             gNote = gNoteEdge = gNoteGhost = gSus = gBeat = gTapChevron = null;
             gNoteGrad = []; gNoteGhostGrad = [];
             tgtX = curX = xFretMid(CAM_LOCK_CENTER_FRET); tgtDist = curDist = CAM_DIST_BASE; tgtLookY = curLookY = 0; _fretRowFitBoost = 1; nStr = NSTR; _oobStringWarned = false;
@@ -24507,6 +24446,7 @@
                 {
                     if (_usesRsDefaultHighway()) {
                         ren.getDrawingBufferSize(mRsLaneDivider.uniforms.uViewport.value);
+                        mRsLaneEdge.uniforms.uViewport.value.copy(mRsLaneDivider.uniforms.uViewport.value);
                     }
                     const comp = (!rsPlusNotation && _bloom && !_ssActive()) ? _bloomEnsure() : null;
                     if (comp) {
