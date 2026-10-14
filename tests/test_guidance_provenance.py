@@ -89,7 +89,8 @@ def test_duplicate_and_reordered_rows_cannot_swap_ownership():
     assert origins(data, "anchors") == ["unknown", "unknown"]
 
 
-def test_legacy_receipt_owns_only_its_fields_and_source_tags_are_not_proof():
+@pytest.mark.parametrize('policy', ['positionless-preparation-v1', 'broken-power-chord-v1'])
+def test_legacy_receipt_owns_only_its_fields_and_source_tags_are_not_proof(policy):
     import hashlib
     import json
     data = chart()
@@ -98,7 +99,7 @@ def test_legacy_receipt_owns_only_its_fields_and_source_tags_are_not_proof():
             allow_nan=False, separators=(",", ":")).encode()).hexdigest()
     data["ext"] = {"source": {"format": "psarc-manifest2014"}, "chartGuidance": {
         "policy": "feedforge-chart-guidance-v2", "sourceAuthored": False, "fields": ["handshapes"],
-        "positionPolicy": "positionless-preparation-v1", "guidanceSha256": raw_hash({"handshapes": []}),
+        "positionPolicy": policy, "guidanceSha256": raw_hash({"handshapes": []}),
         "musicSha256": raw_hash({k: data[k] for k in ("tuning", "capo", "notes", "chords", "templates")})}}
     assert origins(data, "anchors") == ["unknown", "unknown"]
     assert resolve(data, "handshapes")["origin"] == "generated"

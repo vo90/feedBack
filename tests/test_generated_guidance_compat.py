@@ -9,6 +9,8 @@ import subprocess
 import pytest
 
 from lib.generated_guidance_compat import refresh_generated_positions
+from lib.generated_hand_positions import POSITION_POLICY
+from lib.guidance_provenance import stamp
 from lib.song import arrangement_from_wire, arrangement_to_wire
 
 
@@ -28,7 +30,7 @@ def seal(chart):
 
 
 @pytest.mark.parametrize('policy', [None, 'chord-local-v1', 'open-preparation-v1',
-                                  'open-preparation-v2', 'slide-follow-v1'])
+                                  'open-preparation-v2', 'slide-follow-v1', 'positionless-preparation-v1'])
 def test_positionless_groups_upgrade_old_policies_and_phrase_levels_without_music_edits(policy):
     chart = {'tuning':[0]*6, 'capo':0, 'templates':[], 'handshapes':[],
         'notes':[{'t':0,'s':5,'f':2,'sus':.25}, {'t':3,'s':1,'f':15,'sus':.25}],
@@ -39,7 +41,7 @@ def test_positionless_groups_upgrade_old_policies_and_phrase_levels_without_musi
     seal(chart)
     proof = chart['ext']['chartGuidance']
     proof['positionPolicy'] = policy
-    if policy == 'slide-follow-v1': proof['slidePolicy'] = 'timed-known-slides'
+    if policy in ('slide-follow-v1', 'positionless-preparation-v1'): proof['slidePolicy'] = 'timed-known-slides'
     level = {k:deepcopy(v) for k,v in chart.items() if k not in ('tuning','capo','templates','beats')}
     level['ext']['chartGuidance']['window'] = [0,4]
     chart['phrases'] = [{'levels':[level]}]
@@ -50,9 +52,77 @@ def test_positionless_groups_upgrade_old_policies_and_phrase_levels_without_musi
     assert result['phrases'][0]['levels'][0]['anchors'] == expected
     assert result['notes'] == before['notes'] and result['chords'] == before['chords']
     assert chart == before
-    if policy == 'slide-follow-v1':
+    if policy in ('slide-follow-v1', 'positionless-preparation-v1'):
         proof['slidePolicy'] = 'known-corridor'
         assert refresh_generated_positions(chart)['anchors'] == chart['anchors']
+
+
+def broken_power_chord():
+    chart = {'tuning': [0]*6, 'capo': 0, 'templates': [], 'handshapes': [],
+        'notes': [{'t': i*.5, 's': 1, 'f': 2, 'sus': .2, 'pm': True} for i in range(4)],
+        'chords': [{'t': i*.5+.25, 'notes': [
+            {'s': 2, 'f': 4, 'sus': .2, 'pm': True}, {'s': 3, 'f': 4, 'sus': .2, 'pm': True}]}
+            for i in range(4)],
+        'beats': [{'time': i*.5} for i in range(7)],
+        'anchors': [{'time': i*.25, 'fret': 2 if i % 2 == 0 else 4, 'width': 4}
+                    for i in range(8)]}
+    seal(chart)
+    chart['ext']['chartGuidance'].update(
+        positionPolicy='positionless-preparation-v1', slidePolicy='timed-known-slides')
+    return chart
+
+
+def test_prior_broken_power_chord_guidance_upgrades_main_chart_and_inherited_levels():
+    chart = broken_power_chord()
+    level = {k: deepcopy(v) for k, v in chart.items()
+             if k not in ('tuning', 'capo', 'templates', 'beats')}
+    level['ext']['chartGuidance']['window'] = [0, 2]
+    chart['phrases'] = [{'start_time': 0, 'end_time': 2, 'levels': [level]}]
+    before = deepcopy(chart)
+    expected = [{'time': 0., 'fret': 2, 'width': 4}]
+    result = refresh_generated_positions(chart)
+    assert result['anchors'] == expected
+    assert result['phrases'][0]['levels'][0]['anchors'] == expected
+    assert result['notes'] == before['notes'] and result['chords'] == before['chords']
+    wire = arrangement_to_wire(arrangement_from_wire(chart))
+    baseline = deepcopy(chart)
+    baseline['ext']['chartGuidance']['sourceAuthored'] = True
+    baseline_wire = arrangement_to_wire(arrangement_from_wire(baseline))
+    assert wire['anchors'] == expected
+    assert wire['notes'] == baseline_wire['notes']
+    assert wire['chords'] == baseline_wire['chords']
+    assert chart == before
+
+
+@pytest.mark.parametrize('edit', ['music', 'guidance', 'source', 'slide_receipt'])
+def test_previous_policy_broken_power_chord_keeps_unverified_guidance(edit):
+    chart = broken_power_chord()
+    if edit == 'music': chart['notes'][0]['f'] = 3
+    if edit == 'guidance': chart['anchors'][1]['fret'] = 5
+    if edit == 'source': chart['ext']['chartGuidance']['sourceAuthored'] = True
+    if edit == 'slide_receipt': chart['ext']['chartGuidance']['slidePolicy'] = 'known-corridor'
+    before = deepcopy(chart)
+    assert refresh_generated_positions(chart) == before
+    assert chart == before
+
+
+@pytest.mark.parametrize('policy', ['positionless-preparation-v1', 'broken-power-chord-v1'])
+@pytest.mark.parametrize('origin', ['generated', 'source', 'user'])
+def test_versioned_guidance_requires_explicit_regeneration_even_with_old_legacy_receipt(policy, origin):
+    chart = broken_power_chord()
+    stamp(chart, 'anchors', origin, producer='test', policy=policy)
+    level = {k: deepcopy(v) for k, v in chart.items()
+             if k not in ('tuning', 'capo', 'templates', 'beats')}
+    level['ext']['chartGuidance']['window'] = [0, 2]
+    chart['phrases'] = [{'start_time': 0, 'end_time': 2, 'levels': [level]}]
+    before = deepcopy(chart)
+    assert refresh_generated_positions(chart) == before
+    wire = arrangement_to_wire(arrangement_from_wire(chart))
+    assert wire['anchors'] == before['anchors']
+    assert wire['ext'] == before['ext']
+    assert wire['phrases'][0]['levels'][0]['anchors'] == before['phrases'][0]['levels'][0]['anchors']
+    assert wire['phrases'][0]['levels'][0]['ext'] == before['phrases'][0]['levels'][0]['ext']
+    assert chart == before
 
 
 def test_cirice_muted_chords_survive_real_loading_and_wire_rounding():
@@ -125,7 +195,7 @@ def test_edited_authored_and_unknown_guidance_is_preserved(edit):
     if edit == "guidance": chart["anchors"][0]["width"] = 7
     if edit == "authored": proof["sourceAuthored"] = True
     if edit == "unknown": proof["policy"] = "other"
-    if edit == "current": proof["positionPolicy"] = "positionless-preparation-v1"
+    if edit == "current": proof["positionPolicy"] = POSITION_POLICY
     if edit == "future_position": proof["positionPolicy"] = "future-position-policy"
     if edit == "no_ownership": proof["fields"] = ["handshapes"]
     if edit == "bad_hash": proof["musicSha256"] = "bad"
