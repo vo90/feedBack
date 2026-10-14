@@ -17,6 +17,7 @@ function harness() {
         const NFRETS=24, nStr=6, S_COL=Array(6), _oobStringWarned=true, AHEAD=3;
         const _collectNoteDraws=true, _noteDrawQueue=[], _visibleTrailEvents=[];
         const _scrChordNote={};
+        const _openSlideTailNotes=new WeakSet();
         let _noteDrawCount=0, eventLookups=0;
         const _firstEventTimeGreaterThan=()=>Infinity, slideInVisualStart=n=>n.t;
         const trailYieldEventForNote=()=>{eventLookups++;return {};};

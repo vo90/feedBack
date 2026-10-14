@@ -2942,11 +2942,49 @@
         return false;
     }
 
+    /** Plain open continuations do not need detached lane rails after a slide reaches zero. */
+    function hwyOpenSlideTailNotes(links) {
+        const hidden = new WeakSet(), next = new Map(), pending = [];
+        // Keep independently authored open techniques visible. In particular,
+        // a pull-off to open is not a slide endpoint, nor is an open whammy or
+        // harmonic gesture just a continuation of the preceding fret position.
+        const plain = n => n?.f === 0
+            && !(n.sl >= 0) && !(n.slu >= 0) && !(n.su >= 0)
+            && !n.ho && !n.po && !n.hm && !n.hp && !n.pm && !n.mt && !n.fhm
+            && !n.tp && !n.slp && !n.plk && !n.ac && !n.ghost && !n.lr && !n.let_ring_sus
+            && !n.bn && !n.bnv?.length && !n.bt && !n.vb && !n.vibrato && !n.v && !n.tr
+            && !n.vibrato_marks?.length && !n.tremolo_marks?.length
+            && !n.slide_in_marks?.length && !n.slide_out_marks?.length
+            && !n.slide_out && !n.slideOut && !n.pick_scrape_marks?.length
+            && !n.whammy && !n.hn && !n.harmonic_target && !n.harmonic_changes && !n.harmonic_alias;
+        for (const [destination, link] of links || []) {
+            const source = link?.source;
+            // These are the already validated, unambiguous contiguous links;
+            // never infer a hidden tail from proximity to a slide alone.
+            if (!source || source.ln !== true || source.s !== destination?.s || !plain(destination)) continue;
+            if (source.f > 0 && slideTrailEnd(source)?.endFret === 0) pending.push(destination);
+            else if (plain(source)) {
+                let targets = next.get(source);
+                if (!targets) next.set(source, targets = []);
+                targets.push(destination);
+            }
+        }
+        // Iterative propagation is independent of input order and bounded by
+        // the authored links. A new attack or technique breaks the plain hold.
+        for (let i = 0; i < pending.length; i++) {
+            const note = pending[i];
+            if (hidden.has(note)) continue;
+            hidden.add(note);
+            for (const target of next.get(note) || []) pending.push(target);
+        }
+        return hidden;
+    }
+
     /** Independent tails only: shared chord holds replace their members' ribbons. */
-    function hwyBuildIndependentTrailOrigins(notes, chords, holds, stringCount) {
+    function hwyBuildIndependentTrailOrigins(notes, chords, holds, stringCount, hiddenTrails = null) {
         const drawable = new WeakSet(), openOrigins = new WeakMap();
         const add = (note, meta) => {
-            if (!(note?.sus > 0.01) || isPlainDeadNote(note)) return;
+            if (!(note?.sus > 0.01) || isPlainDeadNote(note) || hiddenTrails?.has(note)) return;
             drawable.add(note);
             if (note.f !== 0) return;
             // Reused notes with several rendering origins are ambiguous. Leave
@@ -8358,6 +8396,7 @@
         // the hit line. The Set contains the authored note objects so
         // coincident notes with different frets cannot hide one another.
         let _linkNextTargetSet = null;
+        let _openSlideTailNotes = new WeakSet();
         let _linkedTrailPaths = { byNote: new WeakMap(), paths: [] };
         let _linkedTrailAnchorsRef = null;
         let _linkedTrailHoldModelRef = null;
@@ -16361,11 +16400,12 @@
                 || _chordGuideCache.model !== _linkedTrailHoldModelRef) {
                 const bendLinks = new Map();
                 _linkNextTargetSet = hwyLinkNextTargetNotes(notes, bundle.chords, 1e-6, bendLinks);
+                _openSlideTailNotes = hwyOpenSlideTailNotes(bendLinks);
                 _linkedBendEnds = resolveLinkedBendEnds(bendLinks);
                 _linkedBendStarts = resolveLinkedBendStarts(bendLinks, _linkedBendEnds);
                 _linkedVibratoRuns = resolveLinkedVibratoRuns(bendLinks);
                 const origins = hwyBuildIndependentTrailOrigins(
-                    notes, chords, _chordGuideCache.model.byChord, nStr,
+                    notes, chords, _chordGuideCache.model.byChord, nStr, _openSlideTailNotes,
                 );
                 _linkedTrailOpenOrigins = origins.openOrigins;
                 _linkedTrailPaths = hwyBuildLinkedTrailPaths(bendLinks, {
@@ -16404,7 +16444,7 @@
                     // A hidden representation must not donate its duration,
                     // path or head to a coincident visible representation.
                     separateRepresentations: true,
-                    trailVisible: (note, meta, chord) => !chordMemberTrailSuppressed(
+                    trailVisible: (note, meta, chord) => !_openSlideTailNotes.has(note) && !chordMemberTrailSuppressed(
                         chord && _chordGuideCache.model.byChord.get(chord), note),
                     visualStartForNote: slideInVisualStart,
                 });
@@ -21010,7 +21050,7 @@
                 hwyNoteVisualParts(n, now, AHEAD, linger,
                     _firstEventTimeGreaterThan(n.t + 1e-6), slideInVisualStart(n),
                     guidanceOnly || scrape || hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, n.t - now),
-                    guidanceOnly || sharedChordHold, record.parts);
+                    guidanceOnly || sharedChordHold || _openSlideTailNotes.has(sourceIdentity), record.parts);
                 const event = record.event = guidanceOnly ? null : trailYieldEventForNote(n, sourceIdentity);
                 if (event && (record.parts.head || record.parts.trail)) {
                     if (!event.gemVisible && !event.trailVisible) _visibleTrailEvents.push(event);
@@ -24441,6 +24481,7 @@
             _songKey = null;
             _resetRsNotationPrewarm();
             _linkNextTargetSet = null;
+            _openSlideTailNotes = new WeakSet();
             _linkedTrailPaths = { byNote: new WeakMap(), paths: [] };
             _linkedTrailAnchorsRef = null;
             _linkedTrailHoldModelRef = null;
