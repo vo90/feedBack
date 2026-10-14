@@ -404,11 +404,24 @@
         updateFilterBadge();
     }
 
+    let _catalogToken = 0;
+    function artistCatalogParams() {
+        // Artist dropdowns are alphabetical regardless of the card sort.
+        return queryParams({ size: 100, sort: 'artist' }, { catalog: true });
+    }
     async function loadArtistCatalog() {
+        const token = ++_catalogToken;
+        const params = artistCatalogParams();
+        const catalogQuery = params.toString();
         const artists = [];
         let page = 0, total = Infinity;
         while (artists.length < total) {
-            const data = await jget('/api/library/artists?' + queryParams({ size: 100, page }, { catalog: true }).toString());
+            params.set('page', page);
+            const data = await jget('/api/library/artists?' + params.toString());
+            if (token !== _catalogToken) return;
+            // Filters can change through reload() without starting a catalog
+            // request. Follow the latest scope instead of leaving it empty.
+            if (catalogQuery !== artistCatalogParams().toString()) return loadArtistCatalog();
             if (!data || !Array.isArray(data.artists)) break;
             artists.push(...data.artists);
             total = (data.total_artists != null) ? data.total_artists : artists.length;
@@ -3577,6 +3590,8 @@
     }
 
     function reload() {
+        // A scan can finish before the first visit has built the library DOM.
+        if (!document.getElementById('v3-songs-grid')) return render();
         _clearLibraryScrollSnapshot();
         // Any toolbar-driven change backs out of the artist sub-page — the new
         // state describes a fresh browse, and the host toggles below re-show
@@ -3637,7 +3652,15 @@
         return (data && data.providers) || [{ id: 'local', label: 'My Library' }];
     }
 
-    async function render() {
+    let _renderPromise = null;
+    function render() {
+        if (!_renderPromise) {
+            _renderPromise = renderContent().finally(() => { _renderPromise = null; });
+        }
+        return _renderPromise;
+    }
+
+    async function renderContent() {
         const root = document.getElementById('v3-songs');
         if (!root) return;
         // A full re-render (filter/scan refresh) replaces the DOM the card menu
@@ -3647,18 +3670,18 @@
         // toolbar so its selects reflect the saved choice (default: Artist A–Z).
         if (!_prefsRestored) { applySavedPrefs(); _prefsRestored = true; }
         const providers = await loadProviders();
-        const [, tn] = await Promise.all([
+        const [, tn, genres] = await Promise.all([
             (async () => { state.accuracy = (await jget('/api/stats/best')) || {}; })(),
             jget('/api/library/tuning-names?provider=' + enc(state.provider)
                 + '&instrument=' + enc(libInstrument())),
-            loadArtistCatalog(),
+            jget('/api/library/genres?provider=' + enc(state.provider)),
             // Artist-page gates (PR-B) ride the initial fetch batch so the
             // first card paint already knows whether artist lines are links.
             refreshArtistPageGates(),
         ]);
         state.tuningNames = (tn && tn.tunings) || [];
+        state.genres = (genres && genres.genres) || [];
         _lastRenderInstrument = libInstrument();
-        try { const _g = await jget('/api/library/genres?provider=' + enc(state.provider)); state.genres = (_g && _g.genres) || []; } catch (e) { state.genres = []; }
 
         const opt = (arr, sel) => arr.map(([v, l]) => '<option value="' + esc(v) + '"' + (v === sel ? ' selected' : '') + '>' + esc(l) + '</option>').join('');
         const provOpts = providers.map((p) => '<option value="' + esc(p.id) + '"' + (p.id === state.provider ? ' selected' : '') + '>' + esc(p.label || p.id) + '</option>').join('');
@@ -3822,9 +3845,13 @@
         bindToolbarReflow();
         updateFilterBadge();
         state.built = true;
+        // Dropdowns need the whole artist/album catalog; cards only need one
+        // page. Never make first paint wait for every artist's song payload.
+        void loadArtistCatalog().then(refreshArtistAlbumSelects);
     }
 
     async function onV3SongsScreenEnter() {
+        if (_renderPromise) await _renderPromise;
         // A library scan / DLC-folder change marked the grid stale — re-fetch
         // from scratch instead of restoring a cached (possibly empty, pre-DLC)
         // snapshot. Must win over every fast-path below.
