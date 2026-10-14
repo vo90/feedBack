@@ -9,8 +9,8 @@
 (function () {
     'use strict';
 
-    // Keep score/capability inputs untouched. Only this renderer sees ringing
-    // as a longer sustain, so all existing trail/chord visibility rules apply.
+    // Keep score/capability inputs and authored sustains untouched. The optional
+    // view adds only imported let-ring extensions, for both trails and framing.
     function createLetRingView() {
         const cache = new WeakMap();
         function note(n) {
@@ -18,7 +18,8 @@
             return !n.mt && typeof span === 'number' && Number.isFinite(span) && span > (n.sus || 0)
                 ? {...n, sus: span} : n;
         }
-        return function (bundle) {
+        return function (bundle, enabled = false) {
+            if (!enabled) return bundle;
             if (!bundle || !Array.isArray(bundle.notes) || !Array.isArray(bundle.chords)) return bundle;
             let byChord = cache.get(bundle.notes);
             if (!byChord) { byChord = new WeakMap(); cache.set(bundle.notes, byChord); }
@@ -5696,7 +5697,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, wahGuidanceVisible: true, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration, trailYieldSameStringEnabled: TRAIL_YIELD_DEFAULTS.sameStringEnabled, trailYieldSameStringMaxGap: TRAIL_YIELD_DEFAULTS.sameStringMaxGap, trailYieldSameStringLeadTime: TRAIL_YIELD_DEFAULTS.sameStringLeadTime };
+    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, wahGuidanceVisible: true, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, letRingTrailsVisible: false, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration, trailYieldSameStringEnabled: TRAIL_YIELD_DEFAULTS.sameStringEnabled, trailYieldSameStringMaxGap: TRAIL_YIELD_DEFAULTS.sameStringMaxGap, trailYieldSameStringLeadTime: TRAIL_YIELD_DEFAULTS.sameStringLeadTime };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -6108,7 +6109,7 @@
     // means (fall back to default rather than silently flipping to
     // false). Add new boolean keys to BG_DEFAULTS and they pick this
     // up via the dispatch below.
-    const _BG_BOOL_KEYS = new Set(['wahGuidanceVisible', 'repeatChordFullBorder', 'reactive', 'showFretOnNote', 'cameraLockLow', 'stableCameraFollow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'noteStemsVisible', 'openStringStemsVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront', 'trailYieldIncludeTrails', 'trailYieldSameStringEnabled']);
+    const _BG_BOOL_KEYS = new Set(['wahGuidanceVisible', 'repeatChordFullBorder', 'reactive', 'showFretOnNote', 'cameraLockLow', 'stableCameraFollow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'noteStemsVisible', 'letRingTrailsVisible', 'openStringStemsVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront', 'trailYieldIncludeTrails', 'trailYieldSameStringEnabled']);
     function _bgCoerceBool(val, fallback) {
         if (val === 'true' || val === '1') return true;
         if (val === 'false' || val === '0') return false;
@@ -6219,6 +6220,7 @@
     window.h3dBgSetChordBoxTop = (v) => _bgWriteGlobal('chordBoxTop', _bgCoerce('chordBoxTop', v));
     window.h3dBgSetRepeatChordFullBorder = (v) => _bgWriteGlobal('repeatChordFullBorder', _bgCoerce('repeatChordFullBorder', String(v)));
     window.h3dBgSetNoteStemsVisible = (v) => _bgWriteGlobal('noteStemsVisible', _bgCoerce('noteStemsVisible', String(v)));
+    window.h3dBgSetLetRingTrailsVisible = (v) => _bgWriteGlobal('letRingTrailsVisible', _bgCoerce('letRingTrailsVisible', String(v)));
     window.h3dBgSetOpenStringStemsVisible = (v) => _bgWriteGlobal('openStringStemsVisible', _bgCoerce('openStringStemsVisible', String(v)));
     window.h3dBgSetIntensity = (v) => _bgWriteGlobal('intensity', v);
     window.h3dBgSetReactive = (v) => _bgWriteGlobal('reactive', !!v);
@@ -8536,6 +8538,7 @@
         // linear blend every frame.
         let rsPlusNotation      = false;
         let noteStemsVisible = BG_DEFAULTS.noteStemsVisible;
+        let letRingTrailsVisible = BG_DEFAULTS.letRingTrailsVisible;
         let chordBoxTop = BG_DEFAULTS.chordBoxTop;
         let repeatChordFullBorder = BG_DEFAULTS.repeatChordFullBorder;
         let openStringStemsVisible = BG_DEFAULTS.openStringStemsVisible;
@@ -12578,6 +12581,7 @@
                     changedKey === 'toneHudSize' ||
                     changedKey === 'projectionVisible' ||
                     changedKey === 'noteStemsVisible' || changedKey === 'openStringStemsVisible' ||
+                    changedKey === 'letRingTrailsVisible' ||
                     changedKey === 'chordBoxTop' ||
                     changedKey === 'repeatChordFullBorder' ||
                     changedKey === 'slideArrowApproachVisible' ||
@@ -12821,6 +12825,7 @@
             const previousNotationStyle = rsPlusNotation;
             rsPlusNotation = _bgReadSetting(panelKey, 'notationStyle') === 'rsplus';
             noteStemsVisible = _bgReadSetting(panelKey, 'noteStemsVisible');
+            letRingTrailsVisible = _bgReadSetting(panelKey, 'letRingTrailsVisible');
             chordBoxTop = _bgReadSetting(panelKey, 'chordBoxTop');
             repeatChordFullBorder = _bgReadSetting(panelKey, 'repeatChordFullBorder');
             openStringStemsVisible = _bgReadSetting(panelKey, 'openStringStemsVisible');
@@ -15941,7 +15946,7 @@
         }
 
         function update(bundle) {
-            bundle = letRingView(bundle);
+            bundle = letRingView(bundle, letRingTrailsVisible);
             const effectiveAnchors = cameraMode === 'stable' ? stableRegionAnchors(bundle) : resolvedGuidanceAnchors(bundle);
             pbBeg(0);
             _trailYieldFrameId++;
@@ -23745,7 +23750,7 @@
 
         /* ── Camera smooth lerp ──────────────────────────────────────────── */
         function camUpdate(bundle) {
-            bundle = letRingView(bundle);
+            bundle = letRingView(bundle, letRingTrailsVisible);
             if (cameraMode === 'stable') { stableCamUpdate(bundle, _frameNow); return; }
             if (_stableCam.active) {
                 _stableCam.active = false;
@@ -24843,6 +24848,7 @@
             default: BG_DEFAULTS.notationStyle,
         },
         { key: 'noteStemsVisible', label: 'Note-gem stems', type: 'toggle', default: BG_DEFAULTS.noteStemsVisible },
+        { key: 'letRingTrailsVisible', label: 'Show let-ring trails', type: 'toggle', default: BG_DEFAULTS.letRingTrailsVisible },
         { key: 'openStringStemsVisible', label: 'Open-string stems', type: 'toggle', default: BG_DEFAULTS.openStringStemsVisible },
         { key: 'chordBoxTop', label: 'Chord box top (RS+)', type: 'select',
             options: [{ id: 'short-caps', label: 'Short caps' }, { id: 'full', label: 'Full border' }],
