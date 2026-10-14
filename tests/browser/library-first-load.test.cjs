@@ -4,7 +4,8 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { chromium } = require('playwright');
 
-test('first cards and tab return do not wait for artist catalog; stale catalog is discarded', async () => {
+for (const change of ['search', 'sort', 'filter']) {
+test(`first cards and tab return do not wait for artist catalog; pending ${change} change`, async () => {
     const browser = await chromium.launch({ headless: true });
     try {
         const page = await browser.newPage();
@@ -47,8 +48,26 @@ test('first cards and tab return do not wait for artist catalog; stale catalog i
         await page.waitForFunction(() => window.catalogResolvers.length === 1);
         assert.equal(await page.evaluate(() => window.calls.filter(u => u === '/api/library/providers').length), 1);
         assert.equal(await page.locator('#v3-songs-count').textContent(), '1 song');
-        await page.evaluate(() => { window.v3Songs.search('new query'); });
+        if (change === 'sort') {
+            await page.selectOption('#v3-songs-sort', 'title');
+            await page.evaluate(() => window.catalogResolvers[0]({ artists: [{ name: 'First Artist', albums: [] }], total_artists: 1 }));
+            await page.waitForFunction(() => document.getElementById('v3-songs-artist').textContent.includes('First Artist'));
+            assert.equal(await page.evaluate(() => window.catalogResolvers.length), 1);
+            assert.deepEqual(errors, []);
+            return;
+        }
+        if (change === 'search') {
+            await page.evaluate(() => { window.v3Songs.search('new query'); });
+        } else {
+            await page.evaluate(() => {
+                document.getElementById('v3-songs-unmatched').click();
+                window.catalogResolvers[0]({ artists: [{ name: 'Stale Artist', albums: [] }], total_artists: 200 });
+            });
+        }
         await page.waitForFunction(() => window.catalogResolvers.length === 2);
+        if (change === 'filter') {
+            assert.ok(await page.evaluate(() => window.calls.some(u => u.startsWith('/api/library/artists?') && u.includes('match=unmatched'))));
+        }
         await page.evaluate(() => window.catalogResolvers[1]({ artists: [{ name: 'New Artist', albums: [] }], total_artists: 1 }));
         await page.waitForFunction(() => document.getElementById('v3-songs-artist').textContent.includes('New Artist'));
         await page.evaluate(() => window.catalogResolvers[0]({ artists: [{ name: 'Stale Artist', albums: [] }], total_artists: 200 }));
@@ -60,3 +79,4 @@ test('first cards and tab return do not wait for artist catalog; stale catalog i
         await browser.close();
     }
 });
+}

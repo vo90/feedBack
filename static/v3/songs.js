@@ -405,16 +405,23 @@
     }
 
     let _catalogToken = 0;
+    function artistCatalogParams() {
+        // Artist dropdowns are alphabetical regardless of the card sort.
+        return queryParams({ size: 100, sort: 'artist' }, { catalog: true });
+    }
     async function loadArtistCatalog() {
         const token = ++_catalogToken;
-        const params = queryParams({ size: 100 }, { catalog: true });
+        const params = artistCatalogParams();
         const catalogQuery = params.toString();
         const artists = [];
         let page = 0, total = Infinity;
         while (artists.length < total) {
             params.set('page', page);
             const data = await jget('/api/library/artists?' + params.toString());
-            if (token !== _catalogToken || catalogQuery !== queryParams({ size: 100 }, { catalog: true }).toString()) return;
+            if (token !== _catalogToken) return;
+            // Filters can change through reload() without starting a catalog
+            // request. Follow the latest scope instead of leaving it empty.
+            if (catalogQuery !== artistCatalogParams().toString()) return loadArtistCatalog();
             if (!data || !Array.isArray(data.artists)) break;
             artists.push(...data.artists);
             total = (data.total_artists != null) ? data.total_artists : artists.length;
