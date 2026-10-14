@@ -3,7 +3,6 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { createHash } = require('node:crypto');
 
 const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 
@@ -68,7 +67,7 @@ function harness(subject = source, three = null) {
         ${extract('stableConstrain')}
         ${extract('stableIntervalAt')}
         ${extract('stableSolve')}
-        ${['hwyBuildCameraStops','hwyPrepareCameraStops','hwyCameraPlanAt','hwyCameraRejoin','hwyCameraZoom','stableRegionFitDistance','stableRegionFootprint','stableRegionFraming','stableRegionViewDistance','stableCameraPlan','stableCamUpdate'].map(extract).join('\n')}
+        ${['hwyBuildCameraStops','hwyBuildCameraAttackIndex','hwyPrepareCameraStops','hwyCameraPlanAt','hwyCameraRejoin','hwyCameraZoom','stableRegionFitDistance','stableRegionFootprint','stableRegionFraming','stableRegionViewDistance','stableCameraPlan','stableCamUpdate'].map(extract).join('\n')}
         ${extract('stableCollectGeometry').replace('function stableCollectGeometry(', 'function collectRealRegionGeometry(')}
         function stableCollectGeometry(region) {
             if (fixtureObjects) return collectRealRegionGeometry(region);
@@ -244,13 +243,6 @@ const cameraFrameDtSelection = `// Share the normal visual frame interval, but r
             const frameDt = bundle.transport ? _presentationClock.frameMotionDelta() : NaN;
             const dt = Number.isFinite(frameDt) && frameDt > 0 ? frameDt : Math.min(0.25, elapsed);`;
 const wallCameraSource = source.replace(cameraFrameDtSelection, 'const dt = Math.min(0.25, elapsed);');
-
-test('camera changes only its damping interval relative to frozen 1fbc598', () => {
-    assert.notEqual(wallCameraSource, source);
-    const body = extractFunction('stableCamUpdate', wallCameraSource).replace(/\r\n/g, '\n');
-    assert.equal(createHash('sha256').update(body).digest('hex'),
-        '6f03a4997bf0fc0c024badbcceab761d9caeed56cce40ebd9ff56b1aa17fac82');
-});
 
 test('camera retains exact wall-clamped behavior on every clock fallback and legacy transport', () => {
     const cases = [
@@ -1437,4 +1429,18 @@ test('shared ribbon coordinate storage preserves ordered output between ribbons 
         positions[7*3+2]=value;
         assertCollectionParity(pair,[partial,ribbons[1]],`partial ribbon with ${String(value)}`);
     }
+});
+
+
+test('a visibility correction never manufactures velocity from its displacement or frame interval', () => {
+    const distances = [];
+    for (const fps of [30, 60, 120, 240]) {
+        const h = harness(); h.noRegion(); h.setPoints([[0, 13, 0]]); h.frame(0, 0);
+        h.setPoints([[-240, -18, 0], [240, 100, 0]]);
+        const state = h.frame(1 / fps, 1 / fps);
+        assert.equal(state.correction, true);
+        assert.equal(state.zoomVelocity, 0, 'the guard must not create momentum when the controller had none');
+        distances.push(state.distance);
+    }
+    assert.ok(Math.max(...distances) - Math.min(...distances) < 1e-8);
 });

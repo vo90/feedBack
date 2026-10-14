@@ -18,7 +18,7 @@ function extract(name) {
 const { prepare, at } = new Function(`
     const NFRETS = 24;
     ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote'].map(extract).join('\n')}
-    ${['hwyPrepareCameraStops','hwyCameraPlanAt'].map(extract).join('\n')}
+    ${['hwyBuildCameraAttackIndex','hwyPrepareCameraStops','hwyCameraPlanAt'].map(extract).join('\n')}
     return {prepare:hwyPrepareCameraStops,at:hwyCameraPlanAt};
 `)();
 const note = (t, f = 2, extra = {}) => ({t, f, s: 0, sus: .25, ...extra});
