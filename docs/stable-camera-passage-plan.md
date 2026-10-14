@@ -133,3 +133,82 @@ frame despite large improvements. A true chart replacement also rebuilds
 musical regions and attacks. Guaranteed sub-frame invalidation for arbitrary
 chart sizes would require incremental/background planning and is not claimed
 by this change. Native runtime GPU/audio frame pacing needs a live play test.
+
+## Dominant playing-area refinement
+
+The Enter Sandman example at about 4:44 exposed a different composition issue:
+a readable held view can remain biased toward a previous position even when a
+repeating riff spends more time elsewhere. Chord-lane metadata can split an
+unchanged playing area into short rows, hiding its true duration from the
+detour policy.
+
+The refinement belongs in cached passage preparation. Consecutive equivalent
+geometry contributes continuous dwell time; repeated or sustained playing
+positions establish the preferred resting view. Lower fret numbers are not an
+unconditional preference. A main riff at frets 5–8 with a brief downward slide
+must retain its main position just as a lower riff with a brief higher reach
+should favour its lower position. A slide endpoint alone must not win focus.
+
+The preferred view must fit the passage at its existing distance, respect the
+playing-area focus bounds, and preserve essential note/slide visibility. A
+local correction must not rewrite distant earlier camera history. Warm frames
+must reuse the prepared plan without repeating the dominance analysis.
+
+Acceptance includes the private reported passage, symmetric inherited-position
+cases, short downward slides, equivalent metadata fragmentation, balanced
+alternation, sustained relocation, mirrored layouts, speeds and viewports.
+Compare absolute distance as well as zoom excursions, resting-centre error,
+pan travel/reversals, label/note visibility and cached-plan identity.
+
+The implementation scores up to four real seconds / 32 compacted spans. A
+position needs at least 2.4 seconds and 60% of the window to establish a
+preference; spans shorter than 300 ms and slide destinations without a new
+pick cannot vote. They still constrain visibility. A retained preference loses
+support below 50%, giving it a separate release threshold.
+
+This pass only corrects an inherited held view. Existing deliberate camera
+stops retain their timing, and an upcoming original stop bounds the correction.
+The new centre must offer a meaningful improvement and fit every member's own
+existing distance budget. It cannot spend extra zoom to reach its ideal centre.
+Equivalent metadata rows are compacted before scoring, and prepared attack
+evidence, shape fits and camera plans are reused during normal playback.
+
+Review added regressions for slow playback where the original camera already
+follows correctly, loss of dominant evidence without a competing winner, and
+an original stop inside the final compacted span. The final span must retain
+its explicit end even when no later span exists to close it.
+The support denominator ends at the last picked span in the bounded window;
+an empty future tail must not dilute a continuing riff and trigger an early
+return. Unpicked gaps inside the evidence window, explicit position changes
+and all visibility constraints remain effective.
+Support-loss release also needs at least 2.4 seconds of observed evidence,
+so a final short reply cannot undo the established composition by itself.
+
+The isolated Node planner diagnostic with picked notes measured warm evaluation
+at approximately 0.003–0.016 ms for baseline and candidate, with no plan rebuilds.
+Median cold preparation for 1,000 synthetic rows was about 7–12 ms before and
+9–16 ms after. At 50,000 rows it was about 337–395 ms before and 443–513 ms after.
+The additional analysis runs only during preparation; these CPU diagnostics
+do not measure native rendering/audio frame pacing or guarantee sub-frame
+rebuilds for large charts. The final boundary cap does not change that workload.
+
+Validation against the current Songsterr baseline, including its optional
+let-ring trail policy:
+
+- 1,099 highway JavaScript tests and 78 existing playing-area browser cases
+  passed. Independent review found no remaining actionable issue.
+- Final acceptance compared 98 newly replayed candidate scenarios with 98
+  unchanged baseline scenarios, covering 162,916 frames. All visibility,
+  composition, provenance and frame-cadence checks passed, with no added pan
+  reversals or zoom events. Maximum added distance was only the solver's
+  1e-7 tolerance. Short finishing slides produced zero pan.
+- The original Back In Black interval and public high-slide regression passed
+  eight paired runs with exactly unchanged sampled camera positions/distances.
+- The reported Enter Sandman interval and short downward slide passed 24
+  targeted paired runs across both presets and half/normal/double playback
+  rates. The finishing-slide check includes actual rendered path vertices.
+- At normal speed, the reported interval's mean lower-area centre error fell
+  from 3 to 0.168 frets in Straight and from 3 to 1.941 in Angled. Each made one
+  correction with no added pan reversal or zoom event. Angled stops short of
+  the ideal centre to retain its existing zoom budget. Half-speed following
+  remains unchanged; double-speed Angled avoids a needless correction.

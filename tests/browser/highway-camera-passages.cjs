@@ -7,7 +7,9 @@
 //   ... --source-ref <ref> --reference --fps 60 --case high-slide
 //   ... --baseline-ref <ref> --require-improvement --private-chart <compact JSON>
 // Optional: --variants (lefty/wide), --rates .5,2 (reversal cases at 60 FPS),
-// --captures, --perf (diagnostics, never a gate).
+// --dominance (repeated-riff composition cases), --require-dominance,
+// --private-start/--private-end/--private-focus 1,4, --captures,
+// --perf (diagnostics, never a gate).
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -24,6 +26,7 @@ const readRef = ref => normalize(execFileSync('git', ['-C', repo, 'show', `${ref
 const source = option('--source-ref') ? readRef(option('--source-ref')) : normalize(fs.readFileSync(path.join(repo, 'plugins/highway_3d/screen.js'), 'utf8'));
 const baseline = option('--baseline-ref') ? readRef(option('--baseline-ref')) : null;
 assert.ok(!args.includes('--require-improvement') || baseline, '--require-improvement needs --baseline-ref');
+assert.ok(!args.includes('--require-dominance') || baseline, '--require-dominance needs --baseline-ref');
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const failures = [], browserErrors = [], results = [];
 const note = value => ({t: 6, s: 2, f: 4, sus: 0, sl: -1, slu: -1, bn: 0, ...value});
@@ -32,6 +35,57 @@ const base = value => ({currentTime: 6, isPlaying: true, playbackRate: 1, notes:
   sections: [], lyrics: [], stringCount: 6, tuning: Array(6).fill(0), songInfo: {arrangement: 'Lead'}, lefty: false, inverted: false, renderScale: 1, ...value});
 
 function fixture(kind) {
+  if (kind.startsWith('riff-')) {
+    if(kind==='riff-balanced') {
+      const anchors=[{time:0,fret:1,width:4}],notes=[];
+      for(let cycle=0;cycle<16;cycle++) {
+        const t=6+cycle;
+        anchors.push({time:t,fret:1,width:4},{time:t+.5,fret:4,width:4});
+        for(const [offset,f]of [[.05,1],[.25,3],[.55,4],[.75,6]])notes.push(note({t:t+offset,f,s:cycle%3,sus:.08}));
+      }
+      return base({notes,anchors});
+    }
+    if(kind.includes('-inherited')) {
+      const main=kind.startsWith('riff-low')?1:5,away=main===1?4:2;
+      const anchors=[{time:0,fret:away,width:4}],notes=[];
+      for(let cycle=0;cycle<16;cycle++) {
+        const t=6+cycle;
+        anchors.push({time:t,fret:main,width:4},{time:t+.75,fret:away,width:4});
+        if(kind.endsWith('-split'))anchors.push({time:t+.2,fret:main,width:4,guidanceOrigin:'source'},
+          {time:t+.4,fret:main,width:4,guidanceOrigin:'user'},{time:t+.9,fret:away,width:4,guidanceOrigin:'generated'});
+        for(const [offset,f]of [[0,main],[.2,main+2],[.4,main+3],[.6,main],[.8,away+1]])notes.push(note({t:t+offset,f,s:cycle%3,sus:.08}));
+      }
+      anchors.push({time:22,fret:main,width:4});
+      return base({notes,anchors:anchors.sort((a,b)=>a.time-b.time)});
+    }
+    const low=kind==='riff-low', relocation=kind==='riff-relocation';
+    const main=low?1:5, away=low?4:2;
+    const anchors=[{time:0,fret:main,width:4}],notes=[],chords=[];
+    for(let cycle=0;cycle<6;cycle++) {
+      const t=6+cycle*2;
+      for(const [offset,fret] of [[0,0],[.25,main],[.5,main+2],[.75,main+3],[1,main+2],[1.25,main]]) {
+        notes.push(note({t:t+offset,s:Math.round(offset*4)%3,f:fret,sus:.08}));
+      }
+      if(['riff-low','riff-high'].includes(kind)) {
+        const change=t+1.55;
+        anchors.push({time:change,fret:away,width:4},{time:t+2,fret:main,width:4});
+        // A brief fretted two-string answer to the main riff, not a rest.
+        chords.push({t:change+.03,id:0,notes:[{s:0,f:away,sus:.16},{s:1,f:away+2,sus:.16}]});
+        notes.push(note({t:t+1.85,s:2,f:away+1,sus:.08}));
+      } else if(kind==='riff-high-slide') {
+        // A targeted finishing slide never changes the main 5–8 playing area.
+        notes.push(note({t:t+1.55,s:1,f:8,sus:.3,sl:2}));
+      } else notes.push(note({t:t+1.75,s:1,f:main+1,sus:.1}));
+    }
+    if(kind==='riff-provenance')for(let i=0;i<60;i++)anchors.push({time:6+i*.2,fret:main,width:4,guidanceOrigin:['source','user','generated'][i%3]});
+    if(relocation) {
+      anchors.push({time:11.5,fret:1,width:4});
+      for(const n of notes)if(n.t>=11.5&&n.f>0)n.f-=4;
+    }
+    return base({notes:notes.sort((a,b)=>a.t-b.t),chords,
+      chordTemplates:[{name:'Answer',frets:[away,away+2,-1,-1,-1,-1],fingers:[1,3,-1,-1,-1,-1]}],
+      anchors:anchors.sort((a,b)=>a.time-b.time)});
+  }
   if (kind === 'fixed') return base({notes: Array.from({length: 48}, (_, i) => note({t: 6 + i / 8, f: 2 + i % 4, s: i % 6}))});
   if (kind === 'local') return base({notes: Array.from({length: 35}, (_, i) => note({t: 6 + i / 5, f: 4, s: i % 6})),
     anchors: [{time: 0, fret: 2, width: 4}, ...[3, 4, 3, 2, 3, 2].map((fret, i) => ({time: 7 + i, fret, width: 4}))]});
@@ -49,25 +103,36 @@ function fixture(kind) {
 
 const cases = [];
 const fpsValues = option('--fps', '30,60,120').split(',').map(Number);
+const dominanceKinds=['riff-low','riff-high','riff-low-inherited','riff-low-inherited-split','riff-high-inherited','riff-high-slide','riff-steady','riff-provenance','riff-relocation','riff-balanced'];
+const dominanceFocus=kind=>['riff-low','riff-low-inherited','riff-low-inherited-split'].includes(kind)?[1,4]:['riff-high','riff-high-inherited','riff-high-slide','riff-steady','riff-provenance'].includes(kind)?[5,8]:null;
+const privateStart=Number(option('--private-start',155)),privateEnd=Number(option('--private-end',161));
+const privateFocus=option('--private-focus')?.split(',').map(Number);
+assert.ok(Number.isFinite(privateStart)&&privateEnd>privateStart,'Invalid private playback interval');
+assert.ok(!privateFocus||(privateFocus.length===2&&privateFocus.every(Number.isFinite)&&privateFocus[0]>=1&&privateFocus[1]<=24&&privateFocus[1]>=privateFocus[0]),'Invalid private focus');
 assert.ok(fpsValues.every(fps => Number.isFinite(fps) && fps > 0));
 for (const preset of ['straight', 'angled']) {
   for (const fps of fpsValues) for (const kind of ['fixed', 'local', 'long-shift', 'high-slide']) {
     cases.push({name: `${kind}-${preset}-${fps}`, kind, preset, fps, start: 6, end: 13, b: fixture(kind), viewport: {width: 1920, height: 1032}});
   }
-  if (args.includes('--variants')) for (const variant of ['lefty', 'wide']) {
-    cases.push({name: `high-slide-${preset}-${variant}`, kind: 'high-slide', preset, fps: 60, start: 6, end: 13,
-      b: {...fixture('high-slide'), lefty: variant === 'lefty'}, viewport: {width: 1920, height: variant === 'wide' ? 720 : 1032}});
+  if(args.includes('--dominance'))for(const fps of fpsValues)for(const kind of dominanceKinds) {
+    cases.push({name:`${kind}-${preset}-${fps}`,kind,preset,fps,start:6,end:18,b:fixture(kind),dominantFocus:dominanceFocus(kind),viewport:{width:1920,height:1032}});
+  }
+  if (args.includes('--variants')) for (const variant of ['lefty', 'wide']) for(const kind of ['high-slide',...(args.includes('--dominance')?['riff-low-inherited','riff-high-inherited','riff-high-slide']:[])]) {
+    cases.push({name: `${kind}-${preset}-${variant}`, kind, preset, fps: 60, start: 6, end: kind.startsWith('riff-')?18:13,
+      b: {...fixture(kind), lefty: variant === 'lefty'},dominantFocus:dominanceFocus(kind),viewport: {width: 1920, height: variant === 'wide' ? 720 : 1032}});
   }
   if (option('--private-chart')) {
     const raw = JSON.parse(fs.readFileSync(option('--private-chart'), 'utf8'));
     const b = base({...raw, chordTemplates: raw.chordTemplates || raw.templates || [], handShapes: raw.handShapes || raw.handshapes || []});
-    for (const fps of fpsValues) cases.push({name: `private-${preset}-${fps}`, kind: 'private', preset, fps, start: 155, end: 161, b, viewport: {width: 1920, height: 1032}});
+    for (const fps of fpsValues) cases.push({name: `private-${preset}-${fps}`, kind: 'private', preset, fps, start:privateStart,end:privateEnd,dominantFocus:privateFocus,b, viewport: {width: 1920, height: 1032}});
+    if(args.includes('--variants')&&privateFocus)for(const variant of ['lefty','wide'])cases.push({name:`private-${preset}-${variant}`,kind:'private',preset,fps:60,start:privateStart,end:privateEnd,
+      dominantFocus:privateFocus,b:{...b,lefty:variant==='lefty'},viewport:{width:1920,height:variant==='wide'?720:1032}});
   }
 }
 if(option('--rates')) {
   const rates=option('--rates').split(',').map(Number);
   assert.ok(rates.every(rate=>Number.isFinite(rate)&&rate>=.1&&rate<=4),'Playback rates must be between .1 and 4');
-  for(const c of cases.slice().filter(c=>['high-slide','private'].includes(c.kind)&&c.name.endsWith('-60'))) {
+  for(const c of cases.slice().filter(c=>['high-slide','private','riff-low-inherited','riff-high-inherited','riff-high-slide'].includes(c.kind)&&c.name.endsWith('-60'))) {
     for(const rate of rates) if(rate!==1)cases.push({...c,name:`${c.name}-rate${rate}`,b:{...c.b,playbackRate:rate}});
   }
 }
@@ -104,13 +169,31 @@ function instrument(input) {
           const rect = {}; if (_incomingLabelScreenRect(mesh, rect, true)) labels.push({fret, rect});
         }
       }
+      const desired=window.__passageDominantFocus;
+      const dominantX=desired?(xFret(desired[0]-1)+xFret(desired[1]))*.5:null;
+      const nearSustains=[];
+      if(window.__passageCheckSlide)for(const [kind,pool]of [['tail',pSus],['ribbon',pSusRibbon],['rail',pSusRail]])pool?.forEachActive(mesh=>{
+        if(!mesh.visible||mesh.material?.opacity===0||mesh.userData.stableCameraRelevant===false)return;
+        const positions=mesh.geometry?.attributes?.position;if(!positions)return;
+        const slices=mesh.geometry.userData?.ribbonSlices;
+        const count=Number.isFinite(slices)?Math.min(positions.count,(slices+1)*4):positions.count;
+        let minX=Infinity,maxX=-Infinity,vertices=0;
+        for(let i=0;i<count;i++){
+          point.fromBufferAttribute(positions,i).applyMatrix4(mesh.matrixWorld);
+          if(point.z>.03*K||point.z<-(imminentHorizon*TS+.03*K))continue;
+          point.project(cam);minX=Math.min(minX,point.x);maxX=Math.max(maxX,point.x);vertices++;
+        }
+        if(vertices)nearSustains.push({kind,minX,maxX,vertices});
+      });
       return {time:_frameNow, mode:cameraMode, position:cam.position.toArray(), quaternion:cam.quaternion.toArray(), fov:cam.fov,
         x:_stableCam.x, plannedX:_stableCam.planX, distance:_stableCam.distance, correction:_stableCam.correction,
         targetDistance:_stableCam.targetDistance, zoomVelocity:_stableCam.zoomVelocity, safetyOffset:_stableCam.safetyOffset,
         planDistance:_stablePlan.result.distance, planReturnFloor:_stablePlan.result.returnFloor,
         revision:_stableCam.planRevision, fretWidth:Math.abs(xFretMid(6)-xFretMid(5)),
         focus:region?.valid?{x:region.x,minX:region.minX,maxX:region.maxX,firstFret:region.dMin+1,lastFret:region.dMax}:null,
-        heads, labels};
+        dominantX,dominantScreenX:desired?new T.Vector3(dominantX,sY(2),0).project(cam).x:null,
+        dominantActive:!!desired&&region?.dMin+1===desired[0]&&region?.dMax===desired[1],
+        heads, labels, nearSustains};
     },
     __passagePlanSnapshot() {
       return {revision:_stablePlan.revision,stops:_stablePlan.stops.map(row=>({...row})),regions:_stablePlan.regions.map(row=>({...row})),
@@ -149,7 +232,14 @@ function summarize(samples, viewport, rate) {
       panSpeed.push(vx); zoomSpeed.push(vz);
     }
   }
+  const dominant=samples.filter(s=>s.dominantActive&&s.time>=first.time+1);
+  const settled=samples.filter(s=>s.time>=first.time+2);
   return {frames:samples.length, panTravelFrets:travel, panReversals:reversals,
+    peakDistance:Math.max(...samples.map(s=>s.distance)),
+    settledPanRangeFrets:settled.length?(Math.max(...settled.map(s=>s.x))-Math.min(...settled.map(s=>s.x)))/width:0,
+    dominantFrames:dominant.length,
+    meanDominantCentreErrorFrets:dominant.length?dominant.reduce((sum,s)=>sum+Math.abs(s.x-s.dominantX)/width,0)/dominant.length:null,
+    meanDominantScreenOffset:dominant.length?dominant.reduce((sum,s)=>sum+Math.abs(s.dominantScreenX),0)/dominant.length:null,
     peakPanSpeedFretsPerSecond:Math.max(0,...panSpeed.map(Math.abs)),
     peakPanAccelerationFretsPerSecondSquared:Math.max(0,...panAcceleration.map(Math.abs)),
     peakDistanceRatio:Math.max(...samples.map(s=>s.distance))/nominal, zoomEvents, logZoomTravel,
@@ -170,6 +260,7 @@ function validate(c, run, label) {
     if (delta(sample.quaternion, first.quaternion) > 1e-8 || Math.abs(sample.fov-first.fov) > 1e-8) fail(`Automatic angle/FOV changed at ${sample.time}`);
     if (!sample.heads.every(h=>h.rect.minX>=-1.001&&h.rect.maxX<=1.001)) fail(`Imminent note clipped horizontally at ${sample.time}`);
     if (!sample.labels.every(h=>h.rect.minX>=-1.01&&h.rect.maxX<=1.01&&h.rect.minY>=-1.01&&h.rect.maxY<=1.01)) fail(`Current gold label clipped at ${sample.time}`);
+    if(!sample.nearSustains.every(shape=>shape.minX>=-1.001&&shape.maxX<=1.001))fail(`Finishing slide clipped horizontally at ${sample.time}`);
   }
   if (c.kind === 'fixed') {
     const settled = samples.filter(s=>s.time>=7);
@@ -179,6 +270,12 @@ function validate(c, run, label) {
   if (c.kind === 'long-shift') {
     const last=samples.at(-1);
     if (last.x < last.focus.minX || last.x > last.focus.maxX) fail('Camera did not settle into the sustained new playing area');
+  }
+  if(['riff-steady','riff-provenance','riff-high-slide','riff-balanced'].includes(c.kind)&&run.metrics.settledPanRangeFrets>.05)fail('A steady riff, short finishing slide, or balanced alternation moved the camera');
+  if(c.kind==='riff-high-slide'&&!samples.some(s=>s.nearSustains.length))fail('Finishing slide fixture did not produce auditable near sustain geometry');
+  if(c.kind==='riff-relocation') {
+    const last=samples.at(-1);
+    if(Math.abs(last.x-last.focus.x)>first.fretWidth*.75)fail('Camera did not settle at the sustained new riff');
   }
 }
 
@@ -211,9 +308,12 @@ async function main() {
             notationStyle:'rsplus',style:'off',glow:0,cinematic:false,sparks:false,bloom:false,verdictMarks:false,timingFx:false,streakFx:false,hitFx:0,chordDiagramVisible:false};
           for(const [key,value]of Object.entries(settings)){localStorage.setItem('h3d_bg_'+key,String(value));window['h3dBgSet'+key[0].toUpperCase()+key.slice(1)]?.(value);}
           window.bundle={...c.b,currentTime:c.start};window.r=feedBackViz_highway_3d();r.init(document.getElementById('highway'),bundle);await r.readyPromise;r.__passageDisableGpu();
+          window.__passageDominantFocus=c.dominantFocus||null;
+          window.__passageCheckSlide=c.kind==='riff-high-slide';
           window.__passageEvents=[...bundle.notes,...bundle.chords.flatMap(chord=>(chord.notes||[]).map(n=>({...n,t:chord.t})))];
         },c);
-        const captureTimes=args.includes('--captures')&&c.fps===60?(c.kind==='high-slide'?[8,9.3,9.8,10.3]:c.kind==='private'?[157,158.3,158.8,159.3]:[]):[];
+        const privateCaptures=c.start===155&&c.end===161?[157,158.3,158.8,159.3]:[c.start+(c.end-c.start)/3,c.start+(c.end-c.start)/2,c.end-1];
+        const captureTimes=args.includes('--captures')&&c.fps===60?(c.kind==='high-slide'?[8,9.3,9.8,10.3]:c.kind==='private'?privateCaptures:c.kind.startsWith('riff-')?[8,9.65,10.1,14]:[]):[];
         const rate=c.b.playbackRate||1;
         const playback=await page.evaluate(({start,end,fps,captureTimes,rate})=>{
           const samples=[],captures=[];let planSnapshot;
@@ -227,7 +327,7 @@ async function main() {
         },{...c,captureTimes,rate});
         const samples=playback.samples;
         for(const capture of playback.captures)fs.writeFileSync(path.join(out,`${label}-${c.name}-${capture.time.toFixed(3)}.png`),Buffer.from(capture.png.split(',')[1],'base64'));
-        const run={name:c.name,label,kind:c.kind,preset:c.preset,fps:c.fps,rate,viewport:c.viewport,samples,planSnapshot:playback.planSnapshot,metrics:summarize(samples,c.viewport,rate)};
+        const run={name:c.name,label,kind:c.kind,preset:c.preset,fps:c.fps,rate,start:c.start,end:c.end,dominantFocus:c.dominantFocus,viewport:c.viewport,samples,planSnapshot:playback.planSnapshot,metrics:summarize(samples,c.viewport,rate)};
         validate(c,run,label);
         if(args.includes('--perf')) {
           const times=await page.evaluate(()=>r.__passageBenchmark(bundle,200));
@@ -257,21 +357,51 @@ async function main() {
     if(maxPanDifferenceFrets>.5||maxDistanceDifferenceNominal>.15)failures.push({case:c.name,label,category:'cadence',message:'Camera path diverged across frame rates',comparison});
   }
   const comparisons=[];
+  const provenanceComparisons=[];
+  for(const label of baseline?['baseline','candidate']:['candidate'])for(const c of active.filter(c=>['riff-provenance','riff-low-inherited-split'].includes(c.kind))) {
+    const reference=c.kind==='riff-provenance'?'riff-steady':'riff-low-inherited';
+    const steady=active.find(other=>other.kind===reference&&other.preset===c.preset&&other.fps===c.fps);
+    if(!steady)continue;
+    const a=JSON.parse(fs.readFileSync(path.join(out,`${label}-${c.name}.json`),'utf8')).samples;
+    const b=JSON.parse(fs.readFileSync(path.join(out,`${label}-${steady.name}.json`),'utf8')).samples;
+    const maxPoseDifference=Math.max(...a.map((s,i)=>delta([...s.position,s.distance],[...b[i].position,b[i].distance])));
+    provenanceComparisons.push({name:c.name,label,reference:steady.name,maxPoseDifference});
+    if(maxPoseDifference>1e-7)failures.push({case:c.name,label,category:'correctness',message:'Provenance-only lane splits changed the camera',maxPoseDifference});
+  }
   if(baseline) for(const c of active) {
     const previous=results.find(r=>r.name===c.name&&r.label==='baseline'),current=results.find(r=>r.name===c.name&&r.label==='candidate');
     const comparison={name:c.name,panTravelRatio:current.metrics.panTravelFrets/Math.max(previous.metrics.panTravelFrets,1e-9),
       excessZoomRatio:(current.metrics.peakDistanceRatio-1)/Math.max(previous.metrics.peakDistanceRatio-1,1e-9),
-      logZoomTravelRatio:current.metrics.logZoomTravel/Math.max(previous.metrics.logZoomTravel,1e-9)};
+      logZoomTravelRatio:current.metrics.logZoomTravel/Math.max(previous.metrics.logZoomTravel,1e-9),
+      peakDistanceDelta:current.metrics.peakDistance-previous.metrics.peakDistance,
+      dominantCentreErrorDeltaFrets:current.metrics.meanDominantCentreErrorFrets===null?null:current.metrics.meanDominantCentreErrorFrets-previous.metrics.meanDominantCentreErrorFrets,
+      panReversalsDelta:current.metrics.panReversals-previous.metrics.panReversals,zoomEventsDelta:current.metrics.zoomEvents-previous.metrics.zoomEvents};
     comparisons.push(comparison);
     if(args.includes('--require-improvement')&&['high-slide','private'].includes(c.kind)) {
       const noRegression=comparison.panTravelRatio<=1.05&&comparison.excessZoomRatio<=1.05;
       const improved=comparison.panTravelRatio<=.9||comparison.excessZoomRatio<=.9;
       if(!noRegression||!improved)failures.push({case:c.name,label:'candidate',category:'motion',message:'Expected lower pan travel or excess zoom without increasing the other by more than 5%',comparison});
     }
+    if(args.includes('--require-dominance')&&(c.kind.startsWith('riff-')||c.dominantFocus)) {
+      const fail=message=>failures.push({case:c.name,label:'candidate',category:'composition',message,comparison});
+      // The preference itself must not buy a more central view with extra zoom
+      // or repeated pan/zoom cycles. Geometric protection still uses real meshes.
+      if(current.metrics.peakDistance>previous.metrics.peakDistance*1.005+.001)fail('Dominant preference added zoom');
+      if(current.metrics.zoomEvents>previous.metrics.zoomEvents||current.metrics.panReversals>previous.metrics.panReversals)fail('Dominant preference added camera cycles');
+      if(c.dominantFocus&&current.metrics.meanDominantCentreErrorFrets>previous.metrics.meanDominantCentreErrorFrets+.05)fail('Dominant playing area moved farther from the camera centre');
+      if(c.dominantFocus&&previous.metrics.panTravelFrets<.05&&current.metrics.panTravelFrets>previous.metrics.panTravelFrets+.05
+        &&comparison.dominantCentreErrorDeltaFrets>-.05)fail('Dominant preference added a move without a closer main playing area');
+      // At other playback rates a private passage may already use the closest
+      // feasible view. Require preservation there, not an impossible new fit.
+      const mustImprove=c.kind.includes('-inherited')||c.kind==='private'&&(c.b.playbackRate||1)===1;
+      if(c.dominantFocus&&mustImprove&&previous.metrics.meanDominantCentreErrorFrets>.3) {
+        if(current.metrics.meanDominantCentreErrorFrets>previous.metrics.meanDominantCentreErrorFrets-.05)fail('Dominant playing area did not move closer to the camera centre');
+      }
+    }
   }
-  fs.writeFileSync(path.join(out,'results.json'),JSON.stringify({sourceHash:sha(source),baselineHash:baseline?sha(baseline):null,
+  fs.writeFileSync(path.join(out,'results.json'),JSON.stringify({sourceHash:sha(source),sourceRef:option('--source-ref')||null,baselineHash:baseline?sha(baseline):null,
     method:'Isolated production renderer, deterministic simulated playback, read-only state/mesh audit. Camera algorithms are unmodified. Correctness/motion failures are separate from optional CPU diagnostics.',
-    failures,browserErrors,comparisons,fpsComparisons,results},null,2));
+    failures,browserErrors,comparisons,fpsComparisons,provenanceComparisons,results},null,2));
   console.log(JSON.stringify({out,cases:results.length,failures:failures.length,browserErrors},null,2));
   if(browserErrors.length||(failures.length&&!args.includes('--reference')))process.exitCode=1;
 }

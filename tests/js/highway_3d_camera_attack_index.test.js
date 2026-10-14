@@ -27,7 +27,11 @@ function harness() {
         ${extract('hwyBuildCameraAttackIndex').replace('function hwyBuildCameraAttackIndex(', 'function buildIndex(')}
         function hwyBuildCameraAttackIndex(...args) { builds++; return buildIndex(...args); }
         ${extract('hwyPrepareCameraStops')}
-        return { build: hwyBuildCameraAttackIndex, prepare: hwyPrepareCameraStops, builds: () => builds };
+        return {
+            // Timing assertions deliberately ignore composition-only metadata.
+            build: (...args) => hwyBuildCameraAttackIndex(...args).map(({frets,...event})=>event),
+            focus: hwyBuildCameraAttackIndex, prepare: hwyPrepareCameraStops, builds: () => builds
+        };
     `)();
 }
 
@@ -116,4 +120,13 @@ test('attack index respects effective string count and ignores non-renderable no
     ];
     assert.deepEqual(h.build(notes, [], 6), [{ time: 4, busy: -Infinity }]);
     assert.deepEqual(h.build(notes, [], 7), [{ time: 0, busy: 5 }, { time: 4, busy: 5 }]);
+});
+
+test('composition evidence records real picked frets and never slide endpoints or opens', () => {
+    const h=harness();
+    const rows=h.focus([{t:0,s:0,f:8,sus:2,sl:2},{t:1,s:1,f:0}],
+        [{t:2,notes:[{s:0,f:5},{s:1,f:7}]},{t:3,h3dSynth:true,notes:[{s:0,f:2}]}]);
+    assert.deepEqual(rows.map(({time,frets})=>({time,frets})),[
+        {time:0,frets:1<<8},{time:1,frets:0},{time:2,frets:(1<<5)|(1<<7)},
+    ]);
 });

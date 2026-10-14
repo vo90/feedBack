@@ -3682,7 +3682,7 @@
     // Camera stops are separate from musical regions. Brief detours can share
     // a view only when their full footprint passes the caller's readable fit.
     // Inspect at most 32 neighbours / 1.5 real seconds, never distant notes.
-    function hwyBuildCameraStops(regions, rate, canHold, sharedCentre = null) {
+    function hwyBuildCameraStops(regions, rate, canHold, sharedCentre = null, dominantInterval = null, attacks = null) {
         rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
         const stops = [];
         let held = null;
@@ -3748,7 +3748,153 @@
             held.focusMinX = Math.max(held.focusMinX ?? -Infinity, preferred - focusWidth);
             held.focusMaxX = Math.min(held.focusMaxX ?? Infinity, preferred + focusWidth);
         }
-        return stops;
+        if (!dominantInterval || !attacks?.length || regions.length < 2) return stops;
+
+        // Score elapsed playing time, not metadata rows or slide checkpoints.
+        // Keep the original plan as the fallback for infeasible shared views.
+        const spans = [], focusIds = new Map();
+        for (const row of regions) {
+            const previous = spans[spans.length - 1];
+            if (previous && previous.row.minX === row.minX && previous.row.maxX === row.maxX
+                && previous.row.preferred === row.preferred) continue;
+            if (previous) previous.end = row.time;
+            if (!focusIds.has(row.preferred)) focusIds.set(row.preferred, focusIds.size);
+            spans.push({ row, time: row.time, end: Infinity, frets: 0, focusId: focusIds.get(row.preferred) });
+        }
+        let attackIndex = 0;
+        for (const span of spans) {
+            while (attackIndex < attacks.length && attacks[attackIndex].time < span.time - 0.000501) attackIndex++;
+            while (attackIndex < attacks.length && attacks[attackIndex].time < span.end - 0.000501) {
+                span.frets |= attacks[attackIndex++].frets || 0;
+            }
+            const mask = ((1 << (span.row.lastFret + 1)) - 1) ^ ((1 << span.row.firstFret) - 1);
+            span.picked = !!(span.frets & mask);
+        }
+        const potential = new Float64Array(spans.length + 1);
+        for (let i = 0; i < spans.length; i++) {
+            const span = spans[i], duration = (span.end - span.time) / rate;
+            span.eligible = span.picked && duration >= 0.3;
+            potential[i + 1] = potential[i] + (span.eligible ? Math.min(4, duration) : 0);
+        }
+        const scores = Array.from({ length: focusIds.size }, () => ({ row: null, dwell: 0 }));
+        const analysis = { winner: null, limit: 0, duration: 0, end: 0 };
+        const analyse = (index, retain = false) => {
+            analysis.winner = null; analysis.limit = index; analysis.duration = 0;
+            const maximum = Math.min(spans.length, index + 32);
+            // An upper bound rejects rapid checkpoint-only windows in O(1).
+            if (!retain && potential[maximum] - potential[index] + 1e-8 < 2.4) return analysis;
+            for (const score of scores) { score.row = null; score.dwell = 0; }
+            const start = spans[index].time, horizon = start + 4 * rate;
+            let end = start, evidenceEnd = start;
+            for (let j = index; j < maximum && spans[j].time < horizon; j++) {
+                const span = spans[j], duration = (Math.min(span.end, horizon) - span.time) / rate;
+                end = Math.min(span.end, horizon); analysis.limit = j + 1;
+                if (span.picked) evidenceEnd = end;
+                // Endpoints without a new pick remain visibility constraints.
+                // Brief attacks cannot outweigh the sustained playing area.
+                if (!span.eligible) continue;
+                const score = scores[span.focusId];
+                if (!score.row) score.row = span.row;
+                score.dwell += duration;
+            }
+            // Trailing silence is not evidence for a different composition.
+            // Keep interior gaps and brief picked replies in the denominator,
+            // while all trailing geometry still constrains the shared view.
+            analysis.end = end; analysis.duration = (evidenceEnd - start) / rate;
+            const threshold = Math.max(2.4, analysis.duration * 0.6);
+            for (const score of scores) {
+                if (score.dwell + 1e-8 >= threshold
+                    && (!analysis.winner || score.dwell > analysis.winner.dwell)) analysis.winner = score;
+            }
+            return analysis;
+        };
+        const groups = [];
+        let active = null, baselineIndex = 0;
+        for (let i = 0; i < spans.length; i++) {
+            const span = spans[i], row = span.row;
+            while (baselineIndex + 1 < stops.length && stops[baselineIndex + 1].time <= span.time) baselineIndex++;
+            const baselineUntil = stops[baselineIndex + 1]?.time ?? Infinity;
+            if (active && span.time >= active.baselineUntil) {
+                // Preserve the original stop and its early preparation when
+                // the chart genuinely changes position, even inside a region.
+                active.end = active.baselineUntil; active = null;
+            }
+            // Reject intentional phrase following before scoring its window.
+            const windowEnd = Math.min(span.time + 4 * rate, spans[i + 32]?.time ?? Infinity);
+            if (!active && baselineUntil < windowEnd) continue;
+            const analysis = analyse(i, !!active), candidate = analysis.winner;
+            const preferred = row.preferred, width = row.maxX - row.minX;
+            if (active) {
+                const interval = dominantInterval(row);
+                // A final short reply cannot overturn a sustained passage.
+                // Require the same evidence horizon used to establish it.
+                const lostDominance = analysis.duration + 1e-8 >= 2.4
+                    && scores[focusIds.get(active.dominantPreferred)].dwell + 1e-8 < analysis.duration * 0.5;
+                const changed = candidate && candidate.row.preferred !== active.dominantPreferred
+                    && preferred === candidate.row.preferred;
+                const unpickedMigration = !span.picked && preferred !== active.dominantPreferred
+                    && (span.end - span.time) / rate >= 2.4;
+                if (!interval.valid || active.x < interval.min || active.x > interval.max
+                    || Math.abs(active.x - preferred) > width * 1.5 || changed || unpickedMigration || lostDominance) {
+                    active.end = span.time; active = null;
+                }
+            }
+            if (!active && candidate) {
+                // Correct an inherited hold, never replace intentional phrase
+                // following with a compromised fixed view.
+                if (baselineUntil < analysis.end) continue;
+                const previous = stops[baselineIndex]?.x ?? row.x;
+                const tolerance = (candidate.row.maxX - candidate.row.minX) * 0.2;
+                // Even an unconstrained ideal cannot improve this hold enough.
+                // Avoid projection-key work for already well-framed repeats.
+                if (Math.abs(previous - candidate.row.preferred) < tolerance) continue;
+                let min = -Infinity, max = Infinity;
+                for (let j = i; j < analysis.limit; j++) {
+                    const member = spans[j].row, fit = dominantInterval(member);
+                    const focusWidth = (member.maxX - member.minX) * 1.5;
+                    if (!fit.valid) { min = Infinity; break; }
+                    min = Math.max(min, fit.min, member.preferred - focusWidth);
+                    max = Math.min(max, fit.max, member.preferred + focusWidth);
+                }
+                if (min <= max) {
+                    const target = Math.max(min, Math.min(max, candidate.row.preferred));
+                    // Keep an already better composition and its original
+                    // preparation for necessary position changes. This pass
+                    // only corrects a meaningful inherited focus error.
+                    if (Math.abs(previous - candidate.row.preferred)
+                        - Math.abs(target - candidate.row.preferred) < tolerance) continue;
+                    active = { ...row, time: span.time, end: baselineUntil, baselineUntil, x: target, reason: 'dominant',
+                        dominantPreferred: candidate.row.preferred, focusMinX: min, focusMaxX: max };
+                    groups.push(active);
+                }
+            }
+        }
+        const passages = groups.filter(group => group.end - group.time >= 1.2 * rate);
+        if (!passages.length) return stops;
+        const result = [];
+        const append = stop => {
+            const previous = result[result.length - 1];
+            if (previous && Math.abs(previous.x - stop.x) <= 1e-8) return;
+            if (previous?.time === stop.time) result.pop();
+            result.push(stop);
+        };
+        let index = 0, prior = stops[0];
+        for (let i = 0; i < passages.length; i++) {
+            const group = passages[i];
+            // Keep a genuine boundary stop and its existing early preparation.
+            // The small composition correction can overlap it from this point.
+            while (index < stops.length && stops[index].time <= group.time) {
+                prior = stops[index++]; append(prior);
+            }
+            // Start preparation locally, never by rewriting a historical stop.
+            append({ ...group, time: group.time + (result.length ? 0.6 * rate : 0) });
+            while (index < stops.length && stops[index].time <= group.end) prior = stops[index++];
+            if (Number.isFinite(group.end) && passages[i + 1]?.time !== group.end) {
+                append(prior.time === group.end ? prior : { ...prior, time: group.end, reason: 'dominant-return' });
+            }
+        }
+        while (index < stops.length) append(stops[index++]);
+        return result;
     }
 
     // Attack/technique timing depends on the chart, not camera rate or framing.
@@ -3794,10 +3940,13 @@
             busyUntil = Math.max(busyUntil, event.busy);
             let group = attacks[attacks.length - 1];
             if (!group || event.time - group.time > eps) {
-                group = { time: event.time, busy: busyUntil };
+                group = { time: event.time, busy: busyUntil, frets: 0 };
                 attacks.push(group);
             }
             group.busy = busyUntil;
+            for (const note of event.members) {
+                if (note.f > 0 && !isUnpitchedMute(note)) group.frets |= 1 << note.f;
+            }
         }
         return attacks;
     }
@@ -3819,7 +3968,7 @@
             // slide-outs, silence, or a mixture across strings. Their visible
             // geometry remains protected by the existing camera fit. Only an
             // active significant technique can delay the extra preparation.
-            if (next && Math.abs(next.time - stop.time) <= eps) {
+            if (!stop.reason?.startsWith('dominant') && next && Math.abs(next.time - stop.time) <= eps) {
                 const start = Math.max(stop.time - 1.2 * rate,
                     previous ? previous.time + 0.3 * rate : 0,
                     previous?.busy ?? -Infinity);
@@ -23470,7 +23619,20 @@
                     sharedFits.set(key, x);
                     return x;
                 };
-                cache.stops = hwyBuildCameraStops(cache.regions, rate, canHold, share);
+                // Each member keeps its own existing framing distance. This
+                // composition preference never receives a widening budget.
+                const dominantFits = new Map();
+                const dominantInterval = row => {
+                    const key = row.firstFret * 32 + row.lastFret;
+                    if (!dominantFits.has(key)) {
+                        stableRegionViewDistance(row, row.viewDistance);
+                        const fit = stableIntervalAt(row.viewDistance + 1e-7, 0, .96, null,
+                            _stableViewRegionPoints, _stableViewRegionPoints.length, _stableViewBasis);
+                        dominantFits.set(key, { min: fit.min, max: fit.max, valid: fit.valid });
+                    }
+                    return dominantFits.get(key);
+                };
+                cache.stops = hwyBuildCameraStops(cache.regions, rate, canHold, share, dominantInterval, cache.attacks);
                 cache.stops = hwyPrepareCameraStops(cache.stops, bundle.notes, bundle.chords, rate, nStr, cache.attacks);
                 const leads = new Map(cache.stops.map(stop => [stop.time, stop.lead]));
                 const compositionDistances = new Map();
