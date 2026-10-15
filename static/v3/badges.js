@@ -439,6 +439,7 @@
             '<button type="button" data-inst-toggle title="Instrument: ' + esc(settings.string_count + '-str ' + (wt ? wt.label : tuningLabel())) + '" ' +
             'class="bg-fb-card border border-fb-border/50 rounded-2xl h-[92px] w-16 flex flex-col items-center justify-center gap-1.5 hover:ring-1 hover:ring-fb-primary/40 transition">' +
             guitarIcon +
+            '<span data-guitar-active-label>Default guitar</span>' +
             // Live working-tuning label: dim while you're still in your home tuning,
             // amber once you've retuned. Omitted if the host doesn't expose
             // workingTuning (feature-detect → the card looks exactly as before).
@@ -447,6 +448,7 @@
             '<svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5"/></svg>' +
             '</button>' +
             '<div data-inst-menu class="hidden absolute right-0 mt-2 w-60 bg-fb-card border border-fb-border/50 rounded-xl shadow-xl p-3 z-50 space-y-3">' +
+            '<div data-guitar-picker="header"></div>' +
             // "Now in" banner + one-tap back-to-default — shown only once you've
             // retuned off your home tuning (workingTuning present and not home).
             ((wt && !wt.isHome)
@@ -481,6 +483,7 @@
             '</div></div>';
 
         const toggle = host.querySelector('[data-inst-toggle]');
+        window.feedBack?.guitarProfilesUI?.render();
         const menu = host.querySelector('[data-inst-menu]');
         // Open/close via the id-based helpers so the outside-click closer always
         // targets the live menu (renderInstrument may replace this node) and is

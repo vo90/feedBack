@@ -1,0 +1,16 @@
+.guitar-picker { font-size: 12px; color: #d1d5db; min-width: 0; }
+.guitar-picker-label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #9ca3af; }
+.guitar-picker select, .guitar-picker input[type="text"] { width: 100%; min-width: 0; background: #1f2937; color: #f3f4f6; border: 1px solid #4b5563; border-radius: 6px; padding: 7px; font: inherit; }
+.guitar-picker input[type="range"] { width: 100%; }
+.guitar-picker-level { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px; margin-top: 6px; font-size: 11px; }
+.guitar-picker [data-guitar-status] { color: #9ca3af; }
+.guitar-picker-actions { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.guitar-picker button { border: 1px solid #4b5563; background: #1f2937; border-radius: 6px; padding: 5px 8px; color: #e5e7eb; font: inherit; cursor: pointer; }
+.guitar-picker button:hover { border-color: #22d3ee; }
+.guitar-picker button:disabled, .guitar-picker select:disabled { opacity: .45; cursor: default; }
+.guitar-picker :focus-visible { outline: 2px solid #22d3ee; outline-offset: 2px; }
+.guitar-picker-help { color: #9ca3af; font-size: 11px; line-height: 1.5; margin: 8px 0; }
+.guitar-picker-message { color: #fbbf24; font-size: 11px; margin: 5px 0; }
+.guitar-picker [hidden] { display: none !important; }
+[data-guitar-picker="settings"] { max-width: 480px; padding: 16px 0; }
+[data-guitar-active-label] { display: block; max-width: 60px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 9px; }
