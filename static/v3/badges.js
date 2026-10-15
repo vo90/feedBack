@@ -141,11 +141,6 @@
         } catch (_) { /* non-fatal — TUNINGS falls back to empty, dropdown shows nothing */ }
     }
 
-    function pathwayForProfile(profiles, profileId, fallback) {
-        const p = profiles && profiles[profileId];
-        return p && PATHWAY_OPTIONS.some((o) => o.id === p.pathway) ? p.pathway : (fallback || 'songs');
-    }
-
     function profileIdForInstrument(inst) {
         return inst === 'bass' ? 'bass' : 'guitar-lead';
     }
@@ -403,9 +398,38 @@
     }
 
     // ── Instrument selector card (Stitch RightInstrumentSelector) ──────────--
-    const guitarIcon =
-        '<svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">' +
-        '<path d="M21.66 3.34a1.2 1.2 0 0 0-1.7 0l-2.1 2.1-.7-.7a1 1 0 0 0-1.42 1.42l.3.3-6.06 6.05a4.5 4.5 0 1 0 1.42 1.42l6.05-6.06.3.3a1 1 0 0 0 1.42-1.42l-.7-.7 2.1-2.1a1.2 1.2 0 0 0 0-1.7zM7 19a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>';
+    const instrumentIcons = {
+        guitar: '<svg fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 28 32" aria-hidden="true">' +
+            '<path d="m13 2 3 0 0 12c5-3 7 2 4 5 5 6 0 11-6 11S3 25 8 19c-3-3-1-8 4-5V2Z"/>' +
+            '<path d="M11 4h6M11 7h6M11 10h6M12 26h4M14 12v14"/><circle cx="14" cy="21" r="2.5"/></svg>',
+        bass: '<svg fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 28 32" aria-hidden="true">' +
+            '<path d="m13 1 3 1-1 17c1 1 3-1 4-5 4 4-1 7 1 9 4 5 0 8-6 8S5 27 9 23c3-3 0-5 1-7l3 3V1Z"/>' +
+            '<path d="M10 3h3M10 6h3M16 5h3M16 8h3M12 23h5M12 27h5M14 10v17"/></svg>',
+    };
+
+    // Only the physical-profile owner can change type. Keep this lightweight:
+    // rebuilding the menu on every route event would discard an add-form draft.
+    function syncInstrumentProfile(snapshot) {
+        const host = document.getElementById('v3-badge-instrument');
+        if (!host) return;
+        const s = snapshot || window.feedBack?.guitarProfiles?.getSnapshot();
+        const type = s?.activeType === 'bass' ? 'bass' : 'guitar';
+        const icon = host.querySelector('[data-instrument-icon]');
+        if (icon && icon.dataset.instrumentType !== type) {
+            icon.innerHTML = instrumentIcons[type]; icon.dataset.instrumentType = type;
+        }
+        const toggle = host.querySelector('[data-inst-toggle]');
+        if (toggle) {
+            toggle.disabled = !!s?.locked;
+            toggle.title = s?.locked ? 'Close the song before changing instruments.' : `${s?.activeName || (type === 'bass' ? 'Bass' : 'Guitar')} · ${settings.string_count}-string · ${tuningLabel()}`;
+            toggle.setAttribute('aria-label', `${s?.activeName || 'Instrument'}${s?.locked ? ' (locked while a song is loaded)' : ' — instrument settings'}`);
+        }
+        host.querySelectorAll('[data-pill="inst"]').forEach(button => {
+            button.disabled = !s?.loaded || !!(s.busy || s.locked);
+            button.setAttribute('aria-pressed', String(button.dataset.val === type));
+        });
+        if (s?.locked) closeInstMenu();
+    }
 
     // Instrument-menu open/close helpers keyed by id (NOT a captured element),
     // so they survive renderInstrument() replacing the menu node. closeInstMenu
@@ -416,6 +440,7 @@
     }
     function closeInstMenu() { const m = liveInstMenu(); if (m) m.classList.add('hidden'); }
     function openInstMenu() {
+        if (window.feedBack?.guitarProfiles?.getSnapshot().locked) return;
         const m = liveInstMenu();
         if (!m) return;
         // Close the tuner panel if it is open so the two panels are mutually exclusive.
@@ -433,13 +458,14 @@
     function renderInstrument() {
         const host = document.getElementById('v3-badge-instrument');
         if (!host) return;
+        const wasOpen = liveInstMenu()?.classList.contains('hidden') === false;
         const wt = workingTuningInfo();
         host.innerHTML =
             '<div id="v3-instrument-wrap" class="relative">' +
             '<button type="button" data-inst-toggle title="Instrument: ' + esc(settings.string_count + '-str ' + (wt ? wt.label : tuningLabel())) + '" ' +
             'class="bg-fb-card border border-fb-border/50 rounded-2xl h-[92px] w-16 flex flex-col items-center justify-center gap-1.5 hover:ring-1 hover:ring-fb-primary/40 transition">' +
-            guitarIcon +
-            '<span data-guitar-active-label>Default guitar</span>' +
+            '<span data-instrument-icon>' + instrumentIcons[settings.instrument] + '</span>' +
+            '<span data-guitar-active-label>Guitar</span>' +
             // Live working-tuning label: dim while you're still in your home tuning,
             // amber once you've retuned. Omitted if the host doesn't expose
             // workingTuning (feature-detect → the card looks exactly as before).
@@ -460,6 +486,7 @@
                 : '') +
             instRow('Instrument', ['guitar', 'bass'].map((v) =>
                 pill('inst', v, v[0].toUpperCase() + v.slice(1), settings.instrument === v)).join('')) +
+            '<p data-inst-error class="guitar-picker-message" role="status" aria-live="polite"></p>' +
             instRow('Strings', STRING_COUNTS[settings.instrument].map((v) =>
                 pill('strings', v, v + '', settings.string_count === v)).join('')) +
             // Handedness — a left-hander flips the whole highway (frets mirror).
@@ -484,6 +511,7 @@
 
         const toggle = host.querySelector('[data-inst-toggle]');
         window.feedBack?.guitarProfilesUI?.render();
+        syncInstrumentProfile();
         const menu = host.querySelector('[data-inst-menu]');
         // Open/close via the id-based helpers so the outside-click closer always
         // targets the live menu (renderInstrument may replace this node) and is
@@ -499,23 +527,15 @@
         const keepOpen = openInstMenu;
         menu.querySelectorAll('[data-pill="inst"]').forEach((b) => b.addEventListener('click', async () => {
             const v = b.getAttribute('data-val');
-            const counts = STRING_COUNTS[v];
-            // Clamp string_count AND tuning to ones valid for the new
-            // instrument, so switching can't persist (and push to the tuner) an
-            // unsupported instrument+tuning combo.
-            const newSc = counts.includes(settings.string_count) ? settings.string_count : counts[0];
-            const tunings = _tuningsForInstrument(v, newSc);
-            const ok = await saveSettings({
-                instrument: v,
-                string_count: newSc,
-                tuning: tunings.includes(settings.tuning) ? settings.tuning : (tunings[0] || settings.tuning),
-                pathway: pathwayForProfile(settings.instrument_profiles, profileIdForInstrument(v), settings.pathway),
-            });
-            // Only move the working-tuning context once the switch was actually persisted —
-            // otherwise the selector stays on the old instrument while the card shows the
-            // new one's tuning (settings and workingTuning desync on a rejected save).
-            if (ok) setWorkingInstrument(v, newSc);   // surface THIS instrument's own working tuning
-            renderInstrument(); keepOpen();
+            try {
+                const profiles = window.feedBack?.guitarProfiles;
+                if (!profiles) throw new Error('Instrument profiles are still loading.');
+                await profiles.selectType(v);
+                keepOpen();
+            } catch (error) {
+                const message = liveInstMenu()?.querySelector('[data-inst-error]');
+                if (message) message.textContent = error.message || 'Could not change the instrument.';
+            }
         }));
         menu.querySelectorAll('[data-pill="strings"]').forEach((b) => b.addEventListener('click', async () => {
             const newSc = Number(b.getAttribute('data-val'));
@@ -546,6 +566,7 @@
             if (wtCap && typeof wtCap.resetToDefault === 'function') wtCap.resetToDefault();
             renderInstrument(); keepOpen();
         });
+        if (wasOpen) openInstMenu();
     }
     function instRow(label, inner) {
         return '<div><div class="text-[0.625rem] uppercase tracking-wider text-fb-textDim mb-1">' + label + '</div><div class="flex flex-wrap gap-1">' + inner + '</div></div>';
@@ -571,7 +592,14 @@
             (active ? 'bg-fb-primary text-white' : 'bg-gray-800/50 text-fb-textDim hover:text-fb-text') + '">' + esc(label) + '</button>';
     }
 
-    window.v3Badges = { reload: async () => { await Promise.all([loadTunings(), loadSettings()]); renderInstrument(); renderTuner(); } };
+    window.v3Badges = {
+        syncInstrumentProfile,
+        reload: async () => {
+            await Promise.all([loadTunings(), loadSettings()]);
+            setWorkingInstrument(settings.instrument, settings.string_count);
+            renderInstrument(); renderTuner(); pushToTuner();
+        },
+    };
 
     async function boot() {
         await Promise.all([loadTunings(), loadSettings()]);

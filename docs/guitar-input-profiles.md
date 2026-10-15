@@ -1,103 +1,96 @@
-# Guitar input profiles
+# Instrument input profiles
 
-## Plan and behavior
+## Behavior
 
-1. Keep a permanent `default` profile. A new user sees **Default guitar** and can
-   calibrate immediately without naming or adding an instrument. It can be
-   renamed, but cannot be deleted. Deleting the selected named guitar returns
-   selection to Default.
-2. Offer the same selection in the header instrument menu and player Audio
-   popover. Settings → Audio exposes management and manual gain. Selecting a
-   guitar during playback pauses the song before switching.
-3. Store physical guitar identity separately from the existing lead/rhythm/bass
-   instrument-role settings. Changing guitar does not change tuning or timing.
-4. Store input gain per guitar and input backend/device/channel. Unknown setups
-   start at unity with **Check level**. The same setup recalls its saved gain.
-   Input hardware generation is part of the in-flight calibration context, so
-   even a same-named reconnect invalidates an unfinished measurement.
-5. Migrate the old detector engine gain, or legacy Rig calibration when no
-   detector engine calibration exists, to Default once. Browser setups prefer
-   their old analysis gain. If no input is open, retain migration until the first
-   actual input is available. Do not multiply the old trim a second time.
-6. Share a short noise → strong playing → preview/save wizard with note_detect.
-   The complete input/tuning/timing wizard remains available. Both paths and
-   manual gain edits write through one profile owner.
-7. Give the native engine a dedicated calibration stage, independent of tone
-   drive. Calibration precedes detector/tuner taps; preset drive follows them.
-   Apply gain changes with a 10 ms ramp. External hardware mode still uses the
-   calibration stage for detection, without enabling in-game effects.
+- Guitar and Bass are built-in instruments with independent input levels. No
+  setup or naming is required for a player with one instrument.
+- Add instrument walks through Guitar/Bass, name, recommended input calibration,
+  and review. Skip for now uses normal gain and marks the instrument not
+  calibrated. Only Save instrument creates/selects the new profile. Cancel
+  preserves the current selection and calibration.
+- The header and Settings → Audio retain selection and management. The header
+  shows a distinct guitar or bass icon, including for custom names. There is no
+  instrument picker in the song Audio popover. Audio settings consolidation is
+  deferred.
+- Selection updates the game family, library perspective and tuner context,
+  retaining the appropriate Guitar Lead/Rhythm or Bass role's string/tuning
+  settings. Automatic song selection stays within the selected family and
+  reports when no matching arrangement exists. Explicit arrangement requests
+  retain their existing behavior.
+- Instrument changes and gain edits are blocked from song loading through
+  playback, pause and results. Leaving the player releases the lock. A song
+  cannot start midway through a profile mutation.
+- Gains belong to instrument + input backend/device/channel. A new setup starts
+  at unity. Reconnecting an input invalidates an unfinished measurement even
+  when its name has not changed. Hardware gain/volume changes require a new
+  check; they cannot be detected automatically.
 
-## Ownership and storage
+## Ownership and compatibility
 
-Core owns `window.feedBack.guitarProfiles` and `/api/guitar-profiles`. The store
-is `guitar-profiles.json` in the existing isolated application config directory.
-Mutations use a revision check, process lock and atomic file replacement. A
-damaged store is reported and preserved rather than silently reset. There is a
-limit of 32 guitars and 64 input setups per guitar.
+Core owns `window.feedBack.guitarProfiles` (also exposed as `instrumentProfiles`)
+through `/api/guitar-profiles`. The compatibility names and `guitar-profiles.json`
+remain so existing tone plugins continue to share one gain owner. Schema v2 adds
+instrument type, two protected defaults, remembered choices by family, and the
+last Guitar role. Writes use revision checks, a process lock and atomic file
+replacement. Corrupt storage is reported and preserved.
 
-The browser service serializes operations and exposes readiness, snapshots,
-subscriptions, profile management, `captureContext()` and
-`saveGain(gain, context, metadata)`. A context binds the guitar, input route and
-revision. Switching, reconnecting or editing gain invalidates older contexts.
-Failed native application is not saved as a successful calibration; a failed
-save attempts to restore the previous gain.
+Schema v1 migrates once. Its default receives the existing game's Guitar/Bass
+family and keeps its calibration. Other saved names and gains are preserved;
+named instruments ask once for Guitar or Bass instead of guessing from names.
+The other built-in default starts at unity. Old detector/Rig input gain migrates
+once and waits for an actual route when input is unavailable. Limits are 32
+profiles and 64 input setups per profile (a full v1 store may retain 33 profiles
+when the additional built-in default is introduced).
 
-Desktop provides `setInputCalibrationGain` and `getInputCalibrationGain` for the
-primary input source. Existing preset input gain keeps its legacy behavior until
-this new setter activates profile mode. Raw hardware channel measurements remain
-unscaled. Rig's Input control delegates to Core in profile mode; its amp drive is
-kept separate. NAM presets retain their tone gain, with a distinct browser
-calibration node only when its capture route matches the profile's route.
+The service serializes writes and synchronizes native gain and game family before
+committing a selection. A synchronous session gate prevents song-start races.
+Failed writes refetch durable state and reconcile gain/family to it. A failed
+native apply is not recorded as successful calibration. Recovery failures remain
+visible instead of reporting success.
 
-This first version supports switching one player's physical guitars. It does
-not imply separate calibration for simultaneous multiplayer sources. Hardware
-gain knob changes cannot be detected automatically. Pickup/volume changes may
-require a check or a separate named profile.
+`captureContext()` / `saveGain()` handle existing instruments.
+`captureDraftContext(type)` / `verifyDraftContext()` bind unsaved measurements to
+the current selection and input. Input setup may change before measurement; the
+route is fixed once capture starts. NoteDetect's `measureInstrumentGain()` returns
+a measurement or null on cancellation without saving a profile or applying draft
+gain. `createInstrument()` saves identity and optional calibration together.
 
-## Automated checks
+Desktop's dedicated calibration stage precedes detector/tuner taps and uses a
+10 ms ramp; tone drive follows those taps. Raw hardware meters remain unscaled.
+Rig and NAM share the profile calibration while retaining their own tone drive.
+External hardware tone mode still receives calibrated detection without enabling
+in-game effects. The complete NoteDetect tuning/timing wizard remains available.
 
-- Python store/API tests: Default, migration, independent guitars and routes,
-  restart persistence, copy/delete, invalid input, stale/concurrent writes,
-  corrupt storage and disk failure.
-- Core JavaScript tests: application/recall, startup migration, reconnection,
-  stale calibration, engine failure and save rollback, avoiding repeated gain
-  writes during unchanged-route polling.
-- Real browser UI tests: Default calibration entry, settings/player selection
-  synchronization, playback pause, gain recall, rename/delete and safe text
-  rendering of names.
-- note_detect integration tests: short and full wizard, initial input setup,
-  cancellation, profile/route/revision changes, browser versus native gain,
-  clipping/headroom, and old-host compatibility.
-- Desktop native pipeline tests: dry capture independent of preset drive,
-  ramp/stereo consistency, input-only capture, device reopen, raw meters and
-  external monitoring behavior; IPC validation and TypeScript checks.
-- Rig/NAM tests: independent tone drive, profile edits, external mode,
-  browser route matching and migration settings.
+## Validation
 
-The coordinated Core, Desktop, note_detect, Rig and NAM revisions must be used
-together for acceptance. The isolated candidate runtime records their exact
-commits; the normal Songsterr runtime is not overwritten.
+Automated coverage includes migration, both defaults, typed creation with Skip or
+measurement, cancellation, persistence, independent routes/gains, classification,
+delete/duplicate, stale contexts, native/disk failures, family synchronization and
+rollback, input reconnects, session races, UI workflows/icons, and arrangement
+routing. Tests cover both browser and native calibration paths. Existing Desktop
+calibration/IPC coverage remains applicable because the native stage is unchanged.
 
-## Manual guitar acceptance
+The isolated candidate records the exact Core, Desktop, NoteDetect, Rig and NAM
+revisions. It uses its own profile, logs and disposable library; the normal
+Songsterr runtime is not overwritten.
 
-1. With one guitar, leave **Default guitar** selected. Run Calibrate, mute strings
-   for noise capture, then play several strong normal notes/strums. Save and
-   verify both detection and the desired internal or external monitoring path.
-2. Restart the candidate and verify Default and its saved gain return without
-   creating a guitar.
-3. Add a second guitar, calibrate it, then switch between the two several times.
-   Confirm their names/gains recall, with no repeated calibration prompts.
-4. Load different Rig/NAM tones and verify the selected guitar gain is unchanged.
-   With external Helix tone enabled, confirm detection still uses the selected
-   guitar and no in-game tone is unexpectedly enabled.
-5. Try a quiet guitar and a hot guitar. Verify headroom and the maximum-boost
-   message when applicable. Already clipped input must be corrected at hardware.
-6. Change input channel/device. Confirm **Check level** for a new setup; switching
-   back should restore its saved level. Keep physical gain/volume settings fixed
-   while comparing.
-7. Cancel calibration and verify saved gain stays unchanged. Switch guitar/input
-   during a measurement and confirm that the old measurement cannot be saved.
+## Hardware acceptance
 
-Use the candidate's disposable settings and song library for acceptance. A real
-guitar/listening test remains necessary; automated signals cannot establish the
-best subjective gain or pickup setup for a particular instrument.
+1. Calibrate built-in Guitar or Bass without adding anything; restart and verify
+   the selected default and gain return.
+2. Add a named instrument with Skip; confirm normal gain. Then calibrate it from
+   Settings → Audio, and add another through the recommended calibration flow.
+3. Cancel the add flow and calibration at different stages. Confirm no partial
+   instrument or changed saved gain remains.
+4. Switch between quiet/hot guitars and bass with consistent hardware gain and
+   instrument volume. Verify names, type icons, gain recall, detection and tone.
+5. Open songs with both families and with only one. Confirm matching automatic
+   arrangements, clear missing-family feedback, and no switching until leaving
+   the player (including paused and results states).
+6. Change input channel/device, verify the new setup needs calibration, then
+   switch back and verify its previous gain. Try a reconnect during capture.
+7. Switch Rig/NAM presets and external Helix tone mode. Confirm input calibration
+   remains independent of tone drive. Correct already clipped signals at the
+   hardware input before calibrating.
+
+Physical playing and listening remain necessary to judge real instrument levels.

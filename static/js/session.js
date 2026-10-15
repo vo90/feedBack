@@ -38,6 +38,7 @@ import {
     loadSettings,
 } from './settings.js';
 import { selectionLifecycle } from './screen-selection.js';
+import { instrumentSession } from './instrument-session.js';
 import {
     clearLoop,
     loadSavedLoops,
@@ -106,6 +107,7 @@ export let _settingsOriginScreen = 'home';
 
 // ── Screen Navigation ─────────────────────────────────────────────────────
 export async function showScreen(id) {
+    const instrumentExitToken = S.instrumentSongToken;
     const loadGeneration = id === 'player' ? S.songLoadGeneration
         : (S.songLoadGeneration = (S.songLoadGeneration || 0) + 1);
     // ── 'home' is the LEGACY library screen. Always route it to the v3 Songs list. ──
@@ -248,6 +250,7 @@ export async function showScreen(id) {
         S.isPlaying = false;
         if (window.feedBack) window.feedBack.isPlaying = false;
         setPlayButtonState(false);
+        instrumentSession.endSong(instrumentExitToken);
     }
     window.scrollTo(0, 0);
     // `from` is the screen we just LEFT. Without it, "I am leaving the player" is not
@@ -647,6 +650,16 @@ window.feedBack.on('song:ended', () => {
 export let artAbortController = null;
 
 export async function playSong(filename, arrangement, options) {
+    const instrumentState = window.feedBack?.guitarProfiles?.getSnapshot();
+    if (instrumentState && (!instrumentState.loaded || instrumentState.busy)) {
+        window.alert('Instrument settings are still loading or being saved. Try again in a moment.');
+        return;
+    }
+    let instrumentLoadToken;
+    try { instrumentLoadToken = instrumentSession.beginSong(); }
+    catch (error) { window.alert(error.message); return; }
+    S.instrumentSongToken = instrumentLoadToken;
+    try {
     const loadGeneration = S.songLoadGeneration = (S.songLoadGeneration || 0) + 1;
     console.log('playSong called:', filename);
     // A manual (non-queue) play abandons any active play-queue, so a stale queue
@@ -746,7 +759,7 @@ export async function playSong(filename, arrangement, options) {
     // navigation back from the player (and auto-exit) returns the user
     // there (feedBack#126).
     _playerOriginScreen = _resolvePlayerOrigin();
-    showScreen('player');
+    await showScreen('player');
 
     // Yield a paint for the loading state, without an arbitrary half-second
     // delay. Socket generations isolate late messages from the outgoing song.
@@ -765,6 +778,12 @@ export async function playSong(filename, arrangement, options) {
     document.getElementById('quality-select').value = window.highway.getRenderScale();
     const _minScaleSel = document.getElementById('min-scale-select');
     if (_minScaleSel && window.highway.getMinRenderScale) _minScaleSel.value = String(window.highway.getMinRenderScale());
+    } catch (error) {
+        // Failed before entering the player: no song remains to protect. An
+        // error shown inside the player stays locked until the user leaves it.
+        if (document.querySelector('.screen.active')?.id !== 'player') instrumentSession.endSong(instrumentLoadToken);
+        throw error;
+    }
 }
 
 // Leave the player and return to the screen the song was launched from

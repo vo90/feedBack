@@ -46,6 +46,7 @@ import drums as drums_mod
 import notation as notation_mod
 import loosefolder as loosefolder_mod
 from metadata_db import _arr_smart_sort_key
+from progression import instrument_for_arrangement
 from dlc_paths import _get_dlc_dir, _resolve_dlc_path
 
 import appstate
@@ -248,8 +249,10 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
         # Smart names are needed for smart-mode arrangement selection.
         smart_names = compute_smart_names(song.arrangements)
 
-        # Pick arrangement: explicit request > user preference > most notes
+        # Explicit requests win. Automatic choices stay within the physical
+        # instrument family, including preference and most-notes fallbacks.
         best = -1
+        candidate_indices = list(range(len(song.arrangements)))
         if 0 <= arrangement < len(song.arrangements):
             best = arrangement
         else:
@@ -257,34 +260,38 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
             # to the matching part) and their default-arrangement preference.
             pref = ""
             sel_instrument = ""
+            guitar_role = ""
             config_file = appstate.config_dir / "config.json"
             if config_file.exists():
                 try:
                     _cfg = json.loads(config_file.read_text(encoding="utf-8"))
                     pref = _cfg.get("default_arrangement", "")
                     sel_instrument = (_cfg.get("instrument", "") or "")
+                    guitar_role = _cfg.get("active_instrument_profile", "")
                 except Exception:
                     pass
-            # Instrument routing: load the part that matches the selected instrument so
-            # "your instrument" and "the chart you play" line up. The default ordering
-            # is Lead/guitar-first, so without this a bass player gets handed a guitar
-            # chart (and any tune-check then compares a 4-string bass against a 6-string
-            # part). Currently routes bass -> a Bass arrangement; guitar — and any
-            # unknown/future instrument (drums, keys) — falls through to the
-            # preference/most-notes logic below, which already lands on a guitar part.
-            # Drums/keys get their own match when those arrangement types + selector
-            # entries land. Only applies when no explicit arrangement was requested, so
-            # a manual arrangement switch is always respected.
-            if sel_instrument.lower() == "bass":
-                # Candidate bass parts, preferring the structured pathBass flag; the
-                # normalized smart name (itself pathBass-derived) and raw name are
-                # fallbacks for sources without the flag.
-                bass_idxs = [
-                    i
-                    for i, a in enumerate(song.arrangements)
-                    if arrangement_is_bass(a)
-                    or (smart_names[i] or "").lower().startswith("bass")
+            sel_instrument = str(sel_instrument).lower()
+            if sel_instrument in ("guitar", "bass"):
+                candidate_indices = [
+                    i for i, a in enumerate(song.arrangements)
+                    if ("bass" if arrangement_is_bass(a) else instrument_for_arrangement({
+                        "type": getattr(a, "type", ""), "name": a.name,
+                    })) == sel_instrument
                 ]
+                if not candidate_indices:
+                    await websocket.send_json({"error": f"This song has no {sel_instrument} arrangement. Choose another song or leave the player to select a different instrument."})
+                    await websocket.close()
+                    return
+                # A global Bass default must not force Bass after switching to
+                # Guitar. Keep named-part preferences when they actually match.
+                candidate_names = {song.arrangements[i].name for i in candidate_indices}
+                candidate_names.update(smart_names[i] for i in candidate_indices)
+                if pref not in candidate_names and instrument_for_arrangement({"name": pref}) != sel_instrument:
+                    pref = ""
+                if not pref and sel_instrument == "guitar" and guitar_role in ("guitar-lead", "guitar-rhythm"):
+                    pref = "Rhythm" if guitar_role == "guitar-rhythm" else "Lead"
+            if sel_instrument == "bass":
+                bass_idxs = candidate_indices
                 if bass_idxs:
                     # Among the bass parts: (1) honor the saved default-arrangement
                     # preference if it names one of them (so a bass player who prefers
@@ -306,21 +313,26 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1,
                              if (smart_names[i] if i < len(smart_names) else "") == "Bass"),
                             bass_idxs[0],
                         )
-            # User's default arrangement preference (only when instrument routing did not
-            # already resolve a part — i.e. guitar, or a bass player with no bass part).
+            # Resolve a guitar preference using only compatible parts. Map the
+            # subset index back to the original chart/notation index.
             if best < 0 and pref:
                 if naming_mode == "smart" or pref == "Hybrid Lead":
-                    best = _pick_smart_arrangement(song.arrangements, smart_names, pref)
+                    picked = _pick_smart_arrangement(
+                        [song.arrangements[i] for i in candidate_indices],
+                        [smart_names[i] for i in candidate_indices], pref)
+                    if picked >= 0:
+                        best = candidate_indices[picked]
                 else:
-                    for i, a in enumerate(song.arrangements):
-                        if a.name == pref:
+                    for i in candidate_indices:
+                        if song.arrangements[i].name == pref:
                             best = i
                             break
         if best < 0:
             # Fallback: most notes
-            best = 0
+            best = candidate_indices[0]
             best_count = 0
-            for i, a in enumerate(song.arrangements):
+            for i in candidate_indices:
+                a = song.arrangements[i]
                 c = len(a.notes) + sum(len(ch.notes) for ch in a.chords)
                 if c > best_count:
                     best_count = c
