@@ -41,3 +41,43 @@ def test_playback_fallback_cannot_invent_a_delayed_physical_contact():
     with pytest.raises(ValueError):note_from_wire(n)
     del n['harmonic_changes']['events'][0]['target']['basis']
     with pytest.raises(ValueError):note_from_wire(n)
+
+
+def sliding_contact():
+    n = contact()
+    n.update(f=4, sl=7, sus=7.75, slide_interval={'start':7.5, 'end':7.75})
+    n['harmonic_changes']['events'][0].update(start=2, end=7.75)
+    return n
+
+
+def test_timed_contact_slide_roundtrips_without_adding_an_attack():
+    n = sliding_contact()
+    for out in [note_to_wire(note_from_wire(n)),
+                chord_to_wire(chord_from_wire({'t':n['t'], 'id':0, 'notes':[n]}))['notes'][0]]:
+        for key in ('f', 'sl', 'sus', 'slide_interval', 'harmonic_changes'):
+            assert out[key] == n[key]
+        assert not out['hp'] and 'harmonic_target' not in out
+
+
+@pytest.mark.parametrize('patch', [
+    {'sl':0}, {'sl':25}, {'sl':4}, {'sl':'7'}, {'sl':float('nan')},
+    {'f':0}, {'f':25}, {'slu':9}, {'slide_interval':None},
+    {'slide_interval':{'start':2, 'end':7.75}},
+    {'slide_interval':{'start':7.5, 'end':8}},
+    *[{k:True} for k in ('ho','po','vb','tr','bn','bt')],
+    {'bnv':[{'t':0, 'v':1}]}, {'slide_out':'up'},
+    {'slide_in_marks':[{'direction':'up','time':0}]},
+])
+def test_unsupported_contact_slide_is_rejected(patch):
+    with pytest.raises(ValueError):
+        note_from_wire({**sliding_contact(), **patch})
+
+
+def test_contact_touch_position_does_not_move_the_fretting_hand_lane():
+    from lib.generated_hand_positions import generate_positions
+    n = sliding_contact()
+    n['harmonic_changes']['events'][0]['target'].update(node=24, interval=24)
+    chart = {'notes':[n], 'chords':[], 'templates':[], 'beats':[], 'tuning':[0]*6}
+    plain = deepcopy(chart)
+    del plain['notes'][0]['harmonic_changes']
+    assert generate_positions(chart) == generate_positions(plain)

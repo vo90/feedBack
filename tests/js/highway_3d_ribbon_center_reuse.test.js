@@ -113,6 +113,9 @@ function checkPair(reference, optimized, n, options) {
 test('sample-local center reuse preserves exact Float32 geometry for all motion combinations', async () => {
     const reference = await harness(true), optimized = await harness();
     const variants = [
+        {sl:12,slide_interval:{start:1.3,end:1.8},harmonic_changes:{version:1,events:[
+            {start:.8,end:1.8,source_id:'contact-slide',
+                target:{kind:'artificial',policy:'harmonic',node:5,interval:24}}]}},
         {}, {tr:false}, {sl:12}, {slu:2}, {sl:12,slide_interval:{start:1.3,end:1.8}},
         {bn:1.5}, {bnv:[{t:0,v:.5},{t:.7,v:2},{t:1.7,v:0}]}, {vb:true},
         {slide_in_marks:[{direction:'up',time:0},{direction:'down',time:.7}]},

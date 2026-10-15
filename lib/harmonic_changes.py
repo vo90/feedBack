@@ -28,4 +28,16 @@ def validate_changes(note):
             or not finite(event['target'].get('node'))):
         raise ValueError('Invalid delayed harmonic interval or target')
     validate_target({'f':note.get('f'), 'harmonic_target':event['target']})
+    if (note.get('sl', -1) != -1 or note.get('slu', -1) != -1 or 'slide_interval' in note):
+        interval = note.get('slide_interval')
+        if (not isinstance(interval, dict) or set(interval) != {'start', 'end'}
+                or not all(finite(interval[k]) for k in interval)
+                or type(note.get('sl')) is not int or not 0 < note['sl'] <= 24
+                or not 0 < note['f'] <= 24 or note['sl'] == note['f']
+                or note.get('slu', -1) != -1
+                or not event['start'] < interval['start'] < interval['end'] <= note['sus'] + .0000011
+                or any(note.get(k) for k in ('bn', 'bt', 'bnv', 'ho', 'po', 'vb', 'tr',
+                       'whammy', 'vibrato_marks', 'tremolo_marks', 'pick_scrape_marks',
+                       'slide_out', 'slide_out_marks', 'slide_in_marks'))):
+            raise ValueError('Invalid delayed harmonic contact slide')
     return deepcopy(value)

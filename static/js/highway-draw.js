@@ -26,7 +26,8 @@ import {
 import { isPickScrape, scrapeProgress, scrapePosition, scrapeFade } from './pick-scrapes.js';
 import { hasBar, barVisual, barBoundaries } from './whammy.js';
 import { getLyricLines } from './lyric-lines.js';
-import { harmonicContacts, harmonicContactLabel as timedContactLabel } from './harmonic-contacts.js';
+import { harmonicContacts, harmonicContactSlide, harmonicContactFret,
+    harmonicContactLabel as timedContactLabel } from './harmonic-contacts.js';
 import {
     _shimmerNoise, bendToneLabel, bnvNormalizedPoints, chordHarmonyLabels, project, roundRect,
     teachingDegreeLabel, teachingFingerLabel,
@@ -646,19 +647,53 @@ export function drawHarmonicContact2D(hwState, W, H, n, onset=n.t) {
     const event=harmonicContacts(n)[0];
     if(!event)return;
     const now=hwState.currentTime,ctx=hwState.ctx;
+    const slide=harmonicContactSlide(n,event);
     const point=t=>{
         const p=project(t-now);if(!p)return null;
-        const x=hasBar(n) && n.f===0 ? W/2 : fretX(hwState,n.f,p.scale,W);
+        const x=hasBar(n) && n.f===0 ? W/2 : fretX(hwState,harmonicContactFret(n,t-onset),p.scale,W);
         return {x:x+(hasBar(n)?barVisual(n,t-onset)*9*p.scale*(H/900):0),y:p.y*H,scale:p.scale};
     };
-    const start=Math.max(now,onset+event.start),end=Math.min(now+VISIBLE_SECONDS,onset+event.end);
-    if(end<=start)return;
+    const trailStart=Math.max(now,onset);
+    const start=Math.max(trailStart,onset+event.start),end=Math.min(now+VISIBLE_SECONDS,onset+event.end);
+    if(end<=trailStart || (!slide && end<=start))return;
+    // Exact slide boundaries plus eight samples, including very short slides.
+    // Work is bounded by the visible contact, never the song's note count.
+    const times=end>start?[start,end]:[];
+    if(slide)for(let i=0;i<=8;i++) {
+        const t=onset+slide.start+(slide.end-slide.start)*i/8;
+        if(t>start&&t<end)times.push(t);
+    }
+    if(hasBar(n)) {
+        const count=Math.min(192,Math.max(8,Math.ceil((end-start)*40)));
+        for(let i=1;i<count;i++)times.push(start+(end-start)*i/count);
+    }
+    times.sort((a,b)=>a-b);
     ctx.save();ctx.strokeStyle='#dce8ef';ctx.lineWidth=1;ctx.globalAlpha=.55;
-    const count=hasBar(n)?Math.min(192,Math.max(8,Math.ceil((end-start)*40))):1;
+    if(slide) {
+        // Replace the default static sustain with the same moving centreline.
+        const bodyTimes=[trailStart,...times];
+        if(times.length===0)bodyTimes.push(end);
+        const bodyPoints=bodyTimes.map(point).filter(Boolean);
+        const ns=hwState._noteStateProvider ? _noteState(hwState,n,onset) : null;
+        const lit=ns && ns.state!=='miss';
+        ctx.fillStyle=lit ? ns.color || hwState.STRING_BRIGHT?.[n.s] || hwState.STRING_COLORS?.[n.s] || '#666'
+            : hwState.STRING_DIM?.[n.s] || '#333';
+        ctx.globalAlpha=lit ? .45+.45*ns.alpha : 1;
+        ctx.beginPath();
+        for(const [index,p] of bodyPoints.entries()) {
+            const x=p.x-Math.max(2,6*p.scale);
+            if(index===0)ctx.moveTo(x,p.y);else ctx.lineTo(x,p.y);
+        }
+        for(let i=bodyPoints.length-1;i>=0;i--) {
+            const p=bodyPoints[i];ctx.lineTo(p.x+Math.max(2,6*p.scale),p.y);
+        }
+        ctx.fill();
+        ctx.globalAlpha=.55;
+    }
     for(const side of [-1,1]) {
         ctx.beginPath();
-        for(let i=0;i<=count;i++) {
-            const p=point(start+(end-start)*i/count);if(!p)continue;
+        for(let i=0;i<times.length;i++) {
+            const p=point(times[i]);if(!p)continue;
             const x=p.x+side*Math.max(2,6*p.scale);
             if(i===0)ctx.moveTo(x,p.y);else ctx.lineTo(x,p.y);
         }
@@ -699,6 +734,10 @@ export function drawSustains(hwState, W, H) {
         if (n.sus <= 0.01) continue;
         const end = n.t + n.sus;
         if (end < hwState.currentTime || n.t > hwState.currentTime + VISIBLE_SECONDS) continue;
+        if(n.harmonic_changes && harmonicContacts(n).length && harmonicContactSlide(n)) {
+            drawHarmonicContact2D(hwState,W,H,n);
+            continue;
+        }
 
         const t0 = Math.max(n.t - hwState.currentTime, 0);
         const t1 = Math.min(end - hwState.currentTime, VISIBLE_SECONDS);
@@ -843,7 +882,9 @@ export function drawNotes(hwState, W, H) {
         }
         if (!p) continue;
 
-        const x = n.f === 127 && n.mt ? W / 2 : fretX(hwState, playingFret2D(n), p.scale, W);
+        const heldFret=n.harmonic_changes && harmonicContacts(n).length && harmonicContactSlide(n)
+            ? harmonicContactFret(n,hwState.currentTime-n.t) : playingFret2D(n);
+        const x = n.f === 127 && n.mt ? W / 2 : fretX(hwState, heldFret, p.scale, W);
         drawNote(hwState, W, H, x, p.y * H, p.scale, n.s, n.f, n, hwState._noteStateProvider ? _noteState(hwState, n, n.t) : null);
         drawnNotes.push({
             t: n.t, s: n.s, f: n.f, bn: n.bn || 0, x, y: p.y * H, scale: p.scale,
