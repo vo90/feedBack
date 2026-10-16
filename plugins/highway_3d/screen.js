@@ -9,8 +9,8 @@
 (function () {
     'use strict';
 
-    // Keep score/capability inputs untouched. Only this renderer sees ringing
-    // as a longer sustain, so all existing trail/chord visibility rules apply.
+    // Keep score/capability inputs and authored sustains untouched. The optional
+    // view adds only imported let-ring extensions, for both trails and framing.
     function createLetRingView() {
         const cache = new WeakMap();
         function note(n) {
@@ -18,7 +18,8 @@
             return !n.mt && typeof span === 'number' && Number.isFinite(span) && span > (n.sus || 0)
                 ? {...n, sus: span} : n;
         }
-        return function (bundle) {
+        return function (bundle, enabled = false) {
+            if (!enabled) return bundle;
             if (!bundle || !Array.isArray(bundle.notes) || !Array.isArray(bundle.chords)) return bundle;
             let byChord = cache.get(bundle.notes);
             if (!byChord) { byChord = new WeakMap(); cache.set(bundle.notes, byChord); }
@@ -2941,11 +2942,49 @@
         return false;
     }
 
+    /** Plain open continuations do not need detached lane rails after a slide reaches zero. */
+    function hwyOpenSlideTailNotes(links) {
+        const hidden = new WeakSet(), next = new Map(), pending = [];
+        // Keep independently authored open techniques visible. In particular,
+        // a pull-off to open is not a slide endpoint, nor is an open whammy or
+        // harmonic gesture just a continuation of the preceding fret position.
+        const plain = n => n?.f === 0
+            && !(n.sl >= 0) && !(n.slu >= 0) && !(n.su >= 0)
+            && !n.ho && !n.po && !n.hm && !n.hp && !n.pm && !n.mt && !n.fhm
+            && !n.tp && !n.slp && !n.plk && !n.ac && !n.ghost && !n.lr && !n.let_ring_sus
+            && !n.bn && !n.bnv?.length && !n.bt && !n.vb && !n.vibrato && !n.v && !n.tr
+            && !n.vibrato_marks?.length && !n.tremolo_marks?.length
+            && !n.slide_in_marks?.length && !n.slide_out_marks?.length
+            && !n.slide_out && !n.slideOut && !n.pick_scrape_marks?.length
+            && !n.whammy && !n.hn && !n.harmonic_target && !n.harmonic_changes && !n.harmonic_alias;
+        for (const [destination, link] of links || []) {
+            const source = link?.source;
+            // These are the already validated, unambiguous contiguous links;
+            // never infer a hidden tail from proximity to a slide alone.
+            if (!source || source.ln !== true || source.s !== destination?.s || !plain(destination)) continue;
+            if (source.f > 0 && slideTrailEnd(source)?.endFret === 0) pending.push(destination);
+            else if (plain(source)) {
+                let targets = next.get(source);
+                if (!targets) next.set(source, targets = []);
+                targets.push(destination);
+            }
+        }
+        // Iterative propagation is independent of input order and bounded by
+        // the authored links. A new attack or technique breaks the plain hold.
+        for (let i = 0; i < pending.length; i++) {
+            const note = pending[i];
+            if (hidden.has(note)) continue;
+            hidden.add(note);
+            for (const target of next.get(note) || []) pending.push(target);
+        }
+        return hidden;
+    }
+
     /** Independent tails only: shared chord holds replace their members' ribbons. */
-    function hwyBuildIndependentTrailOrigins(notes, chords, holds, stringCount) {
+    function hwyBuildIndependentTrailOrigins(notes, chords, holds, stringCount, hiddenTrails = null) {
         const drawable = new WeakSet(), openOrigins = new WeakMap();
         const add = (note, meta) => {
-            if (!(note?.sus > 0.01) || isPlainDeadNote(note)) return;
+            if (!(note?.sus > 0.01) || isPlainDeadNote(note) || hiddenTrails?.has(note)) return;
             drawable.add(note);
             if (note.f !== 0) return;
             // Reused notes with several rendering origins are ambiguous. Leave
@@ -3681,7 +3720,7 @@
     // Camera stops are separate from musical regions. Brief detours can share
     // a view only when their full footprint passes the caller's readable fit.
     // Inspect at most 32 neighbours / 1.5 real seconds, never distant notes.
-    function hwyBuildCameraStops(regions, rate, canHold) {
+    function hwyBuildCameraStops(regions, rate, canHold, sharedCentre = null, dominantInterval = null, attacks = null) {
         rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
         const stops = [];
         let held = null;
@@ -3689,36 +3728,216 @@
             const row = regions[i], next = regions[i + 1];
             const duration = next ? (next.time - row.time) / rate : Infinity;
             let x = row.x, reason = 'position';
-            if (held && duration < 0.75 && Math.abs(x - held.x) > 1e-8) {
-                let returns = false;
-                for (let j = i + 1; j < Math.min(regions.length, i + 33); j++) {
-                    const future = regions[j];
-                    if (future.time - row.time > 1.5 * rate) break;
-                    // A-B-A and A-B-C where B is an unnecessary excursion.
-                    if ((x - held.x) * (future.x - x) < 0) { returns = true; break; }
-                }
-                const extension = Math.abs(row.minX - held.minX) < 1e-8
-                    || Math.abs(row.maxX - held.maxX) < 1e-8;
-                const bounded = Math.abs(x - held.x) <= Math.max(held.maxX - held.minX,
-                    row.maxX - row.minX) + 1e-7;
-                if ((returns || extension) && bounded && canHold(row, held.x)) {
-                    x = held.x; reason = extension ? 'extension' : 'detour';
+            if (held && Math.abs(x - held.x) > 1e-8) {
+                const width = Math.max(1e-8, held.maxX - held.minX, row.maxX - row.minX);
+                const displacement = Math.abs(x - held.x);
+                // Keep the preferred playing area inside a small tolerance.
+                // Repeated adjacent lanes must not restart the camera; steady
+                // migration eventually leaves this held view and gets one move.
+                if (displacement <= width * 0.3 && canHold(row, held.x)) {
+                    x = held.x; reason = 'tolerance';
+                } else if (duration < 0.8 + Math.min(0.3, displacement / width * 0.15)) {
+                    let returns = false;
+                    for (let j = i + 1; j < Math.min(regions.length, i + 33); j++) {
+                        const future = regions[j];
+                        if (future.time - row.time > 1.5 * rate) break;
+                        if ((x - held.x) * (future.x - x) < 0) { returns = true; break; }
+                    }
+                    const extension = Math.abs(row.minX - held.minX) < 1e-8
+                        || Math.abs(row.maxX - held.maxX) < 1e-8;
+                    if ((returns || extension) && displacement <= width + 1e-7 && canHold(row, held.x)) {
+                        x = held.x; reason = extension ? 'extension' : 'detour';
+                    } else if (returns && sharedCentre && (row.time - held.time) / rate >= 0.6) {
+                        // A late flourish starts a local group from the actual
+                        // preceding region, not all positions held long ago.
+                        const local = (row.time - held.time) / rate > 1.5;
+                        const previous = regions[i - 1];
+                        const group = local ? { ...previous, x: held.x,
+                            time: Math.max(previous.time, row.time - 0.6 * rate) } : held;
+                        const sharedWidth = Math.max(1e-8, group.maxX - group.minX, row.maxX - row.minX);
+                        const shared = Math.abs(x - group.x) <= sharedWidth * 3 ? sharedCentre(row, group) : NaN;
+                        if (Number.isFinite(shared)) {
+                            // Preserve every focus constraint accepted by this
+                            // group when another excursion shares its centre.
+                            const focusWidth = Math.min(group.maxX - group.minX, row.maxX - row.minX) * 1.5;
+                            const preferred = group.preferred ?? group.x, nextPreferred = row.preferred ?? row.x;
+                            group.focusMinX = Math.max(group.focusMinX ?? -Infinity,
+                                preferred - focusWidth, nextPreferred - focusWidth);
+                            group.focusMaxX = Math.min(group.focusMaxX ?? Infinity,
+                                preferred + focusWidth, nextPreferred + focusWidth);
+                            if (local) { held = group; stops.push(held); }
+                            held.x = x = shared;
+                            held.reason = reason = 'shared';
+                        }
+                    }
                 }
             }
             if (!held || Math.abs(x - held.x) > 1e-8) {
                 held = { ...row, x, reason };
                 stops.push(held);
             }
+            // Any coalesced region may still be playing when this stop is
+            // adjusted later. Retain its visibility and individual focus bounds.
+            held.coverageMinX = Math.min(held.coverageMinX ?? held.minX, row.minX);
+            held.coverageMaxX = Math.max(held.coverageMaxX ?? held.maxX, row.maxX);
+            held.coverageFirstFret = Math.min(held.coverageFirstFret ?? held.firstFret, row.firstFret);
+            held.coverageLastFret = Math.max(held.coverageLastFret ?? held.lastFret, row.lastFret);
+            const focusWidth = (row.maxX - row.minX) * 1.5, preferred = row.preferred ?? row.x;
+            held.focusMinX = Math.max(held.focusMinX ?? -Infinity, preferred - focusWidth);
+            held.focusMaxX = Math.min(held.focusMaxX ?? Infinity, preferred + focusWidth);
         }
-        return stops;
+        if (!dominantInterval || !attacks?.length || regions.length < 2) return stops;
+
+        // Score elapsed playing time, not metadata rows or slide checkpoints.
+        // Keep the original plan as the fallback for infeasible shared views.
+        const spans = [], focusIds = new Map();
+        for (const row of regions) {
+            const previous = spans[spans.length - 1];
+            if (previous && previous.row.minX === row.minX && previous.row.maxX === row.maxX
+                && previous.row.preferred === row.preferred) continue;
+            if (previous) previous.end = row.time;
+            if (!focusIds.has(row.preferred)) focusIds.set(row.preferred, focusIds.size);
+            spans.push({ row, time: row.time, end: Infinity, frets: 0, focusId: focusIds.get(row.preferred) });
+        }
+        let attackIndex = 0;
+        for (const span of spans) {
+            while (attackIndex < attacks.length && attacks[attackIndex].time < span.time - 0.000501) attackIndex++;
+            while (attackIndex < attacks.length && attacks[attackIndex].time < span.end - 0.000501) {
+                span.frets |= attacks[attackIndex++].frets || 0;
+            }
+            const mask = ((1 << (span.row.lastFret + 1)) - 1) ^ ((1 << span.row.firstFret) - 1);
+            span.picked = !!(span.frets & mask);
+        }
+        const potential = new Float64Array(spans.length + 1);
+        for (let i = 0; i < spans.length; i++) {
+            const span = spans[i], duration = (span.end - span.time) / rate;
+            span.eligible = span.picked && duration >= 0.3;
+            potential[i + 1] = potential[i] + (span.eligible ? Math.min(4, duration) : 0);
+        }
+        const scores = Array.from({ length: focusIds.size }, () => ({ row: null, dwell: 0 }));
+        const analysis = { winner: null, limit: 0, duration: 0, end: 0 };
+        const analyse = (index, retain = false) => {
+            analysis.winner = null; analysis.limit = index; analysis.duration = 0;
+            const maximum = Math.min(spans.length, index + 32);
+            // An upper bound rejects rapid checkpoint-only windows in O(1).
+            if (!retain && potential[maximum] - potential[index] + 1e-8 < 2.4) return analysis;
+            for (const score of scores) { score.row = null; score.dwell = 0; }
+            const start = spans[index].time, horizon = start + 4 * rate;
+            let end = start, evidenceEnd = start;
+            for (let j = index; j < maximum && spans[j].time < horizon; j++) {
+                const span = spans[j], duration = (Math.min(span.end, horizon) - span.time) / rate;
+                end = Math.min(span.end, horizon); analysis.limit = j + 1;
+                if (span.picked) evidenceEnd = end;
+                // Endpoints without a new pick remain visibility constraints.
+                // Brief attacks cannot outweigh the sustained playing area.
+                if (!span.eligible) continue;
+                const score = scores[span.focusId];
+                if (!score.row) score.row = span.row;
+                score.dwell += duration;
+            }
+            // Trailing silence is not evidence for a different composition.
+            // Keep interior gaps and brief picked replies in the denominator,
+            // while all trailing geometry still constrains the shared view.
+            analysis.end = end; analysis.duration = (evidenceEnd - start) / rate;
+            const threshold = Math.max(2.4, analysis.duration * 0.6);
+            for (const score of scores) {
+                if (score.dwell + 1e-8 >= threshold
+                    && (!analysis.winner || score.dwell > analysis.winner.dwell)) analysis.winner = score;
+            }
+            return analysis;
+        };
+        const groups = [];
+        let active = null, baselineIndex = 0;
+        for (let i = 0; i < spans.length; i++) {
+            const span = spans[i], row = span.row;
+            while (baselineIndex + 1 < stops.length && stops[baselineIndex + 1].time <= span.time) baselineIndex++;
+            const baselineUntil = stops[baselineIndex + 1]?.time ?? Infinity;
+            if (active && span.time >= active.baselineUntil) {
+                // Preserve the original stop and its early preparation when
+                // the chart genuinely changes position, even inside a region.
+                active.end = active.baselineUntil; active = null;
+            }
+            // Reject intentional phrase following before scoring its window.
+            const windowEnd = Math.min(span.time + 4 * rate, spans[i + 32]?.time ?? Infinity);
+            if (!active && baselineUntil < windowEnd) continue;
+            const analysis = analyse(i, !!active), candidate = analysis.winner;
+            const preferred = row.preferred, width = row.maxX - row.minX;
+            if (active) {
+                const interval = dominantInterval(row);
+                // A final short reply cannot overturn a sustained passage.
+                // Require the same evidence horizon used to establish it.
+                const lostDominance = analysis.duration + 1e-8 >= 2.4
+                    && scores[focusIds.get(active.dominantPreferred)].dwell + 1e-8 < analysis.duration * 0.5;
+                const changed = candidate && candidate.row.preferred !== active.dominantPreferred
+                    && preferred === candidate.row.preferred;
+                const unpickedMigration = !span.picked && preferred !== active.dominantPreferred
+                    && (span.end - span.time) / rate >= 2.4;
+                if (!interval.valid || active.x < interval.min || active.x > interval.max
+                    || Math.abs(active.x - preferred) > width * 1.5 || changed || unpickedMigration || lostDominance) {
+                    active.end = span.time; active = null;
+                }
+            }
+            if (!active && candidate) {
+                // Correct an inherited hold, never replace intentional phrase
+                // following with a compromised fixed view.
+                if (baselineUntil < analysis.end) continue;
+                const previous = stops[baselineIndex]?.x ?? row.x;
+                const tolerance = (candidate.row.maxX - candidate.row.minX) * 0.2;
+                // Even an unconstrained ideal cannot improve this hold enough.
+                // Avoid projection-key work for already well-framed repeats.
+                if (Math.abs(previous - candidate.row.preferred) < tolerance) continue;
+                let min = -Infinity, max = Infinity;
+                for (let j = i; j < analysis.limit; j++) {
+                    const member = spans[j].row, fit = dominantInterval(member);
+                    const focusWidth = (member.maxX - member.minX) * 1.5;
+                    if (!fit.valid) { min = Infinity; break; }
+                    min = Math.max(min, fit.min, member.preferred - focusWidth);
+                    max = Math.min(max, fit.max, member.preferred + focusWidth);
+                }
+                if (min <= max) {
+                    const target = Math.max(min, Math.min(max, candidate.row.preferred));
+                    // Keep an already better composition and its original
+                    // preparation for necessary position changes. This pass
+                    // only corrects a meaningful inherited focus error.
+                    if (Math.abs(previous - candidate.row.preferred)
+                        - Math.abs(target - candidate.row.preferred) < tolerance) continue;
+                    active = { ...row, time: span.time, end: baselineUntil, baselineUntil, x: target, reason: 'dominant',
+                        dominantPreferred: candidate.row.preferred, focusMinX: min, focusMaxX: max };
+                    groups.push(active);
+                }
+            }
+        }
+        const passages = groups.filter(group => group.end - group.time >= 1.2 * rate);
+        if (!passages.length) return stops;
+        const result = [];
+        const append = stop => {
+            const previous = result[result.length - 1];
+            if (previous && Math.abs(previous.x - stop.x) <= 1e-8) return;
+            if (previous?.time === stop.time) result.pop();
+            result.push(stop);
+        };
+        let index = 0, prior = stops[0];
+        for (let i = 0; i < passages.length; i++) {
+            const group = passages[i];
+            // Keep a genuine boundary stop and its existing early preparation.
+            // The small composition correction can overlap it from this point.
+            while (index < stops.length && stops[index].time <= group.time) {
+                prior = stops[index++]; append(prior);
+            }
+            // Start preparation locally, never by rewriting a historical stop.
+            append({ ...group, time: group.time + (result.length ? 0.6 * rate : 0) });
+            while (index < stops.length && stops[index].time <= group.end) prior = stops[index++];
+            if (Number.isFinite(group.end) && passages[i + 1]?.time !== group.end) {
+                append(prior.time === group.end ? prior : { ...prior, time: group.end, reason: 'dominant-return' });
+            }
+        }
+        while (index < stops.length) append(stops[index++]);
+        return result;
     }
 
-    /** Prepare during quiet sustains or silence after the preceding attack.
-     * Built with the cached stop plan, never by scanning the song each frame.
-     * The lane/notes remain authoritative; this changes only camera timing. */
-    function hwyPrepareCameraStops(stops, notes, chords, rate, stringCount = 6) {
-        if (stops.length < 2) return stops.map(stop => ({ ...stop, lead: 0.6 }));
-        rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
+    // Attack/technique timing depends on the chart, not camera rate or framing.
+    // Keep this index reusable when only the composition plan changes.
+    function hwyBuildCameraAttackIndex(notes, chords, stringCount = 6) {
         const eps = 0.000501, events = [];
         const expressive = n => ['bn', 'bnv', 'vb', 'v', 'vibrato', 'vibrato_marks', 'tr', 'whammy', 'hm', 'hp',
             'harmonic_target', 'harmonic_changes', 'ho', 'po', 'ln', 'mt', 'fhm',
@@ -3759,11 +3978,25 @@
             busyUntil = Math.max(busyUntil, event.busy);
             let group = attacks[attacks.length - 1];
             if (!group || event.time - group.time > eps) {
-                group = { time: event.time, busy: busyUntil };
+                group = { time: event.time, busy: busyUntil, frets: 0 };
                 attacks.push(group);
             }
             group.busy = busyUntil;
+            for (const note of event.members) {
+                if (note.f > 0 && !isUnpitchedMute(note)) group.frets |= 1 << note.f;
+            }
         }
+        return attacks;
+    }
+
+    /** Prepare during quiet sustains or silence after the preceding attack.
+     * Built with the cached stop plan, never by scanning the song each frame.
+     * The lane/notes remain authoritative; this changes only camera timing. */
+    function hwyPrepareCameraStops(stops, notes, chords, rate, stringCount = 6, attacks = null) {
+        if (stops.length < 2) return stops.map(stop => ({ ...stop, lead: 0.6 }));
+        rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
+        const eps = 0.000501;
+        if (attacks === null) attacks = hwyBuildCameraAttackIndex(notes, chords, stringCount);
         let index = 0;
         return stops.map(stop => {
             while (index < attacks.length && attacks[index].time < stop.time - eps) index++;
@@ -3773,7 +4006,7 @@
             // slide-outs, silence, or a mixture across strings. Their visible
             // geometry remains protected by the existing camera fit. Only an
             // active significant technique can delay the extra preparation.
-            if (next && Math.abs(next.time - stop.time) <= eps) {
+            if (!stop.reason?.startsWith('dominant') && next && Math.abs(next.time - stop.time) <= eps) {
                 const start = Math.max(stop.time - 1.2 * rate,
                     previous ? previous.time + 0.3 * rate : 0,
                     previous?.busy ?? -Infinity);
@@ -5651,7 +5884,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, wahGuidanceVisible: true, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration, trailYieldSameStringEnabled: TRAIL_YIELD_DEFAULTS.sameStringEnabled, trailYieldSameStringMaxGap: TRAIL_YIELD_DEFAULTS.sameStringMaxGap, trailYieldSameStringLeadTime: TRAIL_YIELD_DEFAULTS.sameStringLeadTime };
+    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, wahGuidanceVisible: true, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, letRingTrailsVisible: false, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration, trailYieldSameStringEnabled: TRAIL_YIELD_DEFAULTS.sameStringEnabled, trailYieldSameStringMaxGap: TRAIL_YIELD_DEFAULTS.sameStringMaxGap, trailYieldSameStringLeadTime: TRAIL_YIELD_DEFAULTS.sameStringLeadTime };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -6063,7 +6296,7 @@
     // means (fall back to default rather than silently flipping to
     // false). Add new boolean keys to BG_DEFAULTS and they pick this
     // up via the dispatch below.
-    const _BG_BOOL_KEYS = new Set(['wahGuidanceVisible', 'repeatChordFullBorder', 'reactive', 'showFretOnNote', 'cameraLockLow', 'stableCameraFollow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'noteStemsVisible', 'openStringStemsVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront', 'trailYieldIncludeTrails', 'trailYieldSameStringEnabled']);
+    const _BG_BOOL_KEYS = new Set(['wahGuidanceVisible', 'repeatChordFullBorder', 'reactive', 'showFretOnNote', 'cameraLockLow', 'stableCameraFollow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'noteStemsVisible', 'letRingTrailsVisible', 'openStringStemsVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront', 'trailYieldIncludeTrails', 'trailYieldSameStringEnabled']);
     function _bgCoerceBool(val, fallback) {
         if (val === 'true' || val === '1') return true;
         if (val === 'false' || val === '0') return false;
@@ -6174,6 +6407,7 @@
     window.h3dBgSetChordBoxTop = (v) => _bgWriteGlobal('chordBoxTop', _bgCoerce('chordBoxTop', v));
     window.h3dBgSetRepeatChordFullBorder = (v) => _bgWriteGlobal('repeatChordFullBorder', _bgCoerce('repeatChordFullBorder', String(v)));
     window.h3dBgSetNoteStemsVisible = (v) => _bgWriteGlobal('noteStemsVisible', _bgCoerce('noteStemsVisible', String(v)));
+    window.h3dBgSetLetRingTrailsVisible = (v) => _bgWriteGlobal('letRingTrailsVisible', _bgCoerce('letRingTrailsVisible', String(v)));
     window.h3dBgSetOpenStringStemsVisible = (v) => _bgWriteGlobal('openStringStemsVisible', _bgCoerce('openStringStemsVisible', String(v)));
     window.h3dBgSetIntensity = (v) => _bgWriteGlobal('intensity', v);
     window.h3dBgSetReactive = (v) => _bgWriteGlobal('reactive', !!v);
@@ -8162,6 +8396,7 @@
         // the hit line. The Set contains the authored note objects so
         // coincident notes with different frets cannot hide one another.
         let _linkNextTargetSet = null;
+        let _openSlideTailNotes = new WeakSet();
         let _linkedTrailPaths = { byNote: new WeakMap(), paths: [] };
         let _linkedTrailAnchorsRef = null;
         let _linkedTrailHoldModelRef = null;
@@ -8491,6 +8726,7 @@
         // linear blend every frame.
         let rsPlusNotation      = false;
         let noteStemsVisible = BG_DEFAULTS.noteStemsVisible;
+        let letRingTrailsVisible = BG_DEFAULTS.letRingTrailsVisible;
         let chordBoxTop = BG_DEFAULTS.chordBoxTop;
         let repeatChordFullBorder = BG_DEFAULTS.repeatChordFullBorder;
         let openStringStemsVisible = BG_DEFAULTS.openStringStemsVisible;
@@ -12533,6 +12769,7 @@
                     changedKey === 'toneHudSize' ||
                     changedKey === 'projectionVisible' ||
                     changedKey === 'noteStemsVisible' || changedKey === 'openStringStemsVisible' ||
+                    changedKey === 'letRingTrailsVisible' ||
                     changedKey === 'chordBoxTop' ||
                     changedKey === 'repeatChordFullBorder' ||
                     changedKey === 'slideArrowApproachVisible' ||
@@ -12776,6 +13013,7 @@
             const previousNotationStyle = rsPlusNotation;
             rsPlusNotation = _bgReadSetting(panelKey, 'notationStyle') === 'rsplus';
             noteStemsVisible = _bgReadSetting(panelKey, 'noteStemsVisible');
+            letRingTrailsVisible = _bgReadSetting(panelKey, 'letRingTrailsVisible');
             chordBoxTop = _bgReadSetting(panelKey, 'chordBoxTop');
             repeatChordFullBorder = _bgReadSetting(panelKey, 'repeatChordFullBorder');
             openStringStemsVisible = _bgReadSetting(panelKey, 'openStringStemsVisible');
@@ -15896,7 +16134,7 @@
         }
 
         function update(bundle) {
-            bundle = letRingView(bundle);
+            bundle = letRingView(bundle, letRingTrailsVisible);
             const effectiveAnchors = cameraMode === 'stable' ? stableRegionAnchors(bundle) : resolvedGuidanceAnchors(bundle);
             pbBeg(0);
             _trailYieldFrameId++;
@@ -16162,11 +16400,12 @@
                 || _chordGuideCache.model !== _linkedTrailHoldModelRef) {
                 const bendLinks = new Map();
                 _linkNextTargetSet = hwyLinkNextTargetNotes(notes, bundle.chords, 1e-6, bendLinks);
+                _openSlideTailNotes = hwyOpenSlideTailNotes(bendLinks);
                 _linkedBendEnds = resolveLinkedBendEnds(bendLinks);
                 _linkedBendStarts = resolveLinkedBendStarts(bendLinks, _linkedBendEnds);
                 _linkedVibratoRuns = resolveLinkedVibratoRuns(bendLinks);
                 const origins = hwyBuildIndependentTrailOrigins(
-                    notes, chords, _chordGuideCache.model.byChord, nStr,
+                    notes, chords, _chordGuideCache.model.byChord, nStr, _openSlideTailNotes,
                 );
                 _linkedTrailOpenOrigins = origins.openOrigins;
                 _linkedTrailPaths = hwyBuildLinkedTrailPaths(bendLinks, {
@@ -16205,7 +16444,7 @@
                     // A hidden representation must not donate its duration,
                     // path or head to a coincident visible representation.
                     separateRepresentations: true,
-                    trailVisible: (note, meta, chord) => !chordMemberTrailSuppressed(
+                    trailVisible: (note, meta, chord) => !_openSlideTailNotes.has(note) && !chordMemberTrailSuppressed(
                         chord && _chordGuideCache.model.byChord.get(chord), note),
                     visualStartForNote: slideInVisualStart,
                 });
@@ -20811,7 +21050,7 @@
                 hwyNoteVisualParts(n, now, AHEAD, linger,
                     _firstEventTimeGreaterThan(n.t + 1e-6), slideInVisualStart(n),
                     guidanceOnly || scrape || hwyShouldSuppressNoteBody(skipBody, explicitLinkTarget, n.t - now),
-                    guidanceOnly || sharedChordHold, record.parts);
+                    guidanceOnly || sharedChordHold || _openSlideTailNotes.has(sourceIdentity), record.parts);
                 const event = record.event = guidanceOnly ? null : trailYieldEventForNote(n, sourceIdentity);
                 if (event && (record.parts.head || record.parts.trail)) {
                     if (!event.gemVisible && !event.trailVisible) _visibleTrailEvents.push(event);
@@ -23093,20 +23332,66 @@
         function stableSolve(preferredX, baseDistance, prediction, margin, fixedCentre = false, points = _stablePoints, count = _stableCam.pointCount, basis = _stableBasis) {
             let low = baseDistance, high = low;
             const fixed = fixedCentre ? preferredX : null;
-            let interval = stableIntervalAt(high, prediction, margin, fixed, points, count, basis);
-            if (!interval.valid) {
-                // Exponential bracket + bounded bisection: no per-frame chart
-                // scans and no dependency on the previous frame's fit result.
-                for (let i = 0; i < 10 && !interval.valid; i++) {
-                    high *= 1.5;
+            let interval;
+            if (fixedCentre && Number.isFinite(preferredX) && Number.isFinite(baseDistance) && baseDistance > 0) {
+                const b = basis, tan = Math.tan(STABLE_CAMERA_FOV * Math.PI / 360);
+                const horizontal = tan * cam.aspect * margin;
+                const top = tan * (Math.max(0.90, margin) + STABLE_CAMERA_SHIFT);
+                const bottom = tan * (Math.max(0.90, margin) - STABLE_CAMERA_SHIFT);
+                if (horizontal > 0 && top > 0 && bottom > 0 && b.distanceMul > 0
+                    && Number.isFinite(horizontal + top + bottom + b.distanceMul)) {
+                    // At a fixed centre every frustum plane gives a lower bound
+                    // on distance. Take their maximum in one pass instead of
+                    // repeatedly testing the same points during bisection.
+                    // Match stableConstrain's near-zero coefficient handling.
+                    const left = -b.rx - horizontal * b.bx, right = b.rx - horizontal * b.bx;
+                    const upper = -b.ux - top * b.bx, lower = b.ux - bottom * b.bx;
+                    const cxLeft = Math.abs(left) < 1e-10 ? 0 : left * preferredX;
+                    const cxRight = Math.abs(right) < 1e-10 ? 0 : right * preferredX;
+                    const cxTop = Math.abs(upper) < 1e-10 ? 0 : upper * preferredX;
+                    const cxBottom = Math.abs(lower) < 1e-10 ? 0 : lower * preferredX;
+                    const cxNear = Math.abs(b.bx) < 1e-10 ? 0 : -b.bx * preferredX;
+                    const base = baseDistance * b.distanceMul;
+                    let required = base, scale = Math.abs(base);
+                    for (let i = 0; i < count; i += 3) {
+                        const x = points[i] - b.x, y = points[i + 1] - b.y;
+                        const z = Math.max(points[i + 2], Math.min(0, points[i + 2] + prediction * TS));
+                        const depth = b.bx * x + b.by * y + b.bz * z;
+                        const r = b.rx * x + b.rz * z, u = b.ux * x + b.uy * y + b.uz * z;
+                        const side = Math.max((r + cxLeft) / horizontal, (-r + cxRight) / horizontal,
+                            (u + cxTop) / top, (-u + cxBottom) / bottom, 0.02 + cxNear);
+                        required = Math.max(required, depth + side);
+                        scale = Math.max(scale, Math.abs(depth), Math.abs(side));
+                    }
+                    if (Number.isFinite(required)) {
+                        // Preserve a sufficient base exactly. Only widening
+                        // needs a few ulps of outward room for cancellation and
+                        // the final projection's different arithmetic order.
+                        high = required > base
+                            ? (required + 32 * Number.EPSILON * Math.max(1, scale)) / b.distanceMul
+                            : baseDistance;
+                        interval = _stableInterval;
+                        interval.min = interval.max = preferredX;
+                        interval.valid = true;
+                    }
+                }
+            }
+            if (!interval) {
+                interval = stableIntervalAt(high, prediction, margin, fixed, points, count, basis);
+                if (!interval.valid) {
+                    // Movable centres still need a feasible-centre interval.
+                    // Keep this path for unsupported projection coefficients too.
+                    for (let i = 0; i < 10 && !interval.valid; i++) {
+                        high *= 1.5;
+                        interval = stableIntervalAt(high, prediction, margin, fixed, points, count, basis);
+                    }
+                    for (let i = 0; i < 16; i++) {
+                        const mid = (low + high) / 2;
+                        if (stableIntervalAt(mid, prediction, margin, fixed, points, count, basis).valid) high = mid;
+                        else low = mid;
+                    }
                     interval = stableIntervalAt(high, prediction, margin, fixed, points, count, basis);
                 }
-                for (let i = 0; i < 16; i++) {
-                    const mid = (low + high) / 2;
-                    if (stableIntervalAt(mid, prediction, margin, fixed, points, count, basis).valid) high = mid;
-                    else low = mid;
-                }
-                interval = stableIntervalAt(high, prediction, margin, fixed, points, count, basis);
             }
             _stableFit.x = Math.max(interval.min, Math.min(interval.max, preferredX));
             _stableFit.distance = high;
@@ -23157,7 +23442,7 @@
             anchorCount: -1, strings: 0, uniform: null, rows: [],
         };
         const _stableRegionResult = {};
-        const _stablePlan = { rows: null, key: '', rate: 1, stops: [], regions: [], revision: 0, result: {} };
+        const _stablePlan = { rows: null, key: '', rate: 1, stops: [], regions: [], zoomRegions: [], revision: 0, result: {} };
 
         function stableRegionReset() {
             _laneIntervalCache.reset();
@@ -23168,7 +23453,9 @@
             cache.noteCount = cache.chordCount = cache.anchorCount = -1;
             cache.strings = 0; cache.uniform = null; cache.rows = [];
             _stableRegionResult.row = null;
-            _stablePlan.rows = null; _stablePlan.stops = []; _stablePlan.regions = []; _stablePlan.key = '';
+            _stablePlan.rows = null; _stablePlan.stops = []; _stablePlan.regions = []; _stablePlan.zoomRegions = []; _stablePlan.key = '';
+            _stablePlan.attackNotes = _stablePlan.attackChords = _stablePlan.attacks = _stablePlan.preparedAttacks = null;
+            _stablePlan.geometryKey = '';
         }
 
         const _guidanceLanes = { notes: null, chords: null, anchors: null, result: null, noteCount: -1, chordCount: -1, anchorCount: -1, strings: 0 };
@@ -23290,30 +23577,136 @@
             const explicit = Number.isFinite(declaredRate) && declaredRate >= 0.1 && declaredRate <= 4;
             const rate = explicit ? declaredRate : !cache.rows || Math.abs(_stableCam.rate - cache.rate) > 0.1
                 ? Math.max(0.1, Math.round(_stableCam.rate * 10) / 10) : cache.rate;
-            const key = [rate, cam.aspect, stableCameraPreset, _leftyCached, nStr,
-                _textSizeMul, baseDistance, cameraSmoothing].join('/');
-            if (cache.rows !== rows || cache.key !== key) {
-                const regions = rows.map(row => {
-                    const a = xFret(row.fret - 1), b = xFret(row.fret + row.width - 1);
-                    const end = xFret(row.fret - 1 + Math.min(4, row.width));
-                    const preferred = (a + end) / 2;
-                    const normal = { minX: Math.min(a, end), maxX: Math.max(a, end), firstFret: row.fret, lastFret: row.fret + Math.min(4, row.width) - 1 };
-                    const closeDistance = stableRegionFitDistance(normal, preferred, baseDistance);
-                    const region = { time: row.time, minX: Math.min(a, b), maxX: Math.max(a, b), preferred, closeDistance, firstFret: row.fret, lastFret: row.fret + row.width - 1 };
-                    const fit = stableRegionFraming(region, preferred, closeDistance);
-                    region.x = fit.x; region.distance = fit.distance;
-                    region.viewDistance = stableRegionViewDistance(region, region.distance);
-                    return region;
-                });
-                cache.stops = hwyBuildCameraStops(regions, rate, (row, centre) =>
-                    stableRegionFraming(row, centre, baseDistance, true, 0.96).distance
-                        <= row.distance + 1e-6);
-                cache.stops = hwyPrepareCameraStops(cache.stops, bundle.notes, bundle.chords, rate, nStr);
-                const leads = new Map(cache.stops.map(stop => [stop.time, stop.lead]));
-                for (const region of regions) region.lead = leads.get(region.time) || 0.6;
+            const geometryKey = [cam.aspect, stableCameraPreset, _leftyCached, nStr,
+                _textSizeMul, baseDistance].join('/');
+            const geometryChanged = cache.rows !== rows || cache.geometryKey !== geometryKey;
+            if (geometryChanged) {
+                // A chart can contain tens of thousands of rows but only a
+                // small set of distinct fret spans. Fit each shape once.
+                const shapes = new Map();
+                // Projection settings change the shape, not the musical row.
+                // Reuse these objects during resize/preset changes rather than
+                // allocating a whole chart's worth of nearly identical rows.
+                const reuse = cache.rows === rows && cache.regions.length === rows.length;
+                const regions = reuse ? cache.regions : new Array(rows.length);
+                for (let i = 0; i < rows.length; i++) {
+                    const row = rows[i];
+                    const key = row.fret + '/' + row.width;
+                    let shape = shapes.get(key);
+                    if (!shape) {
+                        const a = xFret(row.fret - 1), b = xFret(row.fret + row.width - 1);
+                        const end = xFret(row.fret - 1 + Math.min(4, row.width));
+                        const preferred = (a + end) / 2;
+                        const normal = { minX: Math.min(a, end), maxX: Math.max(a, end), firstFret: row.fret, lastFret: row.fret + Math.min(4, row.width) - 1 };
+                        const closeDistance = stableRegionFitDistance(normal, preferred, baseDistance);
+                        shape = { minX: Math.min(a, b), maxX: Math.max(a, b), preferred, closeDistance, firstFret: row.fret, lastFret: row.fret + row.width - 1 };
+                        const fit = stableRegionFraming(shape, preferred, closeDistance);
+                        shape.x = fit.x; shape.distance = fit.distance;
+                        shape.viewDistance = stableRegionViewDistance(shape, shape.distance);
+                        shapes.set(key, shape);
+                    }
+                    if (reuse) Object.assign(regions[i], shape);
+                    else regions[i] = { ...shape, time: row.time };
+                }
                 cache.regions = regions;
-                cache.rows = rows; cache.key = key; cache.rate = rate; cache.revision++;
+                cache.shapeCount = shapes.size;
+                cache.rows = rows; cache.geometryKey = geometryKey;
             }
+            if (cache.attackNotes !== bundle.notes || cache.attackChords !== bundle.chords
+                || cache.attackNoteCount !== (bundle.notes?.length || 0)
+                || cache.attackChordCount !== (bundle.chords?.length || 0) || cache.attackStrings !== nStr) {
+                cache.attacks = hwyBuildCameraAttackIndex(bundle.notes, bundle.chords, nStr);
+                cache.attackNotes = bundle.notes; cache.attackChords = bundle.chords;
+                cache.attackNoteCount = bundle.notes?.length || 0;
+                cache.attackChordCount = bundle.chords?.length || 0; cache.attackStrings = nStr;
+            }
+            const timingChanged = geometryChanged || cache.rate !== rate || cache.attacks !== cache.preparedAttacks;
+            if (timingChanged) {
+                const holdFits = new Map(), sharedFits = new Map();
+                const canHold = (row, centre) => {
+                    const key = row.firstFret + '/' + row.lastFret + '/' + centre;
+                    if (!holdFits.has(key)) {
+                        stableRegionFootprint(row);
+                        holdFits.set(key, stableIntervalAt(row.distance + 1e-6, 0, .96, centre,
+                            _stableRegionPoints, 48).valid);
+                    }
+                    return holdFits.get(key);
+                };
+                const share = (row, held) => {
+                    const coverage = { minX: held.coverageMinX ?? held.minX, maxX: held.coverageMaxX ?? held.maxX,
+                        firstFret: held.coverageFirstFret ?? held.firstFret, lastFret: held.coverageLastFret ?? held.lastFret };
+                    const key = [coverage.firstFret, coverage.lastFret, held.firstFret, held.lastFret,
+                        row.firstFret, row.lastFret, held.x, held.focusMinX, held.focusMaxX].join('/');
+                    if (sharedFits.has(key)) return sharedFits.get(key);
+                    const distance = Math.max(held.viewDistance, row.viewDistance) * 1.25;
+                    stableRegionViewDistance(coverage, distance, held.x);
+                    const a = stableIntervalAt(distance, 0, .96, null,
+                        _stableViewRegionPoints, _stableViewRegionPoints.length, _stableViewBasis);
+                    let min = a.min, max = a.max;
+                    const valid = a.valid;
+                    stableRegionViewDistance(row, distance);
+                    const b = stableIntervalAt(distance, 0, .96, null,
+                        _stableViewRegionPoints, _stableViewRegionPoints.length, _stableViewBasis);
+                    // Sharing must also keep the preferred playing positions
+                    // reasonably close. Visibility alone permits distant areas
+                    // at the screen edge and is not a sufficient composition.
+                    const focusWidth = Math.min(held.maxX - held.minX, row.maxX - row.minX) * 1.5;
+                    min = Math.max(min, b.min, held.focusMinX ?? -Infinity,
+                        held.preferred - focusWidth, row.preferred - focusWidth);
+                    max = Math.min(max, b.max, held.focusMaxX ?? Infinity,
+                        held.preferred + focusWidth, row.preferred + focusWidth);
+                    const x = valid && b.valid && min <= max ? Math.max(min, Math.min(max, held.x)) : NaN;
+                    sharedFits.set(key, x);
+                    return x;
+                };
+                // Each member keeps its own existing framing distance. This
+                // composition preference never receives a widening budget.
+                const dominantFits = new Map();
+                const dominantInterval = row => {
+                    const key = row.firstFret * 32 + row.lastFret;
+                    if (!dominantFits.has(key)) {
+                        stableRegionViewDistance(row, row.viewDistance);
+                        const fit = stableIntervalAt(row.viewDistance + 1e-7, 0, .96, null,
+                            _stableViewRegionPoints, _stableViewRegionPoints.length, _stableViewBasis);
+                        dominantFits.set(key, { min: fit.min, max: fit.max, valid: fit.valid });
+                    }
+                    return dominantFits.get(key);
+                };
+                cache.stops = hwyBuildCameraStops(cache.regions, rate, canHold, share, dominantInterval, cache.attacks);
+                cache.stops = hwyPrepareCameraStops(cache.stops, bundle.notes, bundle.chords, rate, nStr, cache.attacks);
+                const leads = new Map(cache.stops.map(stop => [stop.time, stop.lead]));
+                const compositionDistances = new Map();
+                const distanceAt = (region, centre) => {
+                    if (Math.abs(centre - region.x) <= 1e-8) return region.viewDistance;
+                    const key = [region.firstFret, region.lastFret, centre].join('/');
+                    if (!compositionDistances.has(key)) compositionDistances.set(key,
+                        stableRegionViewDistance(region, region.viewDistance, centre));
+                    return compositionDistances.get(key);
+                };
+                const zoomRegions = cache.zoomRegions || (cache.zoomRegions = []);
+                zoomRegions.length = 0;
+                let stopIndex = 0;
+                for (let i = 0; i < cache.regions.length; i++) {
+                    const region = cache.regions[i], nextTime = cache.regions[i + 1]?.time ?? Infinity;
+                    region.lead = leads.get(region.time) || 0.6;
+                    while (stopIndex + 1 < cache.stops.length && cache.stops[stopIndex + 1].time <= region.time) stopIndex++;
+                    region.plannedViewDistance = distanceAt(region, cache.stops[stopIndex]?.x ?? region.x);
+                    // Reuse the real rows. Only local stops inside a region
+                    // need an extra zoom entry, protecting that predecessor
+                    // from its new centre without widening its entire history.
+                    zoomRegions.push(region);
+                    while (stopIndex + 1 < cache.stops.length && cache.stops[stopIndex + 1].time < nextTime) {
+                        const stop = cache.stops[++stopIndex];
+                        zoomRegions.push({ time: stop.time, lead: stop.lead || 0.6,
+                            plannedViewDistance: distanceAt(region, stop.x) });
+                    }
+                }
+                cache.preparedAttacks = cache.attacks; cache.rate = rate;
+            }
+            // Smoothing changes only the time curve, never chart analysis or
+            // projected shapes. Still rejoin it continuously at the next frame.
+            const key = geometryKey + '/' + rate + '/' + cameraSmoothing;
+            if (timingChanged || cache.key !== key) { cache.key = key; cache.revision++; }
             hwyCameraPlanAt(cache.stops, now, rate, cameraSmoothing, cache.result);
             cache.result.direction = Math.sign(cache.result.velocity);
             if (!cache.result.direction) {
@@ -23334,19 +23727,25 @@
             }
             const current = cache.regions[Math.max(0, lo - 1)];
             cache.result.regionIndex = Math.max(0, lo - 1);
-            cache.result.distance = current?.viewDistance || baseDistance;
             cache.result.closeDistance = current?.closeDistance || baseDistance;
+            const zoomRegions = cache.zoomRegions;
+            let zoomLo = 0, zoomHi = zoomRegions.length;
+            while (zoomLo < zoomHi) {
+                const mid = (zoomLo + zoomHi) >>> 1;
+                if (zoomRegions[mid].time <= now) zoomLo = mid + 1; else zoomHi = mid;
+            }
+            cache.result.distance = zoomRegions[Math.max(0, zoomLo - 1)]?.plannedViewDistance || baseDistance;
             cache.result.returnFloor = baseDistance;
-            for (let i = lo; i < Math.min(cache.regions.length, lo + 32); i++) {
-                const row = cache.regions[i], until = (row.time - now) / rate;
+            for (let i = zoomLo; i < Math.min(zoomRegions.length, zoomLo + 32); i++) {
+                const row = zoomRegions[i], until = (row.time - now) / rate;
                 if (until > 1.3) break;
                 // Do not start closing only to reopen during the 800ms return.
                 // This holds an existing wider view, never widens early.
-                cache.result.returnFloor = Math.max(cache.result.returnFloor, row.viewDistance);
+                cache.result.returnFloor = Math.max(cache.result.returnFloor, row.plannedViewDistance);
                 const u = Math.max(0, Math.min(1, 1 - until / (row.lead || 0.6)));
                 const eased = u * u * u * (10 + u * (-15 + 6 * u));
                 cache.result.distance = Math.max(cache.result.distance,
-                    baseDistance + (row.viewDistance - baseDistance) * eased);
+                    baseDistance + (row.plannedViewDistance - baseDistance) * eased);
             }
             cache.result.revision = cache.revision;
             return cache.result;
@@ -23354,7 +23753,6 @@
 
         function stableCamUpdate(bundle, frameTime = Number(bundle.currentTime) || 0) {
             const s = _stableCam, b = _stableBasis;
-            const previousDistance = s.distance;
             const wall = performance.now() / 1000;
             const elapsed = Number.isFinite(s.lastWall) ? Math.max(0, wall - s.lastWall) : 0;
             // Share the normal visual frame interval, but retain wall timing
@@ -23486,10 +23884,13 @@
                 // and leaves its return state unaware of the widened view.
                 const viewDistance = stableSolve(s.x, fit.distance, prediction, 0.96, true,
                     _stableViewPoints, s.viewPointCount, v).distance;
-                // Geometry approaches while the scheduled camera also pans.
-                // Predict both; predicting note Z alone reacts late when a
-                // playing-area change moves the viewpoint sideways.
-                const future = hwyCameraPlanAt(_stablePlan.stops, frameTime + .25 * s.rate,
+                // Give the zoom controller enough lead along the scheduled
+                // pan, but never reserve this region after its boundary. Live
+                // geometry and the final guard still protect surviving tails.
+                const nextRegion = _stablePlan.regions[plan.regionIndex + 1];
+                const futureTime = Math.min(frameTime + .4 * s.rate,
+                    nextRegion ? Math.max(frameTime, nextRegion.time) : Infinity);
+                const future = hwyCameraPlanAt(_stablePlan.stops, futureTime,
                     s.rate, cameraSmoothing, _stableViewFuturePlan);
                 const futureX = future.valid ? s.x + future.x - plan.x : s.x;
                 const panDistance = stableSolve(futureX, viewDistance, prediction, .96, true,
@@ -23538,8 +23939,11 @@
                 if (s.correction) {
                     s.quietZoomTime = 0;
                     s.zoomReturnFrom = s.zoomRequired = s.distance;
-                    s.zoomVelocity = !snap && !resize && dt > 0
-                        ? Math.max(0, (s.distance - previousDistance) / dt) : 0;
+                    // A visibility correction is not elapsed camera motion.
+                    // Dividing its displacement by dt invents extra outward
+                    // momentum, especially on the last frame of a passage,
+                    // and makes the peak zoom depend on the frame rate.
+                    s.zoomVelocity = !snap && !resize ? Math.max(0, s.zoomVelocity || 0) : 0;
                 }
             }
             if (!stableCameraFollow || bundle.isPlaying === false) s.zoomVelocity = 0;
@@ -23548,7 +23952,7 @@
 
         /* ── Camera smooth lerp ──────────────────────────────────────────── */
         function camUpdate(bundle) {
-            bundle = letRingView(bundle);
+            bundle = letRingView(bundle, letRingTrailsVisible);
             if (cameraMode === 'stable') { stableCamUpdate(bundle, _frameNow); return; }
             if (_stableCam.active) {
                 _stableCam.active = false;
@@ -24077,6 +24481,7 @@
             _songKey = null;
             _resetRsNotationPrewarm();
             _linkNextTargetSet = null;
+            _openSlideTailNotes = new WeakSet();
             _linkedTrailPaths = { byNote: new WeakMap(), paths: [] };
             _linkedTrailAnchorsRef = null;
             _linkedTrailHoldModelRef = null;
@@ -24646,6 +25051,7 @@
             default: BG_DEFAULTS.notationStyle,
         },
         { key: 'noteStemsVisible', label: 'Note-gem stems', type: 'toggle', default: BG_DEFAULTS.noteStemsVisible },
+        { key: 'letRingTrailsVisible', label: 'Show let-ring trails', type: 'toggle', default: BG_DEFAULTS.letRingTrailsVisible },
         { key: 'openStringStemsVisible', label: 'Open-string stems', type: 'toggle', default: BG_DEFAULTS.openStringStemsVisible },
         { key: 'chordBoxTop', label: 'Chord box top (RS+)', type: 'select',
             options: [{ id: 'short-caps', label: 'Short caps' }, { id: 'full', label: 'Full border' }],

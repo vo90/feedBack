@@ -18,7 +18,7 @@ function extract(name) {
 const { build, prepare, at, rejoin, zoom } = new Function(`
     const NFRETS = 24;
     ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote'].map(extract).join('\n')}
-    ${['hwyBuildCameraStops', 'hwyPrepareCameraStops', 'hwyCameraPlanAt', 'hwyCameraRejoin', 'hwyCameraZoom'].map(extract).join('\n')}
+    ${['hwyBuildCameraStops', 'hwyBuildCameraAttackIndex','hwyPrepareCameraStops', 'hwyCameraPlanAt', 'hwyCameraRejoin', 'hwyCameraZoom'].map(extract).join('\n')}
     return {build:hwyBuildCameraStops,prepare:hwyPrepareCameraStops,at:hwyCameraPlanAt,rejoin:hwyCameraRejoin,zoom:hwyCameraZoom};
 `)();
 const row = (time, x, width = 4) => ({ time, x, minX: x - width / 2, maxX: x + width / 2 });
@@ -56,10 +56,11 @@ test('holding eligibility uses real duration at different playback speeds', () =
     assert.equal(build(rows, 2, fits).length, 1);
 });
 
-test('temporary one-sided extension stays centred but a persistent extension reframes', () => {
+test('readable one-sided extensions keep the held centre even when persistent', () => {
     const a = row(0, 10), b = row(2, 11, 6), c = row(2.315, 10);
     assert.equal(build([a, b, c], 1, fits).length, 1);
-    assert.deepEqual(build([a, b], 1, fits).map(r => r.x), [10, 11]);
+    assert.deepEqual(build([a, b], 1, fits).map(r => r.x), [10]);
+    assert.deepEqual(build([a, b], 1, () => false).map(r => r.x), [10, 11]);
 });
 
 test('holding decisions cannot see a distant return elsewhere in the song', () => {
@@ -79,8 +80,8 @@ test('rapid related positions do not restart the same target repeatedly', () => 
 test('progressive short changes continue following rather than staying at an old position', () => {
     const rows = Array.from({ length: 20 }, (_, i) => row(i * .2, i));
     const stops = build(rows, 1, fits);
-    assert.equal(stops.length, 20);
-    assert.equal(sample(stops, 5).x, 19);
+    assert.equal(stops.length, 10);
+    assert.ok(Math.abs(sample(stops, 5).x - 19) <= 1.2);
     let previous = 0;
     for (let t = 0; t < 5; t += .01) {
         const { x } = sample(stops, t); assert.ok(x >= previous - 1e-10); previous = x;
@@ -217,4 +218,23 @@ test('renewed wide requirements cancel a narrowing return', () => {
     zoom(state, 2, .1);
     assert.equal(state.quietZoomTime, 0);
     assert.ok(state.distance > before);
+});
+
+
+test('shared brief remote flourish stays bounded to its neighbouring passage', () => {
+    const rows = [row(0, 4), row(100, 12), row(100.8, 4)];
+    rows.forEach(Object.freeze);
+    const stops = build(rows, 1, () => false, () => 8);
+    assert.deepEqual(stops.map(r => [r.time, r.x]), [[0, 4], [99.4, 8], [100.8, 4]]);
+    for (const time of [0, 10, 50, 98]) assert.equal(sample(stops, time).x, 4);
+    assert.equal(rows[0].x, 4);
+});
+
+test('shared composition is used only for a short nearby reversal that fits', () => {
+    const share = () => 8;
+    const short = [row(0, 2), row(2, 4), row(3, 12), row(3.8, 4)];
+    assert.deepEqual(build(short, 1, () => false, share).map(r => r.x), [2, 8, 4]);
+    assert.deepEqual(build(short, 1, () => false, () => NaN).map(r => r.x), [2, 4, 12, 4]);
+    assert.deepEqual(build([row(0, 4), row(2, 12), row(4, 4)], 1, () => false, share).map(r => r.x), [4, 12, 4]);
+    assert.deepEqual(build([row(0, 4), row(2, 20), row(2.8, 4)], 1, () => false, share).map(r => r.x), [4, 20, 4]);
 });

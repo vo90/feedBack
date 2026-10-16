@@ -1376,6 +1376,8 @@ app.include_router(audio_effects.router)
 
 # ── Settings routes → routers/settings.py (R3) ──────────────────────────────
 app.include_router(settings_router.router)
+from routers import guitar_profiles as guitar_profiles_router
+app.include_router(guitar_profiles_router.router)
 
 
 def _default_settings():

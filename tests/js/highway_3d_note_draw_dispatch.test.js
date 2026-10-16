@@ -24,6 +24,7 @@ function harness() {
         const _noteDrawQueue=[], _visibleTrailEvents=[], _scrChordNote={};
         const _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap(), _linkedVibratoRuns=new WeakMap();
         const _linkedTrailPaths={byNote:new WeakMap()}, AHEAD=3;
+        const _openSlideTailNotes=new WeakSet();
         let hook=null, validHook=null;
         const seen=[], events=new WeakMap();
         const validString=s=>validHook ? validHook(s) : s>=0&&s<6;
@@ -49,6 +50,7 @@ function harness() {
         return {
             draw:drawNote, flush:flushNoteDraws, seen, records:_noteDrawQueue, scratch:_scrChordNote,
             linkedStarts:_linkedBendStarts, linkedEnds:_linkedBendEnds, linkedVibrato:_linkedVibratoRuns, linkedPaths:_linkedTrailPaths,
+            hiddenOpenSlideTails:_openSlideTailNotes,
             collect(value=true){_collectNoteDraws=value;},
             begin(){_collectNoteDraws=true;_noteDrawCount=0;},
             hook(value){hook=value;},validHook(value){validHook=value;},
@@ -144,4 +146,29 @@ test('a reused chord view clears stale fields and absent linked metadata', () =>
     assert.equal(h.linkedStarts.get(view),0);assert.equal(h.linkedEnds.get(view),undefined);
     assert.equal(h.linkedVibrato.get(view),undefined);assert.equal(h.linkedPaths.byNote.has(view),false);
     h.flush();assert.equal(h.seen[1].args[17],view);
+});
+
+test('an open slide endpoint uses chord source identity and pooled reuse restores an ordinary open tail', () => {
+    const h=harness(),endpoint=note({f:0}),ordinary=note({f:0,t:11});
+    h.hiddenOpenSlideTails.add(endpoint);
+    Object.assign(h.scratch,endpoint);
+    const args=Array(18).fill(undefined);
+    args[0]=h.scratch;args[1]=9.9;args[7]=true;args[13]=true;args[17]=endpoint;
+    h.begin();h.draw(...args);
+    const record=h.records[0],view=record.args[0];
+    assert.notEqual(view,endpoint,'the pooled drawing view is not the authored chord member');
+    assert.equal(record.parts.head,false);
+    assert.equal(record.parts.trail,false,'the original member identity hides both detached rails');
+    assert.equal(record.event.gemVisible,false);
+    assert.equal(record.event.trailVisible,false,'hidden tails cannot become overlap candidates');
+    h.flush();
+    Object.assign(h.scratch,ordinary);
+    args[1]=10.9;args[13]=false;args[17]=ordinary;
+    h.begin();h.draw(...args);
+    assert.equal(h.records[0],record);assert.equal(record.args[0],view);
+    assert.equal(record.parts.head,true);
+    assert.equal(record.parts.trail,true,'pool reuse does not hide a later independent open note');
+    assert.equal(record.event.gemVisible,true);
+    assert.equal(record.event.trailVisible,true);
+    h.flush();
 });

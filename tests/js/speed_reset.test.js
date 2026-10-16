@@ -139,6 +139,7 @@ function extractConstLine(src, name) {
 
 function loadPlaySong(sandbox) {
     const src = fs.readFileSync(APP_JS, 'utf8');
+    const instrumentSessionSource = fs.readFileSync(path.join(__dirname, '../../static/js/instrument-session.js'), 'utf8');
     // the module is ESM; the vm sandbox evaluates plain script text
     const controls = fs.readFileSync(CONTROLS_JS, 'utf8').replace(/^export /gm, '');
     const resetHelper = controls.includes('function _resetPlaybackSpeedForNewSong')
@@ -153,6 +154,8 @@ function loadPlaySong(sandbox) {
         `
         : '';
     const code = `
+        ${extractFunction(instrumentSessionSource, 'function createInstrumentSession')}
+        const instrumentSession = createInstrumentSession();
         var artAbortController = null;
         // isPlaying moved onto the shared player-state container so a carved module can
         // WRITE it (an imported binding is read-only). NB window.feedBack.isPlaying — the

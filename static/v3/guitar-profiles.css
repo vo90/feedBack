@@ -1,0 +1,24 @@
+.guitar-picker { font-size: 12px; color: #d1d5db; min-width: 0; }
+.guitar-picker-label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #9ca3af; }
+.guitar-picker select, .guitar-picker input[type="text"] { width: 100%; min-width: 0; background: #1f2937; color: #f3f4f6; border: 1px solid #4b5563; border-radius: 6px; padding: 7px; font: inherit; }
+.guitar-picker input[type="range"] { width: 100%; }
+.guitar-picker-level { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px; margin-top: 6px; font-size: 11px; }
+.guitar-picker [data-guitar-status] { color: #9ca3af; }
+.guitar-picker-actions { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.guitar-picker button { border: 1px solid #4b5563; background: #1f2937; border-radius: 6px; padding: 5px 8px; color: #e5e7eb; font: inherit; cursor: pointer; }
+.guitar-picker button:hover { border-color: #22d3ee; }
+.guitar-picker button:disabled, .guitar-picker select:disabled, .guitar-picker input:disabled { opacity: .45; cursor: default; }
+.guitar-picker :focus-visible { outline: 2px solid #22d3ee; outline-offset: 2px; }
+.guitar-picker-help { color: #9ca3af; font-size: 11px; line-height: 1.5; margin: 8px 0; }
+.guitar-picker-message { color: #fbbf24; font-size: 11px; margin: 5px 0; }
+.guitar-picker [hidden] { display: none !important; }
+[data-guitar-picker="settings"] { max-width: 480px; padding: 16px 0; }
+[data-guitar-active-label] { display: block; max-width: 60px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 9px; }
+.guitar-picker [data-guitar-form] { border-top: 1px solid #374151; margin-top: 12px; padding-top: 10px; }
+.guitar-picker-step { color: #22d3ee; font-size: 11px; font-weight: 600; margin: 0 0 10px; }
+.guitar-picker-review { font-size: 13px; overflow-wrap: anywhere; }
+.guitar-picker [data-guitar-classify] { margin-bottom: 10px; }
+[data-instrument-icon] { display: block; height: 28px; color: #f3f4f6; }
+[data-instrument-icon] svg { width: 28px; height: 28px; }
+[data-inst-toggle]:disabled { opacity: .65; cursor: default; }
+[data-inst-menu] { max-height: calc(100vh - 144px); overflow-y: auto; overscroll-behavior: contain; }

@@ -5,6 +5,7 @@
 
 # Shared FeedForge policy is audited byte-for-byte across checkouts.
 lib/generated_hand_positions.py text eol=lf
+lib/guidance_provenance.py text eol=lf
 
 # Keep the minified Three.js bundle byte-identical across platforms.
 # Without this, autocrlf=true would rewrite the bundle's newlines on

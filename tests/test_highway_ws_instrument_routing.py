@@ -78,7 +78,7 @@ def _write_sloppak(dlc_root, name, arrangements):
 
 @pytest.fixture()
 def make_client(tmp_path, monkeypatch):
-    def _make(instrument=None, default_arrangement=None):
+    def _make(instrument=None, default_arrangement=None, active_profile=None):
         cfg = tmp_path / "config"
         cfg.mkdir(exist_ok=True)
         conf = {}
@@ -86,6 +86,8 @@ def make_client(tmp_path, monkeypatch):
             conf["instrument"] = instrument
         if default_arrangement is not None:
             conf["default_arrangement"] = default_arrangement
+        if active_profile is not None:
+            conf["active_instrument_profile"] = active_profile
         if conf:
             (cfg / "config.json").write_text(json.dumps(conf), encoding="utf-8")
         monkeypatch.setenv("CONFIG_DIR", str(cfg))
@@ -168,13 +170,19 @@ def test_explicit_arrangement_overrides_instrument(make_client):
     assert idx == 0
 
 
-def test_bass_with_no_bass_part_falls_through_to_guitar(make_client):
+def test_bass_with_no_bass_part_reports_visible_error(make_client):
     server = make_client(instrument="bass")
     # Lead + Rhythm, no bass part at all.
     _write_sloppak(server._get_dlc_dir(), "gtr", [("lead", "Lead"), ("rhythm", "Rhythm")])
     with TestClient(server.app) as client:
-        idx = _arr_index(client, "/ws/highway/gtr.sloppak")
-    assert idx == 0  # no bass candidate → existing default (a guitar part)
+        with client.websocket_connect("/ws/highway/gtr.sloppak") as ws:
+            for _ in range(200):
+                msg = ws.receive_json()
+                if msg.get("error"):
+                    assert "no bass arrangement" in msg["error"]
+                    break
+            else:
+                pytest.fail("No visible missing-instrument error")
 
 
 def test_bass_no_pref_picks_the_primary_bass_not_an_alt(make_client):
@@ -233,3 +241,56 @@ def test_hybrid_preference_keeps_bass_instrument_routing(make_client):
     with TestClient(server.app) as client:
         assert _arr_index(client, "/ws/highway/hybrid.sloppak?naming_mode=smart") == 1
         assert _arr_index(client, "/ws/highway/hybrid.sloppak?naming_mode=smart&arrangement=2") == 2
+
+
+@pytest.mark.parametrize("preference", [None, "Bass"])
+@pytest.mark.parametrize("mode", ["smart", "legacy"])
+def test_guitar_excludes_bass_from_default_and_most_notes(make_client, preference, mode):
+    server = make_client(instrument="guitar", default_arrangement=preference)
+    pak = _write_sloppak(server._get_dlc_dir(), "busy", [("bass", "Bass"), ("lead", "Lead"), ("rhythm", "Rhythm")])
+    for name, count in [("bass", 10), ("lead", 1), ("rhythm", 3)]:
+        notes = [{"time": i, "string": 0, "fret": 1, "sustain": 0} for i in range(count)]
+        (pak / "arrangements" / f"{name}.json").write_text(json.dumps(_arr(notes)))
+    with TestClient(server.app) as client:
+        assert _arr_index(client, f"/ws/highway/busy.sloppak?naming_mode={mode}") == 2
+        assert _arr_index(client, f"/ws/highway/busy.sloppak?naming_mode={mode}&arrangement=0") == 0
+
+
+def test_guitar_with_no_guitar_part_reports_visible_error(make_client):
+    server = make_client(instrument="guitar")
+    _write_sloppak(server._get_dlc_dir(), "onlybass", [("bass", "Bass")])
+    with TestClient(server.app) as client:
+        with client.websocket_connect("/ws/highway/onlybass.sloppak") as ws:
+            for _ in range(200):
+                msg = ws.receive_json()
+                if msg.get("error"):
+                    assert "no guitar arrangement" in msg["error"]
+                    break
+            else:
+                pytest.fail("No visible missing-instrument error")
+
+
+def test_named_bass_does_not_enter_guitar_candidates(make_client):
+    server = make_client(instrument="guitar", default_arrangement="Rain")
+    pak = _write_sloppak(server._get_dlc_dir(), "named", [("bass", "Rain"), ("lead", "Lead")])
+    manifest = yaml.safe_load((pak / "manifest.yaml").read_text())
+    manifest["arrangements"][0]["type"] = "bass"
+    (pak / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+    with TestClient(server.app) as client:
+        assert _arr_index(client, "/ws/highway/named.sloppak?naming_mode=smart") == 1
+
+
+@pytest.mark.parametrize("preference", [None, "Bass"])
+@pytest.mark.parametrize("mode", ["smart", "legacy"])
+def test_guitar_rhythm_role_is_used_when_default_is_missing_or_bass(make_client, preference, mode):
+    server = make_client(instrument="guitar", default_arrangement=preference, active_profile="guitar-rhythm")
+    _write_sloppak(server._get_dlc_dir(), "roles", [("bass", "Bass"), ("lead", "Lead"), ("rhythm", "Rhythm")])
+    with TestClient(server.app) as client:
+        assert _arr_index(client, f"/ws/highway/roles.sloppak?naming_mode={mode}") == 2
+
+
+def test_matching_guitar_preference_wins_over_remembered_role(make_client):
+    server = make_client(instrument="guitar", default_arrangement="Lead", active_profile="guitar-rhythm")
+    _write_sloppak(server._get_dlc_dir(), "preferred", [("bass", "Bass"), ("lead", "Lead"), ("rhythm", "Rhythm")])
+    with TestClient(server.app) as client:
+        assert _arr_index(client, "/ws/highway/preferred.sloppak?naming_mode=smart") == 1

@@ -103,6 +103,7 @@
          panes render with. Hand-authored (not Tailwind-scanned) so a
          runtime-installed plugin can use the chip without shipping its own CSS. -->
     <link rel="stylesheet" href="/static/panes/panes.css">
+    <link rel="stylesheet" href="/static/v3/guitar-profiles.css">
     <!-- EVERY external script below is `defer`. Do not add a plain one.
          `defer` and `type="module"` scripts share a single "execute after
          parsing" list and run in DOCUMENT ORDER; a plain classic script runs
@@ -129,6 +130,7 @@
     <script type="module" src="/static/capabilities/working-tuning.js"></script>
     <script type="module" src="/static/capabilities/audio-session.js"></script>
     <script type="module" src="/static/capabilities/amp-sims.js"></script>
+    <script defer src="/static/guitar-profiles.js"></script>
     <script type="module" src="/static/capabilities/audio-effects.js"></script>
     <script type="module" src="/static/capabilities/playback.js"></script>
     <!-- fee[dB]ack v0.3.0: ui.library-card-injection capability (plugin card actions). -->
@@ -638,6 +640,7 @@
             <!-- ══ AUDIO ═══════════════════════════════════════════════════ -->
             <div class="fb-tabpanel" data-tab="audio">
                 <div class="fb-tabpanel-head"><h3>Audio Settings</h3></div>
+                <div data-guitar-picker="settings"></div>
                 <div class="fb-srows">
                     <!-- Live guitar tone source -->
                     <div class="fb-srow fb-srow-stack">
@@ -1313,6 +1316,7 @@
     <script defer src="/static/v3/shop.js"></script>
     <script defer src="/static/v3/tuner-core.js"></script>
     <script defer src="/static/v3/badges.js"></script>
+    <script defer src="/static/v3/guitar-profiles-ui.js"></script>
     <script defer src="/static/v3/stats-recorder.js"></script>
     <script defer src="/static/v3/live-performance-hud.js"></script>
     <script defer src="/static/v3/scoreboard-pref.js"></script>

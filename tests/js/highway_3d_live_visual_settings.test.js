@@ -21,7 +21,7 @@ function listenerHarness() {
 
 for (const key of ['trailYieldSameStringEnabled', 'trailYieldSameStringMaxGap', 'trailYieldSameStringLeadTime',
     'notationStyle', 'chordBoxTop', 'repeatChordFullBorder', 'hitFx', 'sparks', 'cinematic', 'verdictMarks', 'timingFx',
-    'streakFx', 'bloom', 'fpsVisible', 'fretDividersVisible', 'chordDiagramVisible']) {
+    'streakFx', 'bloom', 'fpsVisible', 'fretDividersVisible', 'chordDiagramVisible', 'letRingTrailsVisible']) {
     test(`${key} immediately refreshes live state without rebuilding the background`, () => {
         const h = listenerHarness();
         assert.deepEqual(h.emit(key), { loads: 1, rebuilds: 0 });

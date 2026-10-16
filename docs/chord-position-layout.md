@@ -1,5 +1,59 @@
 # Chord boxes and generated hand positions
 
+## Repeated broken power chords
+
+The `broken-power-chord-v1` policy keeps one compact position for a confirmed
+repeating power-chord grip played in separate attacks. For example, a root at
+A-string fret 2 alternating with D/G-string frets 4/4 uses the 2–5 position for
+both attacks. The lowest fret belongs to the complete repeated grip, even when
+the root is not sounding at the upper attack. No extra notes or sustains are
+created.
+
+This exception requires a repeated, matching musical grip; a lane merely
+containing a new chord is insufficient. Independent chords still establish
+their lowest-fret position. A standalone 5/7/7 chord starts at 5, and the Rats
+slide-to-chord sequence must still release its earlier slide position.
+Conflicting material, technique boundaries and rests end the shared grip.
+At least two complete cycles are required. Repeated or separately picked
+upper contacts can share the grip when the root returns; at a passage end,
+only the first complete upper response belongs to the grip. Continued
+upper-only chords then establish their own lowest-fret position. Candidate
+searches inspect at most sixteen root picks and sixteen upper attacks, with
+beat-relative gap and duration limits.
+
+Six-string tuning offsets cannot identify guitar versus six-string bass.
+Only the two lowest three-string groups, which agree for both instruments,
+qualify for inference; higher groups retain chord-local positions.
+
+Implementation plan:
+
+1. Recognize bounded repeated split power-chord patterns in FeedForge's pure
+   generator, before the existing occupied-fret and position calculation.
+2. Give only confirmed parts their complete grip's preferred lowest fret;
+   preserve the existing chord, slide and overlapping-sustain rules elsewhere.
+3. Version the policy and copy the canonical generator into Core unchanged.
+4. Test independent chords, passage exits, old failure cases and ownership
+   boundaries; measure generator cost on dense input.
+
+The result is an ordinary anchor array. Playback and seeking perform no new
+musical recognition and use the existing shared floor/box lane resolver.
+Recognition runs during import or explicit regeneration, or once at the
+legacy compatibility load boundary. Intact legacy `chartGuidance` receipts
+from `positionless-preparation-v1` can upgrade in memory only with their
+`timed-known-slides` receipt and matching music/guidance hashes. Current and
+unknown policies, altered receipts and authored guidance remain intact.
+
+Any `guidanceProvenance` extension continues to disable the legacy upgrade,
+including previous generated policies. Those archives need explicit
+regeneration. This ownership guard applies independently to the arrangement
+and each difficulty level, with inherited music metadata and phrase windows.
+Loading never rewrites an archive or changes its musical events.
+
+Core verification: 306 loader, provenance, arrangement, wire-format and slide
+tests pass. The new regressions exercise the split grip through real loading
+and serialization, inherited phrase-level upgrades, invalid legacy receipts,
+and explicit generated/source/user ownership preservation.
+
 ## Shared renderer lane bounds
 
 The renderer now accepts a valid containing four-fret position even when an
@@ -28,7 +82,7 @@ evidence is kept outside the repository.
 
 ## Timed slide positions
 
-The shared policy is now `slide-follow-v1`. Known slides produce moving
+The `slide-follow-v1` policy introduced known slides that produce moving
 four-fret positions, widened only when simultaneous notes or the supported
 fret-spacing layouts require it. The generator uses the highway's pitched and
 unpitched easing, preserving the original timebase even if a replacement pick

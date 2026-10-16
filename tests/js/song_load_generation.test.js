@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const {extractFunction} = require('./test_utils');
 const session = fs.readFileSync(path.join(__dirname, '../../static/js/session.js'), 'utf8');
+const instrumentSessionSource = fs.readFileSync(path.join(__dirname, '../../static/js/instrument-session.js'), 'utf8');
 const highway = fs.readFileSync(path.join(__dirname, '../../static/highway.js'), 'utf8');
 
 function build() {
@@ -21,6 +22,8 @@ function build() {
         '_hideSectionPracticeBar','_clearAutoExit','showScreen','_scheduleSectionPracticeRetries','loadSavedLoops']) sb[name]=()=>{};
     sb._resolvePlayerOrigin=()=> 'home'; sb._getArrangementNamingMode=()=> 'default';sb._songEventPayload=()=>({});
     vm.createContext(sb);
+    vm.runInContext(extractFunction(instrumentSessionSource, 'function createInstrumentSession') +
+        '; const instrumentSession = createInstrumentSession();', sb);
     vm.runInContext(extractFunction(session,'async function playSong'),sb);
     return {sb,connections,timers,stops,elements};
 }
@@ -29,19 +32,21 @@ test('load clears stale title immediately and yields without a fixed 500ms delay
     assert.equal(h.elements.get('hud-title').textContent,'Loading song…');
     assert.equal(h.elements.get('hud-arrangement').textContent,'');
     assert.equal(h.sb.window.feedBack.isPlaying,false,'public playback state clears even if no pause event fires');
+    await Promise.resolve(); // Navigation is awaited before yielding the loading paint.
     assert.equal(h.timers[0].ms,0);
     h.timers.shift().fn();await p;
     assert.equal(h.connections.length,1);assert.match(h.connections[0],/first\?arrangement=2/);
 });
 test('rapid A to B to C only connects C',async()=>{
     const h=build();const pending=['A','B','C'].map(f=>h.sb.playSong(f));
+    await Promise.resolve();
     h.timers.forEach(t=>t.fn());await Promise.all(pending);
     assert.equal(h.connections.length,1);assert.match(h.connections[0],/\/C\?/);
 });
 test('superseded native stop completion cannot reset the new session',async()=>{
     const h=build();h.sb.window._juceMode=true;
     const a=h.sb.playSong('A'), b=h.sb.playSong('B');
-    h.stops[1]();await Promise.resolve();await Promise.resolve();await Promise.resolve();
+    h.stops[1]();await new Promise(setImmediate);
     h.timers.forEach(t=>t.fn());await b;
     h.sb.window._juceMode=true;h.sb.audio.src='new-song';
     h.stops[0]();await a;

@@ -28,9 +28,7 @@ const frettedHeads=s=>s.heads.filter(h=>h.dt>=0&&h.dt<=.25&&s.next.some(n=>n.f>0
 const once=(s,a,b)=>{assert.equal(s.split(a).length,2,'Missing unique hook: '+a);return s.replace(a,b);};
 
 function instrument(input){
- let result=once(input,'_stableFit.distance = high;',`_stableFit.distance = high;
- if(window.__prioritySolves)window.__prioritySolves.push({preferredX,baseDistance,prediction,margin,fixedCentre,interval:{...interval},result:{..._stableFit}});`);
- return once(result,"contextType: 'webgl2',",`__priorityAudit(){return {ren,scene,cam,mode:cameraMode,frameTime:_frameNow,constants:{K,TS,AHEAD},
+ return once(input,"contextType: 'webgl2',",`__priorityAudit(){return {ren,scene,cam,mode:cameraMode,frameTime:_frameNow,constants:{K,TS,AHEAD},
  state:Object.fromEntries(Object.entries(_stableCam).filter(([k,v])=>v===null||['number','string','boolean'].includes(typeof v))),
  openingViewFits(distance){
  const testCamera=cam.clone(),scale=typeof _stableViewBasis==='undefined'?1:_stableViewBasis.distanceMul;
@@ -41,11 +39,17 @@ function instrument(input){
  return true;},
  projectFret(f,s=2,dt=0){return new T.Vector3(xFretMid(f),sY(s),dZ(dt)).project(cam).toArray();},
  fretWorldX(f){return xFretMid(f);},
- region(bundle){const r=typeof stablePlayingRegion==='function'?stablePlayingRegion(bundle,_frameNow):null;
+ // draw() resolves an augmented let-ring bundle. Re-resolving the caller's
+ // original arrays here invalidates its caches and changes the next frame.
+ region(bundle){const r=typeof _stableRegionResult==='object'?_stableRegionResult:null;
  const a=getChartAnchorAt(bundle.anchors,_frameNow),bounds=a?laneBoundsFromAnchor(a):null;
  const expected=bounds?{minX:Math.min(xFret(bounds.dMin),xFret(bounds.dMax)),maxX:Math.max(xFret(bounds.dMin),xFret(bounds.dMax)),dMin:bounds.dMin,dMax:bounds.dMax}:null;
  if(expected)expected.x=(expected.minX+expected.maxX)/2;
- const floor=[];pLane.forEachActive(m=>{if(!m.visible)return;m.updateMatrixWorld(true);const b=new T.Box3().setFromObject(m);if(b.max.z>=-.02*K)floor.push([b.min.x,b.max.x,b.min.z,b.max.z]);});
+ // Select the actual first floor interval by depth, not a tolerance around
+ // the playline: immediately before a boundary that tolerance also collects
+ // the next interval, incorrectly comparing their union to the current row.
+ const nearZ=_laneSegLen?(_laneSegZ0[0]+_laneSegZ1[0])*.5:null;
+ const floor=[];pLane.forEachActive(m=>{if(!m.visible||nearZ!==null&&m.position.z!==nearZ)return;m.updateMatrixWorld(true);const b=new T.Box3().setFromObject(m);if(nearZ!==null||b.max.z>=-.02*K)floor.push([b.min.x,b.max.x,b.min.z,b.max.z]);});
  const gold=[];for(let f=1;f<_incomingFixedFretLabels.length;f++){const m=_incomingFixedFretLabels[f];if(m?.visible&&m.material?.opacity===1){const rect={};if(_incomingLabelScreenRect(m,rect,true))gold.push({f,rect});}}
  const rr=r?Object.fromEntries(Object.entries(r).filter(([k,v])=>v===null||['number','string','boolean'].includes(typeof v))):null;
  return{resolved:rr,expected,floor:floor.length?{minX:Math.min(...floor.map(v=>v[0])),maxX:Math.max(...floor.map(v=>v[1]))}:null,gold};},
@@ -56,7 +60,7 @@ function instrument(input){
  pool?.forEachActive(m=>{if(!m.visible)return;const a=m.geometry?.attributes?.position,n=Number.isFinite(m.geometry?.userData?.ribbonSlices)?Math.min(a.count,(m.geometry.userData.ribbonSlices+1)*4):a?.count||0;
  items.push({kind,position:m.position.toArray(),scale:m.scale.toArray(),quaternion:m.quaternion.toArray(),vertices:a?Array.from(a.array.slice(0,n*3)):[]});});}return items;}
  };},
- __priorityBenchmark(bundle,count){window.__prioritySolves=null;for(let i=0;i<30;i++){window.__wall+=1000/60;camUpdate(bundle);}
+ __priorityBenchmark(bundle,count){for(let i=0;i<30;i++){window.__wall+=1000/60;camUpdate(bundle);}
  const samples=[];for(let i=0;i<count;i++){window.__wall+=1000/60;const t=window.__realNow();camUpdate(bundle);samples.push(window.__realNow()-t);}
  samples.sort((a,b)=>a-b);return{mean:samples.reduce((a,b)=>a+b,0)/samples.length,p95:samples[Math.floor(samples.length*.95)],max:samples.at(-1),points:_stableCam.pointCount};},
  contextType:'webgl2',`);
@@ -122,6 +126,7 @@ const range=values=>values.length?Math.max(...values)-Math.min(...values):0;
 const reversals=values=>{let prev=0,count=0;for(let i=1;i<values.length;i++){const d=values[i]-values[i-1];if(Math.abs(d)<1e-5)continue;const sign=Math.sign(d);if(prev&&sign!==prev)count++;prev=sign;}return count;};
 function validate(c,run){
  const samples=[run.first,...run.samples],prefix=c.name+': ';
+ check(new Set(samples.map(s=>s.state.planRevision)).size===1,prefix+'unchanged chart rebuilt the camera plan during playback');
  for(const s of samples){
  check(s.mode==='stable',prefix+'Stable mode inactive at '+s.time);
  check(pose(s).every(Number.isFinite),prefix+'nonfinite pose at '+s.time);
@@ -156,8 +161,13 @@ function validate(c,run){
  if(c.kind==='width'){
  // A closer default may need room at the expanded edge. Independently project
  // the collected envelope with Three.js at the opening distance: widening is
- // justified only when that distance no longer fits the calibrated viewport.
- check(samples.every(s=>Math.abs(s.state.distance-run.first.state.distance)<.001||s.openingViewFits===false),prefix+'same-base extension widened unnecessarily');
+ // justified when that distance no longer fits the calibrated viewport. The
+ // existing 600ms preparation window may anticipate the wider future row,
+ // which is deliberately absent from the current collected envelope.
+ const widthChange=c.b.anchors.find(a=>a.time>c.start&&a.width>c.b.anchors[0].width)?.time;
+ check(samples.every(s=>Math.abs(s.state.distance-run.first.state.distance)<.001
+   ||s.openingViewFits===false
+   ||s.frameTime>=widthChange-.6&&s.frameTime<widthChange),prefix+'same-base extension widened unnecessarily');
  const after=samples.filter(s=>s.time>=9.1);
  check(range(after.map(s=>s.state.distance))<.001,prefix+'same-width passage has drifting zoom');
  check(range(after.map(s=>s.state.x))<.001,prefix+'same-base extension did not settle');
@@ -246,8 +256,8 @@ async function main(){
  const openingViewFits=window.__checkOpeningDistance?a.openingViewFits(window.__openingDistance):null;
  const upcoming=window.chartEvents.filter(n=>n.t>=now-1e-7),t=upcoming[0]?.t;
  const next=upcoming.filter(n=>Math.abs(n.t-t)<1e-7).map(n=>({t:n.t,dt:n.t-now,f:n.f,s:n.s,screen:a.projectFret(n.f,n.s,n.t-now),playline:a.projectFret(n.f,n.s,0)}));
- return{time:now,frameTime:a.frameTime,mode:a.mode,state:a.state,openingViewFits,position:a.cam.position.toArray(),quaternion:a.cam.quaternion.toArray(),fov:a.cam.fov,focusScreen:a.projectFret(window.focusFret||4),focusWorldX:a.fretWorldX(window.focusFret||4),region:a.region(bundle),liveHolds:window.chartEvents.filter(n=>n.sus>0&&n.t<=now&&n.t+n.sus>now&&n.f>0).map(n=>({f:n.f,s:n.s,screen:a.projectFret(n.f,n.s,0)})),heads:a.heads(),next,solves:window.__prioritySolves||[]};};
- window.step=(time,ms,playing=true)=>{window.__wall+=ms;bundle.currentTime=time;bundle.isPlaying=playing;window.__prioritySolves=[];r.draw(bundle);return capture();};
+ return{time:now,frameTime:a.frameTime,mode:a.mode,state:a.state,openingViewFits,position:a.cam.position.toArray(),quaternion:a.cam.quaternion.toArray(),fov:a.cam.fov,focusScreen:a.projectFret(window.focusFret||4),focusWorldX:a.fretWorldX(window.focusFret||4),region:a.region(bundle),liveHolds:window.chartEvents.filter(n=>n.sus>0&&n.t<=now&&n.t+n.sus>now&&n.f>0).map(n=>({f:n.f,s:n.s,screen:a.projectFret(n.f,n.s,0)})),heads:a.heads(),next};};
+ window.step=(time,ms,playing=true)=>{window.__wall+=ms;bundle.currentTime=time;bundle.isPlaying=playing;r.draw(bundle);return capture();};
  window.renderNow=()=>{const a=r.__priorityAudit();a.ren.info.autoReset=false;a.ren.info.reset();window.__realRender(a.scene,a.cam);return{calls:a.ren.info.render.calls,triangles:a.ren.info.render.triangles,geometry:a.geometry()};};
  });}
  async function init(c,extra={}){
