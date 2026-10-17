@@ -34,6 +34,122 @@
     }
     const letRingView = createLetRingView();
 
+    // Some legacy charts put one member's duration in a coincident standalone
+    // record. Give that physical attack one presentation owner before building
+    // holds, culling, trail indexes or camera bounds. Never infer another string's
+    // duration, round onsets, or overwrite an explicitly authored zero.
+    function hwyCoincidentSustainKey(t, s, f) { return `${t}:${s}:${f}`; }
+
+    function hwyPlainSustainMetadata(note) {
+        for (const key of Object.keys(note)) {
+            const value = note[key];
+            switch (key) {
+                case 't': case 's': case 'f': case 'sus': break;
+                case 'fg': case 'sd':
+                    if (!Number.isInteger(value) || value < -1 || value > (key === 'fg' ? 4 : 11)) return false;
+                    break;
+                case 'sl': case 'slu': case 'rh': case 'pkd': case 'ch':
+                    if (value !== -1) return false;
+                    break;
+                case 'bn': case 'bt':
+                    if (value !== 0) return false;
+                    break;
+                case 'ho': case 'po': case 'hm': case 'hp': case 'pm': case 'mt':
+                case 'vb': case 'tr': case 'ac': case 'tp': case 'ln': case 'fhm':
+                case 'plk': case 'slp': case 'ig': case 'ghost':
+                    if (value !== false) return false;
+                    break;
+                case 'bnv':
+                    if (!Array.isArray(value) || value.length !== 0) return false;
+                    break;
+                default: return false;
+            }
+        }
+        return true;
+    }
+
+    function hwyBuildCoincidentSustainOwnership(notes, chords, stringCount = 6) {
+        const sourceByKey = new Map();
+        if (!Array.isArray(notes) || !Array.isArray(chords)) return { notes, chords, sourceByKey };
+        const onsets = new Map();
+        const at = time => {
+            let row = onsets.get(time);
+            if (!row) onsets.set(time, row = { chords: [], strings: new Map() });
+            return row;
+        };
+        for (const chord of chords) if (Number.isFinite(chord?.t)) at(chord.t).chords.push(chord);
+        for (const note of notes) {
+            if (!Number.isFinite(note?.t) || !Number.isInteger(note.s)) continue;
+            const row = onsets.get(note.t);
+            if (!row) continue;
+            const lane = row.strings.get(note.s);
+            if (lane) lane.push(note);
+            else row.strings.set(note.s, [note]);
+        }
+        const replacements = new Map(), consumed = new Set();
+        const valid = note => note && Number.isInteger(note.s) && note.s >= 0 && note.s < stringCount
+            && Number.isInteger(note.f) && note.f >= 0 && note.f <= NFRETS;
+        for (const [time, row] of onsets) {
+            if (row.chords.length !== 1) continue;
+            const chord = row.chords[0], members = chord.notes;
+            if (Object.keys(chord).some(key => !['t', 'id', 'hd', 'notes'].includes(key))
+                || (Object.hasOwn(chord, 'hd') && typeof chord.hd !== 'boolean')
+                || !Array.isArray(members) || members.length < 2 || !members.every(valid)
+                || new Set(members.map(n => n.s)).size !== members.length) continue;
+            const transfers = [];
+            let ambiguous = false;
+            for (const member of members) {
+                const lane = row.strings.get(member.s);
+                if (!lane) continue;
+                if (lane.length !== 1 || lane[0].f !== member.f) { ambiguous = true; break; }
+                const note = lane[0];
+                if (!(Number.isFinite(note.sus) && note.sus > 0)) continue;
+                if (Object.hasOwn(member, 't')
+                    || (Object.hasOwn(member, 'sus') && member.sus !== note.sus)
+                    || !hwyPlainSustainMetadata(note) || !hwyPlainSustainMetadata(member)
+                    || (note.fg ?? -1) !== (member.fg ?? -1)
+                    || (note.sd ?? -1) !== (member.sd ?? -1)) { ambiguous = true; break; }
+                transfers.push({ member, note });
+            }
+            if (ambiguous || !transfers.length) continue;
+            const changed = new Map();
+            for (const { member, note } of transfers) {
+                changed.set(member, { ...member, sus: note.sus });
+                consumed.add(note);
+                sourceByKey.set(hwyCoincidentSustainKey(time, member.s, member.f), note);
+            }
+            replacements.set(chord, { ...chord, notes: members.map(n => changed.get(n) || n) });
+        }
+        return consumed.size ? {
+            notes: notes.filter(n => !consumed.has(n)),
+            chords: chords.map(ch => replacements.get(ch) || ch), sourceByKey,
+        } : { notes, chords, sourceByKey };
+    }
+
+    function createCoincidentSustainView() {
+        let cache = null;
+        function view(bundle, stringCount) {
+            if (!bundle || !Array.isArray(bundle.notes) || !Array.isArray(bundle.chords)) return bundle;
+            if (!cache || cache.notes !== bundle.notes || cache.chords !== bundle.chords || cache.stringCount !== stringCount) {
+                cache = { notes: bundle.notes, chords: bundle.chords, stringCount,
+                    result: hwyBuildCoincidentSustainOwnership(bundle.notes, bundle.chords, stringCount) };
+            }
+            const result = cache.result;
+            if (!result.sourceByKey.size) return bundle;
+            if (cache.provider !== bundle.getNoteState) {
+                cache.provider = bundle.getNoteState;
+                const provider = bundle.getNoteState;
+                // Chord drawing uses pooled copies. Resolve by the exact owned
+                // onset rather than letting a presentation clone reach scoring.
+                cache.getNoteState = typeof provider === 'function' ? (note, time) => provider(
+                    result.sourceByKey.get(hwyCoincidentSustainKey(time, note.s, note.f)) || note, time) : provider;
+            }
+            return { ...bundle, notes: result.notes, chords: result.chords, getNoteState: cache.getNoteState };
+        }
+        view.clear = () => { cache = null; };
+        return view;
+    }
+
     // Chart-local guidance: one cue per authored instant, not per string.
     // A sweep over sorted notes is done only when the chart changes.
     function buildWahGuidance(bundle) {
@@ -8325,6 +8441,7 @@
         // arrangements this avoids per-frame Set construction, nested
         // O(hs × notes) scans, and a sort — significant FPS recovery.
         let _authoredStrumCache = null;
+        const coincidentSustainView = createCoincidentSustainView();
         let _mergeCacheResult = null;
         let _mergeCacheChordsRef = null;
         let _mergeCacheHsRef = null;
@@ -14842,6 +14959,7 @@
             _coincidentRepeatNotesRef = null;
             _coincidentRepeatChordsRef = null;
             _boxedChordMembership = null;
+            coincidentSustainView.clear();
             _filterValidNotesCache = new WeakMap();
             _chordSigCache = new WeakMap();
             _chordShapeCache = new WeakMap();
@@ -24468,6 +24586,7 @@
             _clkAudioT = NaN; _clkPerf = NaN; _clkRate = 1; _frameNow = 0;
             _presentationClock.reset();
             _clkFramePerf = NaN; _clkRateAudioT = NaN; _clkRatePerf = NaN;
+            coincidentSustainView.clear();
             _coincidentRepeatNoteSet = null;
             _coincidentRepeatNotesRef = null;
             _coincidentRepeatChordsRef = null;
@@ -24664,6 +24783,7 @@
             draw(bundle) {
                 if (!_isReady) return;
                 if (_ctxLost) return;   // GPU context lost (alt-tab / reset) — skip until restored
+                bundle = coincidentSustainView(bundle, resolveStringCount(bundle));
                 pbFrameBeg(bundle);
                 if (!_chartPrewarmed) {
                     _chartPrewarmed = true;

@@ -162,6 +162,7 @@ function drawHarness(composer = false) {
         _invertedCached: false, _leftyCached: false, _leftyForBoard: false,
         _invertedForBoard: false, nStr: 6, _renderScale: 1,
         resolveStringCount: () => 6, _prewarmRsNotation: noop, highwayCanvas: null,
+        coincidentSustainView: bundle => bundle,
         update() { h.marks.pbBeg(0); h.advance(4); h.marks.pbEnd(0); },
         camUpdate() { h.advance(2); }, _layoutIncomingFretLabels: noop,
         bgGroup: null, bcCtrl: null, _juiceLastT: 0, _sparkUpdate: noop,

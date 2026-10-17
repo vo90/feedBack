@@ -32,6 +32,7 @@ function membershipHarness() {
         let _chordShapeCache=new WeakMap(), _chordSigCache=new WeakMap();
         let _coincidentRepeatNoteSet, _coincidentRepeatNotesRef, _coincidentRepeatChordsRef, _mergeCacheResult;
         const trailVisibilityReleaseChartReferences=()=>{};
+        const coincidentSustainView={clear:()=>{}};
         ${['validString', 'isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote',
             'usesUnfrettedPosition', '_noteKey', '_noteFretKey', 'lowerBoundT',
             'filterValidNotes', 'mergeChordShape', 'truthyChartFlag', 'hsStart', 'hsEnd',

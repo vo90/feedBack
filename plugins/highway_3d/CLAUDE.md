@@ -65,6 +65,20 @@ visible previews and real repeated attacks; hidden continuation heads can still
 have visible trails. Clear frame visibility on every draw (including paused
 settings changes and seeks), and release queue references with chart indexes.
 
+`createCoincidentSustainView` resolves a unique plain standalone/member overlap
+before all render and camera derivations. Its cached arrays transfer only an
+explicit positive sustain into missing member timing (or remove an exact equal
+duplicate). `lib/song.py` preserves missing chord sustain through the wire;
+explicit zero must remain ineligible. The view preserves source/scoring arrays
+and routes verdict lookups to the original sustained event. Unknown metadata,
+techniques, differing teaching marks and ambiguous onsets block reconciliation.
+Equal ordinary durations may then use shared lanes; a lone sustained member
+keeps its colored trail and blocks the legacy handshape hold. Keep this decision
+chart-static and release the cache during teardown or string-count reset.
+Matching uses exact playback-wire values. Ordinary playback serialization keeps
+its existing millisecond precision, so sub-millisecond source differences are
+unavailable here; Library Doctor instead checks exact raw source values.
+
 ## Incoming fret-label layout
 
 `_setIncomingFloorLabelMap` top-anchors the three gold incoming-label paths and

@@ -102,6 +102,10 @@ class Note:
     # Visual picking intervals, separate from attacks and scoring. None keeps
     # the legacy whole-sustain cue; [] explicitly has no active interval.
     tremolo_marks: list | None = None
+    # Preserve an omitted chord-member duration through the playback wire.
+    # Zero is also an authored value, so it cannot stand in for this provenance.
+    # This is neither musical data nor part of Note equality/scoring.
+    _sustain_unspecified: bool = field(default=False, repr=False, compare=False)
 
 
 @dataclass
@@ -393,6 +397,8 @@ def chord_note_to_wire(cn: Note) -> dict:
     # Chord notes omit their own time (the chord carries it).
     d = note_to_wire(cn)
     d.pop("t", None)
+    if cn._sustain_unspecified and cn.sustain == 0:
+        d.pop("sus", None)
     return d
 
 
@@ -724,6 +730,7 @@ def note_from_wire(d: dict, time: float | None = None) -> Note:
         string=int(d.get("s", 0)),
         fret=int(d.get("f", 0)),
         sustain=float(d.get("sus", 0.0)),
+        _sustain_unspecified="sus" not in d,
         let_ring=d.get("lr") is True,
         let_ring_sustain=ring,
         slide_to=int(d.get("sl", -1)),
@@ -1379,6 +1386,7 @@ def _parse_note(n) -> Note:
         string=_int(n, "string"),
         fret=_int(n, "fret"),
         sustain=_float(n, "sustain"),
+        _sustain_unspecified=n.get("sustain") is None,
         slide_to=_int(n, "slideTo", -1),
         slide_unpitch_to=_int(n, "slideUnpitchTo", -1),
         bend=_float(n, "bend"),
@@ -1552,6 +1560,7 @@ def parse_arrangement(xml_path: str) -> Arrangement:
                         if ct.frets[s] >= 0:
                             chord_notes.append(Note(
                                 time=t, string=s, fret=ct.frets[s],
+                                _sustain_unspecified=True,
                                 palm_mute=_ch_pm,
                                 mute=_ch_mt,
                                 fret_hand_mute=_ch_fhm,

@@ -94,6 +94,13 @@ Hold rails are crisp, restrained and independent of decorative glow. Their timin
 does not change when a chord approaches, reaches the play line or becomes a repeat.
 This display change does not alter chart files, note detection or scoring.
 
+Some legacy charts store a chord member's sustain in a standalone note at exactly
+the same time, string and fret. When that match is unique and ordinary, the
+renderer gives the member that duration and draws the attack once. A duration
+on just one string remains its colored trail; it never supplies a hold for the
+other strings. Missing member timing is distinct from an explicit zero, and
+conflicting timing, techniques or ambiguous matches remain independent.
+
 ### Incoming fret numbers
 
 Gold fret numbers sit below the chord-box or note-stem base for chords, single
