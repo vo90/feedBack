@@ -23,7 +23,8 @@
 import {
     _paintGemGlow, _noteState, fillTextReadable, fretX,
 } from './highway-state-primitives.js';
-import { isPickScrape, scrapeProgress, scrapePosition, scrapeFade } from './pick-scrapes.js';
+import { isPickScrape, scrapeProgress, scrapePosition, scrapeFade,
+    scrapeCueMark, scrapeCaption, scrapeGroupKey } from './pick-scrapes.js';
 import { hasBar, barVisual, barBoundaries } from './whammy.js';
 import { getLyricLines } from './lyric-lines.js';
 import { harmonicContacts, harmonicContactSlide, harmonicContactFret,
@@ -570,11 +571,11 @@ export function drawPickScrape2D(hwState, W, H, n, onset = n.t, sharedLabels = n
     // The parent canvas transform already mirrors the entire highway for lefty.
     const stringCount = hwState._xfStringCount ?? hwState.stringCount ?? 6;
     const stringIndex = hwState._inverted ? stringCount - 1 - n.s : n.s;
-    const point = (mark, time) => {
+    const point = (mark, time, head = false) => {
         const p = project(Math.max(0, time - now));
         if (!p) return null;
         const fraction = scrapeProgress(mark, time - onset);
-        return { x: W / 2 + scrapePosition(mark, fraction) * W * .045 * p.scale,
+        return { x: W / 2 + (head ? 0 : scrapePosition(mark, fraction) * W * .045 * p.scale),
             y: p.y * H + (stringIndex - (stringCount - 1) / 2) * 11 * p.scale, scale: p.scale,
             alpha: scrapeFade(n, mark, fraction) };
     };
@@ -595,21 +596,24 @@ export function drawPickScrape2D(hwState, W, H, n, onset = n.t, sharedLabels = n
             previous = next;
         }
     }
-    const mark = n.pick_scrape_marks.find(m => onset + m.end >= now);
-    const head = mark && point(mark, Math.max(onset + mark.start, now));
+    const mark = scrapeCueMark(n, now - onset);
+    const head = mark && point(mark, Math.max(onset + mark.start, now), true);
     if (head) {
-        ctx.globalAlpha = .95; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
+        head.caption = scrapeCaption(n, now - onset);
+        ctx.globalAlpha = .95; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = hwState.STRING_COLORS[n.s] || '#ccc';
         ctx.font = `bold ${Math.max(10, 22 * head.scale)}px sans-serif`;
         fillTextReadable(hwState, 'X', head.x, head.y);
         if (sharedLabels) {
             // One caption for simultaneous strings, above the uppermost X.
             // Retain every string's X and trail, including mixed chords.
-            const key = `${onset}:${mark.start}:${mark.direction}`;
+            const key = scrapeGroupKey(n, onset);
             const previous = sharedLabels.get(key);
             if (!previous || head.y < previous.y) sharedLabels.set(key, head);
         } else {
+            ctx.fillStyle = '#fff';
             ctx.font = `bold ${Math.max(8, 11 * head.scale)}px sans-serif`;
-            fillTextReadable(hwState, 'PICK SCRAPE', head.x, head.y - Math.max(14, 22 * head.scale));
+            fillTextReadable(hwState, head.caption, head.x, head.y - Math.max(14, 22 * head.scale));
         }
     }
     ctx.restore();
@@ -843,7 +847,7 @@ export function drawSustains(hwState, W, H) {
     ctx.globalAlpha = .95; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
     for (const head of scrapeLabels.values()) {
         ctx.font = `bold ${Math.max(8, 11 * head.scale)}px sans-serif`;
-        fillTextReadable(hwState, 'PICK SCRAPE', head.x, head.y - Math.max(14, 22 * head.scale));
+        fillTextReadable(hwState, head.caption, head.x, head.y - Math.max(14, 22 * head.scale));
     }
     ctx.restore();
 }

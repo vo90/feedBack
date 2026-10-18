@@ -5,7 +5,31 @@ export function isPickScrape(n) {
 }
 
 export function scrapeAt(n, relativeTime) {
-    return n.pick_scrape_marks.find(m => relativeTime >= m.start - 1e-9 && relativeTime <= m.end + 1e-9);
+    // At a tied boundary the new direction owns the cue. Searching backwards
+    // also keeps fractional clock cancellation from hiding a valid endpoint.
+    for (let i = n.pick_scrape_marks.length - 1; i >= 0; i--) {
+        const mark = n.pick_scrape_marks[i];
+        if (relativeTime >= mark.start - 1e-9 && relativeTime <= mark.end + 1e-9) return mark;
+    }
+}
+
+export function scrapeCueMark(n, relativeTime) {
+    return scrapeAt(n, relativeTime)
+        || n.pick_scrape_marks.find(mark => mark.start > relativeTime);
+}
+
+export function scrapeCaption(n, relativeTime) {
+    const mark = scrapeCueMark(n, relativeTime);
+    // Preserve the source's up/down notation without claiming a fret path or
+    // a physical bridge/nut direction. This symbol is readable in lefty too.
+    return 'PICK SCRAPE' + (mark?.direction === 'up' ? ' ↗' : mark?.direction === 'down' ? ' ↘' : '');
+}
+
+export function scrapeGroupKey(n, onset = n.t) {
+    // Only matching gestures share a caption: same attack, duration and every
+    // direction interval. Source frets and string numbers do not define it.
+    return `${onset}:${n.sus}:` + n.pick_scrape_marks
+        .map(mark => `${mark.start}:${mark.end}:${mark.direction}`).join('|');
 }
 
 export function scrapeProgress(mark, relativeTime) {
@@ -13,8 +37,10 @@ export function scrapeProgress(mark, relativeTime) {
 }
 
 export function scrapePosition(mark, progress) {
-    const direction = mark.direction === 'up' ? 1 : -1;
-    return direction * (2 * progress - 1) + .07 * Math.sin(progress * Math.PI * 36);
+    // A compact rough texture around the fixed anchor, never a fret-to-fret
+    // sweep. Direction belongs in the cue, not in invented travel distance.
+    if (progress <= 0 || progress >= 1) return 0;
+    return .055 * Math.sin(progress * Math.PI * 36) + .025 * Math.sin(progress * Math.PI * 14);
 }
 
 export function scrapeFade(n, mark, progress) {

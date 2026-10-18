@@ -121,12 +121,22 @@ const ribbonBaseline=`function slideRibbonUpdatePair(
 
 const baseline=source.replace(fn('sustainTrailCenterXAt'),centerBaseline)
  .replace(fn('slideRibbonUpdatePair'),ribbonBaseline);
+// Scrapes deliberately changed from a camera-relative sweep to a fixed anchor.
+// Keep the old complete arithmetic for ordinary-note regression, and compare
+// scalar/output storage under the new scrape geometry separately.
+const scalarCenter=fn('sustainTrailCenterXAt').replace('slideSt, trailW, out)','slideSt, trailW)')
+ .replaceAll(/\n\s*if \(out\) \{ out\[0\] = value; return; \}/g,'');
+const scrapeScalarReference=source.replace(fn('sustainTrailCenterXAt'),scalarCenter)
+ .replace(fn('slideRibbonUpdatePair'),ribbonBaseline);
 
-test('complete production functions preserve the frozen arithmetic and ribbon ordering',()=>{
- const center=fn('sustainTrailCenterXAt').replace('slideSt, trailW, out)','slideSt, trailW)')
+test('ordinary motion retains frozen arithmetic and the complete ribbon preserves ordering',()=>{
+ const current=fn('sustainTrailCenterXAt');
+ const center=current.slice(current.indexOf('            const value = strandBaseX'))
   .replace('const value = strandBaseX','return strandBaseX')
   .replace('\n            if (out) { out[0] = value; return; }\n            return value;','');
- assert.equal(center,centerBaseline);
+ const ordinaryBaseline=centerBaseline.slice(centerBaseline.indexOf('            return strandBaseX'))
+  .replace(/\n\s*\+ \(\(n\?\.mt === true[^\n]+\) : 0\);/,';');
+ assert.equal(center,ordinaryBaseline);
  const ribbon=fn('slideRibbonUpdatePair').replace(`sustainTrailCenterXAt(
                     n, strandBaseX, Tk, slideSt, outlineTw, _sustainCenterResult,
                 );
@@ -146,9 +156,10 @@ function helpers(input=source,zeroOffsets=false){
  return new Function('zeroOffsets',`
   const scratch=new Float64Array(1);let _leftyCached=false;
   const fretMid=f=>f*6+.375,fretX=f=>f*6;
+  const pickScrapeAnchorX=()=>_leftyCached?(zeroOffsets?-0:-37):(zeroOffsets?0:37);
   const slideOutOffsetWorldX=()=>zeroOffsets?0:3.25,slideInOffsetWorldX=()=>zeroOffsets?0:-.75,
    tremoloOffsetWorldX=(n,t,w)=>zeroOffsets?-0:w*.23,pickScrapeOffset=()=>zeroOffsets?0:1.125;
-  ${['naturalNode','notePositionX','slideTrailEnd','targetedSlideInterval','slideOffsetWorldX','sustainTrailCenterXAt'].map(n=>fn(n,input)).join('\n')}
+  ${['isPickScrape','naturalNode','notePositionX','slideTrailEnd','targetedSlideInterval','slideOffsetWorldX','sustainTrailCenterXAt'].map(n=>fn(n,input)).join('\n')}
   return {center:sustainTrailCenterXAt,lefty(value){_leftyCached=value;},scratch};
  `)(zeroOffsets);
 }
@@ -193,8 +204,10 @@ test('result is written after nested provider/property effects and consumed with
    if(buffered){assert.equal(h.center(n,x,t,st,w,h.scratch),undefined);return h.scratch[0];}
    const value=h.center(n,x,t,st,w);h.scratch[0]=value;return value;
   }
+  // The new scrape guard reads mt before motion; the old inline term read it
+  // afterwards. Keep comparing all motion-provider effects and nested order.
   const n=new Proxy({t:0,s:2,f:7,sus:2,sl:12,slide_out_marks:[{}],slide_in_marks:[{}],tr:true},
-   {get(target,key){events.push(String(key));if(key==='f'&&!nested){
+   {get(target,key){if(key!=='mt')events.push(String(key));if(key==='f'&&!nested){
     nested=true;h.lefty(true);
     events.push(['nested',call({t:0,s:1,f:11,sus:2,sl:3},61,.8,{endFret:3,unpitched:false},2)]);
    }return target[key];}});
@@ -219,7 +232,7 @@ async function ribbonHarness(input){
 }
 
 test('optional centre storage preserves ordered Float32 geometry for all techniques and state changes',async()=>{
- const a=await ribbonHarness(baseline),b=await ribbonHarness(source);
+ const a=await ribbonHarness(baseline),b=await ribbonHarness(source),scrapeScalar=await ribbonHarness(scrapeScalarReference);
  const variants=[{}, {tr:false}, {sl:12},{slu:2},{sl:12,slide_interval:{start:1.3,end:1.8}},
   {sl:12,tr:true},{sl:12,bn:1.5,vb:true},{sl:2,hm:true,hn:12},
   {bnv:[{t:0,v:.5},{t:.7,v:2},{t:1.7,v:0}]}, {vb:true},
@@ -233,7 +246,11 @@ test('optional centre storage preserves ordered Float32 geometry for all techniq
   const n={t:10,s:3,f:7,sus:1.8,...extra},before=JSON.stringify(n);
   const options={rs:flags&1,lefty:flags&2,inverted:flags&4,logarithmic:flags&8,
    yield:true,sameString:true,now,start:Math.max(n.t,now),duration:n.t+n.sus-Math.max(n.t,now)};
-  assert.deepEqual(b(n,options),a(n,options),'ordered geometry, indices, draw ranges, uploads and call counts');
+  // Drive both reference pools with the same sequence so retained index
+  // capacity remains comparable after a technique grows its geometry.
+  const ordinaryExpected=a(n,options),scrapeExpected=scrapeScalar(n,options);
+  const expected=n.pick_scrape_marks ? scrapeExpected : ordinaryExpected;
+  assert.deepEqual(b(n,options),expected,'ordered geometry, indices, draw ranges, uploads and call counts');
   assert.equal(JSON.stringify(n),before,'no chart mutation');
  }
  const n={t:10,s:3,f:7,sus:1.8,sl:12};

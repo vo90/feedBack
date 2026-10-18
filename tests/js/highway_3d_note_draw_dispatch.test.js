@@ -6,6 +6,8 @@ const { test } = require('node:test');
 const { extractFunction } = require('./test_utils');
 
 const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
+const scrapeSource = fs.readFileSync(path.join(__dirname, '../../static/js/pick-scrapes.js'), 'utf8').replace(/export /g, '');
+const scrapeGeometry = new Function(scrapeSource + ';return {scrapeGroupKey};')();
 const fn = name => extractFunction(source, 'function ' + name);
 const draw = fn('drawNote');
 const flush = fn('flushNoteDraws');
@@ -19,9 +21,11 @@ const names = parameters.split(',').map(p => p.trim().split(' = ')[0]).join(', '
 const observedDraw = draw.slice(0, geometryStart) + `return observeDraw(${names});\n}`;
 
 function harness() {
-    return new Function(`
+    return new Function('scrapeGeometry', `
         let _collectNoteDraws=false, _noteDrawCount=0, _noteDrawParts=null, _noteDrawEvent=null;
         const _noteDrawQueue=[], _visibleTrailEvents=[], _scrChordNote={};
+        const _pickScrapeCaptionOwners=new Map(), sY=s=>-s;
+        ${fn('isPickScrape')}
         const _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap(), _linkedVibratoRuns=new WeakMap();
         const _linkedTrailPaths={byNote:new WeakMap()}, AHEAD=3;
         const _openSlideTailNotes=new WeakSet();
@@ -56,7 +60,7 @@ function harness() {
             hook(value){hook=value;},validHook(value){validHook=value;},
             state(){return {collect:_collectNoteDraws,count:_noteDrawCount,parts:_noteDrawParts,event:_noteDrawEvent};},
         };
-    `)();
+    `)(scrapeGeometry);
 }
 const note = extra => ({t:10,s:1,f:5,sus:2,...extra});
 

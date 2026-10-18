@@ -66,6 +66,9 @@ async function harness(original = false) {
         let rsPlusNotation=false, _leftyCached=false, _invertedCached=false, logarithmic=false;
         const fretX=f=>f<=0?0:logarithmic?180*(1-Math.pow(2,-f/12)):f*6;
         const fretMid=f=>f<=0?-2*K:(fretX(f-1)+fretX(f))/2, dZ=t=>-230*t;
+        // Both writers share the fixed scrape anchor; browser coverage checks
+        // its production chart-lane lookup independently of this reuse test.
+        const pickScrapeAnchorX=()=>_leftyCached?-37:37;
         ${source.slice(source.indexOf('    function slideTrailEnd('), source.indexOf('    // Camera tgtDist building blocks'))}
         ${helpers}
         let centerCalls=0;

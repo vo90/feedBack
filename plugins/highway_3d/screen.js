@@ -3680,6 +3680,15 @@
         return laneBoundsFromAnchor(getNoteAnchorAt(anchorArr, t));
     }
 
+    // A scrape identifies strings and time, not a played fret. Place its cue
+    // in the chart's lane at onset and keep that world-space centre throughout
+    // the gesture. No live camera state or hidden source fret participates.
+    function hwyPickScrapeAnchorX(anchors, onset, lefty = false) {
+        const bounds = noteAnchorLaneBoundsAt(anchors, onset);
+        const center = (fretX(bounds?.dMin ?? 0) + fretX(bounds?.dMax ?? 4)) * 0.5;
+        return (lefty ? -1 : 1) * center;
+    }
+
     /**
      * Inclusive chart-fret indices for the playing window (anchor `fret` + `width`),
      * e.g. fret=5 width=4 → 5..8. Unlike {@link laneBoundsFromAnchor}'s `dMin`/`dMax`
@@ -4982,9 +4991,10 @@
     function isPickScrape(n) {
         return n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0;
     }
+    const PICK_SCRAPE_TEXTURE_REACH_NW = .1;
     function pickScrapeOffset(n, chartTime) {
         const mark = scrapeGeometry.scrapeAt(n, chartTime - n.t);
-        return mark ? NW * 1.6 * scrapeGeometry.scrapePosition(mark,
+        return mark ? NW * scrapeGeometry.scrapePosition(mark,
             scrapeGeometry.scrapeProgress(mark, chartTime - n.t)) : 0;
     }
     function pickScrapeAlpha(n, chartTime) {
@@ -8228,6 +8238,10 @@
          * wires for an open note's hit flash (an open note has no fret of its
          * own; its slab spans the lane, so the lane edges are what bracket it). */
         let _drawAnchors = null;
+        /** Canonical chart lanes, independent of the selected camera mode. */
+        let _scrapeAnchors = null;
+        let _scrapeAnchorUniform = null;
+        const _scrapeAnchorCenters = new Map();
         /** Teaching marks sd/ch overlay pref (§6.2.2), mirrored from the 2D
          * highway's `teachingMarksVisible` bundle flag. */
         let _drawTeachingMarks = false;
@@ -8544,6 +8558,7 @@
         // before any ribbon queries another note's visibility. Reuse records
         // and chord views; the frame pass never scans the complete chart.
         const _noteDrawQueue = [];
+        const _pickScrapeCaptionOwners = new Map();
         let _noteDrawCount = 0;
         let _collectNoteDraws = false;
         let _noteDrawParts = null;
@@ -8666,6 +8681,7 @@
         function trailVisibilityReleaseChartReferences() {
             _visibleTrailEvents.length = 0;
             _noteDrawQueue.length = 0;
+            _pickScrapeCaptionOwners.clear();
             _noteDrawCount = 0;
             _collectNoteDraws = false;
             _noteDrawParts = _noteDrawEvent = null;
@@ -9442,6 +9458,14 @@
         const xFret = f => (_leftyCached ? -fretX(f) : fretX(f));
         const xFretMid = f => (_leftyCached ? -fretMid(f) : fretMid(f));
         const xNote = n => (_leftyCached ? -1 : 1) * notePositionX(n);
+        function pickScrapeAnchorX(n) {
+            let center = _scrapeAnchorCenters.get(n.t);
+            if (center === undefined) {
+                center = hwyPickScrapeAnchorX(_scrapeAnchors, n.t);
+                _scrapeAnchorCenters.set(n.t, center);
+            }
+            return (_leftyCached ? -1 : 1) * center;
+        }
         const OPEN_NOTE_PAD_X = NW * 0.4;
         // Open-string note width: same outer span as the chord frame (anchor
         // plus horizontal padding, or the default four-fret window). Kept at
@@ -16253,7 +16277,13 @@
 
         function update(bundle) {
             bundle = letRingView(bundle, letRingTrailsVisible);
-            const effectiveAnchors = cameraMode === 'stable' ? stableRegionAnchors(bundle) : resolvedGuidanceAnchors(bundle);
+            const scrapeAnchors = resolvedGuidanceAnchors(bundle);
+            if (_scrapeAnchors !== scrapeAnchors || _scrapeAnchorUniform !== _h3dFretUniform) {
+                _scrapeAnchorCenters.clear();
+                _scrapeAnchors = scrapeAnchors;
+                _scrapeAnchorUniform = _h3dFretUniform;
+            }
+            const effectiveAnchors = cameraMode === 'stable' ? stableRegionAnchors(bundle) : _scrapeAnchors;
             pbBeg(0);
             _trailYieldFrameId++;
             for (const event of _visibleTrailEvents) {
@@ -19742,12 +19772,16 @@
 
         /** Rendered X centre of one sustain strand at a chart time. */
         function sustainTrailCenterXAt(n, strandBaseX, chartTime, slideSt, trailW, out) {
+            if (isPickScrape(n)) {
+                const value = pickScrapeAnchorX(n) + (_leftyCached ? -1 : 1) * pickScrapeOffset(n, chartTime);
+                if (out) { out[0] = value; return; }
+                return value;
+            }
             const value = strandBaseX
                 + (_leftyCached ? -1 : 1) * (slideSt ? slideOffsetWorldX(n, chartTime, slideSt) : 0)
                 + (_leftyCached ? -1 : 1) * (n.slide_out_marks?.length ? slideOutOffsetWorldX(n, chartTime) : 0)
                 + (_leftyCached ? -1 : 1) * (n.slide_in_marks?.length ? slideInOffsetWorldX(n, chartTime) : 0)
-                + (n.tr ? tremoloOffsetWorldX(n, chartTime, trailW) : 0)
-                + ((n?.mt === true && Array.isArray(n.pick_scrape_marks) && n.pick_scrape_marks.length > 0) ? (_leftyCached ? -1 : 1) * pickScrapeOffset(n, chartTime) : 0);
+                + (n.tr ? tremoloOffsetWorldX(n, chartTime, trailW) : 0);
             if (out) { out[0] = value; return; }
             return value;
         }
@@ -19808,7 +19842,7 @@
             bounds[0] = Infinity;
             bounds[1] = -Infinity;
             if (event.pick_scrape_marks?.length) {
-                const x = curX + (_leftyCached ? -1 : 1) * pickScrapeOffset(event, event.t);
+                const x = pickScrapeAnchorX(event);
                 trailYieldAddTargetXBounds(x, NH * 1.2, bounds);
                 return true;
             }
@@ -19857,7 +19891,7 @@
                 + (event.trailStart < event.t ? 1e-6 : 0.01)) return 0;
             const ctx = _trailYieldMatchContext;
             if (event.pick_scrape_marks?.length) {
-                _trailCrossingTargetBases[0] = curX;
+                _trailCrossingTargetBases[0] = pickScrapeAnchorX(event);
                 _trailCrossingTargetWidths[0] = (NW * .38 + .4 * K)
                     * (rsPlusNotation ? RSPLUS_SUSTAIN_STROKE_SCALE : 1);
                 _trailCrossingTargetBaseCount = 1;
@@ -19955,7 +19989,7 @@
                 const x1 = trailVisibilitySourceCenterXAt(b, width);
                 const slideOut = note.slide_out_marks?.length > 0 && !(member ? member.slideSt : ctx.slideSt);
                 const incoming = slideInMarks(note).length > 0;
-                const reach = (note.tr ? sustainMotionWidth(width) * 0.375 : 0) + (slideOut || incoming ? slideOutReach(note) : 0) + ((note?.mt === true && Array.isArray(note.pick_scrape_marks) && note.pick_scrape_marks.length > 0) ? NW * 1.72 : 0);
+                const reach = (note.tr ? sustainMotionWidth(width) * 0.375 : 0) + (slideOut || incoming ? slideOutReach(note) : 0) + (isPickScrape(note) ? NW * PICK_SCRAPE_TEXTURE_REACH_NW : 0);
                 bounds[0] = Math.min(bounds[0], x0 - reach - width * 0.5, x1 - reach - width * 0.5);
                 bounds[1] = Math.max(bounds[1], x0 + reach + width * 0.5, x1 + reach + width * 0.5);
                 moves ||= !!(note.tr || slideOut || incoming || (note?.mt === true && Array.isArray(note.pick_scrape_marks) && note.pick_scrape_marks.length > 0) || x0 !== x1 || (previousX !== null && previousX !== x0));
@@ -20974,7 +21008,7 @@
             const sweepWidth = Math.abs(slideEndX - strandBaseX)
                 + ctx.trailW + tremoloReach * 2
                 + ((slideOutMarks(n).length > 0 && !ctx.slideSt) || slideInMarks(n).length > 0
-                    ? slideOutReach(n) * 2 : 0) + (n.pick_scrape_marks?.length ? NW * 3.44 : 0);
+                    ? slideOutReach(n) * 2 : 0) + (isPickScrape(n) ? NW * PICK_SCRAPE_TEXTURE_REACH_NW * 2 : 0);
             let count = 0;
             if (priorityTimes) priorityTimes[priorityIndex] = -Infinity;
             // Fret zero is always considered because an open gem spans the
@@ -21125,6 +21159,18 @@
 
         function flushNoteDraws() {
             _collectNoteDraws = false;
+            // One caption above the highest displayed member of each matching
+            // gesture. Every authored string keeps its own X and duration trail.
+            // Rebuild from this frame's queue so seeks and inverted strings have
+            // no retained owner or dependence on note/chord iteration order.
+            _pickScrapeCaptionOwners.clear();
+            for (let i = 0; i < _noteDrawCount; i++) {
+                const n = _noteDrawQueue[i].args[0];
+                if (!isPickScrape(n)) continue;
+                const key = scrapeGeometry.scrapeGroupKey(n);
+                const owner = _pickScrapeCaptionOwners.get(key);
+                if (!owner || sY(n.s) > sY(owner.s)) _pickScrapeCaptionOwners.set(key, n);
+            }
             try {
                 for (let i = 0; i < _noteDrawCount; i++) {
                     const record = _noteDrawQueue[i];
@@ -21137,6 +21183,7 @@
             } finally {
                 _noteDrawParts = null;
                 _noteDrawEvent = null;
+                _pickScrapeCaptionOwners.clear();
             }
         }
 
@@ -21271,7 +21318,7 @@
             // first, get overdrawn by close geometry), close notes get a high
             // value (render last, appear on top). RENDER_ORDER_LAYER_STACK decides
             // the local stack for outline, core, technique symbols, and fret labels.
-            const xBase = scrape ? curX : n.f === 0 ? (openX !== undefined ? openX : curX) : xNote(n);
+            const xBase = scrape ? pickScrapeAnchorX(n) : n.f === 0 ? (openX !== undefined ? openX : curX) : xNote(n);
             // Slide-in-progress: glide the gem (and everything anchored to it —
             // outline, core, halo, technique markers) from its starting fret
             // toward the slide's end fret over the sustain, the same way
@@ -22199,25 +22246,31 @@
             // projection. Its small X and label are the complete attack cue.
             if (scrape) {
                 const at = Math.max(n.t, Math.min(now, susEnd));
-                const sx = xBase + (_leftyCached ? -1 : 1) * pickScrapeOffset(n, at);
+                const sx = xBase;
                 const cueScale = (1 + Math.max(0, Math.min(1, dt / AHEAD)) * 1.5) * _textSizeMul;
                 const mark = pTechPlane.get();
-                mark.material = _spriteMat2MeshMat(mark, txtMat('X', '#ffffff', false, 'technique'));
+                const color = '#' + (activePalette[s] ?? 0xffffff).toString(16).padStart(6, '0');
+                mark.material = _spriteMat2MeshMat(mark, txtMat('X', color, false, 'technique'));
                 mark.scale.set(NH * 1.4 * cueScale, NH * 1.4 * cueScale, 1);
                 mark.position.set(sx, y, noteZ + K);
                 mark.rotation.set(0, 0, 0);
                 mark.renderOrder = renderOrderForLayerAtZ(noteZ, 'TECHNIQUE_MARKER');
                 mark.material.opacity = .95;
+                _registerIncomingLabelOccluder(mark, noteZ);
+                const captionKey = scrapeGeometry.scrapeGroupKey(n);
+                if (_pickScrapeCaptionOwners.get(captionKey) !== sourceNote) return;
+                _pickScrapeCaptionOwners.delete(captionKey);
                 const label = pTechPlane.get();
-                const text = txtMat('PICK SCRAPE', '#ffffff', true, 'technique');
+                // The arrow preserves the source up/down sign. It is not a
+                // fret trajectory or an instruction to move toward nut/bridge.
+                const text = txtMat(scrapeGeometry.scrapeCaption(n, at - n.t), '#ffffff', true, 'technique');
                 label.material = _spriteMat2MeshMat(label, text);
                 const size = NH * .95 * cueScale;
                 label.scale.set(size * text.map.image.width / text.map.image.height, size, 1);
-                label.position.set(sx, y + bendVisualDirY(s) * NH * 2.0 * cueScale, noteZ + K);
+                label.position.set(sx, y + NH * 2.0 * cueScale, noteZ + K);
                 label.rotation.set(0, 0, 0);
                 label.renderOrder = renderOrderForLayerAtZ(noteZ, 'NOTE_FRET_LABEL');
                 label.material.opacity = .9;
-                _registerIncomingLabelOccluder(mark, noteZ);
                 _registerIncomingLabelOccluder(label, noteZ);
                 return;
             }
@@ -24551,6 +24604,9 @@
             _susVerdictLatch.clear();
             _drawChordTemplates = null;
             _drawAnchors = null;
+            _scrapeAnchors = null;
+            _scrapeAnchorUniform = null;
+            _scrapeAnchorCenters.clear();
             _laneTargetColor = null;
             _fwHitColor = _fwHitEmissive = null;
             _fwHitGlow.fill(0);
