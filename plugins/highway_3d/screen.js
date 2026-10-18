@@ -14974,7 +14974,23 @@
                     // Later plucks keep stems throughout their approach, even
                     // when they reuse the same string/fret within the handshape.
                     // Onset membership stays stable across arrival and seeks.
-                    for (const cn of members) arpeggioKeys.add(_noteFretKey(ch.t, cn.s, cn.f));
+                    const memberKeys = new Set(members.map(cn => _noteFretKey(ch.t, cn.s, cn.f)));
+                    for (const key of memberKeys) arpeggioKeys.add(key);
+                    // Imported note and hand-shape onsets can differ by a
+                    // millisecond. Match only this tiny precision window and
+                    // retain each note's original key; never move its attack or
+                    // extend enclosure membership through the whole handshape.
+                    const onsetPrecisionS = 0.002;
+                    const onsetLo = ch.t - onsetPrecisionS, onsetHi = ch.t + onsetPrecisionS;
+                    const onsetNotes = notes || [];
+                    for (let i = lowerBoundT(onsetNotes, onsetLo); i < onsetNotes.length; i++) {
+                        const n = onsetNotes[i];
+                        if (n.t > onsetHi) break;
+                        if (validString(n.s) && isRenderableNote(n)
+                            && memberKeys.has(_noteFretKey(ch.t, n.s, n.f))) {
+                            arpeggioKeys.add(_noteFretKey(n.t, n.s, n.f));
+                        }
+                    }
                     continue;
                 }
                 // Only actual members qualify. Template-only positions and later
