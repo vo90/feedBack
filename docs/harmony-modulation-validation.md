@@ -882,3 +882,115 @@ python tools/evaluate_harmony_chord_evidence.py `
   --chord-directory <frozen-chord-directory> `
   --output <new-report.json>
 ```
+
+## v8: grounded section changes and conflicting collections
+
+Two targeted investigations identified different failures. Gently Weeps has
+64-beat major sections whose long dominant and predominant chords outweigh
+their tonic in the pitch profile. Their incoming dominant-to-tonic connection
+was also outside the local analysis window. I Want It All has a repeated
+played G natural that contradicts one accepted A-major collection, even though
+its G power chord provides no major/minor quality vote.
+
+The new collection override requires an observed tonic, repeated authentic
+cadences and tonic returns, a complete played minor ii-V-I progression, strong
+pitch fit, resolved distinguishing degrees, and one unique collection fitting
+every grounded multi-note voicing. An incoming chord can complete that proof
+across at most half an authored beat of empty release; conflicting notes and
+uncertain intervening harmony block it. Only after that proof can its cadence
+contribute to the selected collection's tonic score. Ordinary window scores
+retain their original local cadence evidence. The original profile winner,
+margin, constrained score basis and collection evidence remain in provenance;
+confidence is capped at medium. Authored contexts beyond the former 48-beat
+cap, up to 64 beats, require this explicit collection proof.
+
+A separate conservative check withholds a known key when repeated harmonic
+visits contradict its palette and one alternative collection explains all
+grounded chords. All seven alternative degrees require independent chart-note
+support, while the proposed replacement degrees must lack that support. This
+check does not promote a replacement key or scale. Repeated strums, identical
+fragments and changing voicings on one opposing root cannot multiply the
+counterevidence. Changed actual pitch sets remain visible even when the chord
+label does not change. Chord extraction, evidence lifetimes and rendering are
+unchanged; no recording or microphone analysis is involved.
+
+### Validation and rejected intermediate results
+
+The first broad candidate incorrectly added 7.502 seconds of G-minor labeling
+in Don't Stop Me Now. An isolated ablation traced this to a single incoming
+cadence crossing the ordinary score threshold, rather than to the longer
+section cap. The final design confines that contribution to the independently
+proven collection override. It restores Don't Stop's exact v7 scored durations.
+The early candidate and an intermediate version that lost the Gently Weeps
+gain are retained as failed development evidence, not reported as final results.
+
+The final frozen `b74f8976` engine was compared against v7 on the previous 15
+reference songs plus Come Together. Come Together was selected and aligned
+before its initial predictions: 3 fitting and 13 checking raw pitch/onset
+anchors, maximum residual 0.0673 seconds, declared uncertainty 0.5 seconds.
+Its initial result was unchanged, and final follow-up comparisons are explicitly
+development runs. Its 191.344 annotated seconds remain entirely unknown and
+all six changes are missed; mainly power-chord evidence remains insufficient.
+
+| All 16 reference songs, 2,039.066 annotated seconds | v7 | v8 |
+| --- | ---: | ---: |
+| Correct key duration (s) | 646.245 | 713.333 |
+| Wrong known key duration (s) | 121.953 | 101.322 |
+| Unknown key duration (s) | 1,270.867 | 1,224.410 |
+| Key changes within four beats | 2 / 37 | 6 / 37 |
+| Unmatched switches in annotated regions | 3 | 3 |
+
+Only the two development targets change scored key duration. Gently Weeps
+gains 67.088 correct seconds and matches all four annotated changes. Its added
+0.122 seconds of raw disagreement is confined to two major-section entrances,
+each within the declared 0.5-second annotation uncertainty. No new wrong-key
+span falls outside uncertainty. Major arrivals still follow 8.374- and
+12.272-second unknown gaps: matching transition times does not imply continuous
+key tracking. The legacy denominator retains Michelle's previously documented
+0.040-second edge with insufficient preceding context.
+
+I Want It All loses 20.753 seconds of incorrect A-major labeling by abstaining;
+it does not gain a correct replacement key. A later wrong A-major passage
+remains because actual G-sharp notes prevent the same veto. The rest of the
+annotated songs' scored key durations are unchanged.
+
+All 16 grounded harmony tracks and all eight independent whole-region/rest
+chord comparison reports are unchanged. Gently Weeps provides no qualifying
+scored interior lead rests; Want It All's removed label is outside its scored
+interior rests. These key results therefore do not establish increased playable
+rest guidance or general scale suitability. The evaluator now reports per-section
+duration and descriptive transition neighborhoods, including unknown gaps and
+uncertainty-limited evidence, alongside unchanged legacy metric definitions.
+
+### Regression, performance and controls
+
+The separate 53-pack comparison retains all 18 fixed chord references, with
+zero timeline-bound, unobserved-chord-tone or scale/chord invariant failures.
+All harmony tracks are unchanged. Two songs gain uncertainty: Everybody Hurts
+loses 55.262 seconds previously labeled E minor; Don't Look Back loses 27.244
+seconds labeled D or G major. These are regression observations, not independently
+verified accuracy gains. Interior-rest scale coverage changes from 6.46% to
+6.43%; 1.668 beats switch to chord-only guidance, and any-guide coverage stays
+55.49%.
+
+Median backend inference in this paired run was 203.88 ms for v7 and 242.60 ms
+for v8; source loading plus inference was 486.89 and 533.24 ms. Other validation
+ran concurrently, so these are observed run timings, not isolated benchmarks
+or FPS measurements. Analysis remains in the background job and is cached per
+song/source revision. `chart-harmony-v8` invalidates the older analysis identity.
+There is no per-frame inference and no new scale configuration.
+
+The focused Python checks cover 462 passing tests, including 92 new transition
+and collection-conflict regressions and six new evaluator cases. The guide
+JavaScript suites pass 95 tests. Independent source review and the final song
+audit found no remaining confirmed defect. The persistent **Settings > Graphics
+> 3D Highway > Harmony guide (experimental)** setting remains the on/off control;
+runtime verification exercises both states and restores the saved preference.
+
+Evidence is retained under
+`C:\Dev\feedback-workspace\verification\songsterr-harmony-transition-tracking-20261018`.
+Use the `*-final-02` comparisons and
+`independent-validation-final-02-summary.json` for final results. Earlier
+`*-first-01`, `*-final-01`, and `new-1-initial-01` runs remain immutable.
+The final engine SHA256 is
+`b74f8976a9c71724373e7cc8e0cb8e9021a519663792aa7269302b7427418c0d`.

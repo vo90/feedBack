@@ -97,7 +97,97 @@ def _known_key(event):
     return None if not event or event.get("unknown") else key_identity(event.get("key"))
 
 
-def timeline_metrics(result, references, beats, boundary_tolerance_beats=4):
+def _key_region_metrics(keys, start, end, allowed):
+    """Describe observed key agreement without filling expired or unknown spans."""
+    starts = [event["t"] for event in keys]
+    edges = sorted({start, end, *(max(start, min(end, value))
+                               for event in keys for value in (event["t"], event["end"]))})
+    totals = dict(correct_seconds=0, wrong_seconds=0, unknown_seconds=0)
+    correct_spans = []
+    for left, right in zip(edges, edges[1:]):
+        event = _at(keys, starts, (left + right) / 2)
+        key = _known_key(event)
+        category = "unknown" if key is None else "correct" if key in allowed else "wrong"
+        totals[category + "_seconds"] += right - left
+        if category == "correct":
+            if correct_spans and correct_spans[-1]["end"] == left and correct_spans[-1]["key"] == key:
+                correct_spans[-1]["end"] = right
+            else:
+                correct_spans.append({"t": left, "end": right, "key": key,
+                                      "prediction_start": event["t"]})
+    return {"t": start, "end": end,
+            **{name: round(value, 6) for name, value in totals.items()},
+            "first_correct_span": correct_spans[0] if correct_spans else None,
+            "last_correct_span": correct_spans[-1] if correct_spans else None}
+
+
+def _time_at_beat(beats, position):
+    if len(beats) < 2:
+        return position
+    index = max(0, min(len(beats) - 2, math.floor(position)))
+    return beats[index] + (position - index) * (beats[index + 1] - beats[index])
+
+
+def section_transition_diagnostics(result, references, beats, neighborhood_beats=4,
+                                   reference_uncertainty_seconds=0):
+    """Add descriptive section evidence; never redefine the legacy change tally.
+
+    Correct fragments on both sides are not necessarily a reliable transition:
+    their intervening unknown and wrong-key durations remain explicit. Short
+    clipped reference sections are flagged instead of treated as full contexts.
+    """
+    uncertainty = float(reference_uncertainty_seconds)
+    if not math.isfinite(uncertainty) or uncertainty < 0:
+        raise ValueError("Reference timing uncertainty must be finite and nonnegative")
+    keys = result["keys"]["events"]
+    sections = []
+    for index, reference in enumerate(references):
+        if not reference["keys"]:
+            continue
+        sections.append({"reference_index": index, "keys": reference["keys"],
+                         **_key_region_metrics(keys, reference["t"], reference["end"],
+                                               {tuple(key) for key in reference["keys"]})})
+    boundaries = []
+    for index, (before, after) in enumerate(zip(references, references[1:])):
+        if (not before["keys"] or not after["keys"] or before["end"] != after["t"]
+                or set(map(tuple, before["keys"])) & set(map(tuple, after["keys"]))):
+            continue
+        t = after["t"]
+        position = beat_at(beats, t)
+        left_start = max(before["t"], _time_at_beat(beats, position - neighborhood_beats))
+        right_end = min(after["end"], _time_at_beat(beats, position + neighborhood_beats))
+        left = _key_region_metrics(keys, left_start, t, set(map(tuple, before["keys"])))
+        right = _key_region_metrics(keys, t, right_end, set(map(tuple, after["keys"])))
+        previous, following = left["last_correct_span"], right["first_correct_span"]
+        candidate = None
+        if previous and following:
+            # Score the gap against the relevant reference on each side. A
+            # nearby wrong-key detour must not masquerade as pure abstention.
+            gap_before = _key_region_metrics(keys, previous["end"], t, set(map(tuple, before["keys"])))
+            gap_after = _key_region_metrics(keys, t, following["t"], set(map(tuple, after["keys"])))
+            candidate = {"from": previous["key"], "to": following["key"],
+                         "last_correct_before_end": previous["end"],
+                         "first_correct_after_start": following["t"],
+                         "new_key_prediction_start": following["prediction_start"],
+                         "prediction_error_beats": beat_at(beats, following["prediction_start"]) - position,
+                         "gap_seconds": round(following["t"] - previous["end"], 6),
+                         "unknown_gap_seconds": round(gap_before["unknown_seconds"] + gap_after["unknown_seconds"], 6),
+                         "intervening_wrong_key_seconds": round(gap_before["wrong_seconds"] + gap_after["wrong_seconds"], 6)}
+        boundaries.append({"t": t, "before_reference_index": index, "after_reference_index": index + 1,
+                           "before": left, "after": right,
+                           "before_reference_limited": beat_at(beats, t) - beat_at(beats, before["t"]) < neighborhood_beats,
+                           "after_reference_limited": beat_at(beats, after["end"]) - beat_at(beats, t) < neighborhood_beats,
+                           "before_uncertainty_limited": t - before["t"] <= 2 * uncertainty,
+                           "after_uncertainty_limited": after["end"] - t <= 2 * uncertainty,
+                           "two_sided_correct_evidence": bool(previous and following),
+                           "candidate_transition": candidate})
+    return {"method": "Descriptive section agreement and clipped neighborhoods; not an alternative modulation success rate.",
+            "neighborhood_beats": neighborhood_beats, "reference_uncertainty_seconds": uncertainty,
+            "sections": sections, "boundaries": boundaries}
+
+
+def timeline_metrics(result, references, beats, boundary_tolerance_beats=4,
+                     reference_uncertainty_seconds=0):
     keys, scales = result["keys"]["events"], result["scales"]["events"]
     key_starts, scale_starts = [e["t"] for e in keys], [e["t"] for e in scales]
     ref_starts = [e["t"] for e in references]
@@ -192,7 +282,9 @@ def timeline_metrics(result, references, beats, boundary_tolerance_beats=4):
             "false_switches_in_annotated_regions": false_switches,
             "key_unknown_seconds_by_reason": {reason: round(seconds, 6)
                                               for reason, seconds in sorted(unknown_reasons.items())},
-            "boundary_tolerance_beats": boundary_tolerance_beats}
+            "boundary_tolerance_beats": boundary_tolerance_beats,
+            "section_transition_diagnostics": section_transition_diagnostics(
+                result, references, beats, boundary_tolerance_beats, reference_uncertainty_seconds)}
 
 
 def rest_reference_metrics(result, references, beats, rests):
@@ -308,7 +400,9 @@ def main():
             row["engines"][label] = {"algorithm": engine.ALGORITHM_VERSION,
                 "engine_ms": engine_ms, "rests": rests,
                 "rest_reference_metrics": rest_reference_metrics(result, reference, source["beats"], rests),
-                "checks": invariant_checks(engine, result), "metrics": timeline_metrics(result, reference, source["beats"])}
+                "checks": invariant_checks(engine, result), "metrics": timeline_metrics(
+                    result, reference, source["beats"],
+                    reference_uncertainty_seconds=entry["alignment"].get("uncertainty_seconds", 0))}
             write(args.output / f"{entry['id']}-{label}.json", result)
         if before != hashlib.sha256(path.read_bytes()).hexdigest():
             raise RuntimeError(f"Source pack changed: {path}")

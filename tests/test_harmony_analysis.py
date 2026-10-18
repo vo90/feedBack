@@ -59,7 +59,7 @@ def test_analysis_preserves_input_revision_and_json_contract():
     assert data == original
     assert result["revision"] == "song-r1"
     assert result["source"] == "charts"
-    assert result["algorithm_version"] == "chart-harmony-v7"
+    assert result["algorithm_version"] == "chart-harmony-v8"
     json.dumps(result, allow_nan=False)
     for track in ("keys", "harmony", "scales"):
         events = result[track]["events"]

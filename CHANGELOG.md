@@ -372,6 +372,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine (`app.js`, `highway.js`, `playSong`, `showScreen`, the capability registry).
 
 ### Fixed
+- Experimental harmony analysis can recognize strongly grounded section key
+  changes and withhold scales contradicted by repeated played chord notes.
+  Incoming cadence evidence requires independent progression support;
+  ambiguous passages remain unlabelled behind the existing 3D Highway toggle.
 - Experimental harmony analysis recognizes compatible partial voicings across
   instrument parts when one complete played chord explains them. Real chord
   conflicts stay uncertain, without adding notes or extending holds. Versioned

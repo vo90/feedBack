@@ -14,7 +14,7 @@ import re
 from statistics import median
 
 
-ALGORITHM_VERSION = "chart-harmony-v7"
+ALGORITHM_VERSION = "chart-harmony-v8"
 _NAMES = ("C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
 _NATURAL = dict(zip("CDEFGAB", (0, 2, 4, 5, 7, 9, 11)))
 _EPS = 1e-7
@@ -540,9 +540,73 @@ def _tonic_quality_matches(event, mode):
              event.get("quality") in ("maj", "maj7", "maj9", "6", "add9")))
 
 
+def _repeated_collection_conflict(best, candidates, note_weights, chord_events):
+    preferred = {(best["pc"] + i) % 12 for i in
+                 SCALES["natural_minor" if best["mode"] == "minor" else "major"]}
+    grounded = [e for e in chord_events if e.get("confidence") != "low"
+                and len(e.get("grounded_chord_tones", [])) >= 2
+                and pitch_class(e.get("root")) in e.get("grounded_chord_tones", [])]
+    # Filling out or repeating one opposing root's voicing is still one visit.
+    # A compatible chord or different root must intervene before another.
+    visits = []
+    for event in grounded:
+        pcs = set(event["grounded_chord_tones"])
+        signature = (pitch_class(event["root"]), not pcs <= preferred)
+        if not visits or visits[-1][0] != signature:
+            visits.append((signature, pcs, event["t"], event["end"]))
+        else:
+            visits[-1] = (signature, visits[-1][1] | pcs, visits[-1][2], event["end"])
+    # These sets summarize notes across a visit; they are never emitted as a chord.
+    opposing = [(tuple(sorted(pcs)), start, end) for signature, pcs, start, end in visits if signature[1]]
+    total = sum(note_weights.values())
+    if len(opposing) < 2 or total <= 0:
+        return None
+    seen, alternatives = {frozenset(preferred)}, []
+    for candidate in candidates:
+        collection = frozenset((candidate["pc"] + i) % 12 for i in
+                              SCALES["natural_minor" if candidate["mode"] == "minor" else "major"])
+        if collection in seen or not candidate["tonic_supported"] or candidate["fit"] < .97:
+            continue
+        if any(not set(event["grounded_chord_tones"]) <= collection for event in grounded):
+            continue
+        # Require independently observed degrees across the entire alternative
+        # collection; a plausible but incomplete palette cannot veto a key.
+        if any(note_weights[pc] / total < .005 for pc in collection):
+            continue
+        if any(note_weights[pc] / total >= .005 for pc in preferred - collection):
+            continue
+        seen.add(collection)
+        alternatives.append({"root": _NAMES[candidate["pc"]], "mode": candidate["mode"],
+                             "pcs": sorted(collection), "fit": round(candidate["fit"], 4)})
+    if len(alternatives) != 1:
+        return None
+    return {"alternative_collection": alternatives[0], "opposing_regions": len(opposing),
+            "opposing_pcs": sorted({pc for pcs, _, _ in opposing for pc in pcs if pc not in preferred}),
+            "opposing_windows": [{"start": start, "end": end, "pcs": list(pcs)}
+                                 for pcs, start, end in opposing[:6]]}
+
+
 def _estimate_key(observations, harmony, start, end, position=None):
     pitch_weights, roots = Counter(), Counter()
     chord_events = []
+    # Coalesced chord regions support cadence counting. Collection checks must
+    # retain every actual voicing, including an extension added within a region.
+    grounded_harmony = []
+    for event in harmony:
+        if (event["end"] <= start or event["t"] >= end or event.get("unknown")
+                or event.get("confidence") == "low"
+                or len(event.get("grounded_chord_tones", [])) < 2
+                or pitch_class(event.get("root")) not in event.get("grounded_chord_tones", [])):
+            continue
+        previous = grounded_harmony[-1] if grounded_harmony else None
+        if (previous and previous["root"] == event["root"]
+                and set(previous["grounded_chord_tones"]) == set(event["grounded_chord_tones"])
+                and abs(previous["end"] - event["t"]) <= _EPS):
+            # Splitting an unchanged voicing supplies no independent evidence.
+            # A changed pitch set remains separate, even with the same label.
+            previous["end"] = event["end"]
+        else:
+            grounded_harmony.append(dict(event))
     for event_index, event in enumerate(harmony):
         overlap = min(event["end"], end) - max(event["t"], start)
         if overlap <= 0 or event.get("unknown") or not event.get("quality"):
@@ -576,8 +640,24 @@ def _estimate_key(observations, harmony, start, end, position=None):
     onsets = sorted(observations, key=lambda event: event["t"])
     onset_times = [event["t"] for event in onsets]
     longest_observation = max((event["end"] - event["t"] for event in onsets), default=0)
+    # A predecessor outside the interval supplies only the connection to an
+    # arrival inside it, never pitch/root votes, duration, or region counts.
+    connection_events = chord_events
+    if chord_events and chord_events[0]["t"] >= start:
+        previous_index = chord_events[0]["_first_index"] - 1
+        while previous_index >= 0:
+            gap_event = harmony[previous_index]
+            if not gap_event.get("unknown") or gap_event.get("evidence", {}).get("reason") != "no_chart_evidence":
+                break
+            previous_index -= 1
+        if previous_index >= 0:
+            previous = harmony[previous_index]
+            if not previous.get("unknown") and _quality_is_observed(previous):
+                antecedent = {**previous, "_quality_observed": True,
+                              "_first_index": previous_index, "_last_index": previous_index}
+                connection_events = [antecedent] + chord_events
     cadence_pairs, articulated_pairs = [], 0
-    for left, right in zip(chord_events, chord_events[1:]):
+    for left, right in zip(connection_events, connection_events[1:]):
         if (not left["_quality_observed"] or not right["_quality_observed"]
                 or not start <= right["t"] < end):
             continue
@@ -600,6 +680,9 @@ def _estimate_key(observations, harmony, start, end, position=None):
                 continue
             articulated_pairs += 1
         cadence_pairs.append((left, right))
+    # An incoming cadence can complete repeated section evidence, but a single
+    # resolution into a sliding window must not raise its ordinary key score.
+    local_cadence_pairs = [(a, b) for a, b in cadence_pairs if a["end"] > start]
     # Pitch observations remain useful for riffs, but correlated chart density
     # is bounded by per-time/group occupancy and cannot drown out harmony.
     note_weights = Counter()
@@ -635,14 +718,36 @@ def _estimate_key(observations, harmony, start, end, position=None):
             fit = sum(value for note, value in pitch_weights.items() if note in scale) / total
             corr = _correlation(distribution, [profile[(note - pc) % 12] for note in range(12)])
             tonic = roots[pc] / root_total
-            cadences = sum(1 for a, b in cadence_pairs
+            cadences = sum(1 for a, b in local_cadence_pairs
                            if pitch_class(b["root"]) == pc and _tonic_quality_matches(b, mode)
                            and (pitch_class(a["root"]) - pc) % 12 in (7, 5))
-            dominant_cadences = sum(1 for a, b in cadence_pairs
+            dominant_cadences = sum(1 for a, b in local_cadence_pairs
                                     if pitch_class(b["root"]) == pc and _tonic_quality_matches(b, mode)
                                     and (pitch_class(a["root"]) - pc) % 12 == 7
                                     and a["quality"] in ("maj", "7", "9", "7sus4"))
+            connected_dominant_cadences = sum(1 for a, b in cadence_pairs
+                                    if pitch_class(b["root"]) == pc and _tonic_quality_matches(b, mode)
+                                    and (pitch_class(a["root"]) - pc) % 12 == 7
+                                    and a["quality"] in ("maj", "7", "9", "7sus4"))
+            # Repeated I-IV motion in a modal loop can look like V-I in a
+            # neighbouring key. An observed minor ii before V supplies separate
+            # evidence for a major-key arrival; IV-V-I alone has that same ambiguity.
+            predominant_cadences = sum(1 for (a, b), (middle, c) in
+                zip(cadence_pairs, cadence_pairs[1:])
+                if b is middle and mode == "major"
+                and pitch_class(c["root"]) == pc and _tonic_quality_matches(c, mode)
+                and (pitch_class(b["root"]) - pc) % 12 == 7
+                and b["quality"] in ("maj", "7", "9")
+                and (pitch_class(a["root"]) - pc) % 12 == 2
+                and a["quality"].startswith("min")
+                and {(pc + interval) % 12 for interval in (2, 5, 9)} <=
+                    set(a.get("grounded_chord_tones", a["chord_tones"])))
             cadence = min(1, cadences / max(1, len(chord_events) / 6))
+            connected_cadences = sum(1 for a, b in cadence_pairs
+                           if pitch_class(b["root"]) == pc and _tonic_quality_matches(b, mode)
+                           and (pitch_class(a["root"]) - pc) % 12 in (7, 5))
+            connected_cadence_bonus = .08 * (min(1, connected_cadences /
+                                                 max(1, len(chord_events) / 6)) - cadence)
             bookends = sum(pitch_class(e["root"]) == pc for e in (chord_events[:1] + chord_events[-1:])) / 2
             # A major/minor tonic must be present with the corresponding third
             # before calling this conventional tonality, rather than a mode.
@@ -659,10 +764,51 @@ def _estimate_key(observations, harmony, start, end, position=None):
             candidates.append({"pc": pc, "mode": mode, "score": score, "fit": fit,
                                "correlation": corr, "tonic_supported": supported_tonic,
                                "dominant_cadences": dominant_cadences, "tonic_weight": tonic,
+                               "connected_dominant_cadences": connected_dominant_cadences,
+                               "connected_cadence_bonus": connected_cadence_bonus,
+                               "predominant_dominant_cadences": predominant_cadences,
                                "observed_tonic_regions": tonic_regions,
                                "compatible_quality_regions": sum(e["_quality_observed"]
                                    and set(e["chord_tones"]) <= scale for e in chord_events)})
     candidates.sort(key=lambda c: c["score"], reverse=True)
+    # A pitch-histogram winner with no authentic cadence must not defeat a grounded cadential home
+    # whose collection explains every observed multi-note chord, including
+    # power chords. Require repeated tonic returns and independently observed
+    # scale distinctions; retain relative tonic uncertainty within collection.
+    raw_best = candidates[0]
+    histogram_margin = candidates[0]["score"] - candidates[1]["score"]
+    multi_regions = grounded_harmony
+    def candidate_collection(candidate):
+        return {(candidate["pc"] + degree) % 12 for degree in
+                SCALES["major" if candidate["mode"] == "major" else "natural_minor"]}
+    def unexplained(candidate):
+        palette = candidate_collection(candidate)
+        count, previous = 0, None
+        for event in multi_regions:
+            signature = (pitch_class(event["root"]),
+                         not set(event["grounded_chord_tones"]) <= palette)
+            # Changing the voicing of one opposing root is still one visit.
+            if signature != previous and signature[1]:
+                count += 1
+            previous = signature
+        return count
+    selected_collection = None
+    if raw_best["dominant_cadences"] == 0 and unexplained(raw_best) >= 2:
+        eligible = [c for c in candidates if c["tonic_supported"]
+                    and c["connected_dominant_cadences"] >= 2 and c["observed_tonic_regions"] >= 2
+                    and c["predominant_dominant_cadences"] >= 1
+                    and c["fit"] >= .97 and c["correlation"] >= .45
+                    and unexplained(c) == 0
+                    and not _ambiguous_collections(c, candidates, note_weights)]
+        palettes = {tuple(sorted(candidate_collection(c))) for c in eligible}
+        if len(palettes) == 1:
+            selected_collection = next(iter(palettes))
+            for candidate in candidates:
+                if tuple(sorted(candidate_collection(candidate))) == selected_collection:
+                    candidate["dominant_cadences"] = candidate["connected_dominant_cadences"]
+                    candidate["score"] += candidate["connected_cadence_bonus"]
+            candidates.sort(key=lambda c: (tuple(sorted(candidate_collection(c))) == selected_collection,
+                                            c["score"]), reverse=True)
     best, second = candidates[:2]
     margin = best["score"] - second["score"]
     enough = best["fit"] >= .80 and best["correlation"] >= .45 and margin >= .025
@@ -716,6 +862,26 @@ def _estimate_key(observations, harmony, start, end, position=None):
                "relative_dominant_cadences": relative["dominant_cadences"],
                "candidates": [{"key": _NAMES[c["pc"]] + (" minor" if c["mode"] == "minor" else " major"),
                                "score": round(c["score"], 4)} for c in candidates[:3]]}
+    if selected_collection:
+        details["selection_basis"] = "grounded_collection_with_repeated_dominant_cadences"
+        details["margin_scope"] = "within_supported_pitch_collection"
+        details["score_basis"] = "local_profile_with_connected_cadences_in_supported_collection"
+        details["collection_consistency"] = {
+            "pitch_classes": list(selected_collection),
+            "predominant_dominant_cadences": best["predominant_dominant_cadences"],
+            "observed_multi_note_regions": len(multi_regions),
+            "selected_collection_incompatible_regions": unexplained(best),
+            "histogram_winner_incompatible_regions": unexplained(raw_best),
+            "histogram_winner": {"key": _NAMES[raw_best["pc"]] + " " + raw_best["mode"],
+                                 "score": round(raw_best["score"], 4)},
+            "histogram_margin": round(histogram_margin, 4),
+        }
+    if enough:
+        conflict = _repeated_collection_conflict(best, candidates, note_weights, grounded_harmony)
+        if conflict:
+            details["reason"] = "recurrent_grounded_collection_conflict"
+            details["collection_conflict"] = conflict
+            return {"unknown": True, "confidence": "low", "evidence": details}
     if not enough:
         details["reason"] = "unresolved_scale_degrees" if ambiguous_collections else (
             "dominant_tonic_ambiguity" if dominant_alternative else
@@ -739,7 +905,7 @@ def _estimate_key(observations, harmony, start, end, position=None):
     if ambiguous_collections:
         details["reason"] = "tonic_supported_palette_unresolved"
         details["ambiguous_collections"] = ambiguous_collections[:3]
-    confidence = "high" if margin >= .09 and best["fit"] >= .94 and not ambiguous_collections else "medium"
+    confidence = "high" if margin >= .09 and best["fit"] >= .94 and not ambiguous_collections and not selected_collection else "medium"
     return {"key": root + " " + best["mode"], "mode": best["mode"], "root": root,
             "confidence": confidence, "evidence": details}
 
@@ -819,9 +985,10 @@ def _key_timeline(source, observations, harmony, beat, cancelled):
             return cache[token]
         if len(cache) >= 1024:
             return {"unknown": True, "confidence": "low", "evidence": {"reason": "local_context_budget"}}
-        first = bisect_left(observation_times, start - longest_observation)
+        cadence_start = seconds(position(start) - .5)
+        first = bisect_left(observation_times, cadence_start - longest_observation)
         last = bisect_left(observation_times, end)
-        a = max(0, bisect_right(harmony_times, start) - 1)
+        a = max(0, bisect_left(harmony_times, cadence_start) - 1)
         b = bisect_left(harmony_times, end)
         value = _estimate_key(observations[first:last], harmony[a:b], start, end, position)
         details = {**value["evidence"], "scope": "local", "context_start": round(start, 6),
@@ -965,9 +1132,22 @@ def _key_timeline(source, observations, harmony, beat, cancelled):
                 _check(cancelled)
             for end in boundaries[index + 1:index + 5]:
                 size = position(end) - position(start)
-                if size < 2 * step - _EPS or size > width * 1.5:
+                if size < 2 * step - _EPS or size > width * 2:
                     continue
                 candidate = propose(start, end, (region_start, region_end))
+                if candidate and size > width * 1.5:
+                    candidate_value = candidate["value"]
+                    palette = _tonal_collection(candidate_value)
+                    multi_chords = [e for e in harmony if e["end"] > candidate["start"]
+                                    and e["t"] < candidate["end"] and not e.get("unknown")
+                                    and len(e.get("grounded_chord_tones", [])) >= 2
+                                    and pitch_class(e.get("root")) in e.get("grounded_chord_tones", [])]
+                    if (candidate_value.get("unknown")
+                            or candidate_value["evidence"].get("selection_basis") !=
+                            "grounded_collection_with_repeated_dominant_cadences"
+                            or candidate_value["evidence"].get("dominant_cadences", 0) < 2
+                            or any(not set(e["grounded_chord_tones"]) <= palette for e in multi_chords)):
+                        candidate = None
                 if candidate:
                     proposals.append(candidate)
                 if len(proposals) >= 256:

@@ -254,3 +254,85 @@ def test_unknown_palette_with_known_tonic_never_gets_scale_credit_in_rests():
     assert metrics["interior"]["chord_tones_visible_seconds"] == 8
     assert rest_reference_metrics(prediction, refs, [], {"available": False, "reason": "no_lead_chart"}) == {
         "available": False, "reason": "no_lead_chart"}
+
+
+def test_section_diagnostics_keep_late_recovery_separate_from_boundary_success():
+    refs = reference([{"start": 0, "end": 10, "keys": ["C major"]},
+                      {"start": 10, "end": 30, "keys": ["D major"]}])
+    prediction = result([{"t": 0, "end": 9, "key": "C major"},
+                         {"t": 9, "end": 17, "unknown": True},
+                         {"t": 17, "end": 30, "key": "D major"}])
+    metrics = timeline_metrics(prediction, refs, list(range(31)))
+    assert not metrics["boundaries"][0]["within_tolerance"]
+    assert len(metrics["false_switches_in_annotated_regions"]) == 1
+    diagnostics = metrics["section_transition_diagnostics"]
+    section = diagnostics["sections"][1]
+    assert section["correct_seconds"] == 13
+    assert section["unknown_seconds"] == 7
+    assert section["wrong_seconds"] == 0
+    assert section["first_correct_span"]["t"] == 17
+    assert section["last_correct_span"]["end"] == 30
+    assert not diagnostics["boundaries"][0]["two_sided_correct_evidence"]
+
+
+@pytest.mark.parametrize("gap_key,unknown_seconds,wrong_seconds", [
+    (None, 3, 0), ("E major", 0, 3),
+])
+def test_near_boundary_correct_fragments_do_not_hide_wrong_key_detours(gap_key, unknown_seconds, wrong_seconds):
+    refs = reference([{"start": 0, "end": 10, "keys": ["C major"]},
+                      {"start": 10, "end": 20, "keys": ["D major"]}])
+    prediction = result([{"t": 0, "end": 9, "key": "C major"},
+                         {"t": 9, "end": 12, **({"key": gap_key} if gap_key else {"unknown": True})},
+                         {"t": 12, "end": 20, "key": "D major"}])
+    diagnostics = timeline_metrics(prediction, refs, list(range(21)))["section_transition_diagnostics"]
+    boundary = diagnostics["boundaries"][0]
+    assert boundary["two_sided_correct_evidence"]
+    assert boundary["before"]["t"] == 6
+    assert boundary["after"]["end"] == 14
+    candidate = boundary["candidate_transition"]
+    assert candidate["gap_seconds"] == 3
+    assert candidate["unknown_gap_seconds"] == unknown_seconds
+    assert candidate["intervening_wrong_key_seconds"] == wrong_seconds
+    assert candidate["prediction_error_beats"] == 2
+
+
+def test_tiny_clipped_reference_edge_is_flagged_without_changing_legacy_tally():
+    refs = reference([{"start": 9.96, "end": 10, "keys": ["F minor"]},
+                      {"start": 10, "end": 20, "keys": ["F major"]}])
+    metrics = timeline_metrics(result([{"t": 0, "end": 20, "key": "F major"}]), refs,
+                               list(range(21)), reference_uncertainty_seconds=.5)
+    assert len(metrics["boundaries"]) == 1
+    assert not metrics["boundaries"][0]["within_tolerance"]
+    boundary = metrics["section_transition_diagnostics"]["boundaries"][0]
+    assert boundary["before_reference_limited"]
+    assert boundary["before_uncertainty_limited"]
+    assert not boundary["after_reference_limited"]
+    assert not boundary["after_uncertainty_limited"]
+    assert boundary["before"]["wrong_seconds"] == pytest.approx(.04)
+
+
+def test_section_diagnostics_use_actual_tempo_and_do_not_credit_relative_keys():
+    refs = reference([{"start": 0, "end": 10, "keys": ["C major"]},
+                      {"start": 10, "end": 24, "keys": ["D major"]}])
+    metrics = timeline_metrics(result([{"t": 0, "end": 10, "key": "A minor"},
+                                      {"t": 10, "end": 24, "key": "D major"}]), refs,
+                               list(range(11)) + list(range(12, 26, 2)))
+    diagnostics = metrics["section_transition_diagnostics"]
+    assert diagnostics["sections"][0]["wrong_seconds"] == 10
+    assert diagnostics["sections"][0]["first_correct_span"] is None
+    assert diagnostics["boundaries"][0]["after"]["end"] == 18
+    assert not diagnostics["boundaries"][0]["two_sided_correct_evidence"]
+
+
+def test_diagnostics_keep_expired_events_unknown_and_reject_invalid_uncertainty():
+    refs = reference([{"start": 0, "end": 10, "keys": ["C major"]}])
+    prediction = result([{"t": 0, "end": 2, "key": "C major"},
+                         {"t": 6, "end": 8, "key": "C major"}])
+    section = timeline_metrics(prediction, refs, [])["section_transition_diagnostics"]["sections"][0]
+    assert section["correct_seconds"] == 4
+    assert section["unknown_seconds"] == 6
+    assert section["first_correct_span"]["end"] == 2
+    assert section["last_correct_span"]["t"] == 6
+    for uncertainty in [-1, float("inf"), float("nan")]:
+        with pytest.raises(ValueError, match="uncertainty"):
+            timeline_metrics(prediction, refs, [], reference_uncertainty_seconds=uncertainty)
