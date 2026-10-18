@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Experimental harmony analysis recognizes cadence returns across short chart
+  release gaps in authored beat time and requires the arriving chord to match
+  the candidate major/minor key. Conflicting or missing harmonic evidence stays
+  bounded; chord and scale lifetimes are unchanged. Cached analysis refreshes
+  automatically, behind the existing 3D Highway toggle.
 - Experimental harmony analysis can retain strongly supported tonic identities
   and shorter local key passages while withholding unresolved full scales.
   Rest-visibility checks distinguish playable guidance from timeline coverage;

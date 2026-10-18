@@ -632,3 +632,123 @@ python tools/evaluate_harmony_known_keys.py `
   --chord-directory <frozen-chord-directory> `
   --output <new-comparison-directory>
 ```
+
+## v6: cadence evidence across articulated chord releases
+
+The follow-up implementation fixes two sources of biased local key evidence.
+An authentic or plagal arrival must now contain the observed third of the
+candidate major/minor tonic. A cadence into C minor cannot count as an arrival
+into C major merely because a C-major chord occurred elsewhere in the context.
+Separately, two grounded chords can have a harmonic connection across at most
+half an authored beat of empty release time. Exact endpoint equality previously
+made an articulated return disappear from the evidence while a legato secondary
+cadence continued to count.
+
+The half-beat allowance measures the authored tempo map, including tempo
+changes. It applies only to cadence evidence: it does not extend a chord,
+target or scale across the gap. An intervening chord, suspended/power chord,
+root-only event, conflicting arrangement, conflicting chord quality or
+incompatible held/new note blocks the connection. Only an explicit
+`no_chart_evidence` gap is eligible. The tonic must actually arrive inside the
+estimated context. The stable local-context and scale-degree checks remain in
+place; this is not a new whole-song prior or a general modulation solution.
+
+The initial diagnosis came from short C7-to-F gaps in Yesterday, but subsequent
+inspection showed that **all eight of those gaps contain conflicting arrangement
+evidence**, rather than empty articulation. The conservative fix therefore does
+not change Yesterday's output. Rhythm C7 and a bonus-lead Gm6 interpretation of
+the subset E/G/Bb, together with bass timing, create competing root evidence.
+That requires separate investigation of how overlapping arrangements are
+combined. Increasing the gap tolerance is not a supported solution.
+
+### Frozen song comparison
+
+The candidate was fixed before evaluating the merged 11-song reference set and
+two newly prepared songs. The additional reference freeze was
+`2026-10-18T17:28:32.226570Z`. I Want It All includes B-minor, relative D-major
+and parallel B-major passages, with five fitting and six checking raw chart
+anchors (maximum residual 0.032 seconds). Good Old Fashioned Lover Boy includes
+Eb-to-Cb-and-back references, with four fitting and five checking anchors
+(maximum residual 0.057 seconds). It is a bass-only sparse-notation control;
+its empty rest sample is not successful scale-guidance validation. Both use
+0.5-second alignment uncertainty and unchanged external Isophonics annotations.
+No audio was decoded or listened to.
+
+| Existing 11-song reference measure | v5 | v6 |
+| --- | ---: | ---: |
+| Reference duration (s) | 1,313.579 | 1,313.579 |
+| Correct key duration (s) | 426.331 | 435.717 |
+| Wrong known key duration (s) | 63.024 | 63.024 |
+| Unknown key duration (s) | 824.223 | 814.837 |
+| Key changes within four beats | 2 / 14 | 2 / 14 |
+| Unmatched switches in annotated regions | 3 | 3 |
+| Full-scale guidance in 155.675 reference-rest seconds | 43.701 | 44.431 |
+
+The gain is Bicycle Race's F-major span at 67.451–76.837 chart seconds.
+The observed C-to-F return has a 0.123-beat empty gap with no intervening
+conflict. An ablation keeping the new mode check but restoring exact adjacency
+loses that recovered span, identifying articulation handling as its cause.
+The gain is 9.386 correct-key seconds and 0.730 seconds of full-scale rest
+guidance. No additional wrong-key time appears in these selected regions.
+The previous false G-minor detours in Don't Stop Me Now remain unresolved.
+
+On the two new songs, musical outputs are unchanged. I Want It All still has
+40.535 wrong-known seconds and 154.315 unknown seconds within 194.851 reference
+seconds; it misses all eight changes. Its incorrect A-major spans reflect
+A-heavy local evidence in B-minor/D-major reference context. It shows no full
+scale in its 34.500 seconds of qualifying lead rests. Lover Boy leaves all
+40.362 reference seconds unknown and misses both changes. Together the 13-song
+study still detects only **2 of 24 annotated changes**. This is a modest
+cadence-evidence correction, not evidence of generally reliable key tracking.
+
+The independent chord check has 59.888 scorable rest seconds in the existing
+set after boundary and N.C. exclusions. Scale exposure rises from 17.467 to
+17.767 seconds, with all added exposure containing the annotated chord tones.
+The old 0.769-second D7/D7sus4 disagreement is unchanged. All highlighted targets
+remain inside annotated chords. The new-song chord check is also unchanged;
+its 0.481-second fallback disagreement is chart Bsus2/F# against a coarser
+B-minor annotation, not a demonstrated wrong note. Chord containment alone
+does not establish the suitability of every additional scale tone.
+
+### Regression and runtime contract
+
+Across the separate 53-pack consistency corpus, all 18 fixed chord references
+still match and all timeline-bound, unobserved-chord-tone and scale/chord
+containment checks pass. Grounded harmony is byte-for-byte unchanged in every
+evaluated result. Interior-rest full-scale coverage changes from 6.55% to 6.46%,
+while any-guide coverage remains 55.49%; the difference becomes chord fallback.
+The affected interior-rest sample is Pride and Joy, whose previously known
+Eb-major context at 153.414–175.373 becomes uncertain. The newly counted
+Ab7-to-Eb-minor arrival across a 38 ms empty gap strengthens the competing
+minor interpretation in a passage containing both thirds. This converts 2.138
+rest seconds from scale to chord-only guidance. There is no independent timed
+key reference for that passage, so reduced scale exposure is not claimed as
+either a confirmed correction or a musical regression.
+
+The run's median backend inference was 359.58 ms for v5 and 388.49 ms for v6.
+Other validation was running concurrently, and the filesystem cache was not
+flushed; these are local observations, not calibrated performance or FPS
+measurements. The work remains in the background analysis job, outside playback
+rendering. `chart-harmony-v6` changes the versioned cache identity, so the first
+enabled analysis recomputes and subsequent requests reuse the new result.
+The existing persistent 3D Highway toggle and its default remain unchanged.
+
+The Python verification passes **320 tests**, including 36 new musical
+regressions and an algorithm-upgrade cache test. The focused JavaScript guide
+suite passes **95 tests**. Independent source review found no remaining
+confirmed defect. Seven browser tests pass with the full Songsterr plugin
+composition. The eighth completes its harmony assertions but encounters an
+unrelated Rig Builder startup error; the same test body passes with only the
+highway plugin selected by a request-scoped fixture. Runtime and browser
+verification receipts retain both results. Tests actively exercise the feature
+enabled and disabled while preserving the user's saved preference.
+
+Reproducible evidence is under
+`C:\Dev\feedback-workspace\verification\songsterr-harmony-section-keys-20261018`:
+`existing-11-first-01`, `new-2-initial-01`, `regression-first-01`, their independent
+chord checks, `study-summary.json`, the pre-prediction design and reference
+freeze, and the raw cadence diagnosis. The final engine SHA256 is
+`47c924a2c15bb2b2d83af916eacceb893e4c93de708eda410b5afca9ccd5e3d7`.
+Use the existing modulation/chord evaluators with these manifests and a new
+output directory. The additional songs become development data if their
+failures inform later model changes.

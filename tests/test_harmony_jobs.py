@@ -74,6 +74,36 @@ def test_force_recomputes_and_corrupt_cache_is_recoverable(manager, tmp_path):
     assert forced["items"][0]["cached"] is False
 
 
+def test_algorithm_upgrade_recomputes_then_reuses_its_own_cache(manager, tmp_path, monkeypatch):
+    import harmony_jobs
+
+    song = tmp_path / "song.feedpak"
+    song.write_text("unchanged-song")
+    calls = []
+
+    def analyse(source, **kwargs):
+        calls.append(harmony_jobs.ALGORITHM_VERSION)
+        return {**result(source), "algorithm_version": harmony_jobs.ALGORITHM_VERSION}
+
+    manager._analyse = analyse
+    with monkeypatch.context() as old_version:
+        old_version.setattr(harmony_jobs, "ALGORITHM_VERSION", "chart-harmony-previous")
+        first = wait_done(manager, manager.submit([("song", song)])["id"])
+        assert first["items"][0]["cached"] is False
+    old_cache = next(manager.cache_dir.glob("*.json"))
+    old_bytes = old_cache.read_bytes()
+
+    upgraded = wait_done(manager, manager.submit([("song", song)])["id"])
+    assert upgraded["items"][0]["cached"] is False
+    assert upgraded["items"][0]["result"]["algorithm_version"] == ALGORITHM_VERSION
+    repeated = wait_done(manager, manager.submit([("song", song)])["id"])
+    assert repeated["items"][0]["cached"] is True
+    assert calls == ["chart-harmony-previous", ALGORITHM_VERSION]
+    assert len(list(manager.cache_dir.glob("*.json"))) == 2
+    assert old_cache.read_bytes() == old_bytes
+    assert song.read_text() == "unchanged-song"
+
+
 def test_unbounded_cached_events_are_recomputed(manager, tmp_path):
     song = tmp_path / "song.feedpak"
     song.write_text("r1")

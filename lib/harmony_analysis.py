@@ -14,7 +14,7 @@ import re
 from statistics import median
 
 
-ALGORITHM_VERSION = "chart-harmony-v5"
+ALGORITHM_VERSION = "chart-harmony-v6"
 _NAMES = ("C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
 _NATURAL = dict(zip("CDEFGAB", (0, 2, 4, 5, 7, 9, 11)))
 _EPS = 1e-7
@@ -471,10 +471,17 @@ def _quality_is_observed(event):
     return pc in observed and bool(thirds) and all((pc + third) % 12 in observed for third in thirds)
 
 
-def _estimate_key(observations, harmony, start, end):
+def _tonic_quality_matches(event, mode):
+    """A cadence to the parallel tonic cannot establish the candidate mode."""
+    return (_quality_is_observed(event) and
+            (event.get("quality", "").startswith("min") if mode == "minor" else
+             event.get("quality") in ("maj", "maj7", "maj9", "6", "add9")))
+
+
+def _estimate_key(observations, harmony, start, end, position=None):
     pitch_weights, roots = Counter(), Counter()
     chord_events = []
-    for event in harmony:
+    for event_index, event in enumerate(harmony):
         overlap = min(event["end"], end) - max(event["t"], start)
         if overlap <= 0 or event.get("unknown") or not event.get("quality"):
             continue
@@ -494,9 +501,43 @@ def _estimate_key(observations, harmony, start, end):
                 or abs(chord_events[-1]["end"] - event["t"]) > _EPS):
             # Keep incomplete/power-chord regions in the sequence. Dropping
             # them would join unrelated triads into a fictitious cadence.
-            chord_events.append({**event, "_quality_observed": supports_quality})
+            chord_events.append({**event, "_quality_observed": supports_quality,
+                                 "_first_index": event_index, "_last_index": event_index})
         else:
             chord_events[-1]["end"] = event["end"]
+            chord_events[-1]["_last_index"] = event_index
+    # Chart releases need not touch the next attack. A brief articulation gap
+    # can still connect two grounded chords harmonically, without claiming
+    # that either chord sounded throughout the gap. Use authored musical time
+    # and never skip another chord or a conflicting played pitch. Direct
+    # callers without a beat clock retain exact-adjacency behavior.
+    onsets = sorted(observations, key=lambda event: event["t"])
+    onset_times = [event["t"] for event in onsets]
+    longest_observation = max((event["end"] - event["t"] for event in onsets), default=0)
+    cadence_pairs, articulated_pairs = [], 0
+    for left, right in zip(chord_events, chord_events[1:]):
+        if (not left["_quality_observed"] or not right["_quality_observed"]
+                or not start <= right["t"] < end):
+            continue
+        gap = right["t"] - left["end"]
+        if gap < -_EPS:
+            continue
+        if any(not event.get("unknown") or event.get("evidence", {}).get("reason") != "no_chart_evidence"
+               for event in
+               harmony[left["_last_index"] + 1:right["_first_index"]]):
+            continue
+        if gap > _EPS:
+            if position is None or position(right["t"]) - position(left["end"]) > .5 + _EPS:
+                continue
+            allowed = set(left["chord_tones"]) | set(right["chord_tones"])
+            first = bisect_left(onset_times, left["end"] - longest_observation)
+            last = bisect_left(onset_times, right["t"])
+            if any(event["end"] > left["end"] and event["weight"] >= .5
+                   and not set(event["pcs"]) <= allowed
+                   for event in onsets[first:last]):
+                continue
+            articulated_pairs += 1
+        cadence_pairs.append((left, right))
     # Pitch observations remain useful for riffs, but correlated chart density
     # is bounded by per-time/group occupancy and cannot drown out harmony.
     note_weights = Counter()
@@ -532,30 +573,24 @@ def _estimate_key(observations, harmony, start, end):
             fit = sum(value for note, value in pitch_weights.items() if note in scale) / total
             corr = _correlation(distribution, [profile[(note - pc) % 12] for note in range(12)])
             tonic = roots[pc] / root_total
-            cadences = sum(1 for a, b in zip(chord_events, chord_events[1:])
-                           if abs(a["end"] - b["t"]) <= _EPS
-                           and a["_quality_observed"] and b["_quality_observed"]
-                           and pitch_class(b["root"]) == pc and (pitch_class(a["root"]) - pc) % 12 in (7, 5))
-            dominant_cadences = sum(1 for a, b in zip(chord_events, chord_events[1:])
-                                    if abs(a["end"] - b["t"]) <= _EPS
-                                    and a["_quality_observed"] and b["_quality_observed"]
-                                    and pitch_class(b["root"]) == pc and (pitch_class(a["root"]) - pc) % 12 == 7
+            cadences = sum(1 for a, b in cadence_pairs
+                           if pitch_class(b["root"]) == pc and _tonic_quality_matches(b, mode)
+                           and (pitch_class(a["root"]) - pc) % 12 in (7, 5))
+            dominant_cadences = sum(1 for a, b in cadence_pairs
+                                    if pitch_class(b["root"]) == pc and _tonic_quality_matches(b, mode)
+                                    and (pitch_class(a["root"]) - pc) % 12 == 7
                                     and a["quality"] in ("maj", "7", "9", "7sus4"))
             cadence = min(1, cadences / max(1, len(chord_events) / 6))
             bookends = sum(pitch_class(e["root"]) == pc for e in (chord_events[:1] + chord_events[-1:])) / 2
             # A major/minor tonic must be present with the corresponding third
             # before calling this conventional tonality, rather than a mode.
-            tonic_quality = "min" if mode == "minor" else "maj"
-            supported_tonic = any(e["_quality_observed"] and pitch_class(e["root"]) == pc and
-                                  (e["quality"].startswith("min") if tonic_quality == "min" else
-                                   e["quality"] in ("maj", "maj7", "maj9", "6", "add9"))
+            supported_tonic = any(pitch_class(e["root"]) == pc and _tonic_quality_matches(e, mode)
                                   for e in chord_events)
             tonic_regions, previous_root = 0, None
             for event in chord_events:
                 current_root = pitch_class(event["root"])
-                if (current_root != previous_root and current_root == pc and event["_quality_observed"]
-                        and (event["quality"].startswith("min") if mode == "minor" else
-                             event["quality"] in ("maj", "maj7", "maj9", "6", "add9"))):
+                if (current_root != previous_root and current_root == pc
+                        and _tonic_quality_matches(event, mode)):
                     tonic_regions += 1
                 previous_root = current_root
             score = fit * .38 + corr * .37 + tonic * .12 + cadence * .08 + bookends * .05
@@ -610,6 +645,7 @@ def _estimate_key(observations, harmony, start, end):
                "observed_quality_roots": len({pitch_class(e["root"]) for e in chord_events if e["_quality_observed"]}),
                "tonic_quality_observed": best["tonic_supported"],
                "dominant_cadences": best["dominant_cadences"],
+               "articulated_chord_connections": articulated_pairs,
                "tonic_duration_share": round(best["tonic_weight"], 4),
                "observed_tonic_regions": best["observed_tonic_regions"],
                "repeated_tonic_anchor": anchored_tonic,
@@ -725,7 +761,7 @@ def _key_timeline(source, observations, harmony, beat, cancelled):
         last = bisect_left(observation_times, end)
         a = max(0, bisect_right(harmony_times, start) - 1)
         b = bisect_left(harmony_times, end)
-        value = _estimate_key(observations[first:last], harmony[a:b], start, end)
+        value = _estimate_key(observations[first:last], harmony[a:b], start, end, position)
         details = {**value["evidence"], "scope": "local", "context_start": round(start, 6),
                    "context_end": round(end, 6), "context_beats": round(position(end) - position(start), 4)}
         # Root and quality observations must span a progression, not a single
