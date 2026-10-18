@@ -247,6 +247,15 @@ export const jucePlayer = {
         this._sourceAt = this._pollAt;
         try {
             if (await window.feedBackDesktop.audio.seekBacking(s) === false) throw new Error('Native backing seek failed');
+            if (owner === this._seekSerial) {
+                // The old audible-output sample belongs to the pre-seek audio.
+                // Paused seeks do not restart polling, so retaining it would
+                // pin the highway (and rest guide) to that old position forever.
+                // Use the committed seek position until a fresh sample arrives.
+                this._presentation = null;
+                this._sourceEnded = false;
+                this._sourceFailed = false;
+            }
         } catch (err) {
             console.warn('[jucePlayer] seekBacking failed:', err);
             if (owner === this._seekSerial) {

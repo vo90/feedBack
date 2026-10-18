@@ -9,6 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { nativeHarness } = require('./helpers/native-backing-harness');
 
 const HIGHWAY_JS = path.join(__dirname, '..', '..', 'static', 'highway.js');
 
@@ -103,6 +104,42 @@ function rendererClock() {
     const start = src.indexOf('    function createPresentationClock() {');
     return vm.runInNewContext(`(${src.slice(start, src.indexOf('    // End presentation clock.', start)).trim()})`)();
 }
+
+test('paused native seek keeps the actual highway rest gate on the sought chart position', async () => {
+    const modelSource = fs.readFileSync(path.join(__dirname, '../../static/js/harmony-guide-model.js'), 'utf8');
+    const {prepareRestWindows, resolveRest} = await import('data:text/javascript;base64,'
+        + Buffer.from(modelSource).toString('base64'));
+    // Yesterday lead's observed interior rest, with occupied context on each side.
+    const rests = prepareRestWindows({notes: [{t:0, sus:26.706}, {t:29.117, sus:10}],
+        beats: Array.from({length:80}, (_, i) => ({time:i / 2})), duration:40});
+    const h = nativeHarness(), lease = await h.acquire();
+    await lease.play();
+    h.player._acceptSnapshot({position:34.28926725, ageMs:0, sequence:1, generation:1,
+        playing:true, presentation:{version:2, position:34.2150696, ageMs:0,
+            playing:true, routeGeneration:1}}, 0);
+    await lease.pause();
+    let now = 0;
+    const sb = buildClockSandbox(() => now);
+    sb.setTime(h.player.currentTime);
+    sb.setPlaybackSample(h.player.getClockSnapshot(), false);
+    assert.equal(resolveRest(rests, sb.api.getPresentationTime()).active, false);
+
+    await lease.seek(27.739026692708332);
+    sb.api.resetPresentation('timeline');
+    for (now of [100, 1000, 10000]) {
+        // Same bridge as app.js: chart time then the native output snapshot.
+        sb.setTime(h.player.currentTime);
+        sb.setPlaybackSample(h.player.getClockSnapshot(), false);
+        const shown = sb.api.getPresentationTime();
+        assert.equal(shown, h.player.currentTime);
+        assert.equal(resolveRest(rests, shown).opacity, 1);
+    }
+    await lease.seek(29.117);
+    sb.api.resetPresentation('timeline');
+    sb.setTime(h.player.currentTime);
+    sb.setPlaybackSample(h.player.getClockSnapshot(), false);
+    assert.equal(resolveRest(rests, sb.api.getPresentationTime()).active, false);
+});
 
 test('native output samples remain smooth through the actual core-to-renderer timing bridge', () => {
     for (const hz of [30, 60, 100, 144]) for (const rate of [.5, 1, 2]) for (const offset of [-150, 0, 100]) {

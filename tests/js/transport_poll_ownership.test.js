@@ -24,6 +24,7 @@ function harness(stream = false) {
     const state = {performance: {now: () => now}, console: {warn() {}},
         setTimeout: (fn, delay) => { const id = ++serial; timers.set(id, fn); delays.push(delay); return id; },
         clearTimeout: id => timers.delete(id), audioSeekGen: () => 1,
+        selectionLifecycle: () => ({reconcileBeforePlayback() {}}),
         _queueBackingCommand: fn => Promise.resolve().then(fn), _emitSongPositionChanged() {},
         window: {feedBackDesktop: {audio: api}}};
     vm.createContext(state);
@@ -65,6 +66,75 @@ test('pause and seek remove subscriptions and reject queued packets from their o
     const current = h.subscriptions.at(-1); await h.j.pause();
     const frozen = h.j.currentTime; current.callback(packet(100, 21, 1000));
     assert.equal(current.stops, 1); assert.equal(h.j.currentTime, frozen);
+});
+
+async function pausedOutputClock() {
+    const h = harness(true);
+    h.setNow(100);
+    h.api.getBackingSnapshot = async () => ({...packet(1, 34.28926725),
+        presentation: {version: 2, position: 34.2150696, ageMs: 0,
+            playing: true, routeGeneration: 1}});
+    await h.fire();
+    await h.j.pause();
+    assert.equal(h.j.getClockSnapshot().position, 34.2150696);
+    return h;
+}
+
+for (const target of [27.739026692708332, 64.77]) {
+    test(`paused seek to ${target} replaces the preceding audible position`, async () => {
+        const h = await pausedOutputClock();
+        await h.j.seek(target);
+        // No poll runs while paused: every later render tick must use the new
+        // seek position, rather than re-publishing the previous v2 output clock.
+        for (const now of [200, 1000, 10000]) {
+            h.setNow(now);
+            const clock = h.j.getClockSnapshot();
+            assert.equal(clock.position, target);
+            assert.equal(clock.playing, false);
+            assert.equal(clock.ended, false);
+            assert.equal(clock.timingVersion, 1);
+            assert.equal(h.j.currentTime, target);
+            assert.equal(h.timers.size, 0);
+        }
+    });
+}
+
+test('a failed paused seek retains its earlier audible snapshot', async () => {
+    const h = await pausedOutputClock();
+    const before = {...h.j.getClockSnapshot()};
+    h.api.seekBacking = async () => false;
+    await assert.rejects(h.j.seek(27.739), /Native backing seek failed/);
+    const after = h.j.getClockSnapshot();
+    assert.equal(after.position, before.position);
+    assert.equal(after.timingVersion, 2);
+    assert.equal(h.j.currentTime, 34.28926725);
+});
+
+test('an old successful seek cannot clear a newer resumed output snapshot', async () => {
+    const h = await pausedOutputClock(), first = deferred();
+    h.api.seekBacking = () => first.promise;
+    const oldSeek = h.j.seek(27.739);
+    h.api.seekBacking = async () => true;
+    await h.j.seek(64.77);
+    assert.equal(await h.j.play(), true);
+    h.api.getBackingSnapshot = async () => ({...packet(2, 64.9, 200),
+        presentation: {version: 2, position: 64.82, ageMs: 0,
+            playing: true, routeGeneration: 2}});
+    h.setNow(200); await h.fire();
+    first.resolve(true); await oldSeek;
+    const clock = h.j.getClockSnapshot();
+    assert.equal(clock.position, 64.82);
+    assert.equal(clock.timingVersion, 2);
+    assert.equal(clock.playing, true);
+    h.j._stopPolling();
+});
+
+test('seek from an ended output clears terminal state until fresh playback samples arrive', async () => {
+    const h = await pausedOutputClock();
+    h.j._sourceEnded = true; h.j._sourceFailed = true;
+    await h.j.seek(27.739);
+    assert.equal(h.j.getClockSnapshot().ended, false);
+    assert.equal(h.j._sourceFailed, false);
 });
 test('ongoing stream progresses through a hung poll and expires without clock calibration', async () => {
     const h = await calibratedStream(), callback = h.subscriptions[0].callback;

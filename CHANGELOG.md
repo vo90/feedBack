@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Seeking while paused now clears the preceding native playback timestamp, so
+  the highway and experimental rest guide stay at the selected song position.
+  Failed or superseded seeks retain the current playback owner's state.
 - Experimental harmony analysis recognizes cadence returns across short chart
   release gaps in authored beat time and requires the arriving chord to match
   the candidate major/minor key. Conflicting or missing harmonic evidence stays
