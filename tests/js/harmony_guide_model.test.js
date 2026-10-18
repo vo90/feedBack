@@ -49,6 +49,34 @@ test('a label-supported major third is never added to grounded chord-only guidan
     assert.equal(state.scale, null);
 });
 
+test('a supported E-minor tonic with an unresolved palette shows only grounded chord tones', async () => {
+    const { createHarmonyTimeline, resolveHarmony, buildGuidanceFretboard } = await model;
+    const timeline = createHarmonyTimeline({ generated: {
+        keys: { events: [{ t: 0, end: 16, key: 'E minor', confidence: 'medium' }] },
+        harmony: { events: [groundedChord(0, 16, {
+            root: 'E', quality: 'min', chord_tones: [4, 7, 11], grounded_chord_tones: [4, 7, 11],
+            evidence: { kind: 'named_chord', observed_pcs: [4, 7, 11], root_observed: true },
+        })] },
+        scales: { events: [{ t: 0, end: 8, unknown: true },
+            { t: 8, end: 16, root: 'E', type: 'natural_minor', confidence: 'medium' }] },
+    } });
+    // Returning to the unresolved passage must remove F#, C and other full-scale notes.
+    for (const time of [2, 10, 2]) {
+        const state = resolveHarmony(timeline, time);
+        assert.equal(state.key.label, 'E minor');
+        const board = buildGuidanceFretboard({ guidance: state.guidance, targetPc: state.targetPc, openMidi: STANDARD });
+        if (time < 8) {
+            assert.equal(state.scale, null);
+            assert.equal(state.guidance.kind, 'chord_tones');
+            assert.deepEqual(new Set(board.markers.map(m => m.pc)), new Set([4, 7, 11]));
+            assert(board.markers.every(m => !m.isTonic && m.degreeLabel === ''));
+        } else {
+            assert.equal(state.guidance.kind, 'scale');
+            assert.deepEqual(new Set(board.markers.map(m => m.pc)), new Set([4, 6, 7, 9, 11, 0, 2]));
+        }
+    }
+});
+
 test('chord-only fallback rejects uncertain, rootless, malformed and conflicting information', async () => {
     const { createHarmonyTimeline, resolveHarmony } = await model;
     const patches = [

@@ -546,3 +546,35 @@ test('local key changes replace the scale notes and stay bounded when seeking', 
   expect(await page.evaluate(() => (window as any).__hgFrame.markers)).toEqual([]);
   await screenshot(page, testInfo, 'harmony-key-change-uncertainty');
 });
+
+test('known tonic and unknown scale stay separate in the header and rendered rest notes', async ({ page }, testInfo) => {
+  test.setTimeout(90000);
+  const result = { version: 1, source: 'charts', revision: 'revision-one',
+    keys: { version: 1, events: [{ t: 0, end: 30, key: 'E minor', confidence: 'medium' }] },
+    harmony: { version: 1, events: [{ t: 0, end: 30, root: 'E', quality: 'min', confidence: 'high',
+      chord_tones: [4, 7, 11], grounded_chord_tones: [4, 7, 11], evidence: { root_observed: true } }] },
+    scales: { version: 1, events: [{ t: 0, end: 16, unknown: true },
+      { t: 16, end: 30, root: 'E', type: 'natural_minor', confidence: 'medium' }] },
+  };
+  await page.route('**/api/harmony/analyse', route => route.fulfill({ json: { id: 'palette-job', status: 'queued' } }));
+  await page.route('**/api/harmony/jobs/palette-job', route => route.fulfill({ json: {
+    id: 'palette-job', status: route.request().method() === 'DELETE' ? 'cancelled' : 'complete',
+    items: [{ filename: 'mock-harmonic-guide.feedpak', status: 'complete', result }],
+  } }));
+  await installSongFixture(page, false); await openSong(page);
+  for (const time of [4.5, 17, 4.5]) {
+    await atTime(page, time);
+    await expect(page.locator('.hg-key')).toHaveText('Key: E minor');
+    await expect(page.locator('.hg-scale')).toHaveText(time === 17 ? 'Scale: E natural minor' : 'Chord tones · Scale unavailable');
+    const frame = await page.evaluate(() => (window as any).__hgFrame);
+    expect(frame.alpha).toBe(1);
+    expect([...new Set(frame.markers.map((m: any) => m.pc))].sort()).toEqual(
+      (time === 17 ? [4, 6, 7, 9, 11, 0, 2] : [4, 7, 11]).sort());
+    if (time !== 17) {
+      expect(frame.guidance).toBe('chord_tones');
+      expect(frame.labelMode).toBe('notes');
+      expect(frame.markers.every((m: any) => !m.tonic && !m.degree)).toBe(true);
+    }
+  }
+  await screenshot(page, testInfo, 'harmony-known-tonic-unknown-scale');
+});

@@ -103,7 +103,7 @@ under the active profile's `harmony_analysis` directory; no feedpak is modified.
 Changed sources or algorithm versions invalidate cached results. Errors have a
 retry action and do not prevent playback.
 
-Algorithm `chart-harmony-v4` separates observed pitch classes from notes only
+Algorithm `chart-harmony-v5` separates observed pitch classes from notes only
 implied by a chord label. A label's missing third or slash bass cannot become
 a played guide note. Major/minor quality and cadence votes require an observed
 root and defining third. Incomplete and power chords remain in the sequence
@@ -115,6 +115,18 @@ labels. Sparse evidence, long gaps and uncertain transitions remain unknown;
 the whole-song key is no longer copied into those passages. A borrowed chord
 alone is not sufficient evidence for a key change. This remains experimental:
 real-song key changes can still be missed, delayed or misidentified.
+
+A repeatedly supported tonic can now be identified even when the chart does
+not distinguish all seven scale notes. In that case the key appears in the
+header, but the scale stays unavailable and the rest guide uses only supported
+chord tones. A key label alone never authorizes the missing scale notes.
+Shorter passages need stronger progression or repeated-tonic evidence; nearby
+played notes can support the analysis context without extending a chord beyond
+its observed passage. These checks also apply near established key changes.
+When a long chord suggests one relative tonic but an observed cadence supports
+the other, the tonic remains uncertain; their shared scale can still be used
+when its notes are supported. Temporary tonicizations remain difficult to
+distinguish from a sustained key change.
 
 Inference runs in a background job when the enabled guide needs missing song
 data, then reuses the versioned cache on later loads. It is not recomputed on

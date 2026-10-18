@@ -14,7 +14,7 @@ import re
 from statistics import median
 
 
-ALGORITHM_VERSION = "chart-harmony-v4"
+ALGORITHM_VERSION = "chart-harmony-v5"
 _NAMES = ("C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
 _NATURAL = dict(zip("CDEFGAB", (0, 2, 4, 5, 7, 9, 11)))
 _EPS = 1e-7
@@ -329,6 +329,7 @@ def _event_signature(event):
             event.get("evidence", {}).get("kind"),
             event.get("evidence", {}).get("shared_scale", {}).get("root"),
             event.get("evidence", {}).get("shared_scale", {}).get("type"),
+            event.get("evidence", {}).get("scale_degrees_resolved", True),
             event.get("evidence", {}).get("reason") if event.get("unknown") else None)
 
 
@@ -549,10 +550,19 @@ def _estimate_key(observations, harmony, start, end):
                                   (e["quality"].startswith("min") if tonic_quality == "min" else
                                    e["quality"] in ("maj", "maj7", "maj9", "6", "add9"))
                                   for e in chord_events)
+            tonic_regions, previous_root = 0, None
+            for event in chord_events:
+                current_root = pitch_class(event["root"])
+                if (current_root != previous_root and current_root == pc and event["_quality_observed"]
+                        and (event["quality"].startswith("min") if mode == "minor" else
+                             event["quality"] in ("maj", "maj7", "maj9", "6", "add9"))):
+                    tonic_regions += 1
+                previous_root = current_root
             score = fit * .38 + corr * .37 + tonic * .12 + cadence * .08 + bookends * .05
             candidates.append({"pc": pc, "mode": mode, "score": score, "fit": fit,
                                "correlation": corr, "tonic_supported": supported_tonic,
                                "dominant_cadences": dominant_cadences, "tonic_weight": tonic,
+                               "observed_tonic_regions": tonic_regions,
                                "compatible_quality_regions": sum(e["_quality_observed"]
                                    and set(e["chord_tones"]) <= scale for e in chord_events)})
     candidates.sort(key=lambda c: c["score"], reverse=True)
@@ -567,9 +577,12 @@ def _estimate_key(observations, harmony, start, end):
     # A brief vi/III chord does not make an otherwise sustained home ambiguous.
     # Comparable relative-tonic durations without a dominant cadence do: window
     # bookends/profile margins alone cannot resolve a balanced repeating loop.
+    # Nor can a duration advantage override an observed authentic cadence to
+    # the relative tonic when the preferred tonic has no such cadence itself.
     relative_ambiguous = (best["tonic_supported"] and relative["tonic_supported"]
                           and not best["dominant_cadences"]
-                          and best["tonic_weight"] < 2 * relative["tonic_weight"])
+                          and (best["tonic_weight"] < 2 * relative["tonic_weight"]
+                               or relative["dominant_cadences"] > 0))
     ambiguous_collections = _ambiguous_collections(best, candidates, note_weights)
     # A long V can dominate a pitch histogram despite repeated V-I motion.
     # If another observed tonic has repeated authentic cadences and explains
@@ -582,7 +595,15 @@ def _estimate_key(observations, harmony, start, end):
         and candidate["dominant_cadences"] >= 2
         and candidate["compatible_quality_regions"] == quality_regions
         and best["compatible_quality_regions"] <= quality_regions - 2), None)
-    enough = enough and not relative_ambiguous and not ambiguous_collections and not dominant_alternative
+    # A repeatedly played tonic with its third can establish a major/minor
+    # home without establishing every scale degree (for example Em-Am-Em).
+    # Keep that identity separate from permission to publish a seven-note scale.
+    anchored_tonic = (best["tonic_supported"] and best["observed_tonic_regions"] >= 2
+                      and best["tonic_weight"] >= .6 and quality_regions >= 4
+                      and best["fit"] >= .94 and margin >= .09
+                      and not relative_ambiguous and not dominant_alternative)
+    enough = enough and not relative_ambiguous and not dominant_alternative
+    enough = enough and (not ambiguous_collections or anchored_tonic)
     details = {"method": "pitch_chord_cadence", "pitch_fit": round(best["fit"], 4),
                "margin": round(margin, 4), "chord_regions": len(chord_events),
                "observed_quality_regions": sum(e["_quality_observed"] for e in chord_events),
@@ -590,7 +611,11 @@ def _estimate_key(observations, harmony, start, end):
                "tonic_quality_observed": best["tonic_supported"],
                "dominant_cadences": best["dominant_cadences"],
                "tonic_duration_share": round(best["tonic_weight"], 4),
+               "observed_tonic_regions": best["observed_tonic_regions"],
+               "repeated_tonic_anchor": anchored_tonic,
+               "scale_degrees_resolved": not bool(ambiguous_collections),
                "relative_tonic_duration_share": round(relative["tonic_weight"], 4),
+               "relative_dominant_cadences": relative["dominant_cadences"],
                "candidates": [{"key": _NAMES[c["pc"]] + (" minor" if c["mode"] == "minor" else " major"),
                                "score": round(c["score"], 4)} for c in candidates[:3]]}
     if not enough:
@@ -613,7 +638,10 @@ def _estimate_key(observations, harmony, start, end):
             details["collection_basis"] = "compatible_progression_with_repeated_dominant_cadences"
         return {"unknown": True, "confidence": "low", "evidence": details}
     root = _NAMES[best["pc"]]
-    confidence = "high" if margin >= .09 and best["fit"] >= .94 else "medium"
+    if ambiguous_collections:
+        details["reason"] = "tonic_supported_palette_unresolved"
+        details["ambiguous_collections"] = ambiguous_collections[:3]
+    confidence = "high" if margin >= .09 and best["fit"] >= .94 and not ambiguous_collections else "medium"
     return {"key": root + " " + best["mode"], "mode": best["mode"], "root": root,
             "confidence": confidence, "evidence": details}
 
@@ -636,7 +664,7 @@ def _beat_coordinates(beats, fallback):
 
 def _tonal_identity(estimate):
     if not estimate.get("unknown"):
-        return ("key", estimate["key"])
+        return ("key", estimate["key"], estimate.get("evidence", {}).get("scale_degrees_resolved", True))
     shared = estimate.get("evidence", {}).get("shared_scale")
     if shared:
         return ("collection", tuple(sorted((pitch_class(shared["root"]) + interval) % 12
@@ -712,7 +740,56 @@ def _key_timeline(source, observations, harmony, beat, cancelled):
         cache[token] = value
         return value
 
-    cells, accepted = [], []
+    def sufficient_span(start, end, value):
+        size = position(end) - position(start)
+        if size >= minimum_span - _EPS:
+            return True
+        details = value.get("evidence", {})
+        rich_progression = (details.get("observed_quality_regions", 0) >= 6
+                            and details.get("observed_quality_roots", 0) >= 3)
+        return (size >= 2 * step - _EPS and not value.get("unknown")
+                and (details.get("repeated_tonic_anchor") or rich_progression))
+
+    def propose(start, end, region, context=None):
+        value = estimate(*(context or (start, end)))
+        identity = _tonal_identity(value)
+        if not identity:
+            return None
+        collection = _tonal_collection(value)
+        a = max(0, bisect_right(harmony_times, start) - 1)
+        b = bisect_left(harmony_times, end)
+        qualified = [e for e in harmony[a:b] if e["end"] > start
+                     and not e.get("unknown") and e.get("confidence") != "low"
+                     and _quality_is_observed(e)]
+        compatible = [e for e in qualified if set(e["grounded_chord_tones"]) <= collection]
+        if not compatible:
+            return None
+        start, end = max(start, compatible[0]["t"]), min(end, compatible[-1]["end"])
+        local_quality = [e for e in qualified if e["end"] > start and e["t"] < end]
+        if any(position(b["t"]) - position(a["end"]) > 4
+               for a, b in zip(local_quality, local_quality[1:])):
+            return None
+        local = estimate(start, end)
+        if _tonal_identity(local) != identity:
+            return None
+        if context:
+            # Nearby played notes can lengthen the analysis context, never its
+            # published key span or its supply of observed chord qualities.
+            if (position(end) - position(start) < step - _EPS
+                    or not local["evidence"].get("repeated_tonic_anchor")):
+                return None
+            value = estimate(*context)
+        else:
+            value = local
+        context_start, context_end = context or (start, end)
+        if not sufficient_span(context_start, context_end, value):
+            return None
+        if context:
+            value = {**value, "evidence": {**value["evidence"], "context_basis": "continuous_played_notes",
+                     "quality_start": round(start, 6), "quality_end": round(end, 6)}}
+        return {"start": start, "end": end, "identity": identity, "value": value, "region": region}
+
+    cells, accepted, proposals = [], [], []
     for region_start, region_end in regions:
         first, last = position(region_start), position(region_end)
         region_cells = []
@@ -735,12 +812,46 @@ def _key_timeline(source, observations, harmony, beat, cancelled):
             while stop < len(region_cells) and region_cells[stop]["identity"] == identity:
                 stop += 1
             start, end = region_cells[index]["start"], region_cells[stop - 1]["end"]
-            if identity and position(end) - position(start) >= minimum_span - _EPS:
+            if identity and position(end) - position(start) >= 2 * step - _EPS:
                 local = estimate(start, end)
                 if _tonal_identity(local) == identity:
-                    accepted.append({"start": start, "end": end, "identity": identity,
-                                     "value": local, "region": (region_start, region_end)})
+                    if position(end) - position(start) >= minimum_span - _EPS:
+                        accepted.append({"start": start, "end": end, "identity": identity,
+                                         "value": local, "region": (region_start, region_end)})
+                    elif sufficient_span(start, end, local):
+                        candidate = propose(start, end, (region_start, region_end))
+                        if candidate and len(proposals) < 256:
+                            proposals.append(candidate)
             index = stop
+
+    activity = []
+    for index, observation in enumerate(observations):
+        if index % 256 == 0:
+            _check(cancelled)
+        if observation["weight"] < .5:
+            continue
+        if activity and position(observation["t"]) - position(activity[-1][1]) <= 2:
+            activity[-1][1] = max(activity[-1][1], observation["end"])
+        else:
+            activity.append([observation["t"], observation["end"]])
+    activity_times = [span[0] for span in activity]
+    for region_index, (start, end) in enumerate(regions):
+        if region_index % 64 == 0:
+            _check(cancelled)
+        if len(proposals) >= 256:
+            break
+        if not step <= position(end) - position(start) < minimum_span:
+            continue
+        index = bisect_right(activity_times, start + _EPS) - 1
+        # Chart attacks can expire before their bounded two-beat chord hold.
+        # Match that existing evidence lifetime without filling a longer gap.
+        if index < 0 or position(end) - position(activity[index][1]) > 2:
+            continue
+        context = (min(start, max(0, activity[index][0], seconds(position(start) - step))),
+                   max(end, min(duration, activity[index][1], seconds(position(end) + step))))
+        candidate = propose(start, end, (start, end), context)
+        if candidate:
+            proposals.append(candidate)
 
     section_times = {_number(section.get("t")) for section in source.get("sections", [])}
     section_times.update(_number(section.get("end")) for section in source.get("sections", []))
@@ -748,7 +859,6 @@ def _key_timeline(source, observations, harmony, beat, cancelled):
     # boundaries propose separate raw-evidence contexts; their names supply no
     # key information. Adjacent short phrases may form one tonal statement.
     # A proposal never overrules an already stable different local context.
-    proposals = []
     for region_start, region_end in regions:
         boundaries = sorted({region_start, region_end, *(t for t in section_times
                               if region_start < t < region_end)})
@@ -757,41 +867,11 @@ def _key_timeline(source, observations, harmony, beat, cancelled):
                 _check(cancelled)
             for end in boundaries[index + 1:index + 5]:
                 size = position(end) - position(start)
-                if size < minimum_span - _EPS or size > width * 1.5:
+                if size < 2 * step - _EPS or size > width * 1.5:
                     continue
-                value = estimate(start, end)
-                identity = _tonal_identity(value)
-                if not identity:
-                    continue
-                collection = _tonal_collection(value)
-                # A marker may precede the actual change by a pickup/chromatic
-                # tail. Do not retrospectively assign those pitches a new key.
-                a = max(0, bisect_right(harmony_times, start) - 1)
-                b = bisect_left(harmony_times, end)
-                qualified = [e for e in harmony[a:b] if e["end"] > start
-                             and not e.get("unknown") and e.get("confidence") != "low"
-                             and _quality_is_observed(e)]
-                compatible = [e for e in qualified
-                              if set(e["grounded_chord_tones"]) <= collection]
-                if not compatible:
-                    continue
-                trimmed_start = max(start, compatible[0]["t"])
-                trimmed_end = min(end, compatible[-1]["end"])
-                if position(trimmed_end) - position(trimmed_start) < minimum_span - _EPS:
-                    continue
-                local_quality = [e for e in qualified if e["end"] > trimmed_start and e["t"] < trimmed_end]
-                # A successful aggregate estimate cannot carry its few observed
-                # triads across a separate power-only passage. Such spans need
-                # their own progression evidence, including in added tails.
-                if any(position(b["t"]) - position(a["end"]) > 4
-                       for a, b in zip(local_quality, local_quality[1:])):
-                    continue
-                value = estimate(trimmed_start, trimmed_end)
-                if _tonal_identity(value) != identity:
-                    continue
-                proposals.append({"start": trimmed_start, "end": trimmed_end,
-                                  "identity": identity, "value": value,
-                                  "region": (region_start, region_end)})
+                candidate = propose(start, end, (region_start, region_end))
+                if candidate:
+                    proposals.append(candidate)
                 if len(proposals) >= 256:
                     break
             if len(proposals) >= 256:
@@ -807,6 +887,7 @@ def _key_timeline(source, observations, harmony, beat, cancelled):
         value = proposal["value"]
         if not value.get("unknown"):
             neighbouring = [span for span in accepted if span["identity"] != proposal["identity"]
+                           and span["value"].get("key") != value.get("key")
                            and ((0 <= position(proposal["start"]) - position(span["end"]) <= width)
                                 or (0 <= position(span["start"]) - position(proposal["end"]) <= width))]
             edge_index = bisect_right(harmony_times, proposal["start"] + _EPS) - 1
@@ -835,9 +916,15 @@ def _key_timeline(source, observations, harmony, beat, cancelled):
                       and span["end"] >= proposal["start"] - _EPS]
         start = min([proposal["start"]] + [span["start"] for span in neighbours])
         end = max([proposal["end"]] + [span["end"] for span in neighbours])
-        value = estimate(start, end)
+        contexts = [proposal] + neighbours
+        context_start = min([start] + [span["value"]["evidence"].get("context_start", span["start"]) for span in contexts])
+        context_end = max([end] + [span["value"]["evidence"].get("context_end", span["end"]) for span in contexts])
+        value = estimate(context_start, context_end)
         if _tonal_identity(value) != proposal["identity"]:
             continue
+        if context_start < start - _EPS or context_end > end + _EPS:
+            value = {**value, "evidence": {**value["evidence"], "context_basis": "continuous_played_notes",
+                     "quality_start": round(start, 6), "quality_end": round(end, 6)}}
         accepted = [span for span in accepted if span not in neighbours]
         accepted.append({**proposal, "start": start, "end": end, "value": value})
     accepted.sort(key=lambda span: span["start"])
@@ -917,6 +1004,9 @@ def _scale_timeline(keys, harmony, duration):
                 or chord.get("evidence", {}).get("root_observed") is False
                 or len(chord.get("grounded_chord_tones", chord.get("chord_tones", []))) < 2):
             _append_event(events, _unknown(t, end, "insufficient_scale_context"))
+            continue
+        if key.get("evidence", {}).get("scale_degrees_resolved") is False:
+            _append_event(events, _unknown(t, end, "unresolved_scale_degrees"))
             continue
         root = shared_scale["root"] if shared_scale else key["root"]
         pc = pitch_class(root)

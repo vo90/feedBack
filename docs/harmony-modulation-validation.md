@@ -7,7 +7,7 @@ selects prepared events. No recording or live instrument analysis is involved.
 
 ## Local analysis
 
-Version `chart-harmony-v4` measures context in the authored beat clock, including
+The v4 baseline measures context in the authored beat clock, including
 tempo changes. Ordinary songs use eight-beat cells with overlapping 32-beat
 contexts and require a stable span of at least 24 beats. An accepted span must
 also pass a fresh estimate of its own raw observations: overlapping windows are
@@ -84,7 +84,7 @@ These negative results are kept to distinguish an honest first test from later
 development improvements. The songs must not be reused as an untouched holdout
 when deciding whether the feature is ready to leave experimental status.
 
-## Final development comparison
+## v4 development comparison
 
 `development-comparison-03` uses engine SHA-256
 `a2ac2669a4556737369cd60eb2d7deaa486c1e315da6a1c281207e1bffe81aeb`.
@@ -168,6 +168,149 @@ python tools/evaluate_harmony_modulations.py `
 Only use `--purpose initial_reference` before those songs have informed an
 implementation decision. The manifest is machine-specific; charts and recordings
 are not bundled. Use separately prepared timing/pitch alignments for other packs.
+
+## v5: shorter supported passages and separate tonic evidence
+
+Version `chart-harmony-v5` retains the bounded local analysis and adds two
+evidence checks. A repeated, dominant tonic with its played third can identify
+the key while the full scale stays explicitly unknown. A shorter context can
+pass from 16 beats when it has that repeated-tonic support or at least six
+quality-bearing chord regions spanning three roots. A 15-beat isolated passage
+still fails. Nearby continuous played notes may extend a short analysis context,
+but never its published key span or supply of observed chord qualities.
+
+Short proposals use the existing neighbour-change guards. Later observations
+that resolve missing scale degrees cannot merge backward into an earlier
+tonic-only passage. Constant-tempo and changing-tempo tests cover the 15, 16, 23
+and 24-beat boundaries, short returns, power-only tails and borrowed chords.
+Automatic scale families remain major, natural minor and harmonic minor.
+
+The final v5 engine is frozen at SHA-256
+`18937908178e1379b87e13111241ba4dc67cd7b68d5ca588ac99f1129c79475e`.
+Evidence is under the workspace-relative directory
+`verification/songsterr-harmony-coverage-20261018`. The original six songs are
+development data; `development-comparison-02` compares v4 and final v5:
+
+| Song | v4 correct key seconds | v5 correct key seconds | v5 wrong key seconds |
+|---|---:|---:|---:|
+| We Are the Champions | 45.099 | 62.205 | 0.007 |
+| Something | 123.063 | 138.596 | 0.000 |
+| Lucy in the Sky with Diamonds | 0.000 | 0.000 | 0.000 |
+| Bicycle Race | 0.000 | 0.000 | 0.000 |
+| Crazy Little Thing Called Love | 41.137 | 41.137 | 0.000 |
+| Another One Bites the Dust | 0.000 | 16.375 | 0.000 |
+
+Correct-key duration increases from 209.299 to 258.313 of 638.350 scored seconds
+(32.8% to 40.5%). The 0.007-second mismatch in Champions is at a boundary and
+is smaller than the declared 0.5-second alignment uncertainty; the raw score
+still includes it. Something's C return now starts at 104.685 seconds, 0.447
+beats after the aligned reference. Both its selected changes pass the four-beat
+criterion, increasing total detected changes from 1/11 to 2/11. Nine still fail.
+Dust's two recovered E-minor passages retain unknown scales and chord-only
+fallback; tonic coverage is not presented as new full-scale coverage.
+
+The evaluator now reports unknown-key duration by reason, exact versus subset
+collection agreement, and guidance during actual lead-chart rests. It freezes
+the production browser model as well as the engine. Rest metrics use maximum
+authored lead difficulty and the default four-beat threshold, with a three-second
+fallback. "Visible" means eligible in the model before fade opacity, not pixels
+measured on screen or the user's current settings.
+
+Across 79.576 reference-covered interior-rest seconds in the six-song set,
+full-scale eligibility increases from 26.873 to 31.116 seconds. All of those
+eligible scales match the reference diatonic collection; this remains weaker
+than independent note-by-note suitability review. Chord-only eligibility falls
+from 16.487 to 12.244 seconds as those moments gain scales. Total guide coverage
+is unchanged. Raw timeline scale duration increases from 145.138 to 169.179
+seconds; most timeline time is not a qualifying rest.
+
+## First v5 evaluation on three fresh songs
+
+References and alignments were frozen before v5 predictions, separately from
+engine development. The first v5 candidate was frozen at SHA-256
+`634ccf30aff7eef330a0213f141fde89c98c0cc069a9c7ae7da9d6713786ef87`.
+See [fresh reference provenance](harmony-coverage-references.md)
+and `tools/harmony_coverage_reference_points.json`. The selected regions total
+452.722 chart seconds after timing alignment. `initial-reference-comparison-01`
+is retained unchanged; these findings may inform future development, so the
+cohort must not be called untouched in a later tuned run.
+
+| Song | v4 reference match / disagreement seconds | Initial v5 reference match / disagreement seconds | Change result |
+|---|---:|---:|---|
+| Bohemian Rhapsody, selected early ballad | 0.000 / 0.000 | 0.000 / 0.000 | 0/3; all keys unknown |
+| Don't Stop Me Now | 22.191 / 78.372 | 29.903 / 78.372 | Stationary F-major reference |
+| Hello, Goodbye | 106.757 / 0.000 | 106.757 / 0.000 | Stationary C-major reference |
+
+The fresh result exposes a substantial existing limitation. Local D-minor and
+G-minor labels in Don't Stop Me Now disagree with its conventional F-major
+reference. The first v5 candidate adds 7.712 correct-key seconds but does not fix those labels.
+Sparse accompaniment in the selected Bohemian Rhapsody chart leaves all three
+changes undetected. These are negative results, not evidence of general
+modulation accuracy. Chromatic or tonicized passages also need more detailed
+musical review than a conventional song-key annotation supplies.
+
+Of the 78.372 seconds, 59.955 are G minor and 18.417 D minor. Repeated D7-to-Gm
+motion makes temporary G-minor tonicization plausible, although some estimates
+extend earlier into other harmony. The D-minor chorus estimates show a clearer
+relative-tonic ambiguity. These figures measure exact reference disagreement,
+not independently established seconds of perceptually wrong labels. D minor
+also shares F major's diatonic pitch collection.
+
+Across 49.990 scored interior-rest seconds, both engines offer 12.585 seconds
+of scales and 8.249 seconds of chord-only guidance. Only 7.158 scale seconds
+match the reference's conventional diatonic collection. The mismatch is not
+automatically a wrong-sounding scale: a key label alone does not validate or
+invalidate a palette over chromatic accompaniment. It does prevent claiming
+that these suggestions have been independently musically validated.
+
+## Relative-cadence correction after reviewing the fresh result
+
+The first comparison revealed a general ambiguity-rule gap: a long preferred
+tonic could outweigh an authentic cadence to its relative tonic when it had no
+authentic cadence of its own. Final v5 now withholds that tonic identity. It
+retains their shared collection only when independently supported; it does not
+force the competing key. Four transpositions and two beat clocks test the rule.
+Missing thirds, intervening power chords and evidence gaps cannot fabricate a
+competing cadence.
+
+`fresh-development-comparison-02` is explicitly a **development** evaluation,
+since the initial result informed this correction. Don't Stop Me Now loses its
+D-minor key labels; total reference disagreement falls from 78.372 to 63.018
+seconds, while F-major agreement remains 29.903 seconds. Removing the D-minor
+assignment also permits one neighbouring G-minor span to begin 3.062 seconds
+earlier. The net reduction is therefore 15.355 seconds, not the original 18.417
+D-minor seconds. Local G-minor versus overarching F-major interpretation remains
+unresolved; this correction does not claim to solve tonal continuity.
+
+All six earlier development-song gains remain. Raw scale availability in the
+new three-song set is 203.082 seconds, versus 209.603 in the first candidate and
+201.891 in v4. Some unresolved boundary context is withheld. Actual qualifying
+rest eligibility and collection agreement remain unchanged. The initial frozen
+comparison is preserved, and no tuned result is presented as a new holdout test.
+
+## v5 regression, cost and interface checks
+
+`regression-comparison-02` repeats all 53 existing packs. There are no per-song
+rest-coverage losses; all 18 fixed chord references remain correct, with zero
+timeline-bound, unobserved-chord-tone or scale/chord compatibility violations.
+Interior-rest scale availability remains 6.55%, chord-only 48.94%, and any-guide
+55.49%. These consistency checks do not measure musical accuracy.
+
+In this final run, median inference takes 186.95 ms versus v4's 147.43 ms; chart
+load plus inference takes 456.65 versus 417.72 ms. The earlier candidate run
+measured 295.84 versus 225.35 ms, illustrating variability with desktop load.
+These are local wall-clock timings
+with an unflushed filesystem cache and other desktop work, not a calibrated
+benchmark or an FPS measurement. The extra analysis happens in the background
+and uses the versioned cache; the frame-time algorithm has not changed.
+
+Validation passes 198 relevant Python tests, 95 JavaScript guide tests and eight
+browser tests. A new browser test verifies that a known E-minor key with an
+unknown palette shows only E/G/B chord tones, including after seeking back from
+a full-scale passage. Independent code review, 20 short-context regressions and
+14 relative-cadence regressions found no additional confirmed defect.
+The feature stays default-off behind its
+existing persistent 3D Highway setting.
 
 ## Remaining release work
 

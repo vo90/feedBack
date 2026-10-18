@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from tools.evaluate_harmony_modulations import aligned_references, timeline_metrics
+from tools.evaluate_harmony_modulations import aligned_references, rest_reference_metrics, timeline_metrics
 
 
 def test_evaluator_cli_can_load_its_source_adapter_outside_the_repo(tmp_path):
@@ -147,3 +147,64 @@ def test_boundary_timing_tolerance_still_accepts_the_correct_key_pair(transition
     assert metrics["boundaries"][0]["error_beats"] == transition - 10
     assert metrics["key_wrong_seconds"] == abs(transition - 10)
     assert not metrics["false_switches_in_annotated_regions"]
+
+
+def test_unknown_reasons_and_missing_events_account_for_all_abstention():
+    refs = reference([{"start": 0, "end": 20, "keys": ["C major"]}])
+    metrics = timeline_metrics(result([
+        {"t": 0, "end": 5, "unknown": True, "evidence": {"reason": "missing_degrees"}},
+        {"t": 5, "end": 10, "unknown": True},
+        {"t": 15, "end": 20, "key": "C major"},
+    ]), refs, list(range(21)))
+    assert metrics["key_unknown_seconds_by_reason"] == {
+        "missing_degrees": 5, "unspecified": 5, "missing_event": 5}
+    assert sum(metrics["key_unknown_seconds_by_reason"].values()) + metrics["key_known_seconds"] == 20
+
+
+def test_subset_collection_is_separate_from_exact_scale_and_tonic_agreement():
+    refs = reference([{"start": 0, "end": 20, "keys": ["C major"]}])
+    metrics = timeline_metrics(result([], [
+        {"t": 0, "end": 10, "root": "A", "type": "minor_pentatonic"},
+        {"t": 10, "end": 20, "root": "D", "type": "dorian"},
+    ]), refs, list(range(21)))
+    assert metrics["scale_diatonic_collection_match_seconds"] == 10
+    assert metrics["scale_diatonic_collection_subset_seconds"] == 20
+    assert metrics["key_correct_seconds"] == 0
+    with pytest.raises(ValueError, match="Unsupported predicted scale"):
+        timeline_metrics(result([], [{"t": 0, "end": 20, "root": "C", "type": "typo"}]), refs, [])
+
+
+def test_rest_agreement_requires_rendered_guidance_scored_reference_and_actual_rest():
+    refs = reference([{"start": 0, "end": 14, "keys": ["C major"]},
+                      {"start": 14, "end": 20, "keys": []}])
+    prediction = result([], [{"t": 0, "end": 10, "root": "C", "type": "major"},
+                             {"t": 10, "end": 20, "root": "A", "type": "minor_pentatonic"}])
+    rests = {"available": True, "arrangement_id": "lead", "qualifying_windows": [
+        {"start": 0, "end": 2, "reentry": True}, {"start": 4, "end": 14, "reentry": True},
+        {"start": 16, "end": 20, "reentry": False}], "guidance_spans": {
+        "scale": [{"start": 0, "end": 6}, {"start": 10, "end": 20}],
+        "chord_tones": [{"start": 6, "end": 10}]}}
+    # A tempo change at10: beats must not be inferred from song seconds.
+    metrics = rest_reference_metrics(prediction, refs, list(range(11)) + [12, 14, 16, 18, 20], rests)
+    assert metrics["all"]["reference_rest_seconds"] == 12
+    assert metrics["interior"]["reference_rest_seconds"] == 10
+    assert metrics["interior"]["reference_rest_beats"] == 8
+    assert metrics["interior"]["scale_visible_seconds"] == 6
+    assert metrics["interior"]["scale_visible_beats"] == 4
+    assert metrics["interior"]["scale_exact_collection_seconds"] == 2
+    assert metrics["interior"]["scale_subset_collection_seconds"] == 6
+    assert metrics["interior"]["chord_tones_visible_seconds"] == 4
+    assert metrics["all"]["scale_exact_collection_seconds"] == 4
+
+
+def test_unknown_palette_with_known_tonic_never_gets_scale_credit_in_rests():
+    refs = reference([{"start": 0, "end": 10, "keys": ["E minor"]}])
+    prediction = result([{"t": 0, "end": 10, "key": "E minor"}],
+                        [{"t": 0, "end": 10, "unknown": True}])
+    rests = {"available": True, "qualifying_windows": [{"start": 1, "end": 9, "reentry": True}],
+             "guidance_spans": {"scale": [], "chord_tones": [{"start": 0, "end": 10}]}}
+    metrics = rest_reference_metrics(prediction, refs, list(range(11)), rests)
+    assert metrics["interior"]["scale_visible_seconds"] == 0
+    assert metrics["interior"]["chord_tones_visible_seconds"] == 8
+    assert rest_reference_metrics(prediction, refs, [], {"available": False, "reason": "no_lead_chart"}) == {
+        "available": False, "reason": "no_lead_chart"}

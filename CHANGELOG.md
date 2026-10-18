@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Experimental harmony analysis can retain strongly supported tonic identities
+  and shorter local key passages while withholding unresolved full scales.
+  Rest-visibility checks distinguish playable guidance from timeline coverage;
+  the existing 3D Highway toggle remains off by default.
 - The desktop amp simulation opt-out now provides a shared suspension policy
   for tone plugins, rejects stale effects loads, and wakes backend workers only
   after a saved preference change. Backing audio and instrument input remain

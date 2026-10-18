@@ -22,9 +22,30 @@ sys.path.insert(0, str(REPO / "lib"))
 from harmony_source import load_harmony_source
 
 try:
-    from .evaluate_harmony import beat_at, invariant_checks, load_engine, write
+    from .evaluate_harmony import beat_at, invariant_checks, lead_chart, load_engine, rest_metrics, write
 except ImportError:
-    from evaluate_harmony import beat_at, invariant_checks, load_engine, write
+    from evaluate_harmony import beat_at, invariant_checks, lead_chart, load_engine, rest_metrics, write
+
+
+# Independent of the predictor: all palettes supported by the browser model.
+SCALE_INTERVALS = {
+    "major": (0, 2, 4, 5, 7, 9, 11), "natural_minor": (0, 2, 3, 5, 7, 8, 10),
+    "dorian": (0, 2, 3, 5, 7, 9, 10), "phrygian": (0, 1, 3, 5, 7, 8, 10),
+    "lydian": (0, 2, 4, 6, 7, 9, 11), "mixolydian": (0, 2, 4, 5, 7, 9, 10),
+    "locrian": (0, 1, 3, 5, 6, 8, 10), "harmonic_minor": (0, 2, 3, 5, 7, 8, 11),
+    "melodic_minor": (0, 2, 3, 5, 7, 9, 11), "major_pentatonic": (0, 2, 4, 7, 9),
+    "minor_pentatonic": (0, 3, 5, 7, 10),
+}
+
+
+def scale_collection(event):
+    if not event or event.get("unknown"):
+        return None
+    intervals = SCALE_INTERVALS.get(event.get("type"))
+    if intervals is None:
+        raise ValueError(f"Unsupported predicted scale: {event.get('type')!r}")
+    root = key_identity(event["root"] + " major")[0]
+    return frozenset((root + value) % 12 for value in intervals)
 
 
 def key_identity(label):
@@ -83,9 +104,9 @@ def timeline_metrics(result, references, beats, boundary_tolerance_beats=4):
     edges = sorted({t for track in (keys, scales, references) for e in track for t in (e["t"], e["end"])})
     totals = dict(reference_seconds=0, key_known_seconds=0, key_correct_seconds=0,
                   key_wrong_seconds=0, key_collection_match_seconds=0,
-                  scale_shown_seconds=0, scale_diatonic_collection_match_seconds=0)
-    scale_intervals = {"major": (0, 2, 4, 5, 7, 9, 11), "natural_minor": (0, 2, 3, 5, 7, 8, 10),
-                       "harmonic_minor": (0, 2, 3, 5, 7, 8, 11)}
+                  scale_shown_seconds=0, scale_diatonic_collection_match_seconds=0,
+                  scale_diatonic_collection_subset_seconds=0)
+    unknown_reasons = {}
     for start, end in zip(edges, edges[1:]):
         t, length = (start + end) / 2, end - start
         reference = _at(references, ref_starts, t)
@@ -93,21 +114,26 @@ def timeline_metrics(result, references, beats, boundary_tolerance_beats=4):
             continue
         totals["reference_seconds"] += length
         allowed = {tuple(key) for key in reference["keys"]}
-        current = _known_key(_at(keys, key_starts, t))
+        key_event = _at(keys, key_starts, t)
+        current = _known_key(key_event)
         if current:
             totals["key_known_seconds"] += length
             totals["key_correct_seconds" if current in allowed else "key_wrong_seconds"] += length
             if collection(current) in {collection(key) for key in allowed}:
                 totals["key_collection_match_seconds"] += length
+        else:
+            reason = (key_event.get("evidence", {}).get("reason", "unspecified")
+                      if key_event else "missing_event")
+            unknown_reasons[reason] = unknown_reasons.get(reason, 0) + length
         scale = _at(scales, scale_starts, t)
         if scale and not scale.get("unknown"):
             totals["scale_shown_seconds"] += length
-            intervals = scale_intervals.get(scale.get("type"))
-            if intervals:
-                root = key_identity(scale["root"] + " major")[0]
-                pcs = frozenset((root + value) % 12 for value in intervals)
-                if pcs in {collection(key) for key in allowed}:
-                    totals["scale_diatonic_collection_match_seconds"] += length
+            pcs = scale_collection(scale)
+            collections = {collection(key) for key in allowed}
+            if pcs in collections:
+                totals["scale_diatonic_collection_match_seconds"] += length
+            if any(pcs <= allowed_pcs for allowed_pcs in collections):
+                totals["scale_diatonic_collection_subset_seconds"] += length
     # Unknown spans remain explicit; bridging one does not imply a confident
     # boundary. Report its length alongside the eventual transition timing.
     transitions, previous = [], None
@@ -164,7 +190,55 @@ def timeline_metrics(result, references, beats, boundary_tolerance_beats=4):
             "correct_key_coverage": totals["key_correct_seconds"] / denominator if denominator else None,
             "boundaries": boundaries, "predicted_transitions": transitions,
             "false_switches_in_annotated_regions": false_switches,
+            "key_unknown_seconds_by_reason": {reason: round(seconds, 6)
+                                              for reason, seconds in sorted(unknown_reasons.items())},
             "boundary_tolerance_beats": boundary_tolerance_beats}
+
+
+def rest_reference_metrics(result, references, beats, rests):
+    """Intersect scored references with actual rest and browser guidance spans.
+
+    Collection agreement is deliberately separate from visibility and is not a
+    claim that every suggested note suits the recorded accompaniment. Visibility
+    means model eligibility at the default rest threshold, before fade opacity.
+    """
+    if not rests.get("available"):
+        return {"available": False, "reason": rests.get("reason", "unavailable")}
+    tracks = {"reference": references, "scale_event": result["scales"]["events"],
+              "window": [{**w, "t": w["start"]} for w in rests["qualifying_windows"]],
+              **{kind: [{**s, "t": s["start"]} for s in rests["guidance_spans"][kind]]
+                 for kind in ("scale", "chord_tones")}}
+    starts = {name: [e["t"] for e in events] for name, events in tracks.items()}
+    edges = sorted({t for events in tracks.values() for e in events for t in (e["t"], e["end"])})
+    names = ("reference_rest", "scale_visible", "scale_exact_collection", "scale_subset_collection", "chord_tones_visible")
+    totals = {category: {f"{name}_{unit}": 0 for name in names for unit in ("seconds", "beats")}
+              for category in ("all", "interior")}
+    for start, end in zip(edges, edges[1:]):
+        t = (start + end) / 2
+        current = {name: _at(events, starts[name], t) for name, events in tracks.items()}
+        ref, window = current["reference"], current["window"]
+        if not ref or not ref["keys"] or not window:
+            continue
+        kinds = ["reference_rest"]
+        if current["scale"]:
+            pcs = scale_collection(current["scale_event"])
+            if pcs is None:
+                raise ValueError("Browser scale visibility has no matching scale event")
+            collections = {collection(key) for key in ref["keys"]}
+            kinds.append("scale_visible")
+            if pcs in collections:
+                kinds.append("scale_exact_collection")
+            if any(pcs <= allowed for allowed in collections):
+                kinds.append("scale_subset_collection")
+        elif current["chord_tones"]:
+            kinds.append("chord_tones_visible")
+        for category in ("all", "interior") if window["start"] > 0 and window.get("reentry") else ("all",):
+            for kind in kinds:
+                totals[category][kind + "_seconds"] += end - start
+                totals[category][kind + "_beats"] += beat_at(beats, end) - beat_at(beats, start)
+    return {"available": True, "arrangement_id": rests.get("arrangement_id"),
+            **{category: {name: round(value, 6) for name, value in values.items()}
+               for category, values in totals.items()}}
 
 
 def main():
@@ -173,9 +247,12 @@ def main():
     parser.add_argument("--references", type=Path, required=True)
     parser.add_argument("--baseline-module", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--node", default=shutil.which("node"))
     parser.add_argument("--purpose", choices=("development", "initial_reference"), default="development",
                         help="Use initial_reference only before these songs influence implementation")
     args = parser.parse_args()
+    if not args.node:
+        parser.error("Node is required for the real browser rest/guidance model")
     manifest = json.loads(args.manifest.read_text(encoding="utf-8-sig"))
     references = json.loads(args.references.read_text(encoding="utf-8-sig"))
     reference_hashes = {hashlib.sha256(args.references.read_bytes()).hexdigest(),
@@ -192,11 +269,13 @@ def main():
         engines[label] = load_engine(frozen, "modulation_evaluation_" + label)
     for source, name in ((args.manifest, "manifest.json"), (args.references, "references.json"),
                          (Path(__file__), "evaluator.py"), (REPO / "tools/evaluate_harmony.py", "evaluation-helpers.py"),
-                         (REPO / "lib/harmony_source.py", "source-adapter.py")):
+                         (REPO / "lib/harmony_source.py", "source-adapter.py"),
+                         (REPO / "static/js/harmony-guide-model.js", "browser-model.mjs")):
         shutil.copyfile(source, args.output / name)
     write(args.output / "run-definition.json", {"started_utc": datetime.now(timezone.utc).isoformat(),
           "evaluation_purpose": args.purpose,
           "audio_listened": False, "method": "Independent timed key annotations aligned before predictions; duration agreement and abstention reported separately. Diatonic collection match is not scale suitability.",
+          "rest_method": "Production browser model at maximum authored lead difficulty, four-beat threshold (three-second fallback). Visibility means eligible guidance before fades, not measured opacity or user-specific settings.",
           "sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in args.output.iterdir() if p.is_file()}})
     rows = []
     for entry in manifest["songs"]:
@@ -207,14 +286,18 @@ def main():
         if before != entry.get("source_sha256"):
             raise ValueError(f"Pack differs from the independently frozen reference manifest: {path}")
         source = load_harmony_source(path)
+        lead = lead_chart(path, source, entry.get("arrangement_id"))
         reference = aligned_references(by_id[entry["id"]], entry["alignment"], source["duration"])
         row = {"id": entry["id"], "title": source["title"], "path": str(path), "source_sha256": before,
                "revision": source["revision"], "cohort": entry.get("cohort", "independent_reference"), "engines": {}}
         for label, engine in engines.items():
             start = time.perf_counter()
             result = engine.analyse_harmony(source)
+            engine_ms = round((time.perf_counter() - start) * 1000, 3)
+            rests = rest_metrics(args.node, args.output / "browser-model.mjs", lead, source, result)
             row["engines"][label] = {"algorithm": engine.ALGORITHM_VERSION,
-                "engine_ms": round((time.perf_counter() - start) * 1000, 3),
+                "engine_ms": engine_ms, "rests": rests,
+                "rest_reference_metrics": rest_reference_metrics(result, reference, source["beats"], rests),
                 "checks": invariant_checks(engine, result), "metrics": timeline_metrics(result, reference, source["beats"])}
             write(args.output / f"{entry['id']}-{label}.json", result)
         if before != hashlib.sha256(path.read_bytes()).hexdigest():

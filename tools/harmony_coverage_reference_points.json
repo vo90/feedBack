@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "frozen_utc": "2026-10-18T16:07:07.186780+00:00",
+  "selection_before_new_predictions": true,
+  "prediction_version_not_observed": "chart-harmony-v5",
+  "audio_listened": false,
+  "purpose": "Fresh selected-interval key-reference agreement, not listening or scale-suitability accuracy.",
+  "songs": [
+    {
+      "id": "bohemian",
+      "artist": "Queen",
+      "title": "Bohemian Rhapsody",
+      "classification": "independent_reference",
+      "source": {
+        "url": "https://isophonics.net/files/annotations/keylab/Queen/Greatest%20Hits%20I/01%20Bohemian%20Rhapsody.lab",
+        "dataset": "Isophonics human reference annotations",
+        "license": "Original annotation redistribution terms unspecified; selected factual key ranges and provenance only.",
+        "annotator": "Isophonics curators; independently corroborating musicological analysis is listed separately.",
+        "confidence": "Moderate-confidence human reference, not definitive listening ground truth.",
+        "sha256": "0d333c1806691e881e69e7a9275b1f92bc13fa2e0ae6bbb8451715f01fd3859b",
+        "archive_member": "keylab/Queen/Greatest Hits I/01 Bohemian Rhapsody.lab",
+        "recording": "Queen Greatest Hits I, Parlophone 0777 7 8950424",
+        "overview_url": "https://isophonics.net/content/reference-annotations",
+        "secondary_sources": [
+          {
+            "author": "Nick Braae",
+            "date": "2026-03",
+            "title": "Structural and Rhetorical Closure in 1970s Rock Songs",
+            "url": "https://www.mtosmt.org/issues/mto.26.32.1/mto.26.32.1.braae.html",
+            "doi": "10.30535/mto.32.1.2",
+            "location": "Section 5.1",
+            "claim": "The verses move between Bb and Eb major; this corroborates key identities, not annotation timestamps."
+          }
+        ]
+      },
+      "selection_rationale": "Previously screened but never predicted in the prior 53-pack or six-song evaluations. Early ballad modulation and return; the chart has sparse guitar quality evidence, so abstention may be appropriate.",
+      "limitations": [
+        "Only the reviewed early ballad interval is scored. Intro, opera, later rock section, coda and final modulation are unscored.",
+        "Alignment primarily uses bass-root sequence anchors; these verify timing and sounding pitch, not chord quality.",
+        "Bass and dyad-heavy chart evidence may not support independent key/scale inference despite a clear external key reference."
+      ],
+      "segments": [
+        {
+          "start": 49.16,
+          "end": 83.139,
+          "keys": [
+            "Bb major"
+          ]
+        },
+        {
+          "start": 83.139,
+          "end": 108.519,
+          "keys": [
+            "Eb major"
+          ]
+        },
+        {
+          "start": 108.519,
+          "end": 142.649,
+          "keys": [
+            "Bb major"
+          ]
+        },
+        {
+          "start": 142.649,
+          "end": 169.86,
+          "keys": [
+            "Eb major"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dont_stop",
+      "artist": "Queen",
+      "title": "Don't Stop Me Now",
+      "classification": "independent_reference",
+      "source": {
+        "url": "https://isophonics.net/files/annotations/keylab/Queen/Greatest%20Hits%20I/07%20Don%27t%20Stop%20Me%20Now.lab",
+        "dataset": "Isophonics human reference annotations",
+        "license": "Original annotation redistribution terms unspecified; selected factual key ranges and provenance only.",
+        "annotator": "Isophonics curators; independently corroborating musicological analysis is listed separately.",
+        "confidence": "Moderate-confidence human reference, not definitive listening ground truth.",
+        "sha256": "6b1c9940ab8632abb92813a85fcc6fcfb5edd10db208ce3f66ef7c515c897f0c",
+        "archive_member": "keylab/Queen/Greatest Hits I/07 Don't Stop Me Now.lab",
+        "recording": "Queen Greatest Hits I, Parlophone 0777 7 8950424",
+        "overview_url": "https://isophonics.net/content/reference-annotations",
+        "secondary_sources": [
+          {
+            "author": "Nick Braae",
+            "date": "2013-04-12",
+            "title": "Queen's Don't Stop Me Now",
+            "url": "https://nickbraaemusic.wordpress.com/2013/04/12/queens-dont-stop-me-now/",
+            "claim": "F-major introduction and return; F7 toward Bb and chromatic Ab6/Bb chorus ending are discussed within that tonal framework."
+          }
+        ]
+      },
+      "selection_rationale": "Fresh stationary-key control containing secondary dominants and chromatic/borrowed harmony; a correct key label does not authorize one diatonic scale over every chord.",
+      "limitations": [
+        "Initial silence and final piano/fade region after 187.365 reference seconds are unscored.",
+        "Stable key is not a claim that all sounding notes or each local chord fit the F-major collection."
+      ],
+      "segments": [
+        {
+          "start": 0.563,
+          "end": 187.365,
+          "keys": [
+            "F major"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hello_goodbye",
+      "artist": "The Beatles",
+      "title": "Hello, Goodbye",
+      "classification": "independent_reference",
+      "source": {
+        "url": "https://isophonics.net/files/annotations/keylab/The%20Beatles/09_-_Magical_Mystery_Tour/07_-_Hello_Goodbye.lab",
+        "dataset": "Isophonics human reference annotations",
+        "license": "Original annotation redistribution terms unspecified; selected factual key ranges and provenance only.",
+        "annotator": "Isophonics curators; independently corroborating musicological analysis is listed separately.",
+        "confidence": "Moderate-confidence human reference, not definitive listening ground truth.",
+        "sha256": "e5e9ff29307f31c53445f1737cfe8315ef262b7acddaeb01d29ddde89e4171b1",
+        "archive_member": "keylab/The Beatles/09_-_Magical_Mystery_Tour/07_-_Hello_Goodbye.lab",
+        "recording": "The Beatles Magical Mystery Tour; exact acoustic master identity not asserted.",
+        "overview_url": "https://isophonics.net/content/reference-annotations",
+        "secondary_sources": [
+          {
+            "author": "Alan W. Pollack",
+            "date": "1996-11-04",
+            "title": "Notes on Hello Goodbye, number 120",
+            "url": "https://www.icce.rug.nl/~soundscapes/DATABASES/AWP/hg.shtml",
+            "mirror_url": "https://awpnoteson.info/notes/hg.html",
+            "claim": "C major remains tonic; refrain Ab/Bb are borrowed harmonies. The later coda is also over a C-major pedal, but it is outside this cohort interval."
+          }
+        ]
+      },
+      "selection_rationale": "Fresh stationary control independently corroborated beyond a single-key Beatles annotation. Repeated borrowed harmony should not become persistent key changes.",
+      "limitations": [
+        "Score only the reviewed, anchor-bracketed body; opening-chord ambiguity and later outro/coda/fade are excluded.",
+        "Isophonics Beatles annotations can omit changes; Pollack independently supports stationary C for this selected interval.",
+        "Chart chord labels/voicings sometimes differ from the published chord interpretation; the key reference comes from external sources."
+      ],
+      "segments": [
+        {
+          "start": 3.059795,
+          "end": 148.799841,
+          "keys": [
+            "C major"
+          ]
+        }
+      ]
+    }
+  ]
+}

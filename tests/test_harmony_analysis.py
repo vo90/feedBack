@@ -59,7 +59,7 @@ def test_analysis_preserves_input_revision_and_json_contract():
     assert data == original
     assert result["revision"] == "song-r1"
     assert result["source"] == "charts"
-    assert result["algorithm_version"] == "chart-harmony-v4"
+    assert result["algorithm_version"] == "chart-harmony-v5"
     json.dumps(result, allow_nan=False)
     for track in ("keys", "harmony", "scales"):
         events = result[track]["events"]
@@ -623,3 +623,192 @@ def test_phrase_proposals_do_not_promote_compatible_fourth_degree_to_modulation(
     assert at(result, "keys", 20)["key"] == "D major"
     assert all(e.get("key") != "G major" for e in result["keys"]["events"])
     assert at(result, "scales", 41)["unknown"]  # played Bb contradicts D major
+
+
+
+def anchored_minor_source(beats, *, start=0, total=None):
+    points = [start + beats * fraction for fraction in (0, .4, .5, .9, 1)]
+    played = [("Em", [4, 7, 11]), ("Am", [0, 4, 9])] * 2
+    return source([chord(label, points[index], points[index + 1], pcs=pcs)
+                   for index, (label, pcs) in enumerate(played)], duration=total or start + beats)
+
+
+def change_clock(data):
+    # A different physical duration on each side of beat8 must not change which
+    # progression has enough musical context.
+    def seconds(t):
+        return t * .5 if t <= 8 else 4 + (t - 8) * 1.25
+    data = copy.deepcopy(data)
+    for event in data["arrangements"][0]["chords"]:
+        event["t"], event["end"] = seconds(event["t"]), seconds(event["end"])
+    data["beats"] = [seconds(t) for t in data["beats"]]
+    data["duration"] = seconds(data["duration"])
+    return data, seconds
+
+
+@pytest.mark.parametrize("beats", [15, 16, 23, 24])
+@pytest.mark.parametrize("variable_tempo", [False, True])
+def test_repeated_tonic_has_separate_identity_and_scale_evidence(beats, variable_tempo):
+    data = anchored_minor_source(beats)
+    seconds = lambda t: t
+    if variable_tempo:
+        data, seconds = change_clock(data)
+    result = analyse_harmony(data)
+    key = at(result, "keys", seconds(beats / 2))
+    if beats < 16:
+        assert key["unknown"]
+    else:
+        assert key["key"] == "E minor"
+        assert key["evidence"]["observed_tonic_regions"] == 2
+        assert key["evidence"]["scale_degrees_resolved"] is False
+        assert key["evidence"]["ambiguous_collections"]
+    assert all(e.get("unknown") for e in result["scales"]["events"])
+
+
+def test_observed_missing_degrees_enable_scale_for_same_anchored_tonic():
+    data = anchored_minor_source(16)
+    data["arrangements"][0]["notes"] = [
+        {"t": t, "end": t + 1, "pc": pc, "midi": 48 + pc}
+        for t, pc in [(1, 6), (3, 2), (9, 6), (11, 2)]]
+    result = analyse_harmony(data)
+    assert at(result, "keys", 8)["key"] == "E minor"
+    assert at(result, "keys", 8)["evidence"]["scale_degrees_resolved"] is True
+    assert at(result, "scales", 8)["type"] == "natural_minor"
+
+
+def test_nearby_played_notes_extend_context_but_never_the_grounded_key_span():
+    data = anchored_minor_source(15, start=8, total=31)
+    data["arrangements"].append({"id": "bass", "role": "bass", "notes": [
+        {"t": t, "end": t + .5, "pc": [4, 7, 4, 9][t % 4], "midi": 28 + [4, 7, 4, 9][t % 4]}
+        for t in range(31)]})
+    result = analyse_harmony(data)
+    key = at(result, "keys", 15)
+    assert key["key"] == "E minor"
+    assert key["evidence"]["context_basis"] == "continuous_played_notes"
+    assert key["evidence"]["context_start"] < key["t"]
+    assert key["evidence"]["context_end"] > key["end"]
+    assert key["t"] == key["evidence"]["quality_start"] == 8
+    assert key["end"] <= 24  # bounded final strum evidence, not the bass phrase
+    assert at(result, "keys", 4)["unknown"]
+    assert at(result, "keys", 28)["unknown"]
+    assert all(e.get("unknown") for e in result["scales"]["events"])
+
+
+def test_distant_notes_cannot_make_a_short_tonic_passage_stable():
+    data = anchored_minor_source(15, start=16, total=48)
+    data["arrangements"][0]["notes"] = [
+        {"t": t, "end": t + .5, "pc": 4, "midi": 52} for t in [0, 1, 2, 3, 44, 45, 46, 47]]
+    result = analyse_harmony(data)
+    assert all(e.get("unknown") for e in result["keys"]["events"])
+
+
+def test_later_scale_degrees_do_not_rewrite_earlier_tonic_only_context():
+    data = anchored_minor_source(16)
+    chords = []
+    for start in range(0, 128, 16):
+        chords.extend(anchored_minor_source(16, start=start)["arrangements"][0]["chords"])
+    data = source(chords, duration=128, notes=[
+        {"t": t, "end": t + 1, "pc": pc, "midi": 48 + pc}
+        for t in range(72, 128, 8) for pc in (6, 2)])
+    result = analyse_harmony(data)
+    assert at(result, "keys", 8)["key"] == at(result, "keys", 112)["key"] == "E minor"
+    assert at(result, "keys", 8)["evidence"]["scale_degrees_resolved"] is False
+    assert at(result, "keys", 112)["evidence"]["scale_degrees_resolved"] is True
+    assert at(result, "scales", 8)["unknown"]
+    assert at(result, "scales", 112)["type"] == "natural_minor"
+
+
+
+@pytest.mark.parametrize("beats", [15, 16, 23, 24])
+@pytest.mark.parametrize("variable_tempo", [False, True])
+def test_rich_short_return_is_local_and_respects_musical_time(beats, variable_tempo):
+    a_phrase = [("A", [1, 4, 9]), ("D", [2, 6, 9]),
+                ("E7", [2, 4, 8, 11]), ("A", [1, 4, 9])]
+    data = local_progression(_C_PHRASE * 4 + a_phrase * 2)
+    for index, (label, pcs) in enumerate(_C_PHRASE * 2):
+        data["arrangements"][0]["chords"].append(
+            chord(label, 96 + index * beats / 8, 96 + (index + 1) * beats / 8, pcs=pcs))
+    data["duration"], data["beats"] = 96 + beats, list(range(97 + beats))
+    data["sections"] = [{"t": 0, "end": 64}, {"t": 64, "end": 96},
+                        {"t": 96, "end": 96 + beats}]
+    seconds = lambda t: t
+    if variable_tempo:
+        data, seconds = change_clock(data)
+        data["sections"] = [{"t": seconds(e["t"]), "end": seconds(e["end"])} for e in data["sections"]]
+    result = analyse_harmony(data)
+    assert at(result, "keys", seconds(20))["key"] == "C major"
+    assert at(result, "keys", seconds(80))["key"] == "A major"
+    returned = at(result, "keys", seconds(96 + beats / 2))
+    if beats < 16:
+        assert returned["unknown"]
+    else:
+        assert returned["key"] == "C major"
+        assert returned["t"] >= seconds(96)
+        assert returned["end"] <= seconds(96 + beats)
+        assert returned["evidence"]["context_start"] >= seconds(96)
+        assert at(result, "scales", seconds(96 + beats / 2))["type"] == "major"
+
+
+def duration_biased_relative_source(transpose=0, cadence_break=None):
+    # The minor tonic lasts three times as long as its relative major, but
+    # only the major receives a played authentic cadence. Every pitch below
+    # is explicit; the chord names cannot supply a missing dominant third.
+    played = [(5, "", [0, 5, 9], 2), (7, "m", [2, 7, 10], 1),
+              (9, "m", [0, 4, 9], 1), (2, "m", [2, 5, 9], 6),
+              (7, "m", [2, 7, 10], 4), (0, "", [0, 4, 7], 2),
+              (5, "", [0, 5, 9], 2), (7, "m", [2, 7, 10], 1),
+              (9, "m", [0, 4, 9], 1), (2, "m", [2, 5, 9], 6)]
+    names = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+    events, cursor = [], 0
+    for root, suffix, pcs, beats in played:
+        label = names[(root + transpose) % 12] + suffix
+        if root == 0 and cadence_break == "missing_third":
+            pcs = [0, 7]
+        if root == 0 and cadence_break == "uncharted_gap":
+            beats = 4
+        end = cursor + beats
+        if root == 0 and cadence_break == "power_interruption":
+            events.append(chord(label, cursor, cursor + .5,
+                                pcs=[(pc + transpose) % 12 for pc in pcs]))
+            events.append(chord(names[transpose] + "5", cursor + .5, end,
+                                pcs=[transpose, (7 + transpose) % 12]))
+        else:
+            played_end = cursor + .25 if root == 0 and cadence_break == "uncharted_gap" else end
+            events.append(chord(label, cursor, played_end,
+                                pcs=[(pc + transpose) % 12 for pc in pcs]))
+        cursor = end
+    return source(events, duration=cursor)
+
+
+@pytest.mark.parametrize("transpose", [0, 2, 5, 7])
+@pytest.mark.parametrize("variable_tempo", [False, True])
+def test_relative_authentic_cadence_blocks_duration_only_tonic(transpose, variable_tempo):
+    data = duration_biased_relative_source(transpose)
+    seconds = lambda t: t
+    if variable_tempo:
+        data, seconds = change_clock(data)
+    result = analyse_harmony(data)
+    key = at(result, "keys", seconds(12))
+    assert all(e.get("unknown") for e in result["keys"]["events"])
+    assert key["evidence"]["reason"] == "relative_major_minor_ambiguity"
+    assert key["evidence"]["tonic_duration_share"] > 2 * key["evidence"]["relative_tonic_duration_share"]
+    assert key["evidence"]["dominant_cadences"] == 0
+    assert key["evidence"]["relative_dominant_cadences"] == 1
+    scale = at(result, "scales", seconds(12))
+    assert not scale.get("unknown")
+    expected = {(pc + transpose) % 12 for pc in (0, 2, 4, 5, 7, 9, 10)}
+    assert {(pitch_class(scale["root"]) + step) % 12 for step in SCALES[scale["type"]]} == expected
+
+
+@pytest.mark.parametrize("cadence_break", ["missing_third", "power_interruption", "uncharted_gap"])
+@pytest.mark.parametrize("variable_tempo", [False, True])
+def test_relative_cadence_requires_contiguous_observed_quality(cadence_break, variable_tempo):
+    data = duration_biased_relative_source(cadence_break=cadence_break)
+    seconds = lambda t: t
+    if variable_tempo:
+        data, seconds = change_clock(data)
+    result = analyse_harmony(data)
+    key = at(result, "keys", seconds(12))
+    assert key["key"] == "D minor"
+    assert key["evidence"]["dominant_cadences"] == 0
+    assert key["evidence"]["relative_dominant_cadences"] == 0
