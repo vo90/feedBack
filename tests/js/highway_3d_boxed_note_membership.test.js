@@ -242,6 +242,50 @@ test('only leading-box attacks hide stems; later arpeggio notes retain stems acr
     assert.equal(render(h,ordinary,chords,{notes:[...notes,ordinary],handShapes}).openStem,true);
 });
 
+test('Songsterr arpeggio onset precision preserves original attacks while hiding leading-box stems',()=>{
+    const onset=76.448997,handShapes=[{chord_id:0,start_time:onset,end_time:77.369003,arp:true}];
+    const templates=[{frets:[0,2,2,1,0,0]}],h=membershipHarness();
+    const chords=h.synthesize([],handShapes,templates);
+    const yellow={t:76.449,s:1,f:2},blue={t:76.45,s:2,f:2,sus:.221};
+    const later={t:76.7,s:2,f:2},notes=[yellow,blue,later];
+    for(const now of [76,76.449,76.5,77.5,76])for(const n of notes){
+        const r=render(h,n,chords,{notes,handShapes,templates,now,arpeggio:true});
+        assert.equal(r.original,n,'precision matching must preserve the authored attack');
+        assert.equal(r.belongsToBoxedArpeggio,n!==later);
+        assert.equal(r.connectors+r.drops,n===later && now<=n.t ? 1 : 0);
+    }
+    assert.equal(blue.t,76.45);
+    assert.equal(chords[0].t,onset);
+    const current=render(h,blue,chords,{notes,handShapes,templates,style:'current',arpeggio:true});
+    assert.equal(current.belongsToBoxedArpeggio,false,'Current keeps its existing stem policy');
+    assert.equal(current.drops,1);
+});
+
+test('arpeggio onset precision is bounded to two milliseconds and actual occurrence members',()=>{
+    const onset=10,handShapes=[{chord_id:1,start_time:onset,end_time:12,arp:true}];
+    const chords=[chord(onset)],templates={1:{frets:[3,5,7]}};
+    const cases=[
+        [{t:onset-.002,s:0,f:3},true],
+        [{t:onset-.0015,s:1,f:5},true],
+        [{t:onset+.0015,s:0,f:3},true],
+        [{t:onset+.002,s:1,f:5},true],
+        [{t:onset-.0021,s:0,f:3},false],
+        [{t:onset+.0021,s:1,f:5},false],
+        [{t:onset+.5,s:0,f:3},false],
+        [{t:onset+.001,s:0,f:4},false],
+        [{t:onset+.001,s:2,f:7},false],
+    ];
+    const notes=cases.map(([n])=>n).sort((a,b)=>a.t-b.t),h=membershipHarness();
+    for(const [n,boxed] of cases){
+        const r=render(h,n,chords,{notes,handShapes,templates,arpeggio:true});
+        assert.equal(r.belongsToBoxedArpeggio,boxed,JSON.stringify(n));
+        assert.equal(r.connectors+r.drops,boxed ? 0 : 1);
+        const ordinary=render(h,n,chords,{notes,templates});
+        assert.equal(ordinary.belongsToBoxedChord,false,'ordinary chord membership stays exact');
+        assert.equal(ordinary.connectors,1);
+    }
+});
+
 test('arpeggio membership requires a renderable box and exact occurrence members',()=>{
     const n={t:10,s:0,f:0},later={t:12.5,s:0,f:0},wrong={t:11,s:1,f:7};
     const ch={t:10,id:1,notes:[{s:0,f:0},{s:1,f:5}]};
