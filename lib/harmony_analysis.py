@@ -14,7 +14,7 @@ import re
 from statistics import median
 
 
-ALGORITHM_VERSION = "chart-harmony-v6"
+ALGORITHM_VERSION = "chart-harmony-v7"
 _NAMES = ("C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
 _NATURAL = dict(zip("CDEFGAB", (0, 2, 4, 5, 7, 9, 11)))
 _EPS = 1e-7
@@ -327,6 +327,9 @@ def _event_signature(event):
             tuple(event.get("evidence", {}).get("observed_pcs", [])),
             tuple(event.get("evidence", {}).get("label_implied_pcs", [])),
             event.get("evidence", {}).get("kind"),
+            event.get("evidence", {}).get("resolution"),
+            event.get("evidence", {}).get("anchor_reference"),
+            tuple(event.get("evidence", {}).get("partial_voicing_references", [])),
             event.get("evidence", {}).get("shared_scale", {}).get("root"),
             event.get("evidence", {}).get("shared_scale", {}).get("type"),
             event.get("evidence", {}).get("scale_degrees_resolved", True),
@@ -342,6 +345,55 @@ def _append_event(events, event):
         evidence["support_windows"] = evidence.get("support_windows", 1) + 1
         return
     events.append(event)
+
+
+def _quality_conflict(candidates, winner, pc):
+    thirds = {(tone - pc) % 12 for c in candidates for tone in c["observed"]} & {3, 4}
+    return len(thirds) == 2 and any(
+        c["named"] and c["quality"] != winner["quality"] for c in candidates)
+
+
+def _compatible_partial_voicings(active, scored):
+    """Resolve only a complete chord versus contained, incomplete labels.
+
+    Root scores still determine which interpretations are strong enough to
+    compete. A weaker chord cannot acquire votes from parts it explains. Among
+    those roots, inspect every active voicing, including correlated alternatives
+    hidden by the per-group score cap. Complete smaller chords and equal pitch
+    sets retain their independent interpretations; a superset alone is not
+    evidence for preferring one root.
+    """
+    strong_roots = {pc for score, pc, _ in scored if score >= scored[0][0] * .84}
+    contenders = [c for c in active if c["pc"] in strong_roots
+                  and c["quality"] and len(c["observed"]) >= 2]
+    solutions = []
+    for anchor in contenders:
+        pc, observed = anchor["pc"], set(anchor["observed"])
+        expected = {(pc + interval) % 12 for interval in CHORD_INTERVALS.get(anchor["quality"], ())}
+        if (len(observed) < 3 or anchor["quality"] == "5" or not expected
+                or pc not in observed or not expected <= observed
+                or anchor.get("label_implied_pcs")):
+            continue
+        same_root = [c for c in contenders if c["pc"] == pc]
+        if _quality_conflict(same_root, anchor, pc):
+            continue
+        partials = [c for c in contenders if c["pc"] != pc]
+        if not partials or any(
+                not c.get("label_implied_pcs") or not set(c["observed"]) < observed
+                for c in partials):
+            continue
+        if any(not set(c["observed"]) <= observed for c in active if c["pc"] in strong_roots):
+            continue
+        solutions.append((anchor, same_root, partials))
+    # Multiple fully observed qualities/collections remain ambiguous even if
+    # their labels happen to share a root. Duplicate charts cannot break a tie.
+    identities = {(a["pc"], a["quality"], tuple(sorted(a["observed"])))
+                  for a, _, _ in solutions}
+    if len(identities) != 1:
+        return None
+    return max(solutions, key=lambda item: (
+        item[0]["weight"], item[0]["named"], item[0].get("bass") or "",
+        item[0]["display_label"], str(item[0]["id"])))
 
 
 def _choose_chord(active, previous, t, end):
@@ -364,22 +416,26 @@ def _choose_chord(active, previous, t, end):
         scored.append((score, pc, list(groups.values())))
     scored.sort(key=lambda item: item[0], reverse=True)
     score, pc, candidates = scored[0]
+    resolved = None
     if len(scored) > 1 and scored[1][0] >= score * .84:
-        return _unknown(t, end, "conflicting_arrangements")
+        resolved = _compatible_partial_voicings(active, scored)
+        if resolved is None:
+            return _unknown(t, end, "conflicting_arrangements")
+        winner, candidates, partials = resolved
+        pc = winner["pc"]
     # A complete singleton is still only a root candidate. It must not erase
     # an observed dyad merely because the dyad's label implies an unplayed third.
     candidates.sort(key=lambda c: (bool(c["quality"]) and len(c["observed"]) >= 2,
                                    not c.get("label_implied_pcs"), c["named"],
                                    c["weight"], len(c["chord_tones"])), reverse=True)
-    winner = candidates[0]
+    winner = resolved[0] if resolved else candidates[0]
     # Conflicting major/minor thirds cannot be resolved by chart count alone.
-    thirds = {(tone - pc) % 12 for c in candidates for tone in c["observed"]} & {3, 4}
-    if len(thirds) == 2 and any(c["named"] and c["quality"] != winner["quality"] for c in candidates[1:]):
+    if _quality_conflict(candidates, winner, pc):
         return _unknown(t, end, "conflicting_chord_quality")
     quality = winner["quality"]
     observed = sorted(set(winner["observed"]))
     implied = sorted(set(winner.get("label_implied_pcs", [])) - set(observed))
-    confidence = "high" if winner["named"] and len(observed) >= 3 and not implied else "medium"
+    confidence = "high" if winner["named"] and len(observed) >= 3 and not implied and not resolved else "medium"
     if not quality:
         confidence = "low" if winner["kind"] == "bass_root_candidate" else "medium"
     result = {"t": round(t, 6), "end": round(end, 6), "root": winner["root"],
@@ -390,6 +446,12 @@ def _choose_chord(active, previous, t, end):
                            "support_windows": 1, "observed_pcs": observed,
                            "label_implied_pcs": implied, "root_observed": pc in observed,
                            "quality_basis": "label" if implied else "observed_voicing"}}
+    if resolved:
+        result["evidence"].update({
+            "resolution": "compatible_partial_voicings",
+            "anchor_reference": str(winner["id"]),
+            "partial_voicing_references": sorted({str(c["id"]) for c in partials})[:3],
+        })
     if winner.get("bass") and pitch_class(winner["bass"]) in observed:
         result["bass"] = winner["bass"]
     return result

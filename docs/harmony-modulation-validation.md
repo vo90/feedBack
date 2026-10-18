@@ -752,3 +752,133 @@ freeze, and the raw cadence diagnosis. The final engine SHA256 is
 Use the existing modulation/chord evaluators with these manifests and a new
 output directory. The additional songs become development data if their
 failures inform later model changes.
+
+## v7: compatible partial voicings across arrangements
+
+The next investigation found that some cross-arrangement conflicts were caused
+by different labels for compatible played notes. Yesterday's rhythm C7 contains
+C/E/G/Bb, while another part labels E/G/Bb as Gm6 with its D missing. Similarly,
+an observed Em7 can explain an incomplete G6 voicing. Previously these produced
+competing root votes and an unknown chord, breaking useful tonal evidence.
+
+The resolver runs only when the existing root scores already indicate a strong
+conflict. It requires one unique, complete, actually observed chord, including
+its root and defining tones. Every competing multi-note interpretation among
+the strong roots must have missing label-implied notes and a strict subset of
+the anchor's played notes. All observations associated with those strong roots,
+including root-only evidence and correlated alternatives, must fit the anchor.
+The normal root-score threshold still applies; this is not a claim that every
+weak accompaniment note belongs to the selected chord.
+
+Complete alternative chords, equal pitch collections such as C6/Am7, same-root
+major/minor conflicts, and incompatible arriving chords remain uncertain. No
+notes are combined to construct a new chord, no evidence lifetime is extended,
+and partial parts do not add votes to the anchor. Resolved events have medium
+confidence and explicit anchor/partial-voicing references. Provenance changes
+preserve their exact boundaries; the key estimator still coalesces adjacent
+equivalent musical regions before considering cadences.
+
+### Paired results and limitations
+
+The candidate was frozen before the comparisons. On the existing 13 reference
+songs, only Yesterday and a 19 ms Am passage in Play the Game change grounded
+harmony. Yesterday gains 2.720 seconds of grounded C7/Em7 evidence across 15
+musical spans. Each of its 21 provenance intervals was checked against an active
+complete anchor for the entire interval. Actual A7/Dm and C7/F overlaps, plus
+expired-C7 fragments against the arriving F, still remain unknown.
+
+| Existing 13-song reference measure | v6 | v7 |
+| --- | ---: | ---: |
+| Correct key duration (s) | 435.717 | 488.827 |
+| Wrong known key duration (s) | 103.560 | 103.560 |
+| Unknown key duration (s) | 1,009.514 | 956.404 |
+| Key changes within four beats | 2 / 24 | 2 / 24 |
+| Unmatched switches in annotated regions | 3 | 3 |
+| Full-scale guidance in 190.175 reference-rest seconds | 44.431 | 50.236 |
+
+The key gain is entirely Yesterday: 53.110 seconds now match the F-major
+reference, producing 5.805 seconds of full-scale guidance in qualifying lead
+rests. This replaces chord-only guidance; total guide availability is unchanged.
+There is no added wrong-key time in these selected regions. The improvement
+does not repair the missed modulations or the existing incorrect key passages.
+
+Two additional full-band songs were selected and aligned before predictions:
+Michelle and While My Guitar Gently Weeps. Their reference freeze is
+`2026-10-18T17:56:20.067305Z`; nine and twelve raw sounding-pitch/onset anchors
+have checking residuals at most 0.039 and 0.041 seconds, respectively, with
+0.5-second declared uncertainty. Michelle's scope ends before later timing
+drift. Neither song changes under v7. Across 298.931 reference seconds they
+retain 157.418 correct-key seconds, 18.393 wrong-known seconds and 123.120
+unknown seconds. They miss all seven annotated changes and have no qualifying
+lead-rest sample. These are useful harmonic regression checks, not evidence of
+successful visible-rest guidance. Across all 15 songs only **2 of 31 annotated
+changes** are detected by the raw evaluator. One Michelle boundary is just
+0.040 seconds after its selected scope begins and lacks useful preceding
+context; the six fully bracketed changes in the two new songs are all missed.
+Gently Weeps' 0.045 seconds of wrong-key exposure is within declared boundary
+uncertainty. These caveats do not alter the frozen references after prediction.
+No audio was decoded or listened to.
+
+The new `tools/evaluate_harmony_chord_evidence.py` measures grounded harmony
+throughout the independently selected annotation regions, alongside the
+existing browser-rest check. Both versions share one bounded scoring mask;
+boundary uncertainty, unsupported/unknown annotations and N.C. are excluded.
+Root-only and multi-note results are separate, and root agreement requires an
+actually observed root. Paired reports retain unknown-to-known, known-to-unknown,
+changed-root and changed-pitch-set passages, with input and helper hashes.
+
+In the existing 11-song group, 541.323 seconds are scorable for full-interval
+chord agreement. The only newly resolved interval inside that mask is Play the
+Game's 0.019 seconds: its grounded Am agrees with the reference. Yesterday's
+new chord intervals fall outside the safe annotation mask, so their chart
+grounding must not be presented as independently verified chord accuracy.
+The previous two-song and new two-song groups provide 87.017 and 147.052
+scorable seconds with unchanged results. Existing outside-annotation exposure
+is 70.750, 4.251 and 10.210 seconds respectively; coarse annotations and chart
+extensions can disagree, so these are not automatically wrong-note counts.
+
+In the existing 11-song independent rest check, 3.556 additional seconds of
+scale guidance contain the annotated chord tones. The prior 0.769-second
+D7/D7sus4 disagreement and all highlighted target checks are unchanged.
+The previous two-song rest check is unchanged, and the new songs provide no
+rest sample. Chord containment alone does not establish that every extra scale
+note is suitable.
+
+### Regression, performance and runtime control
+
+All musical outputs in the separate 53-pack regression corpus are unchanged,
+all 18 fixed chord references still match, and timeline bounds, unobserved
+chord-tone and scale/chord invariants pass in every comparison. Interior-rest
+scale coverage remains 6.46% and any-guide coverage 55.49%. The run's median
+backend inference was 244.10 ms for v6 and 238.85 ms for v7 while other validation
+ran concurrently; this does not establish a speed improvement or an FPS result.
+Inference stays in the existing background job, outside frame rendering.
+
+An independent audit of all 68 pack rows checks all 22 resolved events, totaling
+2.739 seconds, against the raw played chord voicings and the unchanged v6
+extractor. Every selected anchor is complete and active for the emitted span;
+every cited partial voicing is contained and label-incomplete. This establishes
+chart grounding, separately from agreement with external annotations.
+
+The focused Python suite passes **364 tests**, including 32 new musical
+regressions and 12 independent-evaluator tests. The guide JavaScript suites
+pass **95 tests**. Independent implementation review found no remaining
+confirmed defect. `chart-harmony-v7` changes the cache identity, requiring one
+new analysis before subsequent requests reuse the result. The existing
+**3D Highway — Harmony guide (experimental)** setting remains the persistent
+on/off control; no new scale configuration or audio analysis is required.
+
+Frozen comparisons, manifests, raw annotations, alignment evidence, full chord
+and rest reports, `study-summary.json`, `yesterday-diagnosis.json`, and runtime
+verification receipts are retained locally under
+`C:\Dev\feedback-workspace\verification\songsterr-harmony-compatible-voicings-20261018`.
+The final engine SHA256 is
+`a269945bd5a64a2925e735811ce905f0c6b21eecbce3ea0b02464765f59d2642`.
+Reproduce a full-interval chord check from a frozen modulation comparison:
+
+```powershell
+python tools/evaluate_harmony_chord_evidence.py `
+  --comparison <frozen-comparison-directory> `
+  --chord-directory <frozen-chord-directory> `
+  --output <new-report.json>
+```

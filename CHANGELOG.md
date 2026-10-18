@@ -372,6 +372,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine (`app.js`, `highway.js`, `playSong`, `showScreen`, the capability registry).
 
 ### Fixed
+- Experimental harmony analysis recognizes compatible partial voicings across
+  instrument parts when one complete played chord explains them. Real chord
+  conflicts stay uncertain, without adding notes or extending holds. Versioned
+  cached analysis refreshes behind the existing 3D Highway toggle.
 
 - **RS+ open and muted bars consistently reach the floor.** Standalone bars keep
   their full white stems even when associated with hand-shape or arpeggio guidance.
