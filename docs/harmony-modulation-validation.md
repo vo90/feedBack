@@ -1104,3 +1104,113 @@ Evidence is retained under
 `study-summary.json`, immutable `frozen-v8-results`,
 `independent-acceptance-audit.json`, `independent-frozen-v8-review.json`, frozen
 references, native captures and the follow-up runtime acceptance record.
+
+
+## Follow-up: blues vocabulary and missing accompaniment
+
+The follow-up investigated both proposed directions against the same six-song
+rest study and sixteen previously used modulation/control songs. These are
+22 development/regression songs with 135 interior rests, not a new accuracy
+holdout. Rules, code, source hashes and tests were frozen before each corpus
+run. The guide was enabled in controller measurements; the user's saved toggle
+was not changed. No audio was decoded, listened to, or analyzed in this study.
+The v8 production engine and runtime remain unchanged.
+
+### Bounded retention did not improve actual rests
+
+The private bridge only filled gaps of at most two authored beats and two
+seconds between identical supported scales, within one known key and canonical
+section, with continuous compatible pitched sustains. It preserved all key and
+chord tracks. Eighteen focused tests covered boundaries, conflicting evidence,
+missing context and all twelve transpositions.
+
+Across the 22 songs it admitted eight tiny gaps totaling 0.851 seconds, in
+Something, Hello, Goodbye, and Michelle. Every gap fell outside an eligible
+interior rest: **zero additional visible guidance**. Independent review compared
+complete displayed state over rest intervals, not just aggregate coverage, and
+re-ran the unchanged primary scorer for all six development songs. Their scores
+are exactly unchanged. No thresholds were loosened after seeing this result.
+
+A Kind of Magic has no supported v8 key or scale anywhere in the chart, leaving
+no reliable scale to carry forward. The source audit found exactly bass, lead
+and rhythm arrangements, with maximum-difficulty reconstruction and sustains
+already included. There is no omitted piano, pitched vocal, or authored harmony
+track to load. During 70.494-87.781 seconds there are 76 bass notes and no
+sounding lead/rhythm notes, chords or handshapes. The preceding F#m ends at
+67.728 seconds; independent annotations then pass through E, D6, A, D and A.
+Carrying that chord would misdescribe the passage. The chart's coarse intro and
+outro section markers supply no missing interior tonal structure.
+
+### Lead-chart vocabulary does not recover the missing vocal evidence
+
+The second private diagnostic searched selected lead notes on both sides of
+each rest for minor-pentatonic, Dorian and Mixolydian vocabulary. It required a
+single known v8 tonic across the entire context, repeated distinctive degrees,
+at least twelve isolated attacks and four pitch classes on each side, and at
+least 95% onset and articulation-weight fit independently on both sides.
+Technique-marked or uncertain notes and simultaneous chord attacks were
+excluded. The blues probe additionally required repeated other-arrangement
+voicings containing the tonic, major third and fifth. This containment does not
+prove a tonic-major chord root: for example, a vi7 voicing can contain that triad.
+Sixteen focused tests verify the diagnostic mechanics, not musical correctness.
+
+Only 12 of 135 rests have the required stable tonic context, 18 have adequate
+lead-note evidence on both sides, and just three satisfy both conditions. No
+rest passed a candidate vocabulary rule. This establishes no new usable
+automatic palette; it does not prove that all melody-based analysis is impossible. The strict
+isolated-note proxy also discards valid expressive notes and cannot establish
+that a style continues through the intervening rest.
+
+The five Beatles development packs contain empty vocal note/chord arrays and
+lyrics with timing, duration and words only. They contain no pitched vocal
+transcription; the Queen pack has neither vocal nor lyric data. The missing
+melody is therefore absent from these source packs, not dropped by the adapter.
+At the Helter Skelter rest around 61.666-84.212 seconds, nearby charted lead
+notes fit E minor pentatonic at only 66.7% of attacks on each side and include
+F-sharp, C-sharp and both kinds of third. Substituting this guitar part for the
+vocal melody would conflate different musical roles.
+
+[Pollack's Helter Skelter analysis](https://awpnoteson.info/notes/hs.html)
+describes a major-key harmonic setting and a largely minor-pentatonic vocal
+line, including an exception in the introduction. His
+[Taxman analysis](https://awpnoteson.info/notes/t.html) leaves Dorian versus
+Mixolydian unresolved. These are useful analytical constraints, not timestamped
+approval of every suggested improvisation note.
+
+### The current display policy also needs an explicit musical distinction
+
+A separate characterization of the unchanged browser model passed 360 cases
+(ten scenarios, twelve roots, three source origins), plus three editor cases.
+Both local corrections and automatic scales must contain every known chord
+tone. Consequently E minor pentatonic over E major is rejected, as is C major
+pentatonic over F major. E Mixolydian over E7 is accepted. Adding a blues
+candidate to the backend alone would not make it display through this policy.
+
+An explicit compatible scale *does* display over tentative root-only harmony;
+the backend's scale generation is stricter and requires at least two grounded
+chord tones and non-low confidence. The first characterization probe incorrectly
+expected root-only harmony to suppress an explicit scale. Its failed assertion
+and source were retained, then the expectation was corrected without changing
+production code. The sparse prototype's admitted gaps resolve successfully in
+the controller; their zero visible gain is due to rest placement.
+
+The decision is to promote neither prototype. Further progress needs an
+explicit, reviewed per-section practice-scale contract that is distinct from
+chord-contained guidance, with its source and chord-target behavior defined.
+Blues cross-relations cannot be represented by merely removing all compatibility
+checks. The existing local editor supports named scales but currently applies
+the same containment policy; it is not yet a solution for these blues examples.
+Automatic choice should be evaluated against independently reviewed audible
+passages before being extended. No live audio listening is implied by this
+recommendation. The experimental 3D Highway setting remains the feature gate.
+
+Evidence is retained under
+`C:\Dev\feedback-workspace\verification\songsterr-harmony-palette-context-20261018`:
+`independent-acceptance-protocol.json`, `sparse-conclusion.json`,
+`sparse-frozen/protocol.json`, `sparse-results/summary.json`,
+`independent-sparse-results-review.json`, `modal-freeze.json`,
+`modal-results.json`, `modal-conclusion.json`, the per-song modal diagnostics,
+`independent-modal-contract-review.json`, and
+`contract-probe-output-02/report.json`. Earlier frozen acceptance references
+were not changed. This is a documented negative result and source/contract
+audit, not a claimed improvement to automatic musical accuracy.

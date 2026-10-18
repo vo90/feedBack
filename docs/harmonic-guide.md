@@ -197,6 +197,11 @@ including a slash bass, against the suggested scale. Conflicting or unsupported
 data leaves the scale guidance unavailable until reviewed. A globally correct
 key does not automatically make one scale suitable for every borrowed chord.
 
+This containment rule also applies to local corrections: the editor currently
+rejects E minor pentatonic over E major, for example. That is a limitation of
+this conservative guide policy, not a claim that blues cross-relations are
+musically invalid. Reviewed blues practice palettes need separate handling.
+
 Position outlines are provided for major/natural-minor CAGED and five major/
 minor pentatonic positions in standard six-string tuning, including uniform
 transposition and capo. Natural-minor outlines use relative-major CAGED shapes.
