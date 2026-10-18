@@ -189,9 +189,15 @@ def main():
     parser.add_argument("--manifest", type=Path, required=True, help="JSON with songs: [{path, cohort, arrangement_id?}]")
     parser.add_argument("--output", type=Path, required=True, help="New directory; existing output is never overwritten")
     parser.add_argument("--baseline-module", type=Path, help="Frozen old harmony_analysis.py, e.g. v2")
+    parser.add_argument("--candidate-module", type=Path, default=REPO / "lib/harmony_analysis.py",
+                        help="Optional isolated research engine; production is the default")
+    parser.add_argument("--candidate-options", type=json.loads, default={},
+                        help="JSON object of research options, recorded with the frozen run")
     parser.add_argument("--references", type=Path, default=REPO / "tools/harmony_reference_points.json")
     parser.add_argument("--node", default=shutil.which("node"))
     args = parser.parse_args()
+    if not isinstance(args.candidate_options, dict):
+        parser.error("--candidate-options must be a JSON object")
     if not args.node:
         parser.error("Node is required for the real browser rest/guidance model")
     manifest = json.loads(args.manifest.read_text(encoding="utf-8-sig"))
@@ -201,7 +207,8 @@ def main():
         parser.error("Manifest must contain at least one song")
     current_path = args.output / "current-engine.py"
     model_path = args.output / "browser-model.mjs"
-    shutil.copyfile(REPO / "lib/harmony_analysis.py", current_path)
+    shutil.copyfile(REPO / "lib/harmony_analysis.py", args.output / "production-engine.py")
+    shutil.copyfile(args.candidate_module, current_path)
     shutil.copyfile(REPO / "static/js/harmony-guide-model.js", model_path)
     shutil.copyfile(REPO / "lib/harmony_source.py", args.output / "source-adapter.py")
     shutil.copyfile(Path(__file__), args.output / "evaluator.py")
@@ -211,6 +218,7 @@ def main():
         shutil.copyfile(args.baseline_module, baseline_path)
         engines = {"baseline": load_engine(baseline_path, "evaluation_baseline"), **engines}
     definition = {"started_utc": datetime.now(timezone.utc).isoformat(), "classification": "development/regression only",
+                  "candidate_options": args.candidate_options,
                   "accuracy_claim": False, "audio_read_or_listened": False, "manifest": manifest,
                   "code_sha256": {p.name: digest(p) for p in args.output.iterdir() if p.is_file()},
                   "method": "Same normalized input and frozen current browser model for both engines; coverage is not correctness. No OS-cache flush. Cold timings exclude browser, writes and queue wait."}
@@ -229,7 +237,7 @@ def main():
                "revision": source["revision"], "fingerprint": source["fingerprint"], "source_ms": round(source_ms, 2), "engines": {}}
         for label, engine in engines.items():
             started = time.perf_counter()
-            result = engine.analyse_harmony(source)
+            result = engine.analyse_harmony(source, options=args.candidate_options) if label == "current" else engine.analyse_harmony(source)
             engine_ms = (time.perf_counter() - started) * 1000
             write(args.output / f"{index + 1:03d}-{label}.json", result)
             row["engines"][label] = {"version": engine.ALGORITHM_VERSION, "engine_ms": round(engine_ms, 2),

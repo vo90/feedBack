@@ -246,11 +246,17 @@ def main():
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--references", type=Path, required=True)
     parser.add_argument("--baseline-module", type=Path, required=True)
+    parser.add_argument("--candidate-module", type=Path, default=REPO / "lib/harmony_analysis.py",
+                        help="Optional isolated research engine; production is the default")
+    parser.add_argument("--candidate-options", type=json.loads, default={},
+                        help="JSON object of research options, recorded with the frozen run")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--node", default=shutil.which("node"))
     parser.add_argument("--purpose", choices=("development", "initial_reference"), default="development",
                         help="Use initial_reference only before these songs influence implementation")
     args = parser.parse_args()
+    if not isinstance(args.candidate_options, dict):
+        parser.error("--candidate-options must be a JSON object")
     if not args.node:
         parser.error("Node is required for the real browser rest/guidance model")
     manifest = json.loads(args.manifest.read_text(encoding="utf-8-sig"))
@@ -262,8 +268,11 @@ def main():
         raise ValueError("References differ from the independently frozen selection manifest")
     by_id = {song["id"]: song for song in references["songs"]}
     args.output.mkdir(parents=True, exist_ok=False)
+    # Research engines may reuse the production extractor. Freeze that dependency
+    # beside them, so replays do not silently pick up a later checkout's engine.
+    shutil.copyfile(REPO / "lib/harmony_analysis.py", args.output / "production-engine.py")
     engines = {}
-    for label, path in (("baseline", args.baseline_module), ("current", REPO / "lib/harmony_analysis.py")):
+    for label, path in (("baseline", args.baseline_module), ("current", args.candidate_module)):
         frozen = args.output / f"{label}-engine.py"
         shutil.copyfile(path, frozen)
         engines[label] = load_engine(frozen, "modulation_evaluation_" + label)
@@ -274,6 +283,7 @@ def main():
         shutil.copyfile(source, args.output / name)
     write(args.output / "run-definition.json", {"started_utc": datetime.now(timezone.utc).isoformat(),
           "evaluation_purpose": args.purpose,
+          "candidate_options": args.candidate_options,
           "audio_listened": False, "method": "Independent timed key annotations aligned before predictions; duration agreement and abstention reported separately. Diatonic collection match is not scale suitability.",
           "rest_method": "Production browser model at maximum authored lead difficulty, four-beat threshold (three-second fallback). Visibility means eligible guidance before fades, not measured opacity or user-specific settings.",
           "sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in args.output.iterdir() if p.is_file()}})
@@ -292,7 +302,7 @@ def main():
                "revision": source["revision"], "cohort": entry.get("cohort", "independent_reference"), "engines": {}}
         for label, engine in engines.items():
             start = time.perf_counter()
-            result = engine.analyse_harmony(source)
+            result = engine.analyse_harmony(source, options=args.candidate_options) if label == "current" else engine.analyse_harmony(source)
             engine_ms = round((time.perf_counter() - start) * 1000, 3)
             rests = rest_metrics(args.node, args.output / "browser-model.mjs", lead, source, result)
             row["engines"][label] = {"algorithm": engine.ALGORITHM_VERSION,

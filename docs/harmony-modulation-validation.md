@@ -319,3 +319,151 @@ independent recording-level review of suggested scales, and native renderer
 on/off measurements are still needed. A convincing key label alone does not
 justify every note of a scale, especially in modal, borrowed-chord or chromatic
 passages. Unknown passages and the chord-tone fallback remain useful outcomes.
+
+## Phrase collection investigation: research only, not deployed
+
+The next investigation tested whether selecting a coherent sequence of note
+collections could improve rest guidance without requiring an exact local key
+name. It reads chart notes and chords only. No recording or live input is used.
+The existing runtime remains on v5 with its persistent experimental toggle.
+
+`tools/harmony_phrase_prototype.py` is an isolated research engine. It reuses
+v5's grounded evidence and leaves its key and chord tracks unchanged. It scores
+24 distinct collections: twelve diatonic collections (each shared by a major
+and natural-minor pair) and twelve harmonic-minor collections. Eight-beat cells,
+authored section edges and adjacent-cell context feed a whole-sequence decoder.
+The objective combines observed pitch fit with a cost of changing collection.
+Unsupported regions split the sequence; a published scale must still contain
+the observed current chord. Harmonic-minor candidates require an observed minor
+chord and leading note. A path-cost margin is not a calibrated probability.
+
+This is a hand-scored experiment, not an imported or trained music model.
+Related approaches exist: [music21 floating-key analysis](https://music21.org/music21docs/moduleReference/moduleAnalysisFloatingKey.html)
+smooths measure-level estimates, with window size affecting sensitivity to
+changes. [Uehara, Nakamura and Tojo (2019)](https://eita-nakamura.github.io/articles/Uehara_etal_ChordFunctionIdentificationWithModulationDetectionBasedOnHMM_2019.pdf)
+investigate chord function and modulation through sequence models. Their
+classical-music results do not establish accuracy on incomplete guitar charts.
+
+### Frozen experiment and results
+
+Evidence is in `verification/songsterr-harmony-phrases-20261018` under the
+workspace. The six earlier songs and the three later songs are all development
+data. No fresh holdout or listening review is claimed. The first candidate was
+frozen at `76e9387c85efaf55fa3201030b5d3192b7a892ef7ded6035fd2ecbf260f12033`.
+`development-first-01` and `additional-first-01` compare it to unchanged v5.
+The corresponding `*-no-switch-01` runs set only `switch_cost` to zero, retaining
+the same phrase scorer and neighbouring context. This isolates the switch
+penalty, not all use of temporal context.
+
+Across 129.566 seconds of reference-covered interior lead rests:
+
+| Method | Scale eligible, seconds | Exact reference collection, seconds | Chord-only, seconds |
+|---|---:|---:|---:|
+| Production v5 | 43.701 | 38.274 | 20.493 |
+| Phrase scorer, zero switch cost | 32.767 | 27.760 | 31.427 |
+| Phrase sequence, default switch cost | 45.418 | 30.071 | 18.776 |
+
+Any-guide availability remains 64.194 seconds: the prototype mainly exchanges
+full scales and existing chord fallback. It does not create extra supported
+chord coverage. The switch penalty helps its own scorer overall, but this
+first prototype does not outperform production on reference collection
+agreement. These columns measure model eligibility before fades and agreement
+with a conventional diatonic reference, not the suitability of every note.
+Key-change detection is unchanged by design; scale gains are not modulation
+recall gains.
+
+The results are mixed across songs. Hello, Goodbye gains reference-matching
+scale availability from 7.158 to 14.251 rest seconds. Bicycle Race gains 1.460
+seconds. Something retains 7.746 seconds. Champions drops from 18.061 to 6.035
+matching seconds, and Crazy drops from 5.309 to zero. Don't Stop Me Now moves
+mostly to chord fallback: scale eligibility drops from 5.427 to 0.579 seconds,
+with the remaining 0.579 matching its conventional F collection. Dust and the
+selected early Bohemian Rhapsody passages remain without full scales.
+
+Inspection explains why pitch fit plus continuity is insufficient. Crazy has
+a D-centred passage with D/Dsus4, G/G6, C and G/B. Those notes strongly fit the
+G-major collection, also the D-Mixolydian collection. The prototype's canonical
+G label does not establish a G tonic or invalidate the D tonal centre.
+Champions mixes F-centred material with Eb, Ab, Bb and Cm7; an aggregate fit
+favours Bb-major and suppresses conflicting Am moments. Keeping either choice
+stable does not distinguish temporary mixture from a new key. Conversely, a
+reference-key mismatch does not prove that all those local scale notes are bad.
+
+### Independent chord annotation check
+
+`tools/evaluate_harmony_phrase_chords.py` adds a separate check against the
+available human chord annotations. It uses the frozen browser resolver's
+actual eligible pitch sets, the previously verified affine timing/pitch
+alignments, and reference-covered interior rests. It excludes the declared
+alignment uncertainty around each chord boundary, unsupported labels, unknown
+labels and N.C. It freezes its inputs and reports chart chord qualities beside
+each disagreement. Its Harte-notation parser is independent of the predictor.
+
+Only 47.521 of the 129.566 rest seconds remain scorable: boundary uncertainty
+excludes 66.612 seconds and N.C. annotations exclude 15.433. Both engines offer
+25.547 seconds of guidance in the remaining sample. All their highlighted
+targets are within the annotated chords. Production scales contain all annotated
+chord tones for 16.698 of 17.467 scale seconds; the prototype does so for all
+18.308 of its scale seconds. This is a necessary consistency check, not evidence
+that every additional scale note is suitable.
+
+The production 0.769-second disagreement is specifically annotated D7 versus
+fully observed chart D7sus4 in Don't Stop Me Now (167.681–168.065 and
+170.712–171.097 chart seconds). The reference may omit the brief suspension.
+It is not a confirmed analyser error. The prototype turns those moments into
+chord fallback, where the same chart/reference suspension disagreement remains.
+No listening review resolved which description best matches the recording.
+
+### Regression, reproducibility and decision
+
+`regression-first-01` covers the existing 53 packs, including duplicate songs
+in different packs. All 18 fixed chord references remain correct, with zero
+timeline-bound, unobserved-chord-tone or scale/chord containment violations.
+Interior-rest scale availability falls from 6.55% to 6.32%; any-guide coverage
+remains 55.49%. These are consistency and availability checks, not accuracy.
+
+Median inference in that local run is 208.47 ms for v5 and 458.84 ms for the
+prototype; chart load plus inference is 470.78 versus 743.61 ms. The research
+wrapper runs v5 and extracts observations again, so it includes avoidable
+duplicate work. The measurement is not a calibrated performance or FPS test.
+Nothing runs on the playback frame or microphone path.
+
+The final research source is
+`fc419c074a8cd21c08a9e2e74db75f9083be962813d1d92c16f0a2e64cf50eb1`.
+After the first freeze, audit metadata was corrected to retain the minimum
+merged margin and union of supporting tones, and explicit zero-margin ties
+were prevented from publishing when the research threshold is set to zero.
+`final-semantic-verification.json` verifies identical key, chord and played
+scale timelines for all 62 evaluated pack rows with default settings.
+The final focused suite passes 165 tests; independent code review found no
+remaining confirmed defect. Synthetic tests cover decoder optimality, ambiguity,
+temporary chromatic chords, a sustained C-to-D change, gaps, missing degrees,
+tempo changes, cancellation, frozen dependencies and annotation exclusions.
+
+The prototype is retained as a benchmarkable alternative and is **not promoted
+to the runtime**. The next experiment should represent the stable section tonic
+and the current chord's harmonic role separately, while allowing local pitch
+changes and preserving unknown results. A collection-equivalent label must not
+silently change the guide's tonic. More detailed independent review of local
+note guidance is needed before tuning that model. Increasing the continuity
+penalty or choosing thresholds to fit these nine songs would not resolve the
+demonstrated ambiguity.
+
+Both existing evaluators accept `--candidate-module` and JSON
+`--candidate-options`, recording the options and freezing a sibling
+`production-engine.py` dependency. Reproduce from this checkout with the
+original frozen manifests and a new output directory; the saved evaluator
+sources are audit snapshots, not standalone installation bundles:
+
+```powershell
+python tools/evaluate_harmony_modulations.py `
+  --manifest <coverage-evidence>/development-manifest.json `
+  --references tools/harmony_modulation_reference_points.json `
+  --baseline-module <phrase-evidence>/baseline-harmony-v5.py `
+  --candidate-module tools/harmony_phrase_prototype.py `
+  --output <new-comparison-directory>
+
+python tools/evaluate_harmony_phrase_chords.py `
+  --comparison <new-comparison-directory> `
+  --chord-directory <modulation-evidence> --output <new-report.json>
+```

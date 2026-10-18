@@ -1,11 +1,57 @@
 """Guard reference alignment and honest key-agreement metrics."""
 
 import pytest
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
 
 from tools.evaluate_harmony_modulations import aligned_references, rest_reference_metrics, timeline_metrics
+
+
+def test_research_candidate_and_options_are_frozen_without_changing_production(tmp_path, monkeypatch):
+    from tools import evaluate_harmony_modulations as evaluator
+
+    pack = tmp_path / "song.feedpak"
+    pack.write_bytes(b"read-only source fixture")
+    references = tmp_path / "references.json"
+    references.write_text(json.dumps({"songs": [{"id": "song", "segments": [
+        {"start": 0, "end": 10, "keys": ["C major"]}]}]}))
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"reference_sha256": hashlib.sha256(references.read_bytes()).hexdigest(),
+        "songs": [{"id": "song", "path": str(pack),
+                   "source_sha256": hashlib.sha256(pack.read_bytes()).hexdigest(),
+                   "alignment": {"verified": True, "method": "fixture"}}]}))
+    engine_source = '''ALGORITHM_VERSION = "fixture"
+def analyse_harmony(source, options=None):
+    return {"duration": 10, "options_received": options,
+            **{track: {"events": [{"t": 0, "end": 10, "unknown": True}]}
+               for track in ("keys", "harmony", "scales")}}
+'''
+    baseline, candidate = tmp_path / "baseline.py", tmp_path / "candidate.py"
+    baseline.write_text(engine_source)
+    candidate.write_text(engine_source.replace('"fixture"', '"candidate-fixture"'))
+    candidate_bytes = candidate.read_bytes()
+    production = evaluator.REPO / "lib/harmony_analysis.py"
+    production_bytes = production.read_bytes()
+    output = tmp_path / "comparison"
+    monkeypatch.setattr(evaluator, "load_harmony_source", lambda path: {
+        "duration": 10, "beats": list(range(11)), "title": "Fixture", "revision": "fixture"})
+    monkeypatch.setattr(evaluator, "lead_chart", lambda *args: None)
+    monkeypatch.setattr(sys, "argv", [str(evaluator.__file__), "--manifest", str(manifest),
+        "--references", str(references), "--baseline-module", str(baseline),
+        "--candidate-module", str(candidate), "--candidate-options", '{"switch_cost":0}',
+        "--node", "unused-without-lead-chart", "--output", str(output)])
+    evaluator.main()
+    assert json.loads((output / "song-current.json").read_text())["options_received"] == {"switch_cost": 0}
+    assert json.loads((output / "song-baseline.json").read_text())["options_received"] is None
+    assert (output / "current-engine.py").read_bytes() == candidate_bytes
+    assert (output / "production-engine.py").read_bytes() == production_bytes
+    assert production.read_bytes() == production_bytes
+    definition = json.loads((output / "run-definition.json").read_text())
+    assert definition["candidate_options"] == {"switch_cost": 0}
+    assert definition["sha256"]["production-engine.py"] == hashlib.sha256(production_bytes).hexdigest()
 
 
 def test_evaluator_cli_can_load_its_source_adapter_outside_the_repo(tmp_path):
