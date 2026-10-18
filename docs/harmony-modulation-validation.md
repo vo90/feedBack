@@ -994,3 +994,113 @@ Use the `*-final-02` comparisons and
 `*-first-01`, `*-final-01`, and `new-1-initial-01` runs remain immutable.
 The final engine SHA256 is
 `b74f8976a9c71724373e7cc8e0cb8e9021a519663792aa7269302b7427418c0d`.
+
+## First rest-acceptance study: six previously unused songs
+
+This study evaluates the enabled guide at the place it is meant to help: actual
+interior rests in the selected lead chart. The frozen v8 inference engine is
+unchanged. The sample contains 47 rests, totaling 345.151 chart seconds, in six
+previously unused Beatles/Queen packs. Selection excluded 79 prior pack paths
+and 70 normalized titles before any new predictions were inspected.
+
+Human chord/key annotations were aligned using three fitting anchors per song
+and 12–19 independent raw pitch/onset checks. The largest check residual was
+0.230 seconds; 0.5-second guards exclude uncertain chord boundaries. References,
+accepted palette rules, scorer and controller sampler were frozen before the
+first inference pass. The source packs and every frozen output are hashed.
+
+The full rest denominator is retained, including unjudgeable passages. Only
+216.680 seconds have guarded independent chord references. Of the remaining
+128.471 seconds, 121.482 are boundary/missing-annotation uncertainty and 6.990
+fall outside the verified alignment scope. This is a convenience sample of
+stable conventional major-key labels, with no fresh minor-key or modulation
+holdout and no listening validation of improvised notes.
+
+### What the enabled guide supplies
+
+The sampler runs the actual frozen controller, including rest thresholds,
+0.18-second fade-in and final-beat fade-out, at 1x with zero A/V offset and no
+loop. Availability below is any positive controller opacity; it is not a claim
+that every marker is legible. The second profile requires opacity at least 0.5.
+
+| Song | Rest seconds | Full-scale seconds | Chord-note seconds | Blank seconds |
+| --- | ---: | ---: | ---: | ---: |
+| And Your Bird Can Sing | 41.260 | 41.260 | 0 | 0 |
+| Back in the U.S.S.R. | 75.600 | 0 | 67.214 | 8.386 |
+| Can't Buy Me Love | 7.375 | 0 | 6.562 | 0.813 |
+| Helter Skelter | 58.485 | 40.314 | 9.407 | 8.764 |
+| Taxman | 15.534 | 0 | 11.653 | 3.881 |
+| A Kind of Magic | 146.897 | 0 | 16.828 | 130.069 |
+| Total | 345.151 | 81.574 | 111.664 | 151.913 |
+
+At any positive opacity, full scales cover 23.63% of rest time, chord notes
+32.35%, and no guidance 44.01%. Independent reference support covers 64.629
+seconds (18.72%); 128.609 seconds remain unverified. At opacity at least 0.5,
+the corresponding supported/unverified/blank durations are
+63.235 / 120.928 / 160.988 seconds (18.32% / 35.04% / 46.64%).
+
+Only 26.472 strongly visible seconds of the supported output are full scales,
+all in And Your Bird Can Sing; the other 36.763 seconds are chord subsets.
+Exact agreement with a predeclared palette means annotation compatibility,
+not proof that every note will sound good over every voicing. References are
+non-exhaustive, so zero explicit conflicts is not a measured accuracy result.
+Unmatched scales and additional chord tones remain unverified.
+
+### Concrete findings and development direction
+
+- And Your Bird Can Sing is a positive full-scale example. Its 11.741–24.304
+  second lead rest displays E major continuously; 9.525 seconds match the
+  independently accepted palette, with the rest lost to boundary uncertainty.
+  The chromatic bridges were excluded from palette acceptance in advance.
+- A Kind of Magic contributes 85.6% of all blank time. During 70.494–87.781
+  seconds, the lead rests and the rhythm chart contains no events, leaving
+  76 bass notes as evidence. The analyzer offers tentative roots or unknown
+  harmony rather than inventing chord quality. A known song title or lower
+  confidence threshold would not supply the missing accompaniment evidence.
+- Helter Skelter displays E-major scales for 40.314 rest seconds, but these
+  remain musically unverified. Pollack describes a major-key framework with
+  blues inflection and predominantly minor-pentatonic melody. Matching the
+  conventional key and chord containment does not settle the best scale.
+- At 49.706–51.516 and 96.010–97.820 seconds in Can't Buy Me Love, the guide
+  includes B-flat from repeated authored C7 voicings, while the coarse reference
+  says C. Removing that note merely to agree with the reference would discard
+  actual chart evidence. The U.S.S.R. differences similarly need arrangement
+  or listening adjudication, rather than automatic treatment as errors.
+
+Musicological context: [And Your Bird Can Sing](https://awpnoteson.info/notes/aybcs.html),
+[Helter Skelter](https://awpnoteson.info/notes/hs.html), and
+[Taxman](https://awpnoteson.info/notes/t.html). These analyses support the frozen
+exceptions; they are not timestamped expert approval of every suggested palette.
+
+The feature is plausible as an optional practice aid, but this study does not
+establish generally reliable automatic scale choice. The next inference work
+should separate blues/modal palette choice from key naming and investigate
+bounded section context or reviewed authored palettes where accompaniment is
+missing. Globally relaxing confidence would obscure both problems. This study
+makes no inference changes and keeps the persistent experimental toggle.
+
+### Native acceptance and a separate seek correction
+
+Native playback confirmed chord-note display, a full F-major scale in a Yesterday
+interior rest, removal at note re-entry, and the on/off control. It also exposed
+a paused backward-seek defect: chart time moved to 27.739 seconds, while the
+native presentation snapshot still held 34.215 seconds. The panel followed the
+new time but the rest highlights followed the stale screen time. Resuming
+playback restored agreement, establishing a timing problem independent of
+musical inference.
+
+After a successful still-owned seek, transport now clears the preceding native
+presentation snapshot and terminal flags, using the committed seek position
+until fresh output arrives. Failed and superseded seeks preserve the current
+owner's state. The focused transport/native-owner/highway/loop checks pass 214
+tests, including forward/backward paused seeks and a transport-to-rest-gate
+regression. The guide suites pass 95 tests. The private scorer passes 28 tests;
+10 sampler fixtures match 2,847 direct controller observations. These are
+software checks, not musical-accuracy measurements. The paused FPS counter is
+throttled and is not used as a guide performance benchmark.
+
+Evidence is retained under
+`C:\Dev\feedback-workspace\verification\songsterr-harmony-rest-acceptance-20261018`:
+`study-summary.json`, immutable `frozen-v8-results`,
+`independent-acceptance-audit.json`, `independent-frozen-v8-review.json`, frozen
+references, native captures and the follow-up runtime acceptance record.

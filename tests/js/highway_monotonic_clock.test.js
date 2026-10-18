@@ -109,7 +109,7 @@ test('paused native seek keeps the actual highway rest gate on the sought chart 
     const modelSource = fs.readFileSync(path.join(__dirname, '../../static/js/harmony-guide-model.js'), 'utf8');
     const {prepareRestWindows, resolveRest} = await import('data:text/javascript;base64,'
         + Buffer.from(modelSource).toString('base64'));
-    // Yesterday lead's observed interior rest, with occupied context on each side.
+    // A Yesterday-style lead rest, with occupied context on each side.
     const rests = prepareRestWindows({notes: [{t:0, sus:26.706}, {t:29.117, sus:10}],
         beats: Array.from({length:80}, (_, i) => ({time:i / 2})), duration:40});
     const h = nativeHarness(), lease = await h.acquire();
