@@ -103,11 +103,18 @@ under the active profile's `harmony_analysis` directory; no feedpak is modified.
 Changed sources or algorithm versions invalidate cached results. Errors have a
 retry action and do not prevent playback.
 
-Algorithm `chart-harmony-v3` separates observed pitch classes from notes only
+Algorithm `chart-harmony-v4` separates observed pitch classes from notes only
 implied by a chord label. A label's missing third or slash bass cannot become
 a played guide note. Major/minor quality and cadence votes require an observed
 root and defining third. Incomplete and power chords remain in the sequence
 so filtering cannot invent a cadence across an intervening passage.
+
+Key estimates now use bounded local beat contexts. Stable passages can receive
+different keys within the same song, including songs without useful section
+labels. Sparse evidence, long gaps and uncertain transitions remain unknown;
+the whole-song key is no longer copied into those passages. A borrowed chord
+alone is not sufficient evidence for a key change. This remains experimental:
+real-song key changes can still be missed, delayed or misidentified.
 
 Inference runs in a background job when the enabled guide needs missing song
 data, then reuses the versioned cache on later loads. It is not recomputed on
@@ -164,9 +171,16 @@ generated scale. Deliberate authored unknown spans remain unknown.
 
 ## Musical limits
 
-The default suggestion is major or natural minor from the supported key.
-Additional supported scales include the diatonic modes, harmonic/melodic minor
-and major/minor pentatonic. Compatibility checks every known chord tone,
+No scale installation or per-song setup is necessary. Eleven scale types are
+built in, in any of the twelve roots: **major, natural minor, Dorian, Phrygian,
+Lydian, Mixolydian, Locrian, harmonic minor, melodic minor, major pentatonic and
+minor pentatonic**. The automatic analyser currently selects **major, natural
+minor and harmonic minor** only. The other eight types can be supplied through
+song annotations or selected in the local **Edit** panel; merely being available
+in that editor does not make a scale an automatic inference candidate. Adding a
+new scale type beyond these eleven requires a code definition and validation.
+
+Compatibility checks every known chord tone,
 including a slash bass, against the suggested scale. Conflicting or unsupported
 data leaves the scale guidance unavailable until reviewed. A globally correct
 key does not automatically make one scale suitable for every borrowed chord.
@@ -227,3 +241,6 @@ See [the reliability investigation](harmony-reliability-evaluation.md) for the
 reproducible corpus comparison, evidence checks, and remaining listening-review
 work. The evaluator reports consistency and rest coverage separately from
 musical correctness.
+
+See [the modulation validation](harmony-modulation-validation.md) for timed
+external key references, actual-song results, abstention and missed changes.

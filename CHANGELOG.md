@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   independent; saved tone choices are retained for re-enabling.
 
 ### Added
+- **Local tonal context for the experimental harmony guide.** Background chart
+  analysis can follow stable key regions inside a song and leaves uncertain
+  transitions unlabelled. Includes a timed real-song reference evaluator with
+  explicit abstention and missed-change reporting. The existing 3D Highway
+  setting remains opt-in; no scale setup is needed.
 - **Experimental harmony guide in the Songsterr 3D Highway.** A persistent
   Graphics setting enables scale notes during rests and synchronizes with the
   in-song toggle. Background chart analysis and cached results keep inference

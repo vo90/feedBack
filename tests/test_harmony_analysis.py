@@ -59,7 +59,7 @@ def test_analysis_preserves_input_revision_and_json_contract():
     assert data == original
     assert result["revision"] == "song-r1"
     assert result["source"] == "charts"
-    assert result["algorithm_version"] == "chart-harmony-v3"
+    assert result["algorithm_version"] == "chart-harmony-v4"
     json.dumps(result, allow_nan=False)
     for track in ("keys", "harmony", "scales"):
         events = result[track]["events"]
@@ -233,7 +233,8 @@ def test_brief_dominant_section_does_not_relabel_the_song_key():
                         {"t": 48, "end": 64, "name": "fill"},
                         {"t": 64, "end": 112, "name": "verse"}]
     result = analyse_harmony(data)
-    assert {e.get("key") for e in result["keys"]["events"]} == {"C major"}
+    assert {e.get("key") for e in result["keys"]["events"] if not e.get("unknown")} == {"C major"}
+    assert all(e.get("key") != "G major" for e in result["keys"]["events"])
 
 
 def test_sustained_modulation_can_change_section_key():
@@ -388,3 +389,237 @@ def test_tentative_bass_root_cannot_erase_grounded_partial_chord(bass_as_chord):
     assert event["grounded_chord_tones"] == [0, 7]
     assert event["evidence"]["kind"] == "named_chord"
     assert event["evidence"]["label_implied_pcs"] == [4]
+
+
+# Explicit played voicings: labels do not supply the pitches for these local
+# tonality regressions. One progression takes sixteen authored beats.
+_C_PHRASE = [("C", [0, 4, 7]), ("F", [0, 5, 9]),
+             ("G7", [2, 5, 7, 11]), ("C", [0, 4, 7])]
+_D_PHRASE = [("D", [2, 6, 9]), ("G", [2, 7, 11]),
+             ("A7", [1, 4, 7, 9]), ("D", [2, 6, 9])]
+
+
+def local_progression(voicings):
+    return source([chord(label, index * 4, (index + 1) * 4, pcs=pcs)
+                   for index, (label, pcs) in enumerate(voicings)], duration=len(voicings) * 4)
+
+
+def test_sustained_key_change_without_authored_sections_uses_local_contexts():
+    result = analyse_harmony(local_progression(_C_PHRASE * 4 + _D_PHRASE * 4))
+    first, second = at(result, "keys", 20), at(result, "keys", 100)
+    assert first["key"] == "C major"
+    assert second["key"] == "D major"
+    assert first["end"] == second["t"] == 64
+    assert first["evidence"]["context_end"] <= 64
+    assert second["evidence"]["context_start"] >= 64
+    assert second["evidence"]["scope"] == "local"
+    assert second["evidence"]["stability_is_independent_votes"] is False
+    assert at(result, "scales", 100)["root"] == "D"
+
+
+def test_tempo_change_uses_authored_beats_for_context_size_and_boundary():
+    data = local_progression(_C_PHRASE * 4 + _D_PHRASE * 4)
+    beats = [index * .5 if index <= 64 else 32 + index - 64 for index in range(129)]
+    for event in data["arrangements"][0]["chords"]:
+        event["t"], event["end"] = beats[int(event["t"])], beats[int(event["end"])]
+    data["beats"], data["duration"] = beats, beats[-1]
+    result = analyse_harmony(data)
+    assert at(result, "keys", 20)["key"] == "C major"
+    changed = at(result, "keys", 70)
+    assert changed["key"] == "D major"
+    assert changed["t"] == 32
+    assert changed["evidence"]["context_beats"] == 64
+    assert changed["end"] == 96
+
+
+def test_long_uncharted_gap_bounds_local_keys_on_both_sides():
+    data = local_progression(_C_PHRASE * 4 + _D_PHRASE * 4)
+    for event in data["arrangements"][0]["chords"][16:]:
+        event["t"] += 40
+        event["end"] += 40
+    data["duration"], data["beats"] = 168, list(range(169))
+    result = analyse_harmony(data)
+    assert at(result, "keys", 20)["key"] == "C major"
+    assert at(result, "keys", 84)["unknown"]
+    assert at(result, "scales", 84)["unknown"]
+    last = at(result, "keys", 140)
+    assert last["key"] == "D major"
+    assert last["evidence"]["context_start"] >= 104
+
+
+def test_known_song_context_does_not_fill_unsupported_power_chord_section():
+    power_only = [("E5", [4, 11])] * 16
+    result = analyse_harmony(local_progression(_C_PHRASE * 4 + power_only + _D_PHRASE * 4))
+    assert at(result, "keys", 20)["key"] == "C major"
+    assert at(result, "keys", 96)["unknown"]
+    assert at(result, "scales", 96)["unknown"]
+    assert at(result, "keys", 172)["key"] == "D major"
+
+
+@pytest.mark.parametrize("phase", range(4))
+def test_relative_loop_phase_does_not_turn_window_bookends_into_key_changes(phase):
+    phrase = [("Am", [0, 4, 9]), ("F", [0, 5, 9]),
+              ("C", [0, 4, 7]), ("G", [2, 7, 11])]
+    rotated = phrase[phase:] + phrase[:phase]
+    result = analyse_harmony(local_progression(rotated * 8))
+    assert all(e.get("unknown") for e in result["keys"]["events"])
+    scales = [e for e in result["scales"]["events"] if not e.get("unknown")]
+    assert scales
+    for event in scales:
+        pcs = {(pitch_class(event["root"]) + n) % 12 for n in SCALES[event["type"]]}
+        assert pcs == {0, 2, 4, 5, 7, 9, 11}
+
+
+def test_short_final_section_is_not_discarded_or_extended_past_song_end():
+    result = analyse_harmony(local_progression(_C_PHRASE * 4 + _D_PHRASE * 2))
+    assert at(result, "keys", 20)["key"] == "C major"
+    final = at(result, "keys", 92)
+    assert final["key"] == "D major"
+    assert final["t"] == 64
+    assert final["end"] == final["evidence"]["context_end"] == 96
+
+
+def test_local_evidence_does_not_fill_uncharted_intro_and_outro():
+    data = local_progression(_C_PHRASE * 4)
+    for event in data["arrangements"][0]["chords"]:
+        event["t"] += 16
+        event["end"] += 16
+    data["duration"], data["beats"] = 96, list(range(97))
+    result = analyse_harmony(data)
+    assert at(result, "keys", 8)["unknown"]
+    assert at(result, "keys", 40)["key"] == "C major"
+    assert at(result, "keys", 88)["unknown"]
+    assert at(result, "keys", 40)["evidence"]["context_start"] == 16
+    assert at(result, "keys", 40)["evidence"]["context_end"] == 80
+
+
+def test_brief_bridge_does_not_move_confirmed_modulation_backwards():
+    bridge = [("G", [2, 7, 11]), ("C", [0, 4, 7]),
+              ("D7", [0, 2, 6, 9]), ("G", [2, 7, 11])]
+    result = analyse_harmony(local_progression(_C_PHRASE * 4 + bridge + _D_PHRASE * 4))
+    assert at(result, "keys", 20)["key"] == "C major"
+    assert at(result, "keys", 112)["key"] == "D major"
+    assert all(e.get("key") != "G major" for e in result["keys"]["events"])
+    assert all(e["t"] >= 80 for e in result["keys"]["events"] if e.get("key") == "D major")
+
+
+def test_cancellation_is_checked_between_local_contexts(monkeypatch):
+    import harmony_analysis
+    original = harmony_analysis._estimate_key
+    calls = 0
+
+    def counted(*args):
+        nonlocal calls
+        calls += 1
+        return original(*args)
+
+    monkeypatch.setattr(harmony_analysis, "_estimate_key", counted)
+    with pytest.raises(AnalysisCancelled):
+        analyse_harmony(local_progression(_C_PHRASE * 20 + _D_PHRASE * 20),
+                        cancelled=lambda: calls >= 2)
+    assert calls == 2
+
+
+def test_sustained_center_with_brief_relative_chord_does_not_require_authentic_cadence():
+    phrase = [("Cmaj7", [0, 4, 7, 11]), ("C", [0, 4, 7]),
+              ("Am", [0, 4, 9]), ("Dm", [2, 5, 9]),
+              ("F", [0, 5, 9]), ("C", [0, 4, 7])]
+    result = analyse_harmony(local_progression(phrase * 4))
+    key = at(result, "keys", 36)
+    assert key["key"] == "C major"
+    assert key["evidence"]["dominant_cadences"] == 0
+    assert key["evidence"]["tonic_duration_share"] >= 2 * key["evidence"]["relative_tonic_duration_share"]
+    assert at(result, "scales", 36)["root"] == "C"
+
+
+def test_two_chord_context_does_not_supply_missing_scale_degrees():
+    result = analyse_harmony(local_progression([("Em", [4, 7, 11]), ("Am", [0, 4, 9])] * 8))
+    assert all(e.get("unknown") for e in result["keys"]["events"])
+    assert at(result, "keys", 12)["evidence"]["reason"] == "unresolved_scale_degrees"
+    assert at(result, "keys", 12)["evidence"]["observed_quality_roots"] == 2
+    assert all(e.get("unknown") for e in result["scales"]["events"])
+
+
+def test_distinct_root_evidence_is_invariant_under_enharmonic_spelling():
+    data = local_progression([("C", [0, 4, 7]), ("F", [0, 5, 9])] * 8)
+    data["arrangements"][0]["notes"] = [
+        {"t": t, "end": t + 1, "midi": 48 + pc, "pc": pc}
+        for t in range(0, 64, 4) for pc in (2, 11)]
+    respelled = copy.deepcopy(data)
+    for event in respelled["arrangements"][0]["chords"][::4]:
+        event["label"] = "B#"
+    original = analyse_harmony(data)
+    alternate = analyse_harmony(respelled)
+    assert original["keys"] == alternate["keys"]
+    assert at(original, "keys", 12)["evidence"]["observed_quality_roots"] == 2
+
+
+def test_authored_short_phrase_context_excludes_neighbouring_keys_and_pickup():
+    a_phrase = [("A", [1, 4, 9]), ("F#m", [1, 6, 9]), ("D", [2, 6, 9]),
+                ("A", [1, 4, 9]), ("E7", [2, 4, 8, 11]), ("A", [1, 4, 9])]
+    data = local_progression(_C_PHRASE * 4 + a_phrase + _C_PHRASE * 4)
+    # The phrase marker includes a preceding C pickup; the A key cannot begin
+    # until its distinguishing played voicing. Its actual span is only 24 beats.
+    data["sections"] = [{"t": 0, "end": 60}, {"t": 60, "end": 88},
+                        {"t": 88, "end": 152}]
+    result = analyse_harmony(data)
+    key = at(result, "keys", 76)
+    assert key["key"] == "A major"
+    assert key["t"] >= 64 and key["end"] <= 88
+    assert key["evidence"]["context_start"] >= 64
+    assert key["evidence"]["context_end"] <= 88
+    assert at(result, "keys", 20)["key"] == "C major"
+    assert at(result, "keys", 120)["key"] == "C major"
+
+
+def test_long_dominant_durations_do_not_override_repeated_tonic_cadences():
+    voicings = [("G", [2, 7, 11], 2), ("C", [0, 4, 7], 2),
+                ("D", [2, 6, 9], 8)] * 8
+    events, cursor = [], 0
+    for label, pcs, length in voicings:
+        events.append(chord(label, cursor, cursor + length, pcs))
+        cursor += length
+    result = analyse_harmony(source(events, duration=cursor))
+    assert all(e.get("key") != "D major" for e in result["keys"]["events"])
+    scales = [e for e in result["scales"]["events"] if not e.get("unknown")]
+    assert scales
+    for scale in scales:
+        assert {(pitch_class(scale["root"]) + degree) % 12 for degree in SCALES[scale["type"]]} == {0, 2, 4, 6, 7, 9, 11}
+
+
+@pytest.mark.parametrize("isolated_tonic", [False, True])
+def test_section_proposals_do_not_extend_a_key_through_power_only_tails(isolated_tonic):
+    power = [("C5", [0, 7])] * 16
+    if isolated_tonic:
+        power[7] = ("C", [0, 4, 7])
+    data = local_progression(_C_PHRASE * 4 + power + _D_PHRASE * 4)
+    data["sections"] = [{"t": t, "end": t + 16} for t in range(0, 192, 16)]
+    result = analyse_harmony(data)
+    assert at(result, "keys", 20)["key"] == "C major"
+    assert all(e["end"] <= 64 for e in result["keys"]["events"] if e.get("key") == "C major")
+    assert at(result, "keys", 80)["unknown"]
+    assert at(result, "keys", 100)["unknown"]
+    assert at(result, "scales", 80)["unknown"]
+    assert at(result, "keys", 172)["key"] == "D major"
+
+
+def test_phrase_proposals_do_not_promote_compatible_fourth_degree_to_modulation():
+    # A repeated D center includes suspended attacks and borrowed C/Bb chords.
+    # A short G-C-G fragment fits G very well; that alone cannot supersede the
+    # preceding supported D context when it lacks a distinguishing tonic or
+    # repeated clear dominant cadence.
+    played = {"D": [2, 6, 9], "Dsus4": [2, 7, 9], "G": [2, 7, 11],
+              "C": [0, 4, 7], "Bb": [2, 5, 10]}
+    phrase = [("D", 2), ("Dsus4", 1), ("D", 3), ("G", 2), ("C", 2), ("G", 2)]
+    voicings = phrase * 3 + [("D", 4), ("Bb", 2), ("C", 2), ("D", 6),
+                             ("G", 4), ("C", 2), ("G", 2), ("Bb", 4)]
+    events, cursor = [], 0
+    for label, length in voicings:
+        events.append(chord(label, cursor, cursor + length, pcs=played[label]))
+        cursor += length
+    data = source(events, duration=cursor)
+    data["sections"] = [{"t": t, "end": min(t + 16, cursor)} for t in range(0, cursor, 16)]
+    result = analyse_harmony(data)
+    assert at(result, "keys", 20)["key"] == "D major"
+    assert all(e.get("key") != "G major" for e in result["keys"]["events"])
+    assert at(result, "scales", 41)["unknown"]  # played Bb contradicts D major

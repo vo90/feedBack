@@ -135,6 +135,10 @@ The OS filesystem cache is not flushed. This is not an FPS or CPU-overhead test.
 
 ## What remains unverified
 
+The subsequent v4 local-key investigation and timed external-song comparisons
+are documented in [modulation validation](harmony-modulation-validation.md).
+The v3 results above are retained as a historical baseline.
+
 Availability is not accuracy. A compatible pitch set can still be musically
 inappropriate, and a correctly withheld scale lowers coverage. The source
 adapter also depends on the imported chart's pitches and tuning being correct.

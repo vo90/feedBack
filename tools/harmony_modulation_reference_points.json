@@ -1,0 +1,316 @@
+{
+  "version": 1,
+  "frozen_utc": "2026-10-18T15:22:24.729409+00:00",
+  "selection_before_new_predictions": true,
+  "audio_listened": false,
+  "purpose": "Independent key-reference agreement on selected actual-song intervals; neither listening validation nor scale-suitability ground truth.",
+  "songs": [
+    {
+      "id": "champions",
+      "artist": "Queen",
+      "title": "We Are the Champions",
+      "classification": "independent_reference",
+      "source": {
+        "url": "https://isophonics.net/files/annotations/keylab/Queen/Greatest%20Hits%20I/17%20We%20Are%20The%20Champions.lab",
+        "dataset": "Isophonics human reference annotations",
+        "license": "Not specified by original source; selected factual ranges only are reproduced here, not chord files or audio.",
+        "annotator": "Matthias Mauch / Isophonics curators",
+        "confidence": "moderate",
+        "sha256": "38b9a4141b6ab2f80e02e08131afd623a38885730c746c4582b02012fb81d7c1",
+        "archive_member": "keylab/Queen/Greatest Hits I/17 We Are The Champions.lab",
+        "overview_url": "https://isophonics.net/content/reference-annotations",
+        "recording": "Queen Greatest Hits I, Parlophone 0777 7 8950424",
+        "secondary_urls": []
+      },
+      "selection_rationale": "Repeated relative and nonrelative sectional changes; sparse guitar evidence is an intentional difficulty. No earlier development-corpus membership.",
+      "limitations": [
+        "External key labels are moderate-confidence curator annotations, not definitive perceptual truth.",
+        "Ending after reference 170.580 s is unscored; no recording/listening identity assertion."
+      ],
+      "segments": [
+        {
+          "start": 1.648,
+          "end": 16.97,
+          "keys": [
+            "C minor"
+          ]
+        },
+        {
+          "start": 16.97,
+          "end": 34.3,
+          "keys": [
+            "Eb major"
+          ]
+        },
+        {
+          "start": 34.3,
+          "end": 78.1,
+          "keys": [
+            "F major"
+          ]
+        },
+        {
+          "start": 78.1,
+          "end": 93.366,
+          "keys": [
+            "C minor"
+          ]
+        },
+        {
+          "start": 93.366,
+          "end": 110.414,
+          "keys": [
+            "Eb major"
+          ]
+        },
+        {
+          "start": 110.414,
+          "end": 170.58,
+          "keys": [
+            "F major"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "something",
+      "artist": "The Beatles",
+      "title": "Something Full Band DD",
+      "classification": "independent_reference",
+      "source": {
+        "url": "https://isophonics.net/files/annotations/keylab/The%20Beatles/11_-_Abbey_Road/02_-_Something.lab",
+        "dataset": "Isophonics human reference annotations",
+        "license": "Not specified by original source; selected factual ranges only are reproduced here, not chord files or audio.",
+        "annotator": "Isophonics curators; secondary musical analysis by Alan W. Pollack",
+        "confidence": "moderate (Queen); use with care (Beatles)",
+        "sha256": "6e634b7b98b53ba8cb9d46fa4676d49f4abf0f7039f54aa8147a43b293284e8a",
+        "archive_member": "keylab/The Beatles/11_-_Abbey_Road/02_-_Something.lab",
+        "overview_url": "https://isophonics.net/content/reference-annotations",
+        "recording": "The Beatles Abbey Road, CDP 7 46446 2",
+        "secondary_urls": [
+          "https://www.icce.rug.nl/~soundscapes/DATABASES/AWP/s.shtml",
+          "https://awpnoteson.info/notes/s.html"
+        ]
+      },
+      "selection_rationale": "Clear C/A/C bridge confirmed by independent musicological analysis; main-key borrowed/secondary chords remain within C. Held out from prior development corpus.",
+      "limitations": [
+        "Pollack corroborates the main C/A/C scheme but also describes a brief A shift in the outro. Therefore reference after 160 s is deliberately unscored.",
+        "Isophonics Beatles key files can omit changes; no stationary-control inference from a single-key Beatles annotation."
+      ],
+      "segments": [
+        {
+          "start": 5.073321,
+          "end": 70.957,
+          "keys": [
+            "C major"
+          ]
+        },
+        {
+          "start": 70.957,
+          "end": 98.396,
+          "keys": [
+            "A major"
+          ]
+        },
+        {
+          "start": 98.396,
+          "end": 160.0,
+          "keys": [
+            "C major"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lucy",
+      "artist": "The Beatles",
+      "title": "Lucy in the Sky with Diamonds",
+      "classification": "independent_reference",
+      "source": {
+        "url": "https://isophonics.net/files/annotations/keylab/The%20Beatles/08_-_Sgt._Pepper%27s_Lonely_Hearts_Club_Band/03_-_Lucy_In_The_Sky_With_Diamonds.lab",
+        "dataset": "Isophonics human reference annotations",
+        "license": "Not specified by original source; selected factual ranges only are reproduced here, not chord files or audio.",
+        "annotator": "Isophonics curators; secondary musical analysis by Alan W. Pollack",
+        "confidence": "moderate (Queen); use with care (Beatles)",
+        "sha256": "664840ee2dbcd430572cea35a8ed7b6d2797c7a9330c50afaefe431f115e9d93",
+        "archive_member": "keylab/The Beatles/08_-_Sgt._Pepper's_Lonely_Hearts_Club_Band/03_-_Lucy_In_The_Sky_With_Diamonds.lab",
+        "overview_url": "https://isophonics.net/content/reference-annotations",
+        "recording": "The Beatles Sgt. Pepper, CDP 7 46442 2",
+        "secondary_urls": [
+          "https://www.icce.rug.nl/~soundscapes/DATABASES/AWP/litswd.shtml",
+          "https://awpnoteson.info/notes/litswd.html"
+        ]
+      },
+      "selection_rationale": "Independent A verse/Bb bridge/G refrain with explicit transitional ambiguity; first cycle selected before predictions. Held out.",
+      "limitations": [
+        "Pollack places G at the end of the bridge; Isophonics waits until the refrain. Both keys are accepted in 45.282063-50.487 s and this boundary is not used as a hard change-time target.",
+        "Later cycles are not scored: the published keylab omits the A return at the second verse, so copying the whole file would create known incorrect expectations."
+      ],
+      "segments": [
+        {
+          "start": 6.144829,
+          "end": 32.4,
+          "keys": [
+            "A major"
+          ]
+        },
+        {
+          "start": 32.4,
+          "end": 45.282063,
+          "keys": [
+            "Bb major"
+          ]
+        },
+        {
+          "start": 45.282063,
+          "end": 50.487,
+          "keys": [
+            "Bb major",
+            "G major"
+          ]
+        },
+        {
+          "start": 50.487,
+          "end": 68.467188,
+          "keys": [
+            "G major"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bicycle",
+      "artist": "Queen",
+      "title": "Bicycle Race",
+      "classification": "independent_reference",
+      "source": {
+        "url": "https://isophonics.net/files/annotations/keylab/Queen/Greatest%20Hits%20I/05%20Bicycle%20Race.lab",
+        "dataset": "Isophonics human reference annotations",
+        "license": "Not specified by original source; selected factual ranges only are reproduced here, not chord files or audio.",
+        "annotator": "Matthias Mauch / Isophonics curators",
+        "confidence": "moderate",
+        "sha256": "74440153045a3bbdfb29c0a7802e4e145a208834f855fb6ef290897b389062aa",
+        "archive_member": "keylab/Queen/Greatest Hits I/05 Bicycle Race.lab",
+        "overview_url": "https://isophonics.net/content/reference-annotations",
+        "recording": "Queen Greatest Hits I, Parlophone 0777 7 8950424",
+        "secondary_urls": []
+      },
+      "selection_rationale": "Multiple tonal regions and a real F-region ii-V-I; first vocal/bridge sequence selected before predictions. Held out.",
+      "limitations": [
+        "Only 23.153-101.105 s is scored; bell break and later solo are not independently aligned here.",
+        "Alignment supported most strongly across the F bridge; early boundary offset is additionally checked against authored verse marker 26.962999 versus published Bb:min onset 23.102 (0.269 s difference from chosen offset)."
+      ],
+      "segments": [
+        {
+          "start": 23.153,
+          "end": 40.62,
+          "keys": [
+            "Bb minor"
+          ]
+        },
+        {
+          "start": 40.62,
+          "end": 60.892,
+          "keys": [
+            "Ab major"
+          ]
+        },
+        {
+          "start": 60.892,
+          "end": 96.795,
+          "keys": [
+            "F major"
+          ]
+        },
+        {
+          "start": 96.795,
+          "end": 101.105,
+          "keys": [
+            "Ab major"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "crazy",
+      "artist": "Queen",
+      "title": "Crazy Little Thing Called Love",
+      "classification": "independent_reference",
+      "source": {
+        "url": "https://isophonics.net/files/annotations/keylab/Queen/Greatest%20Hits%20I/09%20Crazy%20Little%20Thing%20Called%20Love.lab",
+        "dataset": "Isophonics human reference annotations",
+        "license": "Not specified by original source; selected factual ranges only are reproduced here, not chord files or audio.",
+        "annotator": "Matthias Mauch / Isophonics curators",
+        "confidence": "moderate",
+        "sha256": "d69bb9c2b025de0f66ff2907439585ed0bc411afd7c317f858e3958b692eed9e",
+        "archive_member": "keylab/Queen/Greatest Hits I/09 Crazy Little Thing Called Love.lab",
+        "overview_url": "https://isophonics.net/content/reference-annotations",
+        "recording": "Queen Greatest Hits I, Parlophone 0777 7 8950424",
+        "secondary_urls": [
+          "https://www.musicnotes.com/sheetmusic/queen/crazy-little-thing-called-love/MN0064358",
+          "https://freebasstranscriptions.com/transcriptions/bass-transcription-queen-crazy-little-thing-called-love/"
+        ]
+      },
+      "selection_rationale": "Stationary D-major tonic control with borrowed Bb/C chords and secondary E/A motion. Selected to measure false switches, not only positive detections.",
+      "limitations": [
+        "Published score metadata supports D major; original transcription analysis explains Bb/C as modal interchange.",
+        "Only independently anchored first verse/bridge span is scored; no exhaustive whole-song mode claim."
+      ],
+      "segments": [
+        {
+          "start": 9.535,
+          "end": 70.0,
+          "keys": [
+            "D major"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dust",
+      "artist": "Queen",
+      "title": "Another One Bites the Dust",
+      "classification": "independent_reference",
+      "source": {
+        "url": "https://isophonics.net/files/annotations/keylab/Queen/Greatest%20Hits%20I/02%20Another%20One%20Bites%20The%20Dust.lab",
+        "dataset": "Isophonics human reference annotations",
+        "license": "Not specified by original source; selected factual ranges only are reproduced here, not chord files or audio.",
+        "annotator": "Matthias Mauch / Isophonics curators",
+        "confidence": "moderate",
+        "sha256": "6bcf9107e579964fdcb7ab929f633a2493caad3edb72a4a9f439ae0f43178697",
+        "archive_member": "keylab/Queen/Greatest Hits I/02 Another One Bites The Dust.lab",
+        "overview_url": "https://isophonics.net/content/reference-annotations",
+        "recording": "Queen Greatest Hits I, Parlophone 0777 7 8950424",
+        "secondary_urls": [
+          "https://www.musicnotes.com/sheetmusic/queen/another-one-bites-the-dust/MN0066010"
+        ]
+      },
+      "selection_rationale": "Stationary E tonic control with riff-led sparse harmony; gap avoids the extended break. Held out.",
+      "limitations": [
+        "E minor follows Isophonics and licensed score metadata; this evaluates conventional key identity, not whether E natural minor is suitable over every chord.",
+        "Dorian/modal colors do not make this a scale-suitability reference."
+      ],
+      "segments": [
+        {
+          "start": 22.384,
+          "end": 101.124,
+          "keys": [
+            "E minor"
+          ]
+        },
+        {
+          "start": 101.124,
+          "end": 157.893,
+          "keys": []
+        },
+        {
+          "start": 157.893,
+          "end": 192.905,
+          "keys": [
+            "E minor"
+          ]
+        }
+      ]
+    }
+  ]
+}

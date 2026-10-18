@@ -507,3 +507,42 @@ test('generated chord-only fallback renders grounded notes and clears them at ev
   expect(await page.evaluate(() => (window as any).__hgFrame.alpha)).toBe(1);
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem('feedback.harmonicGuide.preferences.v1')!).labelMode || 'degrees')).toBe('degrees');
 });
+
+test('local key changes replace the scale notes and stay bounded when seeking', async ({ page }, testInfo) => {
+  test.setTimeout(90000);
+  const result = { version: 1, source: 'charts', revision: 'revision-one',
+    keys: { version: 1, events: [
+      { t: 0, end: 8, key: 'C major', confidence: 'medium' },
+      { t: 8, end: 16, unknown: true },
+      { t: 16, end: 30, key: 'D major', confidence: 'medium' },
+    ] },
+    harmony: { version: 1, events: [
+      { t: 0, end: 8, root: 'C', quality: 'maj', confidence: 'high', grounded_chord_tones: [0, 4, 7] },
+      { t: 8, end: 16, unknown: true },
+      { t: 16, end: 30, root: 'D', quality: 'maj', confidence: 'high', grounded_chord_tones: [2, 6, 9] },
+    ] },
+    scales: { version: 1, events: [
+      { t: 0, end: 8, root: 'C', type: 'major' }, { t: 8, end: 16, unknown: true },
+      { t: 16, end: 30, root: 'D', type: 'major' },
+    ] },
+  };
+  await page.route('**/api/harmony/analyse', route => route.fulfill({ json: { id: 'modulation-job', status: 'queued' } }));
+  await page.route('**/api/harmony/jobs/modulation-job', route => route.fulfill({ json: {
+    id: 'modulation-job', status: route.request().method() === 'DELETE' ? 'cancelled' : 'complete',
+    items: [{ filename: 'mock-harmonic-guide.feedpak', status: 'complete', result }],
+  } }));
+  await installSongFixture(page, false); await openSong(page);
+  for (const time of [4.5, 17, 4.5]) {
+    await atTime(page, time);
+    await expect(page.locator('.hg-key')).toHaveText(time === 17 ? 'Key: D major' : 'Key: C major');
+    await expect(page.locator('.hg-scale')).toHaveText(time === 17 ? 'Scale: D major' : 'Scale: C major');
+    const pcs = await page.evaluate(() => [...new Set((window as any).__hgFrame.markers.map((m: any) => m.pc))].sort());
+    expect(pcs).toEqual((time === 17 ? [1, 2, 4, 6, 7, 9, 11] : [0, 2, 4, 5, 7, 9, 11]).sort());
+  }
+  await atTime(page, 8.5);
+  await expect(page.locator('.hg-key')).toHaveText('Key unavailable');
+  await expect(page.locator('.hg-scale')).toHaveText('Scale unavailable');
+  expect(await page.evaluate(() => (window as any).__hgFrame.alpha)).toBe(0);
+  expect(await page.evaluate(() => (window as any).__hgFrame.markers)).toEqual([]);
+  await screenshot(page, testInfo, 'harmony-key-change-uncertainty');
+});
