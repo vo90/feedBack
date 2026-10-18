@@ -467,3 +467,168 @@ python tools/evaluate_harmony_phrase_chords.py `
   --comparison <new-comparison-directory> `
   --chord-directory <modulation-evidence> --output <new-report.json>
 ```
+
+## Controlled section-key experiment — 2026-10-18
+
+This experiment separates two questions: whether the analyser knows the section
+key, and whether the existing chord-aware mapper can choose a useful collection
+given that key. It does **not** implement improved automatic key detection.
+`tools/harmony_known_key_prototype.py` accepts an explicit complete key timeline,
+including unknown intervals, and preserves v5's grounded harmony exactly.
+There is no microphone input, audio decoding, runtime integration or toggle
+change. Production remains `chart-harmony-v5`.
+
+### Inputs and controls
+
+`tools/evaluate_harmony_known_keys.py` compares four arms using the same lead
+rests, supplied-key interior intervals and frozen browser guidance resolver:
+
+| Arm | Key input and scale policy |
+| --- | --- |
+| Automatic | Unchanged production v5 |
+| Automatic, assumed family | Original detected keys and chords; permits the conventional major/minor family without requiring every degree to be observed |
+| Supplied keys, existing mapping | Reference section keys with the existing v5 chord-aware mapper |
+| Supplied keys, minor context | Same keys plus a bounded rule for thirdless dominants in minor |
+
+The last arm can use an actually observed raised-seventh dominant within four
+authored beats to support harmonic minor over a thirdless dominant. It cannot
+carry evidence across other roots, incompatible thirds/sevenths, harmony gaps
+or key boundaries. Without support it retains chord-only guidance. This tests
+a narrow missing-evidence case; v5 already handles a fully observed E7 in A
+minor without this rule. No scales were added to the production catalogue.
+
+Known input intervals are merged before trimming 0.5 seconds from their edges.
+Ambiguous keys, unlabelled sections and trimmed boundaries remain unknown.
+All arms are scored on the same remaining intervals, even if the automatic
+analyser declines to name a key there. Agreement with the supplied key is not
+reported as prediction accuracy: that would score an input against itself.
+
+The six development songs and three previous additional songs are supplemented
+by Play the Game and Yesterday. Their key ranges and raw chart/reference timing
+anchors were frozen at `2026-10-18T17:09:44.206536Z`, before new predictions.
+The references use [Isophonics human annotations](https://isophonics.net/content/reference-annotations).
+Play the Game uses selected C-major regions, excluding the disputed bridge;
+five fitting and four independent checking anchors have maximum residual
+0.044 seconds. Yesterday uses an anchor-bracketed F-major region; four fitting
+and three checking anchors have maximum residual 0.071 seconds. Both use zero
+transposition and conservative 0.5-second uncertainty. These are additional-song
+checks, not a perfectly blind sample: Play the Game was previously inspected
+as a source candidate. The annotations are tonal interpretations, not proof
+that every note in a key's scale fits every local chord. No listening review
+was performed. Here Comes the Sun was excluded because its cached key label
+conflicts with its major-triad evidence; it was not silently corrected.
+
+Of 2,322.581 input song seconds, 1,280.374 have an unambiguous supplied key after
+trimming. The common eligible-rest sample within those intervals is **150.354
+seconds across 11 songs**. Lucy has no qualifying rests in its selected scope;
+its zero contribution is not a successful musical validation.
+
+### Results: availability with a supplied key
+
+| Arm | Full scale (s) | Chord only (s) | Hidden (s) |
+| --- | ---: | ---: | ---: |
+| Automatic | 43.263 | 27.189 | 79.902 |
+| Automatic, assumed family | 43.263 | 27.189 | 79.902 |
+| Supplied keys, existing mapping | 64.555 | 5.897 | 79.902 |
+| Supplied keys, minor context | 64.460 | 5.992 | 79.902 |
+
+Supplying section keys converts 22.685 seconds of chord-only guidance to full
+scales and 1.393 seconds in the opposite direction, a net gain of 21.292 scale
+seconds. Any-guide availability stays at 70.452 seconds. This is increased
+conditional availability, **not a measured increase in musical accuracy**.
+Merely relaxing degree evidence on the automatically detected keys produces no
+change in these rests; that finding need not generalize to other songs.
+
+| Song | Automatic scale (s) | Supplied-key scale (s) |
+| --- | ---: | ---: |
+| We Are the Champions | 18.061 | 22.795 |
+| Something | 7.665 | 7.665 |
+| Bicycle Race | 0 | 1.693 |
+| Crazy Little Thing Called Love | 4.952 | 4.952 |
+| Another One Bites the Dust | 0 | 0.640 |
+| Bohemian Rhapsody | 0 | 0 |
+| Don't Stop Me Now | 5.427 | 4.419 |
+| Hello, Goodbye | 7.158 | 14.251 |
+| Play the Game | 0 | 1.526 |
+| Yesterday | 0 | 6.614 |
+
+Don't Stop Me Now illustrates why more scale exposure is not always better:
+the supplied F section key makes the mapper fall back over chromatic D7 where
+the automatic G-minor interpretation allowed harmonic minor. The extra minor
+context rule provides no independently validated gain; it changes only 0.095
+seconds in Dust from scale to chord fallback in the common rest sample.
+
+The independent chord-annotation check excludes 75.431 seconds around uncertain
+chord boundaries and 15.433 seconds marked N.C., leaving 59.490 scorable rest
+seconds. Automatic scales contain all annotated chord tones for 16.341 of
+17.110 scale seconds; supplied-key scales do so for 28.476 of 29.245 seconds.
+Both retain the same 0.769-second D7 versus observed D7sus4 disagreement already
+described above. All 30.054 seconds of highlighted targets are within annotated
+chords in every arm. The minor-context arm has identical chord-check results.
+The broader collections also absorb a chart/reference fallback disagreement
+in Hello, Goodbye; that is not independent proof of a correction. Containment
+does not establish that every additional suggested scale note sounds suitable.
+
+### Why some rests remain hidden
+
+With supplied keys, 45.109 seconds remain hidden because chart harmony is
+unknown and 34.793 because it has low confidence. The current display requires
+a supported current chord and target, even with a known key. Reliable section
+keys alone therefore cannot fill all missing accompaniment evidence.
+
+A separate **post-hoc, unimplemented** counterfactual asks what happens if those
+hidden passages instead show only the supplied major/natural-minor collection,
+without inventing a chord or highlighting a target. Of 29.436 independently
+scorable hidden seconds, 26.013 contain every annotated chord tone and 3.422
+miss at least one. The scorable hidden sample consists of 20.767 seconds of
+low-confidence, root-only harmony and 8.669 seconds of unknown harmony; the
+omissions occur in both groups. Examples include F minor in Champions (Ab absent from the
+supplied section collection), and Bb/Bbmaj7 or F minor within Play the Game's
+selected C-major sections. This does not prove every such scale note is wrong,
+but it rules out treating a section key as a guarantee of chord compatibility.
+An optional background collection needs further safeguards and validation.
+It has not been added to the player.
+
+### Reproducibility and decision
+
+Evidence is saved under
+`C:\Dev\feedback-workspace\verification\songsterr-harmony-known-keys-20261018`.
+`development-final-01`, `previous-additional-final-01` and
+`new-additional-final-01` freeze inputs, source hashes, browser model, engines,
+references and all four predictions. `study-summary.json` aggregates the study;
+`background-counterfactual.json` and its adjacent script record the separate
+hidden-passage diagnostic. First and final runs have identical musical metrics
+on all 11 songs; intervening changes only fix input validation and reporting.
+`final-verification.json` records the diagnostic script and helper hashes;
+those checkout helpers were verified against the frozen comparison copies.
+Additional reference manifests, raw annotations and source packs remain private
+local evidence, not redistributable test fixtures.
+
+The final prototype SHA256 is
+`cad13769e571b9ff24cbc9290a35f4e9f8b0f263a34dbfdc4f771b741a3186a4`.
+All four arms preserve grounded harmony and pass timeline, observed-chord-tone
+and scale/chord invariants. **211 focused tests pass**, including 38 prototype
+and 8 evaluator tests. Independent review found no remaining confirmed defect.
+Timing fields identify their scope: the automatic-family control measures only
+copy/remap work, while other arms include v5 analysis. They are not comparable
+performance measurements or playback/FPS tests.
+
+The research code is retained but **not promoted to runtime**. The experiment
+supports prioritizing reliable section-key identification or trusted supplied
+metadata, while retaining local chord checks and explicit unknown results.
+The next automatic-key experiment should distinguish stable tonic evidence and
+sustained key changes from temporary borrowed chords, using fixed reference
+boundaries and additional songs selected before predictions. Adding more scale
+types or carrying chord evidence farther is not supported by these results.
+The existing 3D-highway toggle remains the user's control for runtime testing.
+
+Reproduce each group with its frozen manifest, references and chord directory,
+using a new output directory:
+
+```powershell
+python tools/evaluate_harmony_known_keys.py `
+  --manifest <frozen-manifest.json> `
+  --references <reference-points.json> `
+  --chord-directory <frozen-chord-directory> `
+  --output <new-comparison-directory>
+```
