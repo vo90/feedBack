@@ -3,13 +3,17 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const source = fs.readFileSync(path.join(__dirname, '../../static/js/desktop-output.js'), 'utf8')
+const source = fs.readFileSync(path.join(__dirname, '../../static/js/audio-status.js'), 'utf8').replace('export function', 'function')
+    + '\n' + fs.readFileSync(path.join(__dirname, '../../static/js/desktop-output.js'), 'utf8')
+    .replace(/^import .*;\r?\n/m, '')
     .replace('export function', 'function') + '\ninstallDesktopOutput();';
 
-function harness({ browserOnly = false } = {}) {
+function harness({ browserOnly = false, initializing = false, running = true } = {}) {
     const h = { running: true, enabled: false, time: 0, captures: [], contexts: [], taps: [],
         muted: [], bus: [], pushed: [], ports: new Map(), events: {}, timers: [], intervals: [],
+        createdNotices: [],
         device: { outputType: 'Windows Audio', output: 'Selected speakers', sampleRate: 48000, outputBlockSize: 480 } };
+    h.running = running;
     const api = {
         rendererAudioPortVersion: 1,
         hasRendererAudioPort: async id => h.ports.has(id),
@@ -43,13 +47,19 @@ function harness({ browserOnly = false } = {}) {
         addEventListener(name, fn) { this.events[name] = fn; }
         connect() {} disconnect() {}
     }
-    const document = { body: { appendChild() {} }, hidden: false, addEventListener: (name, fn) => { h.events[name] = fn; },
-        createElement: () => ({ style: {}, setAttribute() {} }) };
+    const element = () => ({ style: {}, children: [], textContent: '', hidden: false, setAttribute() {},
+        appendChild(child) { this.children.push(child); child.parent = this; if (child.id === 'desktop-output-status') h.createdNotices.push(child); },
+        remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); },
+    });
+    const document = { body: element(), hidden: false, addEventListener: (name, fn) => { h.events[name] = fn; },
+        createElement: element, getElementById: () => null };
     let portNumber = 0;
     const window = {
+        __feedBackDesktopAudioHooks: { initialization: { state: initializing ? 'pending' : 'settled' } },
         location: { origin: 'http://localhost:8000' },
         addEventListener: (name, fn) => { h.events[name] = fn; },
         removeEventListener: (name, fn) => { if (h.events[name] === fn) delete h.events[name]; },
+        dispatchEvent: event => h.events[event.type]?.(event),
         postMessage(data, origin, ports) {
             assert.equal(data.type, 'feedback-renderer-audio-port');
             h.ports.set(data.id, ports[0]);
@@ -63,15 +73,64 @@ function harness({ browserOnly = false } = {}) {
         URL: { createObjectURL: () => 'blob:worklet', revokeObjectURL() {} },
         setInterval: fn => { h.intervals.push(fn); return 1; }, clearInterval() {},
         setTimeout: fn => { h.timers.push(fn); return 1; }, clearTimeout() {},
+        CustomEvent: class { constructor(type) { this.type = type; } },
         Date: { now: () => h.time }, console: { warn() {} } });
     Object.assign(h, { window, api, document, stream });
     h.tick = () => window._reevaluateRendererBus(); h.state = () => window._rendererOutputRoute;
+    h.initialized = () => { window.__feedBackDesktopAudioHooks.initialization.state = 'settled'; window.dispatchEvent({ type: 'feedback:audio-initialized' }); };
     return h;
 }
 
 test('browser-only install leaves browser audio alone', () => {
     const h = harness({ browserOnly: true });
     assert.equal(h.window._reevaluateRendererBus, undefined); assert.equal(h.intervals.length, 0);
+});
+
+test('stopped startup stays quiet however long restoration takes, then succeeds without a notice', async () => {
+    const h = harness({ initializing: true, running: false });
+    await h.tick(); h.time = 60000; await h.tick();
+    assert.equal(h.state().state, 'stopped'); assert.equal(h.createdNotices.length, 0);
+    assert.deepEqual(h.muted, [true], 'page remains muted during initialization');
+    h.running = true; h.initialized(); await h.tick();
+    await h.tick(); assert.equal(h.state().state, 'active'); assert.equal(h.createdNotices.length, 0);
+});
+
+test('temporary empty output stays quiet and initialization completion bypasses its retry backoff', async () => {
+    const h = harness({ initializing: true }); h.device.output = '';
+    await h.tick(); assert.equal(h.state().state, 'error'); assert.equal(h.createdNotices.length, 0);
+    h.device.output = 'Selected speakers'; h.initialized();
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    await h.tick(); assert.equal(h.state().state, 'active'); assert.equal(h.createdNotices.length, 0);
+});
+
+for (const running of [true, false]) {
+    test(`failed initialization confirms ${running ? 'missing output' : 'stopped engine'} before showing a notice`, async () => {
+        const h = harness({ initializing: true, running }); h.device.output = '';
+        await h.tick(); assert.equal(h.createdNotices.length, 0);
+        h.initialized(); for (let i = 0; i < 30; i++) await Promise.resolve();
+        await h.tick(); assert.equal(h.createdNotices.length, 1);
+        assert.match(h.createdNotices[0].children[0].textContent, /Audio output unavailable/);
+        h.running = true; h.device.output = 'Selected speakers'; h.time = 10001; await h.tick();
+        assert.equal(h.state().state, 'active'); assert.equal(h.document.body.children.length, 0);
+    });
+}
+
+test('pre-initialization failure finishing late cannot flash a stale notice', async () => {
+    const h = harness({ initializing: true, running: false });
+    let finishStop;
+    h.api.setRendererBus = () => new Promise(resolve => { finishStop = resolve; });
+    const early = h.tick(); while (!finishStop) await Promise.resolve();
+    h.api.setRendererBus = async enabled => { h.enabled = enabled; };
+    h.running = true; h.initialized(); finishStop(); await early;
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    await h.tick(); assert.equal(h.state().state, 'active'); assert.equal(h.createdNotices.length, 0);
+});
+
+test('output loss after successful initialization shows the same notice and recovery clears it', async () => {
+    const h = harness(); await h.tick(); h.device.output = ''; await h.tick();
+    assert.equal(h.createdNotices.length, 1);
+    h.device.output = 'Reconnected speakers'; h.time = 10001; await h.tick();
+    assert.equal(h.state().state, 'active'); assert.equal(h.document.body.children.length, 0);
 });
 for (const outputType of ['Windows Audio', 'Windows Audio (Exclusive Mode)', 'Windows Audio (Low Latency)', 'DirectSound', 'ASIO', 'CoreAudio']) {
     test(`${outputType}: whole page uses selected native output without needing a song`, async () => {

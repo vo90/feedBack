@@ -3,7 +3,10 @@
 // stems, previews, HTML media and plugin-private WebAudio contexts. This is
 // frame capture, never system/device loopback (which could recapture JUCE).
 // Browser-only installs keep their normal browser audio behavior.
+import { installAudioStatus } from './audio-status.js';
+
 export function installDesktopOutput() {
+    const notices = installAudioStatus();
     const api = window.feedBackDesktop?.audio;
     if (!api || window._reevaluateRendererBus) return;
 
@@ -43,19 +46,16 @@ export function installDesktopOutput() {
     }; registerProcessor('feedback-output-tap', FeedbackOutputTap);`;
     const moduleUrl = URL.createObjectURL(new Blob([TAP], { type: 'application/javascript' }));
     let capture = null, pending = null, disposed = false, muted = false;
-    let outputKey = '', retryAt = 0, retryDelay = 1000, banner = null;
+    let outputKey = '', retryAt = 0, retryDelay = 1000;
     let routeEpoch = 0;
 
     function status(state, message = '', detail = {}) {
         window._rendererOutputRoute = { state, message, schemaVersion: 1, routeEpoch, ...detail };
-        if (!banner && message && document.body) {
-            banner = document.createElement('div');
-            banner.id = 'desktop-output-status';
-            banner.setAttribute('role', 'status');
-            banner.style.cssText = 'position:fixed;bottom:16px;left:16px;right:16px;z-index:10000;padding:12px 16px;background:#29231a;color:#fff;border:1px solid #bf974b;border-radius:6px;font:14px system-ui';
-            document.body.appendChild(banner);
-        }
-        if (banner) { banner.textContent = message; banner.hidden = !message; }
+        if (message) notices.set('output', {
+            message: 'Audio output unavailable — game audio cannot reach the selected device.',
+            detail: detail.error || message,
+        });
+        else notices.clear('output');
     }
 
     async function release(session) {
@@ -161,6 +161,9 @@ export function installDesktopOutput() {
 
     async function reconcile() {
         if (disposed) return;
+        // A check begun during restoration cannot become a visible failure just
+        // because an await completes after initialization. Check again instead.
+        const initializing = notices.isInitializing();
         try {
             if (!muted) {
                 if (typeof api.setPageMuted !== 'function' || await api.setPageMuted(true) !== true)
@@ -171,7 +174,7 @@ export function installDesktopOutput() {
             if (!running) {
                 await stop();
                 retryAt = 0;
-                status('stopped', 'Audio engine is stopped. Start it in Audio settings to hear game audio.');
+                status('stopped', initializing ? '' : 'Audio engine is stopped. Start it in Audio settings to hear game audio.');
                 return;
             }
             const device = await api.getCurrentDevice();
@@ -207,7 +210,7 @@ export function installDesktopOutput() {
             retryAt = Date.now() + retryDelay;
             retryDelay = Math.min(retryDelay * 2, 10000);
             console.warn('[desktop-output]', error?.message || String(error));
-            status('error', 'Game audio could not reach the selected output. Retrying; check Audio settings.',
+            status('error', initializing ? '' : 'Game audio could not reach the selected output. Retrying; check Audio settings.',
                 { error: error?.message || String(error) });
         }
     }
@@ -219,12 +222,24 @@ export function installDesktopOutput() {
         return pending;
     }
     window._reevaluateRendererBus = reevaluate;
+    const initialized = () => {
+        // Let any pre-initialization transaction finish, then read current
+        // device state without carrying its failure/backoff into startup.
+        void (pending || Promise.resolve()).then(() => {
+            if (disposed) return;
+            retryAt = 0;
+            return reevaluate();
+        });
+    };
+    window.addEventListener('feedback:audio-initialized', initialized);
     const interval = setInterval(() => { void reevaluate(); }, 500);
     document.addEventListener('visibilitychange', () => { void reevaluate(); });
     navigator.mediaDevices?.addEventListener('devicechange', () => { retryAt = 0; void reevaluate(); });
     window.addEventListener('pagehide', () => {
         disposed = true;
         clearInterval(interval);
+        window.removeEventListener('feedback:audio-initialized', initialized);
+        notices.clear('output');
         void stop().catch(() => {});
         URL.revokeObjectURL(moduleUrl);
     }, { once: true });

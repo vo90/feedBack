@@ -694,6 +694,7 @@ export async function loadPlugins() {
         return null;
     }
     _loadPluginsInFlight = false;
+    window.feedBackAudioStatus?.pluginLoadFinished(plugins);
     return plugins;
 }
 
@@ -743,6 +744,7 @@ function _streamPluginStartup() {
         }
         // Terminal: one last refetch to catch anything missed, then stop.
         if (!status.running && (phase === 'complete' || phase === 'error')) {
+            window.feedBackAudioStatus?.pluginStartupFinished();
             _refreshPluginsSoon();
             es.close();
         }
@@ -789,7 +791,10 @@ async function _pollPluginStartup() {
                 status.error || '',
             ]);
             if (sig !== lastSig) { lastSig = sig; _refreshPluginsSoon(); }
-            if (!status.running) { _refreshPluginsSoon(); return; }
+            if (!status.running) {
+                window.feedBackAudioStatus?.pluginStartupFinished();
+                _refreshPluginsSoon(); return;
+            }
         } catch (_e) { /* network error — keep trying */ }
     }
 }

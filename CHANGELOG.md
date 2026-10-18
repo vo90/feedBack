@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Audio input and output warnings stay hidden while saved audio devices initialize,
+  then report confirmed failures using matching notices with settings and details.
 - The desktop amp simulation opt-out now provides a shared suspension policy
   for tone plugins, rejects stale effects loads, and wakes backend workers only
   after a saved preference change. Backing audio and instrument input remain
