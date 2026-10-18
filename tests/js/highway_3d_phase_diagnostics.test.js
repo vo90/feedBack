@@ -172,6 +172,9 @@ function drawHarness(composer = false) {
         canvasSize: () => null, T: { ACESFilmicToneMapping: 1, NoToneMapping: 0 },
         ren: { render() { h.advance(3); } }, scene: {}, cam: {},
         drawTimedContactLabels: noop, lyricsCtx: { clearRect: noop },
+        // Harmony rendering has its own geometry/lifecycle suite. Keep these
+        // optional overlays inert while measuring the production phase clock.
+        updateHarmonicGuide: noop, drawHarmonicGuideLabels: noop, harmonicGuideTopInset: () => 0,
         lyricsCanvas: { width: 10, height: 10 }, drawNotedetectLabels: noop, drawScoreFx: noop,
         _fpsLastT: 0, fpsVisible: false, sectionHudVisible: false,
         toneHudVisible: false, chordDiagramVisible: false,

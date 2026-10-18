@@ -60,6 +60,8 @@ from routers import library as library_router
 from routers import enrichment as enrichment_routes
 from routers import media as media_router
 from routers import artist as artist_router
+from routers import harmony as harmony_router
+from harmony_jobs import HarmonyJobs
 import sloppak as sloppak_mod
 import loosefolder as loosefolder_mod
 # Pure text-matching engine for MusicBrainz enrichment (P8): denoise/score/
@@ -135,6 +137,7 @@ meta_db = MetadataDB(CONFIG_DIR)
 audio_effect_mappings = AudioEffectsMappingDB(CONFIG_DIR)
 amp_sims_policy = AmpSimsPolicy(applicable=os.environ.get("FEEDBACK_DESKTOP") == "1")
 amp_sims_policy.prepare(_load_config(CONFIG_DIR / "config.json"))
+harmony_jobs = HarmonyJobs(CONFIG_DIR)
 
 # Publish the singletons to the router seam. server.py stays their owner — a
 # `sys.modules.pop("server")` + re-import must keep rebuilding them under a
@@ -150,6 +153,7 @@ appstate.configure(
     static_dir=STATIC_DIR,
     sloppak_cache_dir=SLOPPAK_CACHE_DIR,
     audio_cache_dir=AUDIO_CACHE_DIR,
+    harmony_jobs=harmony_jobs,
 )
 
 
@@ -992,6 +996,7 @@ def shutdown_events():
     """Stop the demo-mode janitor thread (if running) on server shutdown."""
     global _event_loop
     _event_loop = None  # prevent stale loop reference after shutdown
+    harmony_jobs.close()
     if not demo_mode.stop_janitor(timeout=5):
         warnings.warn(
             "demo-janitor thread did not stop within 5 s; "
@@ -1623,6 +1628,7 @@ app.include_router(media_router.router)
 # Mounted here, where the handler used to be defined (registration order).
 # Implementation in lib/routers/ws_highway.py.
 app.include_router(ws_highway.router)
+app.include_router(harmony_router.router)
 
 
 # ── Session-sync relay WebSocket (feedBack#1030) ─────────────────────────────

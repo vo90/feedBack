@@ -497,6 +497,10 @@ export function pulseLoopIndicator() {
 export function updateLoopUI() {
     const valid = _validLoopBounds();
     const active = valid && _loopPhase === 'active';
+    // Publish on loop transitions; the per-frame guide never queries transport.
+    if (typeof window !== 'undefined') {
+        window.highway?.setHarmonicGuideLoop?.(active ? { start: loopA, end: loopB } : null);
+    }
     const label = document.getElementById('loop-label');
     if (label) {
         label.textContent = valid

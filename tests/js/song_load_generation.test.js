@@ -65,6 +65,9 @@ test('late messages from an old socket are ignored after reconnect and after sto
     const sockets=[],errors=[];
     const sb={hwState:{_wsGen:0},window:{},console:{log(){},error(){}},
         WebSocket:class{constructor(){sockets.push(this);}close(){}},cancelAnimationFrame(){},
+        // Harmony is reset alongside the socket; its own lifecycle suite
+        // verifies the controller. This harness checks message generations.
+        harmonicGuide:{reset(){}},harmonicGuideUI:null,harmonicGuideLoop:null,harmonicGuideIdentity:'',
         _destroyCurrentIfInited(){},api:{resetPresentation(){}}};
     vm.createContext(sb);
     vm.runInContext('api.connect=function '+extractFunction(highway,'connect(wsUrl, opts = {})')+';api.stop=function '+extractFunction(highway.slice(highway.indexOf('\n        stop() {')),'stop()')+';',sb);

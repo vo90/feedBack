@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   independent; saved tone choices are retained for re-enabling.
 
 ### Added
+- **Experimental harmony guide in the Songsterr 3D Highway.** A persistent
+  Graphics setting enables scale notes during rests and synchronizes with the
+  in-song toggle. Background chart analysis and cached results keep inference
+  outside rendering. Conservative chord-note fallback uses observed evidence
+  when a scale is unavailable; uncertain passages remain unmarked. Includes
+  local corrections, provenance, and a reproducible reliability evaluator.
 - **Independent RS+ stem controls.** Toggle stems for individual fretted gems
   and open-string/muted bars separately in Note appearance or per split-screen
   panel. Both default on and update live without changing fret labels, sustain

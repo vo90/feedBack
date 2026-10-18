@@ -629,6 +629,7 @@ export async function _audioSeek(s, reason, options = {}) {
             window.highway.resetPresentation?.(reason || 'seek');
             window.highway.setPlaybackState?.(S.isPlaying ? 'playing' : 'paused');
         }
+        window.highway?.notifyHarmonicGuideSeek?.(reason);
         window.feedBack.emit('song:seek', { from, to, reason: reason || null });
         return { completed: true, from, to };
     }).catch((err) => {

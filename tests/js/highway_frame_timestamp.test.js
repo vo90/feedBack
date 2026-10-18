@@ -42,6 +42,9 @@ function highway() {
         _rendererNeedsContinuousFrames: () => false,
         project: noop, boundFretX: noop, bsearch: noop, bsearchTime: noop,
         boundNoteState: noop, _getNoteStateProvider: noop,
+        // Bundle timing is independent of the optional harmony controller.
+        harmonicGuideLoop: null, harmonicGuideUI: null,
+        harmonicGuide: { songEnd: 0, update: () => ({ enabled: false, alpha: 0 }) },
     });
     vm.runInContext(`const _bundleReused = {};
         ${extract(core, 'function _makeBundle(')}

@@ -1,0 +1,146 @@
+[
+  {
+    "title": "Redemption Song",
+    "t": 30.477,
+    "root": "G",
+    "quality": "maj",
+    "bass": null,
+    "boundary": false
+  },
+  {
+    "title": "Redemption Song",
+    "t": 32.153,
+    "root": "E",
+    "quality": "min",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Redemption Song",
+    "t": 34.254,
+    "root": "C",
+    "quality": "maj",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Redemption Song",
+    "t": 35.322,
+    "root": "C",
+    "quality": "maj",
+    "bass": "B",
+    "boundary": true
+  },
+  {
+    "title": "Redemption Song",
+    "t": 36.432,
+    "root": "A",
+    "quality": "min",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Wonderwall",
+    "t": 12.776,
+    "root": "F#",
+    "quality": "min7",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Wonderwall",
+    "t": 14.337,
+    "root": "A",
+    "quality": "maj",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Wonderwall",
+    "t": 15.722,
+    "root": "E",
+    "quality": "sus4",
+    "bass": "B",
+    "boundary": true
+  },
+  {
+    "title": "Wonderwall",
+    "t": 16.732,
+    "root": "B",
+    "quality": "7sus4",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Learning to Fly",
+    "t": 12.057,
+    "root": "F",
+    "quality": "maj",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Learning to Fly",
+    "t": 12.829,
+    "root": "C",
+    "quality": "maj",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Learning to Fly",
+    "t": 14.114,
+    "root": "A",
+    "quality": "min",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Learning to Fly",
+    "t": 14.886,
+    "root": "G",
+    "quality": "maj",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Is This Love",
+    "t": 108.91,
+    "root": "D",
+    "quality": "maj",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Is This Love",
+    "t": 109.892,
+    "root": "C#",
+    "quality": "min",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Is This Love",
+    "t": 110.354,
+    "root": "C",
+    "quality": "min",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Is This Love",
+    "t": 110.662,
+    "root": "B",
+    "quality": "min",
+    "bass": null,
+    "boundary": true
+  },
+  {
+    "title": "Creep",
+    "t": 12.553,
+    "root": "G",
+    "quality": "maj",
+    "bass": null,
+    "boundary": true
+  }
+]

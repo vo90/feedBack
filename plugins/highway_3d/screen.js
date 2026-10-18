@@ -1247,8 +1247,9 @@
     const _BASE_OPEN_MIDI_BASS5 = Object.freeze([23, 28, 33, 38, 43]);
     const _BASE_OPEN_MIDI_GUITAR6 = Object.freeze([40, 45, 50, 55, 59, 64]);
     const _BASE_OPEN_MIDI_GUITAR7 = Object.freeze([35, 40, 45, 50, 55, 59, 64]);
-    // F#/B/E standard extension — low string is a fifth below RS 7‑string low B.
-    const _BASE_OPEN_MIDI_GUITAR8 = Object.freeze([28, 35, 40, 45, 50, 55, 59, 64]);
+    // F#/B/E standard extension — match lib/song.py and lib/tunings.py.
+    // Drop E is a -2 tuning offset on the lowest string, not the base pitch.
+    const _BASE_OPEN_MIDI_GUITAR8 = Object.freeze([30, 35, 40, 45, 50, 55, 59, 64]);
 
     function _baseOpenStringMidis(sc, arrangement) {
         const isBass = /bass/i.test(arrangement || '');
@@ -4842,6 +4843,54 @@
     /* ======================================================================
      *  Pure helpers
      * ====================================================================== */
+
+    // Harmonic-guide position selection uses a fret-space deadband, so an
+    // overlapping pair of shapes does not alternate as the camera settles.
+    function selectHarmonicGuidePosition(positions, previousId, focusFret) {
+        if (!Array.isArray(positions) || !Number.isFinite(focusFret)) return null;
+        let closest = null, previous = null, distance = Infinity;
+        for (const p of positions) {
+            if (!p || !Number.isFinite(p.centerFret) || !Array.isArray(p.spans) || !p.spans.length) continue;
+            const d = Math.abs(p.centerFret - focusFret);
+            if (d < distance) { closest = p; distance = d; }
+            if (p.id === previousId) previous = p;
+        }
+        if (previous && Math.abs(previous.centerFret - focusFret) <= distance + 0.7) return previous;
+        return closest;
+    }
+
+    // Build a stepped outline around the actual per-string fingering spans,
+    // rather than rectangles which imply every fret in a box is a scale note.
+    // The reusable flat output stores x1,y1,x2,y2 for each edge. Coordinate
+    // callbacks keep handedness, string inversion and fret spacing authoritative.
+    function buildHarmonicPositionEdges(position, stringCount, xAt, yAt, fretWidth, out) {
+        out.length = 0;
+        if (!position || !Array.isArray(position.spans)) return out;
+        let previous = false, previousString = -2, previousL = 0, previousR = 0, previousY = 0;
+        const dy = stringCount > 1 ? yAt(1) - yAt(0) : S_GAP;
+        for (let s = 0; s < stringCount; s++) {
+            let span = null;
+            for (const p of position.spans) { if (p && p.string === s) { span = p; break; } }
+            if (!span || !Number.isInteger(span.minFret) || !Number.isInteger(span.maxFret)
+                || span.minFret < 0 || span.maxFret > NFRETS || span.maxFret < span.minFret) continue;
+            const a = xAt(span.minFret), b = xAt(span.maxFret);
+            const mir = xAt(1) >= xAt(0) ? 1 : -1;
+            const xL = a - mir * fretWidth(span.minFret) * 0.43;
+            const xR = b + mir * fretWidth(span.maxFret) * 0.43;
+            const y0 = yAt(s) - dy * 0.5, y1 = yAt(s) + dy * 0.5;
+            out.push(xL, y0, xL, y1, xR, y0, xR, y1);
+            if (previous && previousString === s - 1) {
+                out.push(previousL, y0, xL, y0, previousR, y0, xR, y0);
+            } else {
+                if (previous) out.push(previousL, previousY, previousR, previousY);
+                out.push(xL, y0, xR, y0);
+            }
+            previous = true; previousString = s;
+            previousL = xL; previousR = xR; previousY = y1;
+        }
+        if (previous) out.push(previousL, previousY, previousR, previousY);
+        return out;
+    }
 
     // Logarithmic spacing — mirrors real guitar fret geometry (12th root of 2).
     const _fretXLog = f => {
@@ -9207,6 +9256,17 @@
         const _laneSegDMin = [], _laneSegDMax = [], _laneSegZ0 = [], _laneSegZ1 = [];
         const _laneSegments = { dMin: _laneSegDMin, dMax: _laneSegDMax,
             z0: _laneSegZ0, z1: _laneSegZ1, length: 0 };
+        // Stationary improvisation guide. Per-string native gem batches and
+        // five outline batches bound a full neck to thirteen draw calls. Created
+        // only for an enabled visible guide; never chart/scoring data.
+        let _harmonyGroup = null, _harmonyBatches = null, _harmonyTransform = null, _harmonyColor = null;
+        let _harmonyActivePosition = null, _harmonyAlpha = 0, _harmonyLabelCount = 0;
+        const _harmonyLabels = [];
+        const _harmonyEdges = [];
+        const _harmonyPositionLabels = [];
+        const _harmonyLabelRects = new Float32Array(12);
+        const _HARMONY_MARKER_CAP = MAX_RENDER_STRINGS * (NFRETS + 1);
+        const _HARMONY_EDGE_CAP = MAX_RENDER_STRINGS * 16;
         let _laneSegLen = 0;
         let pChordBox, pChordFrameFill, pChordLbl, pBarreLine, pArpBracket, pPMXFill, pFHXFill;
         let gPMXFill = null; // shared geometry for PM X fill — disposed in teardown
@@ -10441,7 +10501,12 @@
                 _lastOpenStringLblSig = '';
                 return;
             }
-            tuningLblG.visible = true;
+            // The open-position scale gems occupy the same headstock column.
+            // Let their degree labels own it during the map, then restore pitch
+            // labels on the next normal chart frame without rebuilding sprites.
+            const guide = bundle.harmonicGuide;
+            tuningLblG.visible = !(guide?.enabled && guide.alpha >= 0.002
+                && Array.isArray(guide.markers) && guide.markers.some(m => m?.fret === 0));
             // Cheap-key fast path: compare the inputs that drive the label content
             // against last frame. The signature string + labels array build are
             // both per-frame allocators, so skipping them when nothing changed
@@ -10644,6 +10709,252 @@
                     return this;
                 },
             };
+        }
+
+        function initHarmonicGuide() {
+            if (_harmonyGroup) return;
+            _harmonyGroup = new T.Group();
+            _harmonyGroup.name = 'harmonic-guide';
+            scene.add(_harmonyGroup);
+            _harmonyTransform = new T.Object3D();
+            _harmonyColor = new T.Color();
+            const batch = (geometry, color, cap, order, nativeMaterial) => {
+                // Borrow the ordinary note's geometry, but own the material so
+                // fading this map cannot dim playable notes or hit feedback.
+                const mat = nativeMaterial ? nativeMaterial.clone() : new T.MeshBasicMaterial({ color });
+                Object.assign(mat, { transparent: true, opacity: 0,
+                    depthTest: false, depthWrite: false, fog: false, toneMapped: false,
+                    side: T.DoubleSide, forceSinglePass: true });
+                const mesh = new T.InstancedMesh(geometry, mat, cap);
+                mesh.count = 0;
+                // The changing instance matrices invalidate computed bounds.
+                // The GPU clips each stationary note against the real camera.
+                mesh.frustumCulled = false;
+                mesh.renderOrder = order;
+                mesh.instanceMatrix.setUsage(T.DynamicDrawUsage);
+                _harmonyGroup.add(mesh);
+                return mesh;
+            };
+            // Rectangular hollow frames follow the native gem's proportions.
+            // Separate holes keep a translucent white/gold role frame from
+            // painting over the string gradient, including coincident roles.
+            const frame = (outerX, outerY, innerX, innerY) => {
+                const shape = new T.Shape();
+                const rect = (path, sx, sy) => {
+                    const x = NW * sx * 0.5, y = NH * sy * 0.5;
+                    path.moveTo(-x, -y); path.lineTo(x, -y); path.lineTo(x, y);
+                    path.lineTo(-x, y); path.closePath();
+                };
+                rect(shape, outerX, outerY);
+                const hole = new T.Path(); rect(hole, innerX, innerY);
+                shape.holes.push(hole);
+                return new T.ShapeGeometry(shape);
+            };
+            const edge = new T.PlaneGeometry(1, 1);
+            const order = renderOrderForLayerAtZ(0, 'NOTE_OUTLINE');
+            _harmonyBatches = {
+                adjacent: batch(edge, 0x83abc7, _HARMONY_EDGE_CAP, order - 0.002),
+                active: batch(edge, 0xa8d6eb, _HARMONY_EDGE_CAP, order - 0.001),
+                strings: batch(frame(1.1, 1.1, 1, 1), 0xffffff, _HARMONY_MARKER_CAP, order),
+                tonic: batch(frame(1.16, 1.25, 1.07, 1.1), 0xe3f4ff, _HARMONY_MARKER_CAP, order + 0.001),
+                target: batch(frame(1.34, 1.55, 1.24, 1.38), 0xffdd7c, _HARMONY_MARKER_CAP, order + 0.002),
+            };
+            for (let s = 0; s < MAX_RENDER_STRINGS; s++) {
+                const mesh = batch(gNoteGrad[s] || gNote, 0xffffff, NFRETS + 1,
+                    renderOrderForLayerAtZ(0, 'NOTE_CORE'), mStr[s]);
+                mesh.userData.harmonicGuideBorrowedGeometry = true;
+                _harmonyBatches['gem' + s] = mesh;
+            }
+            // Allocate instanceColor before first rendering so Three compiles
+            // the coloured instancing shader immediately (also after recovery).
+            for (let i = 0; i < _HARMONY_MARKER_CAP; i++) {
+                _harmonyBatches.strings.setColorAt(i, _harmonyColor.set(0xffffff));
+                _harmonyLabels.push({ x: 0, y: 0, radius: 0, text: '' });
+            }
+        }
+
+        function harmonicGuideInstance(mesh, x, y, sx, sy, rotation) {
+            if (mesh.count >= mesh.instanceMatrix.count) return;
+            _harmonyTransform.position.set(x, y, 0);
+            _harmonyTransform.scale.set(sx, sy, 1);
+            _harmonyTransform.rotation.set(0, 0, rotation || 0);
+            _harmonyTransform.updateMatrix();
+            mesh.setMatrixAt(mesh.count++, _harmonyTransform.matrix);
+        }
+
+        function updateHarmonicGuide(guide) {
+            _harmonyAlpha = guide && guide.enabled && Number.isFinite(guide.alpha)
+                ? Math.max(0, Math.min(1, guide.alpha)) : 0;
+            _harmonyLabelCount = 0;
+            _harmonyPositionLabels.length = 0;
+            if (_harmonyAlpha < 0.002 || !Array.isArray(guide.markers) || !guide.markers.length) {
+                if (_harmonyGroup) _harmonyGroup.visible = false;
+                if (!guide || !guide.enabled) _harmonyActivePosition = null;
+                return;
+            }
+            initHarmonicGuide();
+            _harmonyGroup.visible = true;
+            const b = _harmonyBatches;
+            for (const name in b) { b[name].count = 0; b[name].material.opacity = _harmonyAlpha; }
+            b.adjacent.material.opacity *= 0.21;
+            b.active.material.opacity *= 0.57;
+            b.strings.material.opacity *= 0.78;
+            for (let s = 0; s < MAX_RENDER_STRINGS; s++) {
+                const mat = b['gem' + s].material;
+                mat.opacity *= 0.9;
+                // Hollow notes still consume a slot in their string's map.
+                b['gem' + s].userData.markerCount = 0;
+                // Native palette changes update gradient geometry in place;
+                // copy the material tint too for flat seventh/eighth strings.
+                mat.color.copy(mStr[s].color);
+            }
+
+            for (let i = 0; i < guide.markers.length && _harmonyLabelCount < _HARMONY_MARKER_CAP; i++) {
+                const m = guide.markers[i];
+                if (!m || !Number.isInteger(m.string) || m.string < 0 || m.string >= nStr
+                    || !Number.isInteger(m.fret) || m.fret < 0 || m.fret > NFRETS) continue;
+                const gem = b['gem' + m.string];
+                if (gem.userData.markerCount >= NFRETS + 1) continue;
+                gem.userData.markerCount++;
+                const x = xFretMid(m.fret), y = sY(m.string);
+                const scale = Math.min(0.7, fretColumnWorldW(m.fret) * 0.68 / (NW * 1.34),
+                    S_GAP * 0.82 / (NH * 1.55));
+                // Open strings use a compact gem at the native open column;
+                // a chart's wide open-note slab would cover other scale frets.
+                // Only the song's current root is filled. Scale degrees and
+                // the scale tonic remain hollow until they become that target.
+                if (m.isTarget) harmonicGuideInstance(gem, x, y, scale, scale, 0);
+                const colorIndex = b.strings.count;
+                harmonicGuideInstance(b.strings, x, y, scale, scale, 0);
+                b.strings.setColorAt(colorIndex, _harmonyColor.set(activePalette[m.string]));
+                if (m.isTonic) harmonicGuideInstance(b.tonic, x, y, scale, scale, 0);
+                if (m.isTarget) harmonicGuideInstance(b.target, x, y, scale, scale, 0);
+                const label = _harmonyLabels[_harmonyLabelCount++];
+                label.x = x; label.y = y; label.radius = NH * scale * 0.5;
+                // Scale degrees stay relative to the scale tonic even when the
+                // gold song target changes. Optional pitch labels use the same
+                // bounded canvas path, never per-label GPU textures.
+                const mode = guide.options?.labelMode || 'degrees';
+                const text = mode === 'notes' ? (m.note || m.label || '') : (m.degreeLabel || '');
+                const validLabel = mode === 'notes' ? /^[A-G](?:[#b\u266f\u266d]{1,2})?$/
+                    : /^(?:R|[#b\u266f\u266d]{0,2}[2-7])$/;
+                label.text = mode !== 'none' && guide.options?.showNoteNames !== false
+                    && typeof text === 'string' && validLabel.test(text) ? text : '';
+            }
+
+            // Find the fret nearest the visible centre, using the final camera
+            // matrix (including FreeCam pan/orbit). This never changes the view.
+            cam.updateMatrixWorld();
+            let focusFret = 0, focusDistance = Infinity;
+            const midY = (sY(0) + sY(nStr - 1)) * 0.5;
+            for (let f = 0; f <= NFRETS; f++) {
+                _probe.set(xFretMid(f), midY, 0).project(cam);
+                if (_probe.z < -1 || _probe.z > 1) continue;
+                const d = Math.abs(_probe.x);
+                if (d < focusDistance) { focusDistance = d; focusFret = f; }
+            }
+            const positions = guide.positions;
+            const active = selectHarmonicGuidePosition(positions, _harmonyActivePosition, focusFret);
+            _harmonyActivePosition = active ? active.id : null;
+            if (active) {
+                let before = null, after = null;
+                for (const p of positions) {
+                    if (!p || !Number.isFinite(p.centerFret)) continue;
+                    if (p.centerFret < active.centerFret && (!before || p.centerFret > before.centerFret)) before = p;
+                    if (p.centerFret > active.centerFret && (!after || p.centerFret < after.centerFret)) after = p;
+                }
+                for (const p of positions) {
+                    if (p !== active && p !== before && p !== after) continue;
+                    const isActive = p === active;
+                    const mesh = isActive ? b.active : b.adjacent;
+                    buildHarmonicPositionEdges(p, nStr, xFretMid, sY, fretColumnWorldW, _harmonyEdges);
+                    for (let i = 0; i < _harmonyEdges.length; i += 4) {
+                        const x1 = _harmonyEdges[i], y1 = _harmonyEdges[i + 1];
+                        const x2 = _harmonyEdges[i + 2], y2 = _harmonyEdges[i + 3];
+                        const dx = x2 - x1, dy = y2 - y1;
+                        const len = Math.hypot(dx, dy);
+                        if (len > 0.00001) harmonicGuideInstance(mesh, (x1 + x2) * 0.5, (y1 + y2) * 0.5,
+                            len, (isActive ? 0.13 : 0.09) * K, Math.atan2(dy, dx));
+                    }
+                    _harmonyPositionLabels.push(p);
+                }
+            }
+            for (const name in b) b[name].instanceMatrix.needsUpdate = true;
+            b.strings.instanceColor.needsUpdate = true;
+        }
+
+        function drawHarmonicGuideLabels(ctx, W, H) {
+            if (!_harmonyGroup || !_harmonyGroup.visible || !_probe) return;
+            ctx.save();
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.globalAlpha = _harmonyAlpha;
+            for (let i = 0; i < _harmonyLabelCount; i++) {
+                const m = _harmonyLabels[i];
+                if (!m.text) continue;
+                _probe.set(m.x, m.y, 0).project(cam);
+                if (_probe.z < -1 || _probe.z > 1 || Math.abs(_probe.x) > 0.99 || Math.abs(_probe.y) > 0.98) continue;
+                const x = (_probe.x * 0.5 + 0.5) * W, y = (0.5 - _probe.y * 0.5) * H;
+                _probe.set(m.x, m.y + m.radius, 0).project(cam);
+                const r = Math.hypot((_probe.x * 0.5 + 0.5) * W - x, (0.5 - _probe.y * 0.5) * H - y);
+                // Stay as gems when zoomed out; cramming microscopic letters
+                // onto strings makes the entire map harder to follow.
+                if (r < 4) continue;
+                const size = Math.min(18, Math.max(8, r * 1.55));
+                ctx.font = `700 ${size}px system-ui, sans-serif`;
+                ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.strokeStyle = '#09121d';
+                ctx.strokeText(m.text, x, y, r * 2.3);
+                ctx.fillStyle = '#f7fbff';
+                ctx.fillText(m.text, x, y, r * 2.3);
+            }
+            const labelY = Math.max(sY(0), sY(nStr - 1)) + S_GAP * 1.04;
+            let rectCount = 0;
+            // The current position earns its label first. Adjacent labels are
+            // omitted when zoomed-out projection would make them collide; their
+            // shape boundaries remain visible and become labelled as you pan.
+            for (let pass = 0; pass < 2; pass++) {
+                for (const p of _harmonyPositionLabels) {
+                    const active = p.id === _harmonyActivePosition;
+                    if ((pass === 0) !== active) continue;
+                    _probe.set(xFretMid(p.centerFret), labelY, 0).project(cam);
+                    if (_probe.z < -1 || _probe.z > 1 || Math.abs(_probe.x) > 0.94 || Math.abs(_probe.y) > 0.95) continue;
+                    const x = (_probe.x * 0.5 + 0.5) * W, y = (0.5 - _probe.y * 0.5) * H;
+                    ctx.globalAlpha = _harmonyAlpha * (active ? 0.94 : 0.45);
+                    const size = Math.max(10, Math.min(13, W / 95));
+                    ctx.font = `${active ? 650 : 500} ${size}px system-ui, sans-serif`;
+                    ctx.lineWidth = 4; ctx.strokeStyle = '#09121d';
+                    ctx.fillStyle = active ? '#d4edf8' : '#abc7d7';
+                    const text = typeof p.label === 'string' ? p.label.slice(0, 28) : '';
+                    const halfW = ctx.measureText(text).width * 0.5 + 8, halfH = size * 0.5 + 4;
+                    let overlaps = false;
+                    for (let i = 0; i < rectCount; i++) {
+                        const j = i * 4;
+                        if (Math.abs(x - _harmonyLabelRects[j]) < halfW + _harmonyLabelRects[j + 2]
+                            && Math.abs(y - _harmonyLabelRects[j + 1]) < halfH + _harmonyLabelRects[j + 3]) overlaps = true;
+                    }
+                    if (overlaps) continue;
+                    const j = rectCount++ * 4;
+                    _harmonyLabelRects[j] = x; _harmonyLabelRects[j + 1] = y;
+                    _harmonyLabelRects[j + 2] = halfW; _harmonyLabelRects[j + 3] = halfH;
+                    ctx.strokeText(text, x, y); ctx.fillText(text, x, y);
+                }
+            }
+            ctx.restore();
+        }
+
+        function disposeHarmonicGuide() {
+            if (_harmonyGroup) {
+                _harmonyGroup.removeFromParent();
+                const geos = new Set();
+                _harmonyGroup.traverse(obj => {
+                    if (obj.geometry && !obj.userData.harmonicGuideBorrowedGeometry) geos.add(obj.geometry);
+                    obj.material?.dispose?.();
+                    if (obj.isInstancedMesh) obj.dispose();
+                });
+                for (const geo of geos) geo.dispose();
+            }
+            _harmonyGroup = _harmonyBatches = _harmonyTransform = _harmonyColor = null;
+            _harmonyActivePosition = null; _harmonyAlpha = 0; _harmonyLabelCount = 0;
+            _harmonyLabels.length = _harmonyEdges.length = _harmonyPositionLabels.length = 0;
         }
 
         // Returns indices of the longest consecutive run in a sorted integer
@@ -11393,7 +11704,14 @@
         // just drawing over the cached widths.
         let _lyrRowsCache = null;
 
-        function drawLyrics(lyrics, currentTime, ctx, W, H) {
+        function harmonicGuideTopInset(layout, height) {
+            if (!layout || !Number.isFinite(layout.topInset) || layout.topInset <= 0
+                || !Number.isFinite(layout.viewportHeight) || layout.viewportHeight <= 0
+                || !Number.isFinite(height) || height <= 0) return 0;
+            return Math.min(height, layout.topInset * height / layout.viewportHeight);
+        }
+
+        function drawLyrics(lyrics, currentTime, ctx, W, H, topInset = 0) {
             const allLines = lyricLayout.getLyricLines(lyrics);
             if (!allLines.length) return 0;
 
@@ -11415,7 +11733,7 @@
             if (nextLine && gapToNext <= 3.0) linesToShow.push(nextLine);
 
             const fontSize = Math.max(18, H * 0.028) | 0;
-            const lineY = H * 0.04;
+            let lineY = H * 0.04;
             const sylText = s => { const t = s.w || ''; return (t.endsWith('+') || t.endsWith('-')) ? t.slice(0, -1) : t; };
 
             ctx.font = `bold ${fontSize}px sans-serif`;
@@ -11464,6 +11782,11 @@
 
             const rowHeight = fontSize + 6;
             const totalHeight = rows.length * rowHeight + 10;
+            // DOM layout is cached by the guide; no DOM reads enter this draw.
+            // Keep floating panels independent. If a very short view has no room
+            // below the dock, do not paint the banner behind the guide.
+            lineY = Math.max(lineY, topInset > 0 ? topInset + 12 : 0);
+            if (topInset > 0 && lineY - 4 + totalHeight > H - 8) return 0;
 
             ctx.fillStyle = 'rgba(0,0,0,0.7)';
             ctx.beginPath();
@@ -24452,6 +24775,7 @@
 
             if (wrap) { wrap.remove(); wrap = null; }
             _disposeOpenStringPitchSprites();
+            disposeHarmonicGuide();
             if (scene) {
                 // Don't dispose material.map textures here. Texture
                 // lifetime belongs to whoever allocated it; the bg
@@ -24567,6 +24891,7 @@
             _ownedSharedMats.length = 0;
             for (const g of _ownedSharedGeos) g?.dispose?.();
             _ownedSharedGeos.length = 0;
+            gNoteGrad = []; // native gradients (also borrowed by the guide) were owned above
             txtCache = {};
             if (_sparkPts) { try { _sparkPts.geometry.dispose(); _sparkPts.material.dispose(); } catch (e) {} _sparkPts = null; }
             if (_composer) { try { _composer.dispose(); if (_bloomPass && _bloomPass.dispose) _bloomPass.dispose(); } catch (e) {} _composer = null; _bloomPass = null; }
@@ -24694,6 +25019,7 @@
             // replaces the underlying <canvas> element so getContext('webgl2')
             // can succeed (see static/highway.js _replaceCanvas).
             contextType: 'webgl2',
+            supportsHarmonicGuide: true,
             init(canvas, bundle) {
                 _unsubscribeFocus();
                 if (wrap || ren) {
@@ -24930,6 +25256,7 @@
                 camUpdate(bundle);
                 pbCameraEnd();
                 _layoutIncomingFretLabels();
+                updateHarmonicGuide(bundle.harmonicGuide);
 
                 // Background animations (#13). Compute frame dt once,
                 // read audio bands when reactivity is on, delegate to
@@ -25045,10 +25372,13 @@
                     lyricsCtx.clearRect(0, 0, lyricsCanvas.width, lyricsCanvas.height);
                     // Capture the actual lyrics-banner bottom so overlay cards
                     // step down past every wrapped row, not just a 2-row estimate.
-                    let lyricsBottom = 0;
+                    const guideTop = harmonicGuideTopInset(bundle.harmonicGuideLayout, lyricsCanvas.height);
+                    let lyricsBottom = guideTop;
                     if (bundle.lyricsVisible && bundle.lyrics?.length) {
-                        lyricsBottom = drawLyrics(bundle.lyrics, _frameNow, lyricsCtx, lyricsCanvas.width, lyricsCanvas.height) || 0;
+                        lyricsBottom = Math.max(guideTop, drawLyrics(bundle.lyrics, _frameNow,
+                            lyricsCtx, lyricsCanvas.width, lyricsCanvas.height, guideTop) || 0);
                     }
+                    drawHarmonicGuideLabels(lyricsCtx, lyricsCanvas.width, lyricsCanvas.height);
                     drawNotedetectLabels(lyricsCtx, lyricsCanvas.width, lyricsCanvas.height);
                     drawScoreFx(lyricsCtx, lyricsCanvas.width, lyricsCanvas.height);
 

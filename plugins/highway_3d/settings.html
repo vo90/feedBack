@@ -105,6 +105,31 @@
     </script>
 </div>
 
+<div id="h3d-harmony-settings" role="group" aria-labelledby="h3d-harmony-heading" class="mt-6">
+    <h3 id="h3d-harmony-heading" class="text-sm font-medium text-gray-400 mb-2">3D Highway — Harmony guide (experimental)</h3>
+    <label class="flex items-center gap-2 text-xs text-gray-300">
+        <input id="h3d-harmony-enabled" data-harmony-enabled type="checkbox" disabled>
+        Show scale and chord notes during rests
+    </label>
+    <p class="text-xs text-gray-500 mt-2">
+        Show suggested notes on the fretboard during longer rests. Changes apply
+        immediately and are remembered. Turning this off also stops the current
+        song's automatic harmony analysis.
+    </p>
+    <p data-harmony-status role="status" class="text-xs text-gray-400 mt-2"></p>
+    <script>
+        (function () {
+            const root = document.getElementById('h3d-harmony-settings');
+            import('/static/js/harmony-guide-settings.js').then(module => {
+                if (root?.isConnected) module.mountHarmonyGuideSettings(root);
+            }).catch(() => {
+                if (root?.isConnected) root.querySelector('[data-harmony-status]').textContent =
+                    'Harmony guide settings could not load. Please reload and try again.';
+            });
+        })();
+    </script>
+</div>
+
 <div role="group" aria-labelledby="h3d-notation-heading" class="mt-6">
     <h3 id="h3d-notation-heading" class="text-sm font-medium text-gray-400 mb-2">Note appearance</h3>
     <label for="h3d-notation-style" class="text-xs font-medium text-gray-400 mb-1 block">Notation style</label>
