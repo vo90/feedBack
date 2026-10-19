@@ -188,3 +188,18 @@ test('3D Highway exposes static panelControls descriptors for per-panel hosts', 
     assert.equal(cameraLockZoom.max, 1);
     assert.equal(cameraLockZoom.default, defaults.cameraLockZoom);
 });
+
+test('per-panel camera tuning exposes the expanded ranges with the original defaults and steps', () => {
+    const controls = loadHighway3dStatics().feedBackViz_highway_3d.panelControls;
+    for (const [key, min, max, step, initial] of [
+        ['stableCameraDepartureDelay', 0, 1000, 25, 100],
+        ['stableCameraTravelExtra', 0, 200, 5, 10],
+        ['stableCameraSettleLimit', 0, 3000, 25, 250],
+        ['stableCameraExcursionThreshold', 0, 3000, 50, 500],
+        ['stableCameraLongSwitchFrets', 1, 24, 1, 5],
+    ]) {
+        const control = controls.find(item => item.key === key);
+        assert.equal(control.type, 'range');
+        assert.deepEqual([control.min, control.max, control.step, control.default], [min, max, step, initial], key);
+    }
+});

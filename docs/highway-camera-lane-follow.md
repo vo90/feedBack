@@ -55,11 +55,11 @@ controls expose five persisted values:
 
 | Control | Trial value | Range | Meaning |
 | --- | --- | --- | --- |
-| Departure delay | 100 ms | 0–200 ms | Start a long direct switch later. |
-| Extra travel time | 10% | 0–30% | Lengthen that switch's travel time. |
-| Maximum settling time | 250 ms | 0–400 ms | Bound completion after the lane begins. |
-| Short-excursion threshold | 500 ms | 0–1000 ms | Ignore shorter whole excursions; original song time. |
-| Long switch: minimum fret change | 5 frets | 1–12 frets | Minimum absolute change in the lane's first fret for timing adjustments. |
+| Departure delay | 100 ms | 0–1000 ms | Start a long direct switch later. |
+| Extra travel time | 10% | 0–200% | Lengthen that switch's travel time. |
+| Maximum settling time | 250 ms | 0–3000 ms | Bound completion after the lane begins. |
+| Short-excursion threshold | 500 ms | 0–3000 ms | Ignore shorter whole excursions; original song time. |
+| Long switch: minimum fret change | 5 frets | 1–24 frets | Minimum absolute change in the lane's first fret for timing adjustments. |
 
 Delay and settling limits use real playback time. Timing tuning applies to
 direct moves between lasting lanes, not progressive chains. Delay and added
@@ -73,7 +73,11 @@ selects 0 ms delay, 0% extra travel, 0 ms settling, 500 ms excursions, and a
 5-fret threshold, reproducing the preceding camera timing. Sliders apply on
 release; numeric inputs allow precise values. The settings persist on this
 device and work for both Stable viewpoints. Follow off disables the controls.
-These are testing defaults, pending the user's tuning feedback.
+These are testing defaults, pending the user's tuning feedback. The widened
+ranges allow deliberately exaggerated comparisons without changing these
+defaults. At +200%, a movement can take three times its original duration.
+Raise Maximum settling time when testing large delays or added travel; the
+next scheduled movement still limits both proportionally.
 
 The in-song panel opens without pausing playback. Collapse it with its button
 or Escape while focused inside it. Its controls consume keyboard shortcuts

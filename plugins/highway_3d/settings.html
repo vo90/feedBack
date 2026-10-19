@@ -455,12 +455,12 @@
         <details id="h3d-stable-camera-tuning" class="mt-4 rounded-lg border border-gray-700 bg-dark-700/40" open>
             <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-gray-300">Camera movement tuning</summary>
             <fieldset id="h3d-stable-camera-tuning-fields" class="px-3 pb-3">
-                <p class="text-xs text-gray-400 mb-3">Try one adjustment at a time. Changes apply when you release a slider and are saved for both Stable viewpoints.</p>
+                <p class="text-xs text-gray-400 mb-3">Wide testing ranges let you exaggerate each effect. Changes apply when you release a slider and are saved for both Stable viewpoints. Increase Maximum settling time to give larger timing adjustments room; the next move can still limit them.</p>
                 <div class="mt-3">
                     <label for="h3d-stable-departure-delay" class="text-xs font-medium text-gray-300">Departure delay</label>
                     <div class="flex items-center gap-3 mt-1">
-                        <input type="range" id="h3d-stable-departure-delay" min="0" max="200" step="25" value="100" class="w-full accent-accent" aria-describedby="h3d-stable-departure-delay-description">
-                        <input type="number" id="h3d-stable-departure-delay-value" min="0" max="200" step="25" value="100" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Departure delay in milliseconds">
+                        <input type="range" id="h3d-stable-departure-delay" min="0" max="1000" step="25" value="100" class="w-full accent-accent" aria-describedby="h3d-stable-departure-delay-description">
+                        <input type="number" id="h3d-stable-departure-delay-value" min="0" max="1000" step="25" value="100" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Departure delay in milliseconds">
                         <span class="text-xs text-gray-400">ms</span>
                     </div>
                     <p id="h3d-stable-departure-delay-description" class="text-xs text-gray-400 mt-1">Wait this much longer before a long switch. Higher values keep the current lane centered longer.</p>
@@ -468,8 +468,8 @@
                 <div class="mt-3">
                     <label for="h3d-stable-travel-extra" class="text-xs font-medium text-gray-300">Extra travel time</label>
                     <div class="flex items-center gap-3 mt-1">
-                        <input type="range" id="h3d-stable-travel-extra" min="0" max="30" step="5" value="10" class="w-full accent-accent" aria-describedby="h3d-stable-travel-extra-description">
-                        <input type="number" id="h3d-stable-travel-extra-value" min="0" max="30" step="5" value="10" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Extra travel time in percent">
+                        <input type="range" id="h3d-stable-travel-extra" min="0" max="200" step="5" value="10" class="w-full accent-accent" aria-describedby="h3d-stable-travel-extra-description">
+                        <input type="number" id="h3d-stable-travel-extra-value" min="0" max="200" step="5" value="10" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Extra travel time in percent">
                         <span class="text-xs text-gray-400">%</span>
                     </div>
                     <p id="h3d-stable-travel-extra-description" class="text-xs text-gray-400 mt-1">Give long switches more time to travel. Higher values make the movement slower.</p>
@@ -477,8 +477,8 @@
                 <div class="mt-3">
                     <label for="h3d-stable-settle-limit" class="text-xs font-medium text-gray-300">Maximum settling time</label>
                     <div class="flex items-center gap-3 mt-1">
-                        <input type="range" id="h3d-stable-settle-limit" min="0" max="400" step="25" value="250" class="w-full accent-accent" aria-describedby="h3d-stable-settle-limit-description">
-                        <input type="number" id="h3d-stable-settle-limit-value" min="0" max="400" step="25" value="250" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Maximum settling time in milliseconds">
+                        <input type="range" id="h3d-stable-settle-limit" min="0" max="3000" step="25" value="250" class="w-full accent-accent" aria-describedby="h3d-stable-settle-limit-description">
+                        <input type="number" id="h3d-stable-settle-limit-value" min="0" max="3000" step="25" value="250" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Maximum settling time in milliseconds">
                         <span class="text-xs text-gray-400">ms</span>
                     </div>
                     <p id="h3d-stable-settle-limit-description" class="text-xs text-gray-400 mt-1">Allow the last part of a long switch to finish after the new lane starts. Zero keeps exact arrival. Departure delay and extra travel are reduced when this limit or the next move leaves less room.</p>
@@ -486,8 +486,8 @@
                 <div class="mt-4 pt-3 border-t border-gray-700">
                     <label for="h3d-stable-excursion-threshold" class="text-xs font-medium text-gray-300">Short-excursion threshold</label>
                     <div class="flex items-center gap-3 mt-1">
-                        <input type="range" id="h3d-stable-excursion-threshold" min="0" max="1000" step="50" value="500" class="w-full accent-accent" aria-describedby="h3d-stable-excursion-threshold-description">
-                        <input type="number" id="h3d-stable-excursion-threshold-value" min="0" max="1000" step="50" value="500" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Short-excursion threshold in original song milliseconds">
+                        <input type="range" id="h3d-stable-excursion-threshold" min="0" max="3000" step="50" value="500" class="w-full accent-accent" aria-describedby="h3d-stable-excursion-threshold-description">
+                        <input type="number" id="h3d-stable-excursion-threshold-value" min="0" max="3000" step="50" value="500" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Short-excursion threshold in original song milliseconds">
                         <span class="text-xs text-gray-400">ms</span>
                     </div>
                     <p id="h3d-stable-excursion-threshold-description" class="text-xs text-gray-400 mt-1">Hold the home lane for brief excursions shorter than this. Uses original song time at every playback speed. Higher values suppress more excursions; zero disables this rule. Riff-extension protections still apply, and progressive runs still travel.</p>
@@ -495,8 +495,8 @@
                 <div class="mt-3">
                     <label for="h3d-stable-long-switch-frets" class="text-xs font-medium text-gray-300">Long switch: minimum fret change</label>
                     <div class="flex items-center gap-3 mt-1">
-                        <input type="range" id="h3d-stable-long-switch-frets" min="1" max="12" step="1" value="5" class="w-full accent-accent" aria-describedby="h3d-stable-long-switch-frets-description">
-                        <input type="number" id="h3d-stable-long-switch-frets-value" min="1" max="12" step="1" value="5" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Minimum fret change for a long switch">
+                        <input type="range" id="h3d-stable-long-switch-frets" min="1" max="24" step="1" value="5" class="w-full accent-accent" aria-describedby="h3d-stable-long-switch-frets-description">
+                        <input type="number" id="h3d-stable-long-switch-frets-value" min="1" max="24" step="1" value="5" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Minimum fret change for a long switch">
                         <span class="text-xs text-gray-400">frets</span>
                     </div>
                     <p id="h3d-stable-long-switch-frets-description" class="text-xs text-gray-400 mt-1">Apply the three timing controls to direct lane switches at least this many frets apart. Lower values include smaller switches. Progressive runs keep their continuous movement.</p>
@@ -1534,11 +1534,11 @@
                 const disabledNote = document.getElementById('h3d-stable-tuning-disabled');
                 const status = document.getElementById('h3d-stable-tuning-status');
                 const rows = [
-                    ['departure-delay', 'stableCameraDepartureDelay', 0, 200, 100, 25],
-                    ['travel-extra', 'stableCameraTravelExtra', 0, 30, 10, 5],
-                    ['settle-limit', 'stableCameraSettleLimit', 0, 400, 250, 25],
-                    ['excursion-threshold', 'stableCameraExcursionThreshold', 0, 1000, 500, 50],
-                    ['long-switch-frets', 'stableCameraLongSwitchFrets', 1, 12, 5, 1],
+                    ['departure-delay', 'stableCameraDepartureDelay', 0, 1000, 100, 25],
+                    ['travel-extra', 'stableCameraTravelExtra', 0, 200, 10, 5],
+                    ['settle-limit', 'stableCameraSettleLimit', 0, 3000, 250, 25],
+                    ['excursion-threshold', 'stableCameraExcursionThreshold', 0, 3000, 500, 50],
+                    ['long-switch-frets', 'stableCameraLongSwitchFrets', 1, 24, 5, 1],
                 ].map(([id, key, min, max, fallback, step]) => ({key, min, max, fallback, step,
                     slider: document.getElementById('h3d-stable-' + id),
                     number: document.getElementById('h3d-stable-' + id + '-value')}));

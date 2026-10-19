@@ -126,6 +126,34 @@ test('delay and added travel can be changed independently',()=>{
     assert.equal(extra.start,old.start);near(extra.end-old.end,.11);
 });
 
+test('expanded timing limits produce a one-second delay, triple travel duration and up to three seconds of settling',()=>{
+    for(const rate of [.5,1,2]) for(const direction of [1,-1]) {
+        const rows=direction>0?[row(0,1),row(4,17)]:[row(0,17),row(4,1)];
+        const old=motion(rows,rate,.5,0,0,0,5)[0];
+        const delayed=motion(rows,rate,.5,1000,0,3000,5)[0];
+        near((delayed.start-old.start)/rate,1);
+        near(delayed.end-delayed.start,old.end-old.start);
+        const slower=motion(rows,rate,.5,0,200,3000,5)[0];
+        assert.equal(slower.start,old.start);
+        near((slower.end-slower.start)/(old.end-old.start),3);
+        near((slower.end-old.end)/rate,2.2);
+        const maximum=motion(rows,rate,.5,1000,200,3000,5)[0];
+        near((maximum.end-old.end)/rate,3);
+        near((maximum.start-old.start)/rate,3/3.2,
+            'the settling cap scales both requests proportionally');
+        let previous=rows[0].x;
+        for(let i=0;i<=200;i++) {
+            const state=sample(rows,maximum.start+(maximum.end-maximum.start)*i/200,
+                {rate,delay:1000,extra:200,cap:3000});
+            assert.ok(direction*(state.x-previous)>=-1e-8,'extreme tuning must not reverse');
+            assert.ok(direction*(rows[1].x-state.x)>=-1e-8,'extreme tuning must not overshoot');
+            previous=state.x;
+        }
+        assert.equal(previous,rows[1].x);
+        assert.equal(sample(rows,maximum.end,{rate,delay:1000,extra:200,cap:3000}).velocity,0);
+    }
+});
+
 test('the settling limit caps lateness without shortening or accelerating the original move',()=>{
     for(const rate of [.5,1,2]) for(const cap of [0,25,100,250,400]) {
         const rows=[row(0,1),row(4,17)],old=motion(rows,rate,.5,0,0,0,5)[0];
@@ -147,9 +175,9 @@ test('the settling limit caps lateness without shortening or accelerating the or
 });
 
 test('a tight following move limits tuning rather than overlapping or rushing either segment',()=>{
-    for(const nextTime of [4.5,5.15,6]) {
+    for(const rate of [.5,1,2]) for(const nextTime of [4.5,5.15,6,8,12]) {
         const rows=[row(0,1),row(4,17),row(nextTime,1)];
-        const nominal=motion(rows,1,.5,0,0,0,5),tuned=motion(rows,1,.5,200,30,400,5);
+        const nominal=motion(rows,rate,.5,0,0,0,5),tuned=motion(rows,rate,.5,1000,200,3000,5);
         assert.ok(tuned[0].end<=nominal[1].start+1e-10);
         assert.ok(tuned[1].start>=tuned[0].end-1e-10);
         for(let i=0;i<tuned.length;i++) {
@@ -159,12 +187,12 @@ test('a tight following move limits tuning rather than overlapping or rushing ei
             assert.equal(tuned[0].start,nominal[0].start);
             assert.equal(tuned[0].end,nominal[0].end);
         }
-        if(nextTime===5.15) near(tuned[0].end,4.05);
+        if(nextTime===5.15&&rate===1) near(tuned[0].end,4.05);
     }
 });
 
 test('long switch eligibility uses the selected fret displacement and preserves small moves',()=>{
-    for(const threshold of [1,5,12]) for(const difference of [1,4,5,11,12]) {
+    for(const threshold of [1,5,12,23,24]) for(const difference of [1,4,5,11,12,22,23]) {
         const rows=[row(0,1),row(4,1+difference)];
         const old=motion(rows,1,.5,0,0,0,threshold)[0];
         const tuned=motion(rows,1,.5,100,10,250,threshold)[0];
@@ -182,7 +210,7 @@ test('progressive short runs retain their complete original path with every timi
         const nominal=clone(rows),tuned=clone(rows);
         for(let i=0;i<=300;i++) {
             const time=i/50,a=sample(nominal,time,{rate,delay:0,extra:0,cap:0});
-            const b=sample(tuned,time,{rate,delay:200,extra:30,cap:400,long:1});
+            const b=sample(tuned,time,{rate,delay:1000,extra:200,cap:3000,long:1});
             assert.equal(b.x,a.x);assert.equal(b.velocity,a.velocity);
         }
     }
@@ -221,6 +249,18 @@ test('the excursion control measures original whole-excursion duration independe
     }
 });
 
+test('a three-second excursion threshold uses the whole source-time departure and follows its exact boundary',()=>{
+    for(const duration of [1.001,2.5,2.999,3]) for(const rate of [.5,1,2]) {
+        const rows=[row(0,1),row(5,7),row(5+duration/2,9),row(5+duration,1)];
+        const stops=buildStops(rows,rate,null,null,null,null,null,3000);
+        if(duration<3) assert.deepEqual(stops.map(s=>s.firstFret),[1],
+            'the expanded value must not silently retain the old one-second cap');
+        else assert.ok(stops.length>1,'exactly three source seconds is followed at every playback speed');
+        const ordinary=buildStops(rows,rate,null,null,null,null,null,500);
+        assert.ok(ordinary.length>1,'the wider control is a real classification choice');
+    }
+});
+
 test('zero brief-excursion tolerance retains same-base and proven riff-variation protection',()=>{
     const extended=build([row(0,5),row(2,5,true,8),row(4,5)],0);
     assert.deepEqual(extended.map(s=>s.firstFret),[5]);
@@ -250,7 +290,7 @@ test('the four timing controls rebuild motion without reclassifying lanes or rep
     const h=controller(),cache=h.planCache();
     const semantic=cache.semanticStops,timeline=cache.timeline,regions=cache.regions,attacks=cache.attacks;
     const objects=regions.slice(),stops=cache.stops;
-    for(const settings of [{departureDelay:200},{travelExtra:30},{settleLimit:400},{longSwitchFrets:12}]) {
+    for(const settings of [{departureDelay:1000},{travelExtra:200},{settleLimit:3000},{longSwitchFrets:24}]) {
         const oldMotion=cache.stops.motion,revision=cache.revision;
         h.settings(settings);h.frame(0,0);
         assert.equal(cache.semanticStops,semantic);assert.equal(cache.timeline,timeline);
