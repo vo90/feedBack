@@ -13,7 +13,7 @@
 // --tuning-ui checks the live panel and captures wide/narrow screenshots on sustained cases.
 // --live-consistency exercises committed threshold edits during playback, pause,
 // Follow and rate changes, then loop wrap. Use --range to select a private passage.
-// --live-home Name=fret additionally checks a known local riff stays there at 1000/3000ms.
+// --live-home Name=fret checks a known 300ms-lane riff holds at 350/500/900ms and moves at 250ms.
 // Repeat --setting stableCameraDepartureDelay=0 etc. to exercise camera controls.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -70,6 +70,27 @@ for(let i=0;i<5;i++) { const t=6+i*2;
   for(const [offset,f]of [[0,5],[.3,7],[.6,8],[1,5],[1.75,3]])riffNotes.push(note({t:t+offset,f}));
 }
 fixtures.push({name:'rooted-riff',kind:'held',start:4,end:18,b:base({anchors:riffAnchors,notes:riffNotes})});
+{
+  const anchors=[{time:0,fret:5,width:4}],notes=[];
+  for(let i=0;i<16;i++) {
+    const time=6+i*.3,fret=[8,7,4,5][i%4];
+    anchors.push({time,fret,width:4});notes.push(note({t:time,f:fret}));
+  }
+  fixtures.push({name:'per-lane-riff',kind:'held',start:4,end:15,b:base({anchors,notes})});
+}
+for(const [name,path]of [
+  ['per-lane-scale',[2,4,6,8,10,12,14,16,18,20,21,19,17,15,13,11,9,7,5,3,2]],
+  ['per-lane-zigzag',[2,4,3,5,4,6,5,7,6,8,7,9,2]],
+]) {
+  const peakFret=Math.max(...path);
+  const frets=[...path.slice(1),...path.slice(1)],anchors=[{time:0,fret:2,width:4}],notes=[],peakTimes=[];
+  for(const [i,fret]of frets.entries()) {
+    const time=6+i*.2;
+    anchors.push({time,fret,width:4});notes.push(note({t:time,f:fret}));
+    if(fret===peakFret)peakTimes.push(time);
+  }
+  fixtures.push({name,kind:'progressive-return',start:4,end:18,peakTimes,peakFret,b:base({anchors,notes})});
+}
 if(args.includes('--live-consistency')) {
   const anchors=[{time:0,fret:5,width:4}],notes=[];
   for(let i=0;i<32;i++) {
@@ -213,6 +234,16 @@ function validate(c, samples, plan) {
       check(at&&Math.abs(at.x-first.x)>width,c.name,'Lasting outside lane was suppressed');
     }
     if(c.kind==='chain')check(samples.every((s,i)=>!i||s.x>=samples[i-1].x-1e-5),c.name,'Forward chain reversed direction');
+    if(c.kind==='progressive-return') {
+      const high=plan.regions.find(s=>s.firstFret===c.peakFret)?.preferred;
+      for(const time of c.peakTimes) {
+        const sample=samples.find(s=>Math.abs(s.time-time)<1e-6);
+        check(sample&&Math.abs(sample.x-high)<width*.05,c.name,
+          'An all-short repeated climb and descent was suppressed instead of following the high lane',{time,high,sample});
+      }
+      check(Math.abs(samples.at(-1).x-plan.stops.at(-1).x)<width*.05,c.name,
+        'The progressive return did not settle back at its final lane');
+    }
     if(c.sourceName==='far-24'&&held) {
       const last=samples.at(-1),peak=Math.max(...samples.map(s=>s.distance));
       check(peak>first.distance*1.05,c.name,'Far fret did not exercise outward visibility zoom');
@@ -306,7 +337,7 @@ async function validateLiveConsistency(page,c) {
       input.checked=value;input.dispatchEvent(new Event('change',{bubbles:true}));r.draw(bundle);};
     const reset=async()=>{
       r.destroy();window.__wall=1000;window.h3dBgSetStableCameraFollow(true);
-      window.h3dBgSetStableCameraExcursionThreshold(500);
+      window.h3dBgSetStableCameraExcursionThreshold(250);
       window.bundle={...c.b,currentTime:c.start,playbackRate:c.rate,isPlaying:true};
       window.r=feedBackViz_highway_3d();r.init(document.getElementById('highway'),bundle);
       await r.readyPromise;r.__laneDisableGpu();r.draw(bundle);
@@ -314,9 +345,10 @@ async function validateLiveConsistency(page,c) {
     };
     for(const mode of ['playing','paused','follow','rate','rapid']) {
       await reset();const changes=[];
-      for(const [index,value]of [1000,3000,500].entries()) {
+      const thresholds=[500,900,350,250,500];
+      for(const [index,value]of thresholds.entries()) {
         const target=mode==='rapid'?c.start+(c.end-c.start)*.2+index*.12*c.rate
-          :c.start+(c.end-c.start)*[.15,.4,.65][index];
+          :c.start+(c.end-c.start)*[.1,.26,.42,.58,.74][index];
         advance(Math.max(bundle.currentTime,target));
         if(mode==='paused'){bundle.isPlaying=false;r.draw(bundle);}
         const before=audit();commit(value);r.draw(bundle);const after=audit();
@@ -328,7 +360,7 @@ async function validateLiveConsistency(page,c) {
             stops:[...(prior?[prior]:[]),...plan.stops.filter(s=>s.time>start&&s.time<end)].map(s=>({time:s.time,x:s.x})),
             motion:plan.motion.filter(s=>s.start<end&&s.end>start).map(s=>({start:s.start,end:s.end,from:s.from,to:s.to}))};
         }
-        if(mode==='rapid'&&index<2){changes.push(change);continue;}
+        if(mode==='rapid'&&index<thresholds.length-1){changes.push(change);continue;}
         if(mode==='paused') {
           window.__wall+=500;r.draw(bundle);change.held=audit();
           bundle.isPlaying=true;r.draw(bundle);change.resume=audit();
@@ -360,9 +392,9 @@ async function validateLiveConsistency(page,c) {
       if(change.home) {
         const held=change.home.stops.every(s=>Math.abs(s.x-change.home.expected)<1e-8)
           &&change.home.motion.every(s=>Math.abs(s.from-change.home.expected)<1e-8&&Math.abs(s.to-change.home.expected)<1e-8);
-        check(change.value===500?!held:held,c.name,change.value===500
-          ?'The ordinary threshold incorrectly suppressed the known local riff movements'
-          :'The wider threshold did not consistently retain the known local riff home',
+        check(change.value===250?!held:held,c.name,change.value===250
+          ?'The lower threshold incorrectly suppressed the known 300ms lane movements'
+          :'The per-lane threshold did not consistently retain the known local riff home',
           {mode:run.mode,value:change.value,home:change.home});
       }
       if(run.mode!=='paused')check(Math.abs(change.before.velocity-change.after.velocity)<1e-7,c.name,'Live threshold edit broke velocity continuity',evidence);

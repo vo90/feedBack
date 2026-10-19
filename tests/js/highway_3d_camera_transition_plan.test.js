@@ -72,15 +72,17 @@ test('duration is measured across provenance fragments, not individual chord row
     assertArrived(stops,16.586,7);
 });
 
-test('a short whole excursion can contain several changed lanes', () => {
+test('a single unproven multi-lane return still moves even when its total duration is short', () => {
     const stops=build([row(0,9),row(2,13),row(2.2,15),row(2.49,9)],1,fits);
-    assert.deepEqual(targets(stops),[9]);
+    assert.deepEqual(targets(stops),[9,13,15,9]);
+    assert.ok(sample(stops,2.2).x>9);
 });
 
-test('several short rows cannot hide a whole excursion longer than 500ms', () => {
-    const stops=build([row(0,3),row(2,7),row(2.3,9),row(2.6,11),row(2.9,3)],1,fits);
-    assert.ok(stops.length>1);
-    assert.ok(sample(stops,2.5).x>3,'camera must travel while the excursion is in progress');
+test('several individually short lanes hold even when the complete return takes longer than 500ms', () => {
+    const stops=build([row(0,3),row(2,7),row(2.3,5),row(2.6,2),row(2.9,3),
+        row(3.2,7),row(3.5,5),row(3.8,2),row(4.1,3)],1,fits);
+    assert.deepEqual(targets(stops),[3]);
+    for (let time=0;time<5;time+=.01) assertArrived(stops,time,3);
 });
 
 test('a short off-route overshoot is skipped while travelling to the lasting destination', () => {

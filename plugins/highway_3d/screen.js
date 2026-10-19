@@ -3999,11 +3999,63 @@
             nextLasting[i] = lasting;
             if (spans[i].lasting) lasting = i;
         }
-        const hasReturn = i => {
+        const shortReturn = i => {
             const end = nextSame[i];
-            return end > i + 1 && end <= nextLasting[i]
-                && spans[end].time - spans[i + 1].time < brief - 1e-9;
+            // The indexed barrier means EVERY intermediate lane is shorter
+            // than the threshold. Total time around the cycle is irrelevant.
+            return end > i + 1 && end <= nextLasting[i];
         };
+        // Direct runs and successively advancing peaks/troughs are travelling
+        // patterns, even when the larger phrase eventually repeats or returns.
+        // Keep the latest complete pattern's start, making interval queries
+        // constant time without rescanning a repeated cycle's interior.
+        const progressiveStart = new Int32Array(spans.length).fill(-1);
+        let direction = 0, directionalSteps = 0;
+        let latestPatternStart = -1;
+        const peaks = { firstIndex: -1, firstValue: NaN, secondIndex: -1, secondValue: NaN };
+        const troughs = { firstIndex: -1, firstValue: NaN, secondIndex: -1, secondValue: NaN };
+        for (let i = 1; i < spans.length; i++) {
+            const previous = spans[i - 1], current = spans[i];
+            const previousPosition = Number.isFinite(previous.firstFret) ? previous.firstFret : previous.x;
+            const currentPosition = Number.isFinite(current.firstFret) ? current.firstFret : current.x;
+            const nextDirection = Math.sign(currentPosition - previousPosition);
+            directionalSteps = nextDirection && nextDirection === direction ? directionalSteps + 1 : nextDirection ? 1 : 0;
+            if (directionalSteps >= 3) latestPatternStart = Math.max(latestPatternStart, i - 3);
+            if (nextDirection && direction && nextDirection !== direction) {
+                const turns = direction > 0 ? peaks : troughs;
+                if (turns.firstIndex >= 0 && ((turns.firstValue < turns.secondValue && turns.secondValue < previousPosition)
+                    || (turns.firstValue > turns.secondValue && turns.secondValue > previousPosition))) {
+                    latestPatternStart = Math.max(latestPatternStart, turns.firstIndex);
+                }
+                turns.firstIndex = turns.secondIndex; turns.firstValue = turns.secondValue;
+                turns.secondIndex = i - 1; turns.secondValue = previousPosition;
+            }
+            direction = nextDirection;
+            progressiveStart[i] = latestPatternStart;
+        }
+        const hasProgressiveRun = (start, end) => progressiveStart[end] >= start;
+        // A multi-lane return needs a repeated ordered cycle, rather than an
+        // arbitrary eventual return after a climb or a different local riff.
+        // Consecutive cycles for one fret are disjoint; exact comparisons are
+        // bounded by the physical fret vocabulary, without hashing or slices.
+        // Unknown geometry-only homes conservatively keep their waypoints.
+        const repeatedReturn = new Uint8Array(spans.length);
+        for (let i = 0; i < spans.length; i++) {
+            if (!Number.isInteger(spans[i].firstFret) || spans[i].firstFret < 0
+                || spans[i].firstFret > NFRETS || !shortReturn(i)) continue;
+            const middle = nextSame[i];
+            if (!shortReturn(middle)) continue;
+            const end = nextSame[middle], length = middle - i;
+            // Check the join as well: rotating the cycle's proposed home must
+            // not hide a travelling run that crosses its first return.
+            if (length !== end - middle || hasProgressiveRun(i, end)) continue;
+            let same = true;
+            for (let offset = 1; same && offset < length; offset++) {
+                same = spans[i + offset].base === spans[middle + offset].base;
+            }
+            if (same) repeatedReturn[i] = repeatedReturn[middle] = 1;
+        }
+        const hasReturn = i => shortReturn(i) && (nextSame[i] === i + 2 || repeatedReturn[i]);
         // Overlapping cycles may support several homes. An authored section
         // can break that tie only when its incoming lane has a complete short
         // return inside the section. A marker alone never invents a home.
@@ -4036,11 +4088,12 @@
         for (let i = 0; i < spans.length; i++) {
             if (spans[i].kind === 'riff-variation') continue;
             const previous = seen.get(spans[i].base);
-            // When no home is established, the first completed return is the
-            // evidence. Protect it against later overlapping return candidates.
+            // A completed singleton reply or proven repeated cycle can
+            // establish a local home. Never reach back across a lasting lane.
             if (previous !== undefined && previous >= protectedHome && i > previous + 1
+                && i === nextSame[previous] && i <= nextLasting[previous]
                 && i <= nextSectionHome[previous]
-                && spans[i].time - spans[previous + 1].time < brief - 1e-9) holdReturn(previous, i);
+                && (i === previous + 2 || repeatedReturn[previous])) holdReturn(previous, i);
             if (!i || spans[i].lasting || spans[i].localHome || sectionHomes.has(i)) {
                 protectedHome = i;
                 // An established incoming home wins nested short returns.
@@ -4062,15 +4115,19 @@
                 if (spans[i].base !== home.base) continue;
                 away = i + 1;
             }
-            if (away >= b || target.base === home.base
-                || target.time - spans[away].time >= brief - 1e-9) continue;
+            if (away >= b || target.base === home.base) continue;
             const low = Math.min(home.x, target.x), high = Math.max(home.x, target.x);
-            for (let i = away; i < b; i++) {
-                // Only an off-route spike between ADJACENT lasting positions
-                // can be bypassed. Ordered intermediate lanes remain transit.
-                if (!spans[i].localHome && (spans[i].x < low - 1e-8 || spans[i].x > high + 1e-8)) {
-                    ignore(spans[i], 'ignored-overshoot', home);
-                }
+            const outside = span => span.x < low - 1e-8 || span.x > high + 1e-8;
+            for (let i = away; i < b;) {
+                // Between ADJACENT lasting positions every intermediate lane
+                // is individually short. Only isolated off-route spikes are
+                // bypassed here; multi-lane holds require the cycle proof above.
+                if (!outside(spans[i])) { i++; continue; }
+                const start = i;
+                while (i < b && outside(spans[i])) i++;
+                // Alternating directions can still form a progressive climb.
+                // Do not infer a hold from an unproven multi-lane group.
+                if (i === start + 1 && !spans[start].localHome) ignore(spans[start], 'ignored-overshoot', home);
             }
         }
         return spans;
@@ -6791,7 +6848,7 @@
             ['stableCameraDepartureDelay', 'Departure delay (ms)', 0, 1000, 25],
             ['stableCameraTravelExtra', 'Extra travel time (%)', 0, 200, 5],
             ['stableCameraSettleLimit', 'Maximum settling time (ms)', 0, 3000, 25],
-            ['stableCameraExcursionThreshold', 'Short-excursion threshold (ms)', 0, 3000, 50],
+            ['stableCameraExcursionThreshold', 'Short-lane threshold (ms)', 0, 3000, 50],
             ['stableCameraLongSwitchFrets', 'Long switch: minimum fret change', 1, 24, 1],
         ];
         const read = key => _bgReadSetting(_bgPanelKey(getCanvas()), key);
@@ -6836,7 +6893,7 @@
                 });
             }
         }
-        fields.appendChild(element('p', 'Excursions count the whole time away and back, in original song time. Riff protections stay on.', 'margin:8px 0;color:#adc0d7;'));
+        fields.appendChild(element('p', 'The threshold applies to each lane in original song time. Short repeated riffs hold; progressive runs still travel. Riff protections stay on.', 'margin:8px 0;color:#adc0d7;'));
         fields.appendChild(element('p', 'Lower the minimum fret change to include smaller direct switches in timing adjustments.', 'margin:8px 0;color:#adc0d7;'));
         for (const [name, label, values] of [
             ['gentler', 'Gentler trial', [100, 10, 250, 500, 5]],
@@ -25974,7 +26031,7 @@
             min: 0, max: 200, step: 5, default: BG_DEFAULTS.stableCameraTravelExtra },
         { key: 'stableCameraSettleLimit', label: 'Stable maximum settling time (ms)', type: 'range',
             min: 0, max: 3000, step: 25, default: BG_DEFAULTS.stableCameraSettleLimit },
-        { key: 'stableCameraExcursionThreshold', label: 'Stable short-excursion threshold (ms)', type: 'range',
+        { key: 'stableCameraExcursionThreshold', label: 'Stable short-lane threshold (ms)', type: 'range',
             min: 0, max: 3000, step: 50, default: BG_DEFAULTS.stableCameraExcursionThreshold },
         { key: 'stableCameraLongSwitchFrets', label: 'Long switch: minimum fret change (Stable)', type: 'range',
             min: 1, max: 24, step: 1, default: BG_DEFAULTS.stableCameraLongSwitchFrets },

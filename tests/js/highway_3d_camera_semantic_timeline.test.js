@@ -56,13 +56,99 @@ test('500ms classification uses source time and compensates subtraction roundoff
     assert.equal(build([row(0,2),row(15.1,7),row(15.6,2)])[1].lasting,true);
 });
 
-test('a whole multi-position departure cannot be hidden as individually short rows', () => {
-    const short=build([row(0,2),row(2,7),row(2.2,9),row(2.4,2)]);
-    assert.equal(short.length,1);
-    assert.deepEqual(short.timeline.slice(1,3).map(s=>s.kind),['ignored-excursion','ignored-excursion']);
-    const long=build([row(0,2),row(2,7),row(2.3,9),row(2.6,2)]);
-    assert.deepEqual(long.map(s=>s.firstFret),[2,7,9,2]);
-    assert.equal(long.at(-1).lasting,true);
+test('each lane in a repeated ordered return uses the cutoff independently of the total trip', () => {
+    for (const duration of [.499,.5,.501]) for (const rate of [.5,1,2]) {
+        const stops=build([row(0,5),row(2,8),row(2+duration,7),row(2+duration*2,4),
+            row(2+duration*3,5),row(2+duration*4,8),row(2+duration*5,7),
+            row(2+duration*6,4),row(2+duration*7,5)],null,rate);
+        if (duration<.5) {
+            assert.deepEqual(stops.map(s=>s.firstFret),[5]);
+            assert.deepEqual(stops.timeline.slice(1,4).map(s=>s.kind),Array(3).fill('ignored-excursion'));
+        } else {
+            assert.deepEqual(stops.map(s=>s.firstFret),[5,8,7,4,5,8,7,4,5]);
+            assert.ok(stops.every(s=>s.lasting));
+        }
+    }
+});
+
+test('repeated all-short cycles stay home across many seconds and release for the next lasting lane', () => {
+    for (const cycles of [2,3,20]) {
+        const rows=[row(0,5)];
+        for (let i=0;i<cycles*4;i++) rows.push(row(2+i*.3,[8,7,4,5][i%4]));
+        rows.push(row(2+cycles*1.2,16));
+        const stops=build(rows);
+        assert.deepEqual(stops.map(s=>s.firstFret),[5,16]);
+        assert.ok(stops.timeline.filter(s=>s.firstFret!==5&&s.firstFret!==16)
+            .every(s=>s.kind==='ignored-excursion'&&s.homeX===60));
+        assert.equal(stops.at(-1).time,2+cycles*1.2);
+    }
+});
+
+test('an unproven multi-lane return follows the passage even when every lane is short', () => {
+    for (const duration of [.1,.3,.499]) {
+        const stops=build([row(0,5),row(2,8),row(2+duration,7),row(2+duration*2,4),
+            row(2+duration*3,5)]);
+        assert.deepEqual(stops.map(s=>s.firstFret),[5,8,7,4,5]);
+    }
+});
+
+test('a long all-short climb and descent is followed without waiting for a lasting intermediate lane', () => {
+    const frets=[1,2,4,6,8,10,12,14,16,18,20,22,24,23,21,19,17,15,13,11,9,7,5,3,1];
+    for (const repetitions of [1,2,3]) {
+        const path=[frets[0],...Array.from({length:repetitions},()=>frets.slice(1)).flat()];
+        const stops=build(path.map((f,i)=>row(i?2+(i-1)*.2:0,f)));
+        assert.deepEqual(stops.map(s=>s.firstFret),path);
+        assert.ok(stops.slice(1,-1).every(s=>!s.lasting));
+    }
+});
+
+test('an unrelated old home cannot consume a new repeating local riff before a much later return', () => {
+    const rows=[row(0,5),...Array.from({length:16},(_,i)=>row(2+i*.3,i%2?12:9)),row(6.8,9),row(7.1,5)];
+    const stops=build(rows);
+    assert.deepEqual(stops.map(s=>s.firstFret),[5,9,5]);
+    assert.ok(stops.timeline.filter(s=>s.firstFret===12).every(s=>s.homeX===100));
+});
+
+test('only adjacent matching ordered cycles prove a multi-lane home', () => {
+    const frets=[5,8,7,5,12,11,5,8,7,5];
+    const stops=build(frets.map((f,i)=>row(i?2+(i-1)*.3:0,f)));
+    assert.deepEqual(stops.map(s=>s.firstFret),frets);
+});
+
+test('both matching cycles must keep every away lane below the individual cutoff', () => {
+    for (const barrierIndex of [1,2,4,5]) {
+        const frets=[5,8,7,5,8,7,5],rows=[row(0,5)];
+        let time=2;
+        for (let i=1;i<frets.length;i++) { rows.push(row(time,frets[i]));time+=i===barrierIndex?.5:.3; }
+        const stops=build(rows);
+        assert.ok(stops.length>1,'a lasting lane prevents matching-cycle suppression');
+        assert.ok(stops.some(s=>s.time===rows[barrierIndex].time&&s.firstFret===frets[barrierIndex]));
+        assert.ok(stops.timeline.every(s=>s.kind!=='ignored-excursion'),
+            'one short cycle cannot prove a home when its matching cycle contains a lasting lane');
+        assert.equal(stops.timeline[barrierIndex].lasting,true);
+    }
+});
+
+test('a lasting intermediate lane blocks both forward and retrospective return suppression', () => {
+    for (const duration of [.5,.501,1.2]) for (const barrier of [8,7,4]) {
+        let time=2;
+        const rows=[row(0,5)];
+        for (const fret of [8,7,4]) { rows.push(row(time,fret));time+=fret===barrier?duration:.3; }
+        rows.push(row(time,5),row(time+.3,9));
+        const stops=build(rows),actual=stops.find(s=>s.firstFret===barrier);
+        assert.ok(actual&&actual.lasting,`${barrier} at ${duration}s must remain a destination`);
+        assert.equal(stops.timeline.find(s=>s.firstFret===barrier).kind,'lasting');
+        assert.equal(stops.at(-1).firstFret,9);
+    }
+});
+
+test('zero excursion tolerance follows every distinct lane in otherwise suppressed cycles', () => {
+    const rows=[row(0,5),row(2,8),row(2.3,7),row(2.6,4),row(2.9,5)];
+    for (const rate of [.5,1,2]) {
+        const stops=build(rows,null,rate,0);
+        assert.deepEqual(stops.map(s=>s.firstFret),[5,8,7,4,5]);
+        assert.ok(stops.every(s=>s.lasting));
+    }
 });
 
 test('same-base riff extensions hold their original focus and preserve source geometry', () => {
@@ -82,8 +168,92 @@ test('Rats short off-route overshoot bypasses its stop while ordered steps remai
     const path=build([row(0,9),row(2,10),row(2.2,11),row(2.4,12)]);
     assert.deepEqual(path.map(s=>s.firstFret),[9,10,11,12]);
     assert.deepEqual(path.map(s=>s.lasting),[true,false,false,true]);
-    const tooLong=build([row(0,9),row(2,13),row(2.3,14),row(2.6,8)]);
-    assert.deepEqual(tooLong.map(s=>s.firstFret),[9,13,14,8]);
+    const unproven=build([row(0,9),row(2,13),row(2.3,14),row(2.6,8)]);
+    assert.deepEqual(unproven.map(s=>s.firstFret),[9,13,14,8]);
+    assert.deepEqual(unproven.timeline.slice(1,3).map(s=>s.kind),['transit','transit']);
+});
+
+test('mixed off-route detours retain the ordered short path toward a new lasting destination', () => {
+    const rows=[row(0,5),row(2,3),row(2.3,6),row(2.6,13),row(2.9,8),row(3.2,14),row(3.5,10)];
+    const stops=build(rows);
+    assert.deepEqual(stops.map(s=>s.firstFret),[5,6,8,10]);
+    assert.deepEqual(stops.map(s=>s.lasting),[true,false,false,true]);
+    assert.deepEqual(stops.timeline.filter(s=>s.kind==='ignored-overshoot').map(s=>s.firstFret),[3,13,14]);
+});
+
+test('a progressive climb beyond its final lasting lane cannot disappear as one large off-route overshoot', () => {
+    const frets=[2,...Array.from({length:22},(_,i)=>i+3),3];
+    for (const descending of [false,true]) {
+        const path=frets.map(f=>descending?25-f:f);
+        const stops=build(path.map((f,i)=>row(i?2+(i-1)*.3:0,f)));
+        assert.deepEqual(stops.map(s=>s.firstFret),path);
+        assert.ok(stops.timeline.every(s=>s.kind!=='ignored-overshoot'));
+    }
+});
+
+test('a zigzag staircase travels beyond a nearby final lane without being mistaken for an off-route spike', () => {
+    const frets=[2,4,5,4,6,5,7,6,8,7,9,3];
+    for (const descending of [false,true]) {
+        const path=frets.map(f=>descending?25-f:f);
+        const stops=build(path.map((f,i)=>row(i?2+(i-1)*.3:0,f)));
+        assert.deepEqual(stops.map(s=>s.firstFret),[2,4,6,5,7,6,8,7,9,3].map(f=>descending?25-f:f));
+        assert.equal(stops.timeline[2].kind,'ignored-excursion','the first genuine local reply may remain held');
+        assert.ok(stops.timeline.every(s=>s.kind!=='ignored-overshoot'),
+            'the multi-lane staircase must not collapse into a single overshoot');
+    }
+});
+
+test('repeating and rotating a zigzag with advancing peaks and troughs preserves its progressive travel', () => {
+    const cycle=[2,4,3,5,4,6,5,7,6,8,7,9];
+    for (let rotation=0;rotation<cycle.length;rotation++) for (const descending of [false,true]) {
+        const shifted=[...cycle.slice(rotation),...cycle.slice(0,rotation)];
+        const frets=[...shifted,...shifted,shifted[0]].map(f=>descending?25-f:f);
+        const stops=build(frets.map((f,i)=>row(i?2+(i-1)*.3:0,f)));
+        assert.deepEqual(stops.map(s=>s.firstFret),frets,`rotation ${rotation}, descending ${descending}`);
+    }
+});
+
+test('varying singleton replies retain their fixed home even when the reply peaks advance', () => {
+    const frets=[5,8,5,10,5,12,5,8,5,10,5,12,5];
+    for (const descending of [false,true]) {
+        const path=frets.map(f=>descending?25-f:f);
+        const stops=build(path.map((f,i)=>row(i?2+(i-1)*.3:0,f)));
+        assert.deepEqual(stops.map(s=>s.firstFret),[path[0]]);
+        assert.ok(stops.timeline.filter(s=>s.firstFret!==path[0]).every(s=>s.kind==='ignored-excursion'));
+    }
+});
+
+test('an isolated off-route spike still holds its focus during a longer ordered progression', () => {
+    const frets=[2,3,4,5,15,6,7];
+    for (const descending of [false,true]) {
+        const path=frets.map(f=>descending?25-f:f);
+        const stops=build(path.map((f,i)=>row(i?2+(i-1)*.3:0,f)));
+        assert.deepEqual(stops.map(s=>s.firstFret),[2,3,4,5,6,7].map(f=>descending?25-f:f));
+        assert.equal(stops.timeline[4].kind,'ignored-overshoot');
+    }
+});
+
+test('rotating a repeating progressive cycle cannot hide three same-direction moves across its join', () => {
+    const pattern=[8,6,4,2,3,5,7];
+    for (let rotation=0;rotation<pattern.length;rotation++) {
+        const cycle=[...pattern.slice(rotation),...pattern.slice(0,rotation)];
+        const frets=[...cycle,...cycle,...cycle,cycle[0]];
+        const stops=build(frets.map((f,i)=>row(i?2+(i-1)*.3:0,f)));
+        assert.deepEqual(stops.map(s=>s.firstFret),frets,`rotation ${rotation} must keep travelling`);
+    }
+});
+
+test('ascending and descending runs with local micro-returns still travel to the new stable lane', () => {
+    for (const frets of [[1,2,3,4,5,6],[1,2,3,2,4,5,4,6]]) for (const descending of [false,true]) {
+        const path=frets.map(f=>descending?25-f:f);
+        const rows=path.map((f,i)=>row(i===0?0:2+(i-1)*.3,f));
+        const stops=build(rows);
+        const expected=frets.length===6?path:[1,2,4,6].map(f=>descending?25-f:f);
+        assert.deepEqual(stops.map(s=>s.firstFret),expected);
+        if (frets.length===6) assert.ok(stops.slice(1,-1).every(s=>!s.lasting));
+        else assert.equal(stops.timeline.filter(s=>s.kind==='ignored-excursion').length,2);
+        assert.equal(stops.at(-1).lasting,true);
+    }
 });
 
 test('fit callbacks and distance never veto a semantic destination or remote ignored excursion', () => {
@@ -172,32 +342,37 @@ test('a complete local return does not require a lasting individual home dwell',
 
 test('incoming local home owns nested returns without suppressing onward progression', () => {
     const stops=build([row(0,5),row(.1,8),row(.2,10),row(.3,8),row(.4,5),
-        row(.6,6),row(.8,7),row(1,6),row(1.2,8),row(1.4,9)],null,1,1000);
+        row(.5,8),row(.6,10),row(.7,8),row(.8,5),
+        row(1,6),row(1.2,7),row(1.4,6),row(1.6,8),row(1.8,9)],null,1,1000);
     assert.deepEqual(stops.map(s=>s.firstFret),[5,6,8,9]);
-    assert.deepEqual(stops.timeline.slice(1,4).map(s=>s.homeX),[60,60,60]);
-    assert.equal(stops.timeline[6].homeX,70);
+    assert.ok(stops.timeline.filter(s=>s.time<.8&&s.firstFret!==5).every(s=>s.homeX===60));
+    assert.equal(stops.timeline.find(s=>s.time===1.2).homeX,70);
     assert.equal(stops.at(-1).firstFret,9);
 });
 
 function shortHomeFixture() {
-    const rows=[[0,15],[1.4,8],[1.55,7],[1.7,5],[2.16,4],[2.93,5],[3.24,7],[3.4,8],
-        [3.87,5],[4.17,8],[4.47,7],[4.77,4],[5.07,5],[5.97,12],
-        [6.27,5],[6.57,8],[6.87,7],[7.17,4],[7.47,5],[8.67,2]].map(([time,fret])=>row(time,fret));
-    return {rows,context:{sections:[{time:3.87,name:'riff'},{time:6.27,name:'riff'}]}};
+    const values=[[0,15],[1.4,8],[1.55,7],[1.7,5],[2.16,4],[2.93,5],[3.24,7],[3.4,8]];
+    for (const start of [3.87,8.67]) {
+        for (let i=0;i<12;i++) values.push([start+i*.3,[5,8,7,4][i%4]]);
+        values.push([start+3.6,5]);
+    }
+    values.push([8.37,12],[13.47,2]);
+    const rows=values.sort((a,b)=>a[0]-b[0]).map(([time,fret])=>row(time,fret));
+    return {rows,context:{sections:[{time:3.87,name:'riff'},{time:8.67,name:'riff'}]}};
 }
 
 test('proven section entry resolves overlapping homes and merges their effective hold', () => {
-    for (const threshold of [1000,1500,2000,2500,3000]) {
+    for (const threshold of [500,1000,1500,2000,2500,3000]) {
         const {rows,context}=shortHomeFixture();
         context.sections.push({time:3.87,name:'duplicate'});
         const stops=build(freeze(rows),freeze(context),1,threshold);
-        const inside=stops.timeline.filter(s=>s.time>=3.87&&s.time<8.67);
+        const inside=stops.timeline.filter(s=>s.time>=3.87&&s.time<13.47);
         assert.ok(inside.every(s=>s.firstFret===5||s.kind==='ignored-excursion'),threshold);
         assert.ok(inside.filter(s=>s.firstFret!==5).every(s=>s.homeX===60),threshold);
-        const home=stops.find(s=>s.firstFret===5&&s.time<=3.87&&s.end>7.47);
+        const home=stops.find(s=>s.firstFret===5&&s.time<=3.87&&s.end>12.27);
         assert.ok(home,threshold);
         assert.equal(home.lasting,true,threshold);
-        assert.ok(home.duration>=8.67-3.87-1e-9,threshold);
+        assert.ok(home.duration>=13.47-3.87-1e-9,threshold);
         assert.equal(home.reason,'lasting');
     }
 });
@@ -208,11 +383,8 @@ test('raising the threshold keeps proven brief replies suppressed as home dwells
         const reply=stops.timeline.find(s=>s.firstFret===12);
         assert.equal(reply.kind,'ignored-excursion',threshold);
         assert.equal(reply.homeX,60,threshold);
-        if (threshold===500) {
-            assert.ok(stops.some(s=>s.time<=4.17&&s.end>=4.47&&s.firstFret===8));
-            assert.ok(stops.some(s=>s.time===4.47&&s.firstFret===7));
-            assert.ok(stops.some(s=>s.time===4.77&&s.firstFret===4));
-        }
+        assert.ok(stops.timeline.filter(s=>s.time>=3.87&&s.time<13.47&&s.firstFret!==5)
+            .every(s=>s.kind==='ignored-excursion'&&s.homeX===60));
     }
 });
 

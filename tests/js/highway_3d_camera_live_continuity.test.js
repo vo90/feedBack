@@ -69,6 +69,34 @@ test('rapid threshold edits preserve pose and converge after the last edit witho
     near(atWaypoint.x, 130, 'later waypoint is reached without a loop reset');
 });
 
+test('live per-lane threshold changes settle repeated riffs at both presets and every playback speed', () => {
+    const timeline=[{time:0,minX:40,maxX:80}];
+    for (let i=0;i<64;i++) {
+        const fret=[8,7,4,5][i%4];
+        timeline.push({time:4+i*.3,minX:(fret-1)*10,maxX:(fret+3)*10});
+    }
+    timeline.push({time:24,minX:150,maxX:190});
+    for (const preset of ['straight','angled']) for (const rate of [.5,1,2]) {
+        const h=controller(250,rate,preset,timeline);
+        let time=4.15,state=advance(h,0,time,rate);
+        for (const threshold of [500,900,350,250,500,1000,3000]) {
+            const before=state;
+            h.settings({excursionThreshold:threshold});state=h.frame(time,0);
+            assertContinuous(before,state);
+            state=advance(h,time,time+.71*rate,rate);time+=.71*rate;
+            assertRejoined(h,state);
+            if (threshold>300) {
+                near(state.x,60,`held riff at ${threshold}ms/${rate}x/${preset}`);
+                near(velocity(state),0,'the effective home remains still');
+            } else {
+                assert.ok(h.planCache().stops.some(s=>s.x!==60&&s.time<23),
+                    'lowering below individual lane duration must restore the riff movements');
+            }
+            state=advance(h,time,time+.1*rate,rate);time+=.1*rate;
+        }
+    }
+});
+
 test('an edit that removes the current move rejoins the held lane instead of departing for a far future move', () => {
     const timeline = [[0, 1], [4, 9], [4.6, 1], [10, 17]]
         .map(([time, fret]) => ({ time, minX: (fret - 1) * 10, maxX: (fret + 3) * 10 }));
