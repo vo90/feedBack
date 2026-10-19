@@ -24,7 +24,8 @@ const api = new Function(`
 `)();
 const row = (time, fret, width = 4, extra = {}) => ({time, firstFret:fret, lastFret:fret+width-1,
     minX:(fret-1)*10, maxX:(fret+width-1)*10, preferred:(fret+1)*10, x:(fret+1)*10, ...extra});
-const build = (rows, context = null, rate = 1) => api.stops(rows, rate, () => false, null, null, null, context);
+const build = (rows, context = null, rate = 1, threshold = 500) =>
+    api.stops(rows, rate, () => false, null, null, null, context, threshold);
 const positions = stops => stops.map(s => [s.time,s.firstFret,s.lasting]);
 function freeze(value) {
     if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); }
@@ -155,6 +156,88 @@ test('short alternation retains the incoming home until a lasting new position b
     const stops=build([row(0,5),row(2,9),row(2.3,5),row(2.6,9),row(2.9,5),row(3.2,9)]);
     assert.deepEqual(positions(stops),[[0,5,true],[3.2,9,true]]);
     assert.deepEqual(stops.timeline.filter(s=>s.kind==='ignored-excursion').map(s=>s.time),[2,2.6]);
+});
+
+test('a complete local return does not require a lasting individual home dwell', () => {
+    const stops=build([row(0,15),row(2,5),row(2.2,12),row(2.5,5),row(2.7,7)],null,1,1000);
+    assert.deepEqual(stops.map(s=>s.firstFret),[15,5,7]);
+    assert.equal(stops.timeline[2].kind,'ignored-excursion');
+    assert.equal(stops.timeline[2].homeX,60);
+    assert.equal(stops[1].lasting,false);
+    for (const duration of [1,1.001]) {
+        const exact=build([row(0,15),row(2,5),row(2.2,12),row(2.2+duration,5)],null,1,1000);
+        assert.equal(exact.find(s=>s.firstFret===12).lasting,true);
+    }
+});
+
+test('incoming local home owns nested returns without suppressing onward progression', () => {
+    const stops=build([row(0,5),row(.1,8),row(.2,10),row(.3,8),row(.4,5),
+        row(.6,6),row(.8,7),row(1,6),row(1.2,8),row(1.4,9)],null,1,1000);
+    assert.deepEqual(stops.map(s=>s.firstFret),[5,6,8,9]);
+    assert.deepEqual(stops.timeline.slice(1,4).map(s=>s.homeX),[60,60,60]);
+    assert.equal(stops.timeline[6].homeX,70);
+    assert.equal(stops.at(-1).firstFret,9);
+});
+
+function shortHomeFixture() {
+    const rows=[[0,15],[1.4,8],[1.55,7],[1.7,5],[2.16,4],[2.93,5],[3.24,7],[3.4,8],
+        [3.87,5],[4.17,8],[4.47,7],[4.77,4],[5.07,5],[5.97,12],
+        [6.27,5],[6.57,8],[6.87,7],[7.17,4],[7.47,5],[8.67,2]].map(([time,fret])=>row(time,fret));
+    return {rows,context:{sections:[{time:3.87,name:'riff'},{time:6.27,name:'riff'}]}};
+}
+
+test('proven section entry resolves overlapping homes and merges their effective hold', () => {
+    for (const threshold of [1000,1500,2000,2500,3000]) {
+        const {rows,context}=shortHomeFixture();
+        context.sections.push({time:3.87,name:'duplicate'});
+        const stops=build(freeze(rows),freeze(context),1,threshold);
+        const inside=stops.timeline.filter(s=>s.time>=3.87&&s.time<8.67);
+        assert.ok(inside.every(s=>s.firstFret===5||s.kind==='ignored-excursion'),threshold);
+        assert.ok(inside.filter(s=>s.firstFret!==5).every(s=>s.homeX===60),threshold);
+        const home=stops.find(s=>s.firstFret===5&&s.time<=3.87&&s.end>7.47);
+        assert.ok(home,threshold);
+        assert.equal(home.lasting,true,threshold);
+        assert.ok(home.duration>=8.67-3.87-1e-9,threshold);
+        assert.equal(home.reason,'lasting');
+    }
+});
+
+test('raising the threshold keeps proven brief replies suppressed as home dwells cease lasting', () => {
+    for (const threshold of [500,600,800,900,901,950,1000,1100,2000,3000]) {
+        const {rows,context}=shortHomeFixture(),stops=build(rows,context,1,threshold);
+        const reply=stops.timeline.find(s=>s.firstFret===12);
+        assert.equal(reply.kind,'ignored-excursion',threshold);
+        assert.equal(reply.homeX,60,threshold);
+        if (threshold===500) {
+            assert.ok(stops.some(s=>s.time<=4.17&&s.end>=4.47&&s.firstFret===8));
+            assert.ok(stops.some(s=>s.time===4.47&&s.firstFret===7));
+            assert.ok(stops.some(s=>s.time===4.77&&s.firstFret===4));
+        }
+    }
+});
+
+test('section markers alone cannot reset a valid home or create excursion evidence', () => {
+    const rows=[row(0,5),row(2,12),row(2.3,5),row(4,12),row(4.3,5),row(6,7)];
+    for (const sections of [[],[{time:2,name:'riff'}],[{time:1,name:'riff'}],
+        [{time:2.3,name:'riff'},{time:4.3,name:'riff'}]]) {
+        const stops=build(rows,{sections},1,1000);
+        assert.deepEqual(stops.map(s=>s.firstFret),[5,7]);
+        assert.ok(stops.timeline.filter(s=>s.firstFret===12).every(s=>s.homeX===60));
+    }
+    const progress=build([row(0,1),row(.2,3),row(.4,2),row(.6,4),row(.8,6)],
+        {sections:[{time:.2,name:'riff'}]},1,3000);
+    assert.deepEqual(progress.map(s=>s.firstFret),[1,3,2,4,6]);
+});
+
+test('dense short return cycles have one effective home and preserve raw row durations', () => {
+    const rows=Array.from({length:20000},(_,i)=>row(i*.1,i%2?12:5));
+    rows.push(row(2000,5),row(2002,9));
+    const stops=build(rows,null,1,3000);
+    assert.deepEqual(stops.map(s=>s.firstFret),[5,9]);
+    assert.equal(stops[0].lasting,true);
+    assert.equal(stops[0].duration,2002);
+    assert.equal(stops.timeline[0].duration,.1);
+    assert.equal(stops.timeline[1].kind,'ignored-excursion');
 });
 
 test('a repeated high passage is insufficient evidence for an established lower home variation', () => {

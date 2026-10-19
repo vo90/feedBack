@@ -11,6 +11,9 @@
 // --range Name=start,end limits a focused song/performance passage.
 // --songs-only / --synthetic-only, --perf, --moving-perf, --lifecycle are optional.
 // --tuning-ui checks the live panel and captures wide/narrow screenshots on sustained cases.
+// --live-consistency exercises committed threshold edits during playback, pause,
+// Follow and rate changes, then loop wrap. Use --range to select a private passage.
+// --live-home Name=fret additionally checks a known local riff stays there at 1000/3000ms.
 // Repeat --setting stableCameraDepartureDelay=0 etc. to exercise camera controls.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -67,12 +70,25 @@ for(let i=0;i<5;i++) { const t=6+i*2;
   for(const [offset,f]of [[0,5],[.3,7],[.6,8],[1,5],[1.75,3]])riffNotes.push(note({t:t+offset,f}));
 }
 fixtures.push({name:'rooted-riff',kind:'held',start:4,end:18,b:base({anchors:riffAnchors,notes:riffNotes})});
+if(args.includes('--live-consistency')) {
+  const anchors=[{time:0,fret:5,width:4}],notes=[];
+  for(let i=0;i<32;i++) {
+    const time=6+i*.3,fret=[5,8,7,4][i%4];
+    anchors.push({time,fret,width:4});notes.push(note({t:time,f:fret,sus:.1}));
+  }
+  // A distant future destination must not hijack a local correction when
+  // playback speed changes while the current passage holds its home lane.
+  anchors.push({time:15.6,fret:5,width:4},{time:22,fret:2,width:4});
+  fixtures.push({name:'live-cycle',kind:'live-cycle',start:4,end:18,b:base({anchors,notes})});
+}
 
 const captures = new Map(repeated('--captures').map(value => { const at=value.indexOf('=');
   assert.ok(at>0,'--captures Name=seconds,seconds');return [value.slice(0,at),value.slice(at+1).split(',').map(Number)]; }));
 const ranges = new Map(repeated('--range').map(value => { const at=value.indexOf('='),range=value.slice(at+1).split(',').map(Number);
   assert.ok(at>0&&range.length===2&&range.every(Number.isFinite)&&range[1]>range[0],'--range Name=start,end');
   return [value.slice(0,at),range]; }));
+const liveHomes = new Map(repeated('--live-home').map(value=>{const at=value.indexOf('='),fret=Number(value.slice(at+1));
+  assert.ok(at>0&&Number.isInteger(fret)&&fret>=1&&fret<=24,'--live-home Name=fret');return [value.slice(0,at),fret];}));
 const songs = repeated('--songs').map(value => {
   const at=value.indexOf('='); const file=path.resolve(at>0?value.slice(at+1):value);
   const name=at>0?value.slice(0,at):path.basename(file,'.json');
@@ -91,7 +107,7 @@ for(const fixture of inputs)for(const preset of presets)for(const rate of rates)
   if(option('--case')&&!option('--case').split(',').some(part=>name.includes(part)))continue;
   const range=ranges.get(fixture.name),start=Math.max(fixture.start,range?.[0]??fixture.start),end=Math.min(fixture.end,range?.[1]??fixture.end);
   assert.ok(end>start,'Selected range must intersect the fixture');
-  cases.push({...fixture,name,sourceName:fixture.name,start,end,preset,rate,viewport,cameraSettings,fps:Number(option(fixture.kind==='song'?'--song-fps':'--fps',fixture.kind==='song'?'10':'30'))});
+  cases.push({...fixture,name,sourceName:fixture.name,start,end,preset,rate,viewport,cameraSettings,liveHome:liveHomes.get(fixture.name),fps:Number(option(fixture.kind==='song'?'--song-fps':'--fps',fixture.kind==='song'?'10':'30'))});
 }
 assert.ok(cases.length,'No cases selected');
 
@@ -122,6 +138,10 @@ function instrument(input) {
         requiredRegionDistance,requiredVisibleDistance};
     },
     __lanePlan(){return {stops:_stablePlan.stops.map(r=>({...r})),motion:(_stablePlan.stops.motion||[]).map(r=>({...r})),regions:_stablePlan.regions.map(r=>({...r})),timeline:(_stablePlan.timeline||[]).map(r=>({...r}))};},
+    __laneLiveAudit(){const s=_stableCam,p=_stablePlan.result;return {time:_frameNow,x:s.x,distance:s.distance,
+      velocity:(s.planVelocity||0)+(s.rejoinVelocity||0),plannedX:s.planX,plannedVelocity:s.planVelocity,
+      following:s.following,clockReset:s.clockReset,rate:_stablePlan.rate,revision:p.revision,transit:p.transit,
+      arrivalTime:p.arrivalTime,arrivalX:p.arrivalX,rejoinEnd:s.rejoinEnd,resumeUntil:s.resumeUntil};},
     __laneDisableGpu(){this.__laneGpu=ren.render.bind(ren);ren.render=()=>{};},
     __laneCapture(){this.__laneGpu(scene,cam);return ren.domElement.toDataURL('image/png');},
     __laneCpu(count){const a=[];for(let i=0;i<count+30;i++){window.__wall+=1000/60;const t=window.__realNow();camUpdate(window.bundle);if(i>=30)a.push(window.__realNow()-t);}return a;},
@@ -266,10 +286,115 @@ async function validateTuningUi(page,c) {
   return {layout,lifecycle};
 }
 
+async function validateLiveConsistency(page,c) {
+  assert.ok(c.end-c.start>3,'Live consistency needs a passage longer than three source seconds');
+  const runs=await page.evaluate(async c=>{
+    const records=[];
+    const audit=()=>r.__laneLiveAudit();
+    const advance=(end,history=[])=>{
+      while(bundle.currentTime<end-1e-9) {
+        const time=Math.min(end,bundle.currentTime+bundle.playbackRate/60);
+        window.__wall+=(time-bundle.currentTime)/bundle.playbackRate*1000;
+        bundle.currentTime=time;r.draw(bundle);history.push(audit());
+      }
+      return audit();
+    };
+    const control=key=>document.querySelector('[data-camera-setting="'+key+'"][data-camera-input="number"]');
+    const commit=value=>{const input=control('stableCameraExcursionThreshold');input.value=String(value);
+      input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));};
+    const follow=value=>{const input=document.querySelector('[data-camera-setting="stableCameraFollow"]');
+      input.checked=value;input.dispatchEvent(new Event('change',{bubbles:true}));r.draw(bundle);};
+    const reset=async()=>{
+      r.destroy();window.__wall=1000;window.h3dBgSetStableCameraFollow(true);
+      window.h3dBgSetStableCameraExcursionThreshold(500);
+      window.bundle={...c.b,currentTime:c.start,playbackRate:c.rate,isPlaying:true};
+      window.r=feedBackViz_highway_3d();r.init(document.getElementById('highway'),bundle);
+      await r.readyPromise;r.__laneDisableGpu();r.draw(bundle);
+      document.querySelector('[data-camera-tuning-toggle]').click();
+    };
+    for(const mode of ['playing','paused','follow','rate','rapid']) {
+      await reset();const changes=[];
+      for(const [index,value]of [1000,3000,500].entries()) {
+        const target=mode==='rapid'?c.start+(c.end-c.start)*.2+index*.12*c.rate
+          :c.start+(c.end-c.start)*[.15,.4,.65][index];
+        advance(Math.max(bundle.currentTime,target));
+        if(mode==='paused'){bundle.isPlaying=false;r.draw(bundle);}
+        const before=audit();commit(value);r.draw(bundle);const after=audit();
+        const change={value,before,after,stored:localStorage.getItem('h3d_bg_stableCameraExcursionThreshold'),history:[]};
+        if(c.liveHome) {
+          // Entry and next-section anticipation may straddle a manually chosen loop.
+          const start=c.start+.4,end=c.end-.4,plan=r.__lanePlan(),prior=plan.stops.filter(s=>s.time<=start).at(-1);
+          change.home={start,end,expected:plan.regions.find(s=>s.firstFret===c.liveHome)?.preferred,
+            stops:[...(prior?[prior]:[]),...plan.stops.filter(s=>s.time>start&&s.time<end)].map(s=>({time:s.time,x:s.x})),
+            motion:plan.motion.filter(s=>s.start<end&&s.end>start).map(s=>({start:s.start,end:s.end,from:s.from,to:s.to}))};
+        }
+        if(mode==='rapid'&&index<2){changes.push(change);continue;}
+        if(mode==='paused') {
+          window.__wall+=500;r.draw(bundle);change.held=audit();
+          bundle.isPlaying=true;r.draw(bundle);change.resume=audit();
+        } else if(mode==='follow') {
+          advance(bundle.currentTime+.15*bundle.playbackRate,change.history);follow(false);
+          change.heldBefore=audit();advance(bundle.currentTime+.2*bundle.playbackRate);
+          change.held=audit();follow(true);change.resume=audit();
+        } else if(mode==='rate') {
+          advance(bundle.currentTime+.15*bundle.playbackRate,change.history);change.rateBefore=audit();
+          bundle.playbackRate=bundle.playbackRate===2?.5:2;r.draw(bundle);change.resume=audit();
+        }
+        change.rejoinStart=bundle.currentTime;
+        change.converged=advance(bundle.currentTime+.7*bundle.playbackRate,change.history);
+        change.afterConvergence=advance(bundle.currentTime+.2*bundle.playbackRate,change.history);
+        changes.push(change);
+      }
+      advance(c.end);const beforeWrap=audit();
+      window.__wall+=1000/60;bundle.currentTime=c.start;r.draw(bundle);const wrapped=audit();
+      const wrapHistory=[];advance(Math.min(c.end,c.start+1.1*bundle.playbackRate),wrapHistory);
+      records.push({mode,changes,beforeWrap,wrapped,wrapHistory});
+    }
+    return records;
+  },c);
+  for(const run of runs) {
+    for(const change of run.changes) {
+      const evidence={mode:run.mode,value:change.value,before:change.before,after:change.after};
+      check(Number(change.stored)===change.value,c.name,'Live threshold edit was not committed',evidence);
+      check(Math.abs(change.before.x-change.after.x)<1e-8,c.name,'Live threshold edit jumped horizontally',evidence);
+      if(change.home) {
+        const held=change.home.stops.every(s=>Math.abs(s.x-change.home.expected)<1e-8)
+          &&change.home.motion.every(s=>Math.abs(s.from-change.home.expected)<1e-8&&Math.abs(s.to-change.home.expected)<1e-8);
+        check(change.value===500?!held:held,c.name,change.value===500
+          ?'The ordinary threshold incorrectly suppressed the known local riff movements'
+          :'The wider threshold did not consistently retain the known local riff home',
+          {mode:run.mode,value:change.value,home:change.home});
+      }
+      if(run.mode!=='paused')check(Math.abs(change.before.velocity-change.after.velocity)<1e-7,c.name,'Live threshold edit broke velocity continuity',evidence);
+      if(change.held) {
+        const before=change.heldBefore||change.after;
+        check(change.held.x===before.x&&change.held.distance===before.distance,c.name,'Pause or Follow-off did not hold the live-edit pose',{mode:run.mode,before,after:change.held});
+        check(Math.abs(change.resume.x-change.held.x)<1e-8,c.name,'Resuming a live edit jumped horizontally',{mode:run.mode,held:change.held,resume:change.resume});
+      }
+      if(change.rateBefore)check(Math.abs(change.rateBefore.x-change.resume.x)<1e-8&&Math.abs(change.rateBefore.velocity-change.resume.velocity)<1e-7,
+        c.name,'Changing speed during a live correction broke pose or velocity continuity',{before:change.rateBefore,after:change.resume});
+      if(change.converged) {
+        for(const sample of [change.converged,change.afterConvergence]) {
+          check(Math.abs(sample.x-sample.plannedX)<1e-7&&Math.abs(sample.velocity-sample.plannedVelocity)<1e-6,
+            c.name,'Live edit did not rejoin the current plan within 700ms without seeking',{mode:run.mode,value:change.value,rejoinStart:change.rejoinStart,sample});
+        }
+        check(change.history.every(s=>!s.clockReset&&[s.x,s.distance,s.velocity].every(Number.isFinite)),c.name,
+          'Live-edit convergence required a seek or produced non-finite state',{mode:run.mode,value:change.value});
+      }
+    }
+    check(Math.abs(run.wrapped.x-run.wrapped.plannedX)<1e-8&&run.wrapped.clockReset,c.name,
+      'Loop wrap retained an obsolete live correction',{mode:run.mode,sample:run.wrapped});
+    check(run.wrapHistory.every(s=>Math.abs(s.x-s.plannedX)<1e-7),c.name,
+      'Loop playback diverged again after a live edit',{mode:run.mode});
+  }
+  return runs;
+}
+
 async function main() {
   fs.mkdirSync(out,{recursive:true});
   fs.writeFileSync(path.join(out,'source.sha256'),sha(source)+'\n');
-  const browser=await chromium.launch({headless:true,args:['--enable-unsafe-swiftshader']});
+  const browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
+    args:['--enable-unsafe-swiftshader']});
   try {
     const page=await browser.newPage();
     page.on('pageerror',e=>errors.push(e.stack));
@@ -370,11 +495,12 @@ async function main() {
         check(moving.resumeHistory.every((s,i)=>!i||s.x>=moving.resumeHistory[i-1].x-1e-8),c.name,'Resuming Follow caused a reverse excursion');
       }
       const tuningUi=args.includes('--tuning-ui')&&c.kind==='arrival'?await validateTuningUi(page,c):undefined;
+      const liveConsistency=args.includes('--live-consistency')?await validateLiveConsistency(page,c):undefined;
       const run={name:c.name,sourceName:c.sourceName,kind:c.kind,preset:c.preset,rate:c.rate,fps:c.fps,viewport:c.viewport,start:c.start,end:c.end,cameraSettings:c.cameraSettings,tuningUi,
-        chartHash:c.chartHash,sourceHash:sha(source),metrics:summary(samples),boundaries,performanceDiagnostics,lifecycle,
+        chartHash:c.chartHash,sourceHash:sha(source),metrics:summary(samples),boundaries,performanceDiagnostics,lifecycle,liveConsistency,
         classification:initial.plan.timeline.map(s=>({time:s.time,end:s.end,duration:s.duration,firstFret:s.firstFret,kind:s.kind,lasting:s.lasting})),plan:initial.plan,samples};
       fs.writeFileSync(path.join(out,c.name+'.json'),JSON.stringify(run));
-      results.push({...run,plan:undefined,samples:undefined,lifecycle:undefined});
+      results.push({...run,plan:undefined,samples:undefined,lifecycle:undefined,liveConsistency:undefined});
       console.log(JSON.stringify({name:c.name,...run.metrics,boundaries:boundaries.length,failures:failures.filter(f=>f.name===c.name).length}));
     }
   } finally {await browser.close();}
