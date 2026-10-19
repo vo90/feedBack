@@ -3948,7 +3948,7 @@
     function hwyBuildCameraTimeline(regions, context = null, excursionThreshold = 500) {
         context = context || {};
         const threshold = Number(excursionThreshold);
-        const brief = Math.max(0, Math.min(1000, Number.isFinite(threshold) ? threshold : 500)) / 1000;
+        const brief = Math.max(0, Math.min(3000, Number.isFinite(threshold) ? threshold : 500)) / 1000;
         const spans = [];
         for (let i = 0; i < (regions?.length || 0); i++) {
             const row = regions[i], preferred = Number.isFinite(row?.preferred) ? row.preferred : row?.x;
@@ -4123,7 +4123,7 @@
     function hwyBuildCameraMotion(stops, rate, smoothing, departureDelay = 0, travelExtra = 0, settleLimit = 250, longSwitchFrets = 5) {
         const segments = [];
         const base = 0.6 + Math.max(0, Math.min(1, smoothing)) * 0.2;
-        const fretThreshold = Math.max(1, Math.min(12, Math.round(Number(longSwitchFrets) || 5)));
+        const fretThreshold = Math.max(1, Math.min(24, Math.round(Number(longSwitchFrets) || 5)));
         let first = 0;
         while (first + 1 < stops.length) {
             let last = first + 1;
@@ -4153,9 +4153,9 @@
             for (let i = groupStart; i < segments.length; i++) segments[i].arrivalIndex = segments.length - 1;
             first = last;
         }
-        const delay = Math.max(0, Math.min(200, Number(departureDelay) || 0)) / 1000 * rate;
-        const extraFraction = Math.max(0, Math.min(30, Number(travelExtra) || 0)) / 100;
-        const lateLimit = Math.max(0, Math.min(400, Number(settleLimit) || 0)) / 1000 * rate;
+        const delay = Math.max(0, Math.min(1000, Number(departureDelay) || 0)) / 1000 * rate;
+        const extraFraction = Math.max(0, Math.min(200, Number(travelExtra) || 0)) / 100;
+        const lateLimit = Math.max(0, Math.min(3000, Number(settleLimit) || 0)) / 1000 * rate;
         // Tune only complete direct moves after the nominal path is known.
         // Scale both requests together when a later move leaves less room:
         // never shorten a pan or push it into a following transit chain.
@@ -6553,11 +6553,11 @@
     // shaped settings share the same parse + clamp behaviour.
     const _BG_FLOAT_KEYS = new Set(['intensity', 'cameraSmoothing', 'zoomSmoothing', 'tiltSmoothing', 'cameraLockZoom', 'textSize', 'vibrancy', 'glow', 'chordDiagramSize', 'sectionHudSize', 'toneHudSize', 'hitFx', 'trailYieldMinScale', 'trailYieldLeadTime', 'trailYieldTaperDuration', 'trailYieldHoldAfter', 'trailYieldRecoverDuration', 'trailYieldEndLeadTime', 'trailYieldEndTaperDuration', 'trailYieldSameStringMaxGap', 'trailYieldSameStringLeadTime']);
     function _bgCoerce(key, val) {
-        const stableRange = key === 'stableCameraDepartureDelay' ? [0, 200, 25]
-            : key === 'stableCameraTravelExtra' ? [0, 30, 5]
-            : key === 'stableCameraSettleLimit' ? [0, 400, 25]
-            : key === 'stableCameraExcursionThreshold' ? [0, 1000, 50]
-            : key === 'stableCameraLongSwitchFrets' ? [1, 12, 1] : null;
+        const stableRange = key === 'stableCameraDepartureDelay' ? [0, 1000, 25]
+            : key === 'stableCameraTravelExtra' ? [0, 200, 5]
+            : key === 'stableCameraSettleLimit' ? [0, 3000, 25]
+            : key === 'stableCameraExcursionThreshold' ? [0, 3000, 50]
+            : key === 'stableCameraLongSwitchFrets' ? [1, 24, 1] : null;
         if (stableRange) {
             const n = parseFloat(val);
             return Number.isFinite(n)
@@ -6715,12 +6715,13 @@
         const actions = element('div', '', 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;');
         fields.appendChild(actions);
         fields.appendChild(element('p', 'Release a slider to apply. Timing controls affect long direct switches.', 'margin:0 0 8px;color:#adc0d7;'));
+        fields.appendChild(element('p', 'The settling limit or next move may reduce the timing effect.', 'margin:0 0 8px;color:#adc0d7;'));
         const rows = [
-            ['stableCameraDepartureDelay', 'Departure delay (ms)', 0, 200, 25],
-            ['stableCameraTravelExtra', 'Extra travel time (%)', 0, 30, 5],
-            ['stableCameraSettleLimit', 'Maximum settling time (ms)', 0, 400, 25],
-            ['stableCameraExcursionThreshold', 'Short-excursion threshold (ms)', 0, 1000, 50],
-            ['stableCameraLongSwitchFrets', 'Long switch: minimum fret change', 1, 12, 1],
+            ['stableCameraDepartureDelay', 'Departure delay (ms)', 0, 1000, 25],
+            ['stableCameraTravelExtra', 'Extra travel time (%)', 0, 200, 5],
+            ['stableCameraSettleLimit', 'Maximum settling time (ms)', 0, 3000, 25],
+            ['stableCameraExcursionThreshold', 'Short-excursion threshold (ms)', 0, 3000, 50],
+            ['stableCameraLongSwitchFrets', 'Long switch: minimum fret change', 1, 24, 1],
         ];
         const read = key => _bgReadSetting(_bgPanelKey(getCanvas()), key);
         const write = (key, value) => _bgWriteScoped(_bgPanelKey(getCanvas()), key, value);
@@ -25850,15 +25851,15 @@
         { key: 'stableCameraFollow', label: 'Follow hand position (Stable)', type: 'toggle',
             default: BG_DEFAULTS.stableCameraFollow },
         { key: 'stableCameraDepartureDelay', label: 'Stable departure delay (ms)', type: 'range',
-            min: 0, max: 200, step: 25, default: BG_DEFAULTS.stableCameraDepartureDelay },
+            min: 0, max: 1000, step: 25, default: BG_DEFAULTS.stableCameraDepartureDelay },
         { key: 'stableCameraTravelExtra', label: 'Stable extra travel time (%)', type: 'range',
-            min: 0, max: 30, step: 5, default: BG_DEFAULTS.stableCameraTravelExtra },
+            min: 0, max: 200, step: 5, default: BG_DEFAULTS.stableCameraTravelExtra },
         { key: 'stableCameraSettleLimit', label: 'Stable maximum settling time (ms)', type: 'range',
-            min: 0, max: 400, step: 25, default: BG_DEFAULTS.stableCameraSettleLimit },
+            min: 0, max: 3000, step: 25, default: BG_DEFAULTS.stableCameraSettleLimit },
         { key: 'stableCameraExcursionThreshold', label: 'Stable short-excursion threshold (ms)', type: 'range',
-            min: 0, max: 1000, step: 50, default: BG_DEFAULTS.stableCameraExcursionThreshold },
+            min: 0, max: 3000, step: 50, default: BG_DEFAULTS.stableCameraExcursionThreshold },
         { key: 'stableCameraLongSwitchFrets', label: 'Long switch: minimum fret change (Stable)', type: 'range',
-            min: 1, max: 12, step: 1, default: BG_DEFAULTS.stableCameraLongSwitchFrets },
+            min: 1, max: 24, step: 1, default: BG_DEFAULTS.stableCameraLongSwitchFrets },
         {
             key: 'notationStyle', label: 'Notation style', type: 'select',
             options: [{ id: 'current', label: 'Current' }, { id: 'rsplus', label: 'RS+ inspired' }],

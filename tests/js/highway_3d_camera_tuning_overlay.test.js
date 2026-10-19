@@ -135,7 +135,7 @@ test('live tuning opens from saved settings without writing and commits slider c
 test('live numeric controls coerce values through production storage and hydrate after reopening', () => {
     const h = load({h3d_bg_cameraMode: 'stable', h3d_bg_stableCameraDepartureDelay: '50'}), o = h.create();
     o.toggle.click();
-    for (const [key, raw, expected] of [[keys[0], '112', 100], [keys[1], '999', 30],
+    for (const [key, raw, expected] of [[keys[0], '112', 100], [keys[1], '999', 200],
         [keys[2], '-25', 0], [keys[3], '743', 750], [keys[4], '0', 1]]) {
         const input = o.input(key, 'number'); input.value = raw; input.emit('change');
         assert.equal(Number(o.input(key).value), expected);
@@ -143,11 +143,30 @@ test('live numeric controls coerce values through production storage and hydrate
         assert.equal(h.data.get(stored(key)), String(expected));
     }
     o.toggle.click(); o.toggle.click();
-    assert.deepEqual(values(o), [100, 30, 0, 750, 1]);
+    assert.deepEqual(values(o), [100, 200, 0, 750, 1]);
     o.destroy();
     const reopened = h.create();
-    assert.deepEqual(values(reopened), [100, 30, 0, 750, 1]);
+    assert.deepEqual(values(reopened), [100, 200, 0, 750, 1]);
     assert.equal(h.writes.length, 5);
+});
+
+test('all expanded live ranges accept and persist their upper limits without the previous clamps', () => {
+    const h = load({h3d_bg_cameraMode: 'stable'}), o = h.create(), maxima = [1000, 200, 3000, 3000, 24];
+    o.toggle.click();
+    for (const [index, key] of keys.entries()) {
+        const range = o.input(key), number = o.input(key, 'number');
+        assert.equal(Number(range.max), maxima[index]);
+        assert.equal(Number(number.max), maxima[index]);
+        number.value = String(maxima[index]); number.emit('change');
+        assert.equal(h.api.read('main', key), maxima[index]);
+        assert.equal(h.data.get(stored(key)), String(maxima[index]));
+        number.value = '99999'; number.emit('change');
+        assert.equal(Number(number.value), maxima[index]);
+    }
+    assert.deepEqual(values(o), maxima);
+    assert.equal(h.writes.length, 5, 'clamping an oversized edit to the current value is a no-op');
+    o.destroy();
+    assert.deepEqual(values(h.create()), maxima);
 });
 
 test('comparison buttons persist all five settings and restore previous or gentler tuning', () => {

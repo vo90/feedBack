@@ -236,9 +236,9 @@ test('tuning previews slider values then commits once through the live setter on
 
 test('advanced numeric controls persist, clamp invalid input, and hydrate on reopen', () => {
     const h = load({ h3d_bg_cameraMode: 'stable', h3d_bg_stableCameraTravelExtra: 'garbage',
-        h3d_bg_stableCameraSettleLimit: '999', h3d_bg_stableCameraLongSwitchFrets: '0' });
+        h3d_bg_stableCameraSettleLimit: '9999', h3d_bg_stableCameraLongSwitchFrets: '0' });
     assert.equal(h.el('stable-travel-extra').value, '10');
-    assert.equal(h.el('stable-settle-limit').value, '400');
+    assert.equal(h.el('stable-settle-limit').value, '3000');
     assert.equal(h.el('stable-long-switch-frets').value, '1');
     h.el('stable-excursion-threshold-value').value = '750';
     h.el('stable-excursion-threshold-value').emit('change');
@@ -253,6 +253,35 @@ test('advanced numeric controls persist, clamp invalid input, and hydrate on reo
     const reopened = load(Object.fromEntries(h.data));
     assert.equal(reopened.el('stable-excursion-threshold-value').value, '750');
     assert.equal(reopened.el('stable-travel-extra-value').value, '0');
+});
+
+test('settings accept the expanded experiment ranges and retain them on reopen', () => {
+    const ranges = [
+        ['departure-delay', 'stableCameraDepartureDelay', 1000],
+        ['travel-extra', 'stableCameraTravelExtra', 200],
+        ['settle-limit', 'stableCameraSettleLimit', 3000],
+        ['excursion-threshold', 'stableCameraExcursionThreshold', 3000],
+        ['long-switch-frets', 'stableCameraLongSwitchFrets', 24],
+    ];
+    const h = load({ h3d_bg_cameraMode: 'stable' });
+    for (const [id, key, max] of ranges) {
+        for (const suffix of ['', '-value']) {
+            const markup = html.match(new RegExp(`<input\\b[^>]*id="h3d-stable-${id}${suffix}"[^>]*>`));
+            assert.ok(markup, id + suffix);
+            assert.match(markup[0], new RegExp(`max="${max}"`));
+        }
+        const input = h.el('stable-' + id + '-value');
+        input.value = String(max); input.emit('change');
+        assert.equal(h.data.get('h3d_bg_' + key), String(max));
+        assert.equal(h.el('stable-' + id).value, String(max));
+        input.value = '99999'; input.emit('change');
+        assert.equal(input.value, String(max));
+    }
+    const reopened = load(Object.fromEntries(h.data));
+    for (const [id, , max] of ranges) {
+        assert.equal(reopened.el('stable-' + id).value, String(max));
+        assert.equal(reopened.el('stable-' + id + '-value').value, String(max));
+    }
 });
 
 test('comparison buttons set all five values and remain inactive outside Stable Follow', () => {
