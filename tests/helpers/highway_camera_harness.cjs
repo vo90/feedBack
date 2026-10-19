@@ -34,6 +34,8 @@ function harness(subject = source, three = null) {
         ${constants}
         ${source.slice(stateStart, stateEnd).replace('function stableSupportReset() {', 'function stableSupportReset() { rawPoints.length = 0;')}
         let _stableCameraResetSerial = 0, stableCameraPreset = 'straight', stableCameraFollow = true;
+        let stableCameraDepartureDelay = 0, stableCameraTravelExtra = 0, stableCameraSettleLimit = 0;
+        let stableCameraExcursionThreshold = 500, stableCameraLongSwitchFrets = 5;
         let _leftyCached = false, _songKey = 'song', nStr = 6, cameraSmoothing = .5, zoomSmoothing = .5;
         let wall = 0, fixturePoints = [], fixtureObjects = null, segmentCalls = 0, depthCalls = 0,
             regionFixture = null, regionRows = null, lastRegionTime = NaN, curX = 60;
@@ -146,7 +148,13 @@ function harness(subject = source, three = null) {
                 if ('pan' in values) cameraSmoothing = values.pan;
                 if ('rate' in values) bundle.playbackRate = values.rate;
                 if ('epoch' in values) bundle.transport = {epoch: values.epoch};
+                if ('departureDelay' in values) stableCameraDepartureDelay = values.departureDelay;
+                if ('travelExtra' in values) stableCameraTravelExtra = values.travelExtra;
+                if ('settleLimit' in values) stableCameraSettleLimit = values.settleLimit;
+                if ('excursionThreshold' in values) stableCameraExcursionThreshold = values.excursionThreshold;
+                if ('longSwitchFrets' in values) stableCameraLongSwitchFrets = values.longSwitchFrets;
             },
+            planCache() { return _stablePlan; },
             frame(time, elapsed = 1 / 60, playing = true, frameTime) {
                 wall += elapsed; bundle.currentTime = time; bundle.isPlaying = playing;
                 stableCamUpdate(bundle, frameTime); return { ..._stableCam };

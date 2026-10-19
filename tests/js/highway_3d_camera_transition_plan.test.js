@@ -36,7 +36,7 @@ const { build, prepare, at, rejoin, joinAt, zoom } = new Function(`
 const row = (time, x, width = 4) => ({ time, x, preferred:x, minX:x-2, maxX:x-2+width,
     firstFret:x-1, lastFret:x-2+width });
 const fits = () => true;
-const sample = (stops, time, rate = 1) => at(stops, time, rate, .5);
+const sample = (stops, time, rate = 1) => at(stops, time, rate, .5, undefined, 0, 0, 0, 5);
 const targets = stops => stops.map(stop => stop.x);
 const assertArrived = (stops, time, wanted, rate = 1) => {
     const result = sample(stops, time, rate);
@@ -251,8 +251,8 @@ test('lifecycle correction preserves initial position and velocity then ends at 
 });
 
 test('empty and one-position charts have finite resting plans', () => {
-    assert.deepEqual(sample([],20),{x:0,velocity:0,valid:false});
-    assert.deepEqual(sample(build([row(3,9)],1,fits),0),{x:9,velocity:0,valid:true});
+    assert.deepEqual(sample([],20),{x:0,velocity:0,valid:false,arrivalTime:Infinity,arrivalX:0});
+    assert.deepEqual(sample(build([row(3,9)],1,fits),0),{x:9,velocity:0,valid:true,arrivalTime:Infinity,arrivalX:9});
 });
 
 test('necessary zoom waits 500ms and returns fully over 800ms at every frame rate', () => {

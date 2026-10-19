@@ -27,6 +27,8 @@ function harness(rows) {
         const _stablePlan = { rows:null, regions:[], stops:[], rate:1, key:'', result:{}, revision:0 };
         const _stableCam = {rate:1}, cam = {aspect:16/9}, _leftyCached=false, nStr=6, _textSizeMul=1;
         let stableCameraPreset='straight', cameraSmoothing=.5;
+        const stableCameraDepartureDelay=0,stableCameraTravelExtra=0,stableCameraSettleLimit=0;
+        const stableCameraExcursionThreshold=500,stableCameraLongSwitchFrets=5;
         const bundle={notes:[],chords:[],playbackRate:1}, counts={close:0,framing:0,view:0,attacks:0};
         const xFret=f=>f*10, stableRegionAnchors=()=>rows;
         function stableRegionFitDistance(row, preferred, base) {
