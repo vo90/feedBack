@@ -37,6 +37,8 @@ function harness(rows, {aspect=16/9,preset='straight',lefty=false,rate=1,notes=[
         const K=1,TS=230,NFRETS=24,nStr=6,S_GAP=4,NH=3,_textSizeMul=1;
         ${constants}
         const cam={aspect},stableCameraPreset=preset,_leftyCached=lefty,cameraSmoothing=.5;
+        const stableCameraDepartureDelay=0,stableCameraTravelExtra=0,stableCameraSettleLimit=0;
+        const stableCameraExcursionThreshold=500,stableCameraLongSwitchFrets=5;
         const xFret=f=>f*10*(lefty?-1:1),xFretMid=f=>(f*10-5)*(lefty?-1:1);
         const sY=s=>3+(5-s)*4,fretLabelScaleForFret=()=>1;
         const _stablePoints=[],_stableRegionPoints=new Float64Array(48),_stableViewRegionPoints=new Float64Array(72);

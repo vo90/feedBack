@@ -3945,8 +3945,10 @@
     // Camera positions are not metadata rows. The original regions continue to
     // own every lane/box/zoom extent; this timeline owns only lateral decisions.
     // regionStart is inclusive and regionEnd exclusive in the original array.
-    function hwyBuildCameraTimeline(regions, context = null) {
+    function hwyBuildCameraTimeline(regions, context = null, excursionThreshold = 500) {
         context = context || {};
+        const threshold = Number(excursionThreshold);
+        const brief = Math.max(0, Math.min(1000, Number.isFinite(threshold) ? threshold : 500)) / 1000;
         const spans = [];
         for (let i = 0; i < (regions?.length || 0); i++) {
             const row = regions[i], preferred = Number.isFinite(row?.preferred) ? row.preferred : row?.x;
@@ -3972,8 +3974,8 @@
             const span = spans[i];
             span.end = spans[i + 1]?.time ?? Infinity;
             span.duration = span.end - span.time;
-            // Only compensate floating-point subtraction at exactly 500ms.
-            span.lasting = span.duration >= 0.5 - 1e-9;
+            // Compensate subtraction roundoff only at the chosen song-time threshold.
+            span.lasting = span.duration > 0 && span.duration >= brief - 1e-9;
             span.kind = span.lasting ? 'lasting' : 'transit';
             span.cameraX = span.x;
         }
@@ -3994,13 +3996,13 @@
                 if (spans[i].base !== home.base) continue;
                 // Count the WHOLE departure, not each intermediate lane. A
                 // genuine lasting intermediate position terminates this block.
-                if (away < i && spans[i].time - spans[away].time < 0.5 - 1e-9) {
+                if (away < i && spans[i].time - spans[away].time < brief - 1e-9) {
                     for (let j = away; j < i; j++) ignore(spans[j], 'ignored-excursion', home);
                 }
                 away = i + 1;
             }
             if (away >= b || target.base === home.base
-                || target.time - spans[away].time >= 0.5 - 1e-9) continue;
+                || target.time - spans[away].time >= brief - 1e-9) continue;
             const low = Math.min(home.x, target.x), high = Math.max(home.x, target.x);
             for (let i = away; i < b; i++) {
                 // Only an off-route spike between ADJACENT lasting positions
@@ -4016,8 +4018,8 @@
     // The retained arguments keep callers compatible while lateral policy is
     // independent of fit budgets and playback speed. Visibility is solved at
     // the chosen centre; it must not silently delete an accepted destination.
-    function hwyBuildCameraStops(regions, rate, canHold, sharedCentre = null, dominantInterval = null, attacks = null, context = null) {
-        const timeline = hwyBuildCameraTimeline(regions, context), stops = [];
+    function hwyBuildCameraStops(regions, rate, canHold, sharedCentre = null, dominantInterval = null, attacks = null, context = null, excursionThreshold = 500) {
+        const timeline = hwyBuildCameraTimeline(regions, context, excursionThreshold), stops = [];
         for (const span of timeline) {
             if (span.kind.startsWith('ignored-') || span.kind === 'riff-variation') continue;
             const previous = stops[stops.length - 1];
@@ -4118,9 +4120,10 @@
     // Timed Hermite segments share position, velocity and zero acceleration.
     // Lasting lanes are arrival constraints; short waypoints are traversed
     // without stopping. Bounded tangents prevent overshoot between waypoints.
-    function hwyBuildCameraMotion(stops, rate, smoothing) {
+    function hwyBuildCameraMotion(stops, rate, smoothing, departureDelay = 0, travelExtra = 0, settleLimit = 250, longSwitchFrets = 5) {
         const segments = [];
         const base = 0.6 + Math.max(0, Math.min(1, smoothing)) * 0.2;
+        const fretThreshold = Math.max(1, Math.min(12, Math.round(Number(longSwitchFrets) || 5)));
         let first = 0;
         while (first + 1 < stops.length) {
             let last = first + 1;
@@ -4137,12 +4140,36 @@
                 const right = (points[i + 1].x - points[i].x) / Math.max(1e-9, points[i + 1].time - points[i].time);
                 if (left * right > 0) points[i].velocity = Math.sign(left) * Math.min(Math.abs(left), Math.abs(right));
             }
+            const groupStart = segments.length;
+            const tuningEligible = last === first + 1 && from.lasting !== false && entry.lasting !== false
+                && Number.isFinite(from.firstFret) && Number.isFinite(entry.firstFret)
+                && Math.abs(entry.firstFret - from.firstFret) >= fretThreshold;
             for (let i = 1; i < points.length; i++) {
                 const a = points[i - 1], b = points[i];
                 if (b.time > a.time) segments.push({ start: a.time, end: b.time,
+                    nominalStart: a.time, nominalEnd: b.time, tuningEligible,
                     from: a.x, to: b.x, v0: a.velocity, v1: b.velocity, lasting: i === points.length - 1 });
             }
+            for (let i = groupStart; i < segments.length; i++) segments[i].arrivalIndex = segments.length - 1;
             first = last;
+        }
+        const delay = Math.max(0, Math.min(200, Number(departureDelay) || 0)) / 1000 * rate;
+        const extraFraction = Math.max(0, Math.min(30, Number(travelExtra) || 0)) / 100;
+        const lateLimit = Math.max(0, Math.min(400, Number(settleLimit) || 0)) / 1000 * rate;
+        // Tune only complete direct moves after the nominal path is known.
+        // Scale both requests together when a later move leaves less room:
+        // never shorten a pan or push it into a following transit chain.
+        for (let i = 0; i < segments.length; i++) {
+            const segment = segments[i];
+            if (!segment.tuningEligible) continue;
+            const addedDuration = (segment.nominalEnd - segment.nominalStart) * extraFraction;
+            const requested = delay + addedDuration;
+            if (!(requested > 0) || !(lateLimit > 0)) continue;
+            const room = Math.max(0, Math.min(lateLimit,
+                (segments[i + 1]?.nominalStart ?? Infinity) - segment.nominalEnd));
+            const scale = Math.min(1, room / requested);
+            segment.start += delay * scale;
+            segment.end += requested * scale;
         }
         return segments;
     }
@@ -4161,14 +4188,18 @@
         return out;
     }
 
-    // Evaluate a cached, non-overlapping trajectory. Every lasting stop is
-    // reached at its onset, independent of frame rate or seek history.
-    function hwyCameraPlanAt(stops, now, rate, smoothing, out) {
+    // Evaluate a cached, non-overlapping trajectory. Lasting stops use their
+    // scheduled arrival, independent of frame rate or seek history.
+    function hwyCameraPlanAt(stops, now, rate, smoothing, out, departureDelay = 0, travelExtra = 0, settleLimit = 250, longSwitchFrets = 5) {
         out = out || {};
         rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
-        if (!stops.motion || stops.motionRate !== rate || stops.motionSmoothing !== smoothing) {
-            stops.motion = hwyBuildCameraMotion(stops, rate, smoothing);
+        if (!stops.motion || stops.motionRate !== rate || stops.motionSmoothing !== smoothing
+            || stops.motionDepartureDelay !== departureDelay || stops.motionTravelExtra !== travelExtra
+            || stops.motionSettleLimit !== settleLimit || stops.motionLongSwitchFrets !== longSwitchFrets) {
+            stops.motion = hwyBuildCameraMotion(stops, rate, smoothing, departureDelay, travelExtra, settleLimit, longSwitchFrets);
             stops.motionRate = rate; stops.motionSmoothing = smoothing;
+            stops.motionDepartureDelay = departureDelay; stops.motionTravelExtra = travelExtra;
+            stops.motionSettleLimit = settleLimit; stops.motionLongSwitchFrets = longSwitchFrets;
         }
         const motion = stops.motion;
         let lo = 0, hi = motion.length;
@@ -4187,6 +4218,9 @@
             out.x = motion[lo - 1]?.to ?? stops[0]?.x ?? 0;
             out.velocity = 0;
         }
+        const arrival = segment ? motion[segment.arrivalIndex] : null;
+        out.arrivalTime = arrival?.end ?? Infinity;
+        out.arrivalX = arrival?.to ?? out.x;
         out.valid = stops.length > 0;
         return out;
     }
@@ -6092,7 +6126,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, wahGuidanceVisible: true, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, letRingTrailsVisible: false, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration, trailYieldSameStringEnabled: TRAIL_YIELD_DEFAULTS.sameStringEnabled, trailYieldSameStringMaxGap: TRAIL_YIELD_DEFAULTS.sameStringMaxGap, trailYieldSameStringLeadTime: TRAIL_YIELD_DEFAULTS.sameStringLeadTime };
+    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, stableCameraDepartureDelay: 100, stableCameraTravelExtra: 10, stableCameraSettleLimit: 250, stableCameraExcursionThreshold: 500, stableCameraLongSwitchFrets: 5, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, wahGuidanceVisible: true, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, letRingTrailsVisible: false, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration, trailYieldSameStringEnabled: TRAIL_YIELD_DEFAULTS.sameStringEnabled, trailYieldSameStringMaxGap: TRAIL_YIELD_DEFAULTS.sameStringMaxGap, trailYieldSameStringLeadTime: TRAIL_YIELD_DEFAULTS.sameStringLeadTime };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -6461,6 +6495,7 @@
     // localStorage overrides still win because they're an explicit
     // per-instance opt-out and shouldn't be shadowed by a global edit.
     const _bgMemFallback = Object.create(null);
+    const _bgPanelMemFallback = Object.create(null);
     function _bgReadSetting(panelKey, key) {
         let panelVal = null;
         let globalVal = null;
@@ -6475,6 +6510,8 @@
             }
             globalVal = localStorage.getItem('h3d_bg_' + key);
         } catch (_) { /* storage blocked — both stay null */ }
+        const panelFallback = _bgPanelMemFallback[panelKey];
+        if (panelFallback && key in panelFallback) return _bgCoerce(key, panelFallback[key]);
         if (panelVal !== null && panelVal !== undefined) return _bgCoerce(key, panelVal);
         // Prefer the in-memory staged value over the persisted global slot.
         // _bgWriteGlobal always writes to _bgMemFallback first, so the
@@ -6516,6 +6553,17 @@
     // shaped settings share the same parse + clamp behaviour.
     const _BG_FLOAT_KEYS = new Set(['intensity', 'cameraSmoothing', 'zoomSmoothing', 'tiltSmoothing', 'cameraLockZoom', 'textSize', 'vibrancy', 'glow', 'chordDiagramSize', 'sectionHudSize', 'toneHudSize', 'hitFx', 'trailYieldMinScale', 'trailYieldLeadTime', 'trailYieldTaperDuration', 'trailYieldHoldAfter', 'trailYieldRecoverDuration', 'trailYieldEndLeadTime', 'trailYieldEndTaperDuration', 'trailYieldSameStringMaxGap', 'trailYieldSameStringLeadTime']);
     function _bgCoerce(key, val) {
+        const stableRange = key === 'stableCameraDepartureDelay' ? [0, 200, 25]
+            : key === 'stableCameraTravelExtra' ? [0, 30, 5]
+            : key === 'stableCameraSettleLimit' ? [0, 400, 25]
+            : key === 'stableCameraExcursionThreshold' ? [0, 1000, 50]
+            : key === 'stableCameraLongSwitchFrets' ? [1, 12, 1] : null;
+        if (stableRange) {
+            const n = parseFloat(val);
+            return Number.isFinite(n)
+                ? Math.max(stableRange[0], Math.min(stableRange[1], Math.round(n / stableRange[2]) * stableRange[2]))
+                : BG_DEFAULTS[key];
+        }
         const trailRange = key === 'trailYieldSameStringMaxGap' ? [0, 0.20]
             : key === 'trailYieldSameStringLeadTime' ? [0.05, 1]
             : key === 'trailYieldMinScale' ? [0.05, 0.50]
@@ -6576,6 +6624,7 @@
     // value the first time they're read so existing users who calmed
     // the camera don't lose calmness on the new axes by default.
     function _bgHasStored(panelKey, key) {
+        if (_bgPanelMemFallback[panelKey] && key in _bgPanelMemFallback[panelKey]) return true;
         try {
             if (localStorage.getItem('h3d_bg_' + panelKey + '_' + key) != null) return true;
         } catch (_) {}
@@ -6596,9 +6645,180 @@
         _bgMemFallback[key] = s;
         try { localStorage.setItem('h3d_bg_' + key, s); } catch (_) { /* storage blocked */ }
         _bgEmitChange(key);
+        if (key === 'cameraMode' || key.startsWith('stableCamera')) {
+            const settings = typeof document !== 'undefined'
+                ? document.getElementById?.('h3d-stable-camera-controls') : null;
+            if (settings && typeof CustomEvent === 'function') settings.dispatchEvent(
+                new CustomEvent('h3d:stable-camera-change', { detail: { key, value: _bgCoerce(key, s) } }));
+        }
     }
 
-    // Pub-sub so settings.html can update live across all panel instances.
+    // A gameplay control edits its own split-screen pane. The main highway
+    // shares global settings unless an explicit main-pane override exists.
+    function _bgWriteScoped(panelKey, key, value) {
+        const storageKey = 'h3d_bg_' + panelKey + '_' + key;
+        let scoped = panelKey !== 'main' || !!(_bgPanelMemFallback[panelKey] && key in _bgPanelMemFallback[panelKey]);
+        try { scoped = scoped || localStorage.getItem(storageKey) != null; } catch (_) {}
+        if (!scoped) { _bgWriteGlobal(key, value); return; }
+        const text = String(value);
+        try {
+            localStorage.setItem(storageKey, text);
+            if (_bgPanelMemFallback[panelKey]) delete _bgPanelMemFallback[panelKey][key];
+        } catch (_) {
+            const fallback = _bgPanelMemFallback[panelKey] || (_bgPanelMemFallback[panelKey] = Object.create(null));
+            fallback[key] = text;
+        }
+        _bgEmitChange(key);
+    }
+
+    // Event-driven gameplay controls: no DOM work belongs in the render loop.
+    function createStableCameraTuningOverlay(host, getCanvas, instanceId) {
+        const root = document.createElement('div'), prefix = 'h3d-camera-' + instanceId;
+        root.className = 'h3d-camera-tuning'; root.id = prefix;
+        root.style.cssText = 'position:absolute;left:12px;top:clamp(76px,14%,116px);z-index:3;width:320px;max-width:calc(100% - 24px);pointer-events:none;font:12px/1.4 system-ui,sans-serif;color:#e5edf7;';
+        const cleanups = [], controls = [];
+        let expanded = false, destroyed = false;
+        const listen = (element, event, handler) => {
+            element.addEventListener(event, handler);
+            cleanups.push(() => element.removeEventListener(event, handler));
+        };
+        const element = (tag, text, style) => {
+            const item = document.createElement(tag);
+            if (text) item.textContent = text;
+            if (style) item.style.cssText = style;
+            return item;
+        };
+        const buttonStyle = 'border:1px solid #50637b;border-radius:7px;background:#172435;color:inherit;padding:6px 9px;font:inherit;cursor:pointer;pointer-events:auto;';
+        const inputStyle = 'min-width:0;border:1px solid #50637b;border-radius:5px;background:#101a28;color:inherit;padding:4px;font:inherit;';
+        const toggle = element('button', 'Camera tuning', buttonStyle);
+        toggle.type = 'button'; toggle.dataset.cameraTuningToggle = '';
+        toggle.setAttribute('aria-controls', prefix + '-panel');
+        const panel = element('section', '', 'box-sizing:border-box;margin-top:6px;padding:12px;border:1px solid #50637b;border-radius:9px;background:rgba(13,23,36,.97);box-shadow:0 8px 24px #0006;max-height:min(46vh,410px);overflow:auto;overscroll-behavior:contain;pointer-events:auto;');
+        panel.id = prefix + '-panel'; panel.dataset.cameraTuningPanel = '';
+        panel.setAttribute('aria-label', 'Stable camera tuning');
+        const heading = element('div', '', 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;');
+        heading.appendChild(element('strong', 'Stable camera'));
+        const close = element('button', 'Close', buttonStyle);
+        close.type = 'button'; close.setAttribute('aria-label', 'Close camera tuning');
+        heading.appendChild(close); panel.appendChild(heading);
+        const presetLabel = element('label', 'View ', 'display:flex;align-items:center;gap:8px;margin-bottom:8px;');
+        const preset = element('select', '', inputStyle + 'flex:1;');
+        preset.dataset.cameraSetting = 'stableCameraPreset';
+        for (const [value, label] of [['straight', 'Straight'], ['angled', 'RS+-inspired']]) {
+            const option = element('option', label); option.value = value; preset.appendChild(option);
+        }
+        presetLabel.appendChild(preset); panel.appendChild(presetLabel);
+        const followLabel = element('label', '', 'display:flex;align-items:center;gap:8px;margin-bottom:8px;');
+        const follow = element('input'); follow.type = 'checkbox'; follow.dataset.cameraSetting = 'stableCameraFollow';
+        followLabel.appendChild(follow); followLabel.appendChild(element('span', 'Follow hand position')); panel.appendChild(followLabel);
+        const fields = element('fieldset', '', 'min-width:0;border:0;padding:0;margin:0;');
+        const actions = element('div', '', 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;');
+        fields.appendChild(actions);
+        fields.appendChild(element('p', 'Release a slider to apply. Timing controls affect long direct switches.', 'margin:0 0 8px;color:#adc0d7;'));
+        const rows = [
+            ['stableCameraDepartureDelay', 'Departure delay (ms)', 0, 200, 25],
+            ['stableCameraTravelExtra', 'Extra travel time (%)', 0, 30, 5],
+            ['stableCameraSettleLimit', 'Maximum settling time (ms)', 0, 400, 25],
+            ['stableCameraExcursionThreshold', 'Short-excursion threshold (ms)', 0, 1000, 50],
+            ['stableCameraLongSwitchFrets', 'Long switch: minimum fret change', 1, 12, 1],
+        ];
+        const read = key => _bgReadSetting(_bgPanelKey(getCanvas()), key);
+        const write = (key, value) => _bgWriteScoped(_bgPanelKey(getCanvas()), key, value);
+        const status = element('p', '', 'margin:8px 0 0;color:#adc0d7;');
+        status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+        for (const [key, label, min, max, step] of rows) {
+            const row = element('div', '', 'margin:10px 0;');
+            const title = element('label', label, 'display:block;margin-bottom:4px;');
+            title.htmlFor = prefix + '-' + key + '-number'; row.appendChild(title);
+            const line = element('div', '', 'display:flex;align-items:center;gap:8px;');
+            const range = element('input', '', 'min-width:0;flex:1;accent-color:#59cdec;');
+            const number = element('input', '', inputStyle + 'width:66px;box-sizing:border-box;');
+            range.type = 'range'; number.type = 'number';
+            for (const input of [range, number]) {
+                input.min = String(min); input.max = String(max); input.step = String(step);
+                input.dataset.cameraSetting = key; input.dataset.cameraInput = input.type;
+                input.id = prefix + '-' + key + '-' + input.type;
+                input.setAttribute('aria-label', label);
+                line.appendChild(input);
+            }
+            row.appendChild(line); fields.appendChild(row);
+            const control = { key, range, number, dirty: false }; controls.push(control);
+            const commit = input => {
+                if (destroyed || fields.disabled) return;
+                const value = _bgCoerce(key, input.value);
+                control.dirty = false; range.value = number.value = String(value);
+                if (read(key) !== value) write(key, value);
+                status.textContent = 'Applied. Replay the passage to compare.';
+            };
+            for (const input of [range, number]) {
+                listen(input, 'input', () => {
+                    control.dirty = true;
+                    if (input === range) number.value = range.value;
+                    else if (Number.isFinite(parseFloat(number.value))) range.value = String(_bgCoerce(key, number.value));
+                    status.textContent = input === range ? 'Release to apply.' : 'Press Enter or leave the field to apply.';
+                });
+                listen(input, 'change', () => commit(input));
+                listen(input, 'blur', () => { if (control.dirty) commit(input); });
+                listen(input, 'keydown', event => {
+                    if (event.key === 'Enter') { event.preventDefault(); commit(input); }
+                });
+            }
+        }
+        fields.appendChild(element('p', 'Excursions use original song time. Riff protections stay on.', 'margin:8px 0;color:#adc0d7;'));
+        for (const [name, label, values] of [
+            ['gentler', 'Gentler trial', [100, 10, 250, 500, 5]],
+            ['previous', 'Previous tuning', [0, 0, 0, 500, 5]],
+        ]) {
+            const button = element('button', label, buttonStyle); button.type = 'button';
+            button.dataset.cameraTuningPreset = name; actions.appendChild(button);
+            listen(button, 'click', () => {
+                if (fields.disabled) return;
+                controls.forEach(control => { control.dirty = false; });
+                rows.forEach(([key], index) => { if (read(key) !== values[index]) write(key, values[index]); });
+                sync(); status.textContent = label + ' applied.';
+            });
+        }
+        panel.appendChild(fields); panel.appendChild(status);
+        root.appendChild(toggle); root.appendChild(panel); host.appendChild(root);
+        function setExpanded(value, restoreFocus = false) {
+            expanded = value; panel.hidden = !value;
+            toggle.setAttribute('aria-expanded', String(value));
+            if (restoreFocus) toggle.focus();
+        }
+        function sync(key) {
+            if (destroyed || (key && key !== 'cameraMode' && !key.startsWith('stableCamera'))) return;
+            const stable = read('cameraMode') === 'stable'; root.hidden = !stable;
+            if (!stable) setExpanded(false);
+            preset.value = read('stableCameraPreset'); follow.checked = read('stableCameraFollow');
+            fields.disabled = !follow.checked;
+            for (const control of controls) {
+                if (control.dirty && key !== control.key) continue;
+                control.dirty = false;
+                control.range.value = control.number.value = String(read(control.key));
+            }
+            if (!follow.checked) status.textContent = 'Turn on Follow hand position to adjust movement.';
+        }
+        listen(toggle, 'click', () => setExpanded(!expanded));
+        listen(close, 'click', () => setExpanded(false, true));
+        listen(preset, 'change', () => write('stableCameraPreset', _bgCoerce('stableCameraPreset', preset.value)));
+        listen(follow, 'change', () => write('stableCameraFollow', follow.checked));
+        listen(root, 'keydown', event => {
+            event.stopPropagation();
+            if (event.key === 'Escape') { event.preventDefault(); setExpanded(false, true); }
+        });
+        for (const name of ['keyup', 'keypress', 'pointerdown', 'click', 'wheel']) {
+            listen(root, name, event => event.stopPropagation());
+        }
+        _bgSubscribe(sync); setExpanded(false); sync();
+        return { root, sync, destroy() {
+            if (destroyed) return;
+            destroyed = true; _bgUnsubscribe(sync);
+            for (const cleanup of cleanups) cleanup();
+            root.remove();
+        } };
+    }
+
+    // Pub-sub keeps settings, gameplay overlays, and renderer instances in sync.
     const _bgListeners = new Set();
     function _bgSubscribe(fn) { _bgListeners.add(fn); }
     function _bgUnsubscribe(fn) { _bgListeners.delete(fn); }
@@ -6608,8 +6828,8 @@
         }
     }
 
-    // Settings.html setters — global keys; per-panel overrides via direct
-    // localStorage edits today, runtime UI in a follow-up.
+    // Settings.html setters update global keys. The gameplay camera overlay
+    // uses _bgWriteScoped to preserve explicit main and split-screen overrides.
     window.h3dBgSetStyle = (v) => _bgWriteGlobal('style', v);
     window.h3dBgSetNotationStyle = (v) => _bgWriteGlobal('notationStyle', _bgCoerce('notationStyle', v));
     window.h3dBgSetChordBoxTop = (v) => _bgWriteGlobal('chordBoxTop', _bgCoerce('chordBoxTop', v));
@@ -6661,6 +6881,11 @@
     window.h3dBgSetCameraLockZoom = (v) => _bgWriteGlobal('cameraLockZoom', v);
     window.h3dBgSetStableCameraPreset = (v) => _bgWriteGlobal('stableCameraPreset', _bgCoerce('stableCameraPreset', v));
     window.h3dBgSetStableCameraFollow = (v) => _bgWriteGlobal('stableCameraFollow', !!v);
+    window.h3dBgSetStableCameraDepartureDelay = (v) => _bgWriteGlobal('stableCameraDepartureDelay', _bgCoerce('stableCameraDepartureDelay', v));
+    window.h3dBgSetStableCameraTravelExtra = (v) => _bgWriteGlobal('stableCameraTravelExtra', _bgCoerce('stableCameraTravelExtra', v));
+    window.h3dBgSetStableCameraSettleLimit = (v) => _bgWriteGlobal('stableCameraSettleLimit', _bgCoerce('stableCameraSettleLimit', v));
+    window.h3dBgSetStableCameraExcursionThreshold = (v) => _bgWriteGlobal('stableCameraExcursionThreshold', _bgCoerce('stableCameraExcursionThreshold', v));
+    window.h3dBgSetStableCameraLongSwitchFrets = (v) => _bgWriteGlobal('stableCameraLongSwitchFrets', _bgCoerce('stableCameraLongSwitchFrets', v));
     window.h3dStableCameraReset = () => { ++_stableCameraResetSerial; };
     window.h3dBgSetCameraMode = (v) => {
         let s = String(v);
@@ -8197,6 +8422,7 @@
         // ── Per-instance Three.js state ───────────────────────────────────
         let scene = null, cam = null, ren = null;
         let wrap = null;
+        let stableCameraTuningOverlay = null;
         // WebGL context-loss recovery. Switching the active window / alt-tabbing
         // (especially on Windows) can trigger a GPU context reset; with no
         // handler the lost context escalates into a render-process crash. The
@@ -8920,6 +9146,11 @@
         let cameraMode = BG_DEFAULTS.cameraMode;
         let stableCameraPreset = BG_DEFAULTS.stableCameraPreset;
         let stableCameraFollow = BG_DEFAULTS.stableCameraFollow;
+        let stableCameraDepartureDelay = BG_DEFAULTS.stableCameraDepartureDelay;
+        let stableCameraTravelExtra = BG_DEFAULTS.stableCameraTravelExtra;
+        let stableCameraSettleLimit = BG_DEFAULTS.stableCameraSettleLimit;
+        let stableCameraExcursionThreshold = BG_DEFAULTS.stableCameraExcursionThreshold;
+        let stableCameraLongSwitchFrets = BG_DEFAULTS.stableCameraLongSwitchFrets;
         let _stableNoteRelevant = true;
         // Global text-size multiplier for in-scene text sprites (chord
         // names, fret labels, section banners, technique markers, etc.).
@@ -11918,6 +12149,7 @@
                     // splitscreen each panel has its own canvas.
                     if (e.detail.oldCanvas !== highwayCanvas) return;
                     highwayCanvas = e.detail.newCanvas;
+                    stableCameraTuningOverlay?.sync();
                     // Re-sync wrap visibility from the new canvas in
                     // case its initial displayed-state differs.
                     if (wrap) {
@@ -11985,6 +12217,7 @@
             lyricsCtx = lyricsCanvas.getContext('2d');
             document.fonts?.addEventListener('loadingdone', _invalidateFpsTextCache);
             wrap.appendChild(lyricsCanvas);
+            stableCameraTuningOverlay = createStableCameraTuningOverlay(wrap, () => highwayCanvas, _instanceId);
 
             scene = new T.Scene();
             scene.fog = new T.Fog(0x101820, FOG_START * 0.8, FOG_END * 1.2);
@@ -13254,6 +13487,9 @@
                     changedKey === 'tiltSmoothing' || changedKey === 'cameraLockLow' ||
                     changedKey === 'cameraLockZoom' || changedKey === 'cameraMode' ||
                     changedKey === 'stableCameraPreset' || changedKey === 'stableCameraFollow' ||
+                    changedKey === 'stableCameraDepartureDelay' || changedKey === 'stableCameraTravelExtra' ||
+                    changedKey === 'stableCameraSettleLimit' || changedKey === 'stableCameraExcursionThreshold' ||
+                    changedKey === 'stableCameraLongSwitchFrets' ||
                     changedKey === 'textSize' ||
                     changedKey === 'chordDiagramSize' || changedKey === 'chordDiagramPosition' ||
                     changedKey === 'fretColumnMarkerCadence' ||
@@ -13585,6 +13821,11 @@
             cameraMode = _bgReadSetting(panelKey, 'cameraMode');
             stableCameraPreset = _bgReadSetting(panelKey, 'stableCameraPreset');
             stableCameraFollow = _bgReadSetting(panelKey, 'stableCameraFollow');
+            stableCameraDepartureDelay = _bgReadSetting(panelKey, 'stableCameraDepartureDelay');
+            stableCameraTravelExtra = _bgReadSetting(panelKey, 'stableCameraTravelExtra');
+            stableCameraSettleLimit = _bgReadSetting(panelKey, 'stableCameraSettleLimit');
+            stableCameraExcursionThreshold = _bgReadSetting(panelKey, 'stableCameraExcursionThreshold');
+            stableCameraLongSwitchFrets = _bgReadSetting(panelKey, 'stableCameraLongSwitchFrets');
             textSize             = _bgReadSetting(panelKey, 'textSize');
             vibrancy             = _bgReadSetting(panelKey, 'vibrancy');
             glowMul              = _bgReadSetting(panelKey, 'glow');
@@ -24168,15 +24409,18 @@
             const semanticsChanged = geometryChanged || cache.attacks !== cache.preparedAttacks
                 || cache.beats !== bundle.beats || cache.sections !== bundle.sections
                 || cache.beatCount !== (bundle.beats?.length || 0)
-                || cache.sectionCount !== (bundle.sections?.length || 0);
+                || cache.sectionCount !== (bundle.sections?.length || 0)
+                || cache.excursionThreshold !== stableCameraExcursionThreshold;
             if (semanticsChanged) {
                 // Geometry is visibility only. Neither fit tolerance nor a
                 // duration-dominance pass can cancel an accepted lane change.
                 cache.semanticStops = hwyBuildCameraStops(cache.regions, 1, null, null, null, cache.attacks,
-                    { notes: bundle.notes, chords: bundle.chords, beats: bundle.beats, sections: bundle.sections, stringCount: nStr });
+                    { notes: bundle.notes, chords: bundle.chords, beats: bundle.beats, sections: bundle.sections, stringCount: nStr },
+                    stableCameraExcursionThreshold);
                 cache.timeline = cache.semanticStops.timeline || [];
                 cache.beats = bundle.beats; cache.sections = bundle.sections;
                 cache.beatCount = bundle.beats?.length || 0; cache.sectionCount = bundle.sections?.length || 0;
+                cache.excursionThreshold = stableCameraExcursionThreshold;
             }
             const timingChanged = semanticsChanged || cache.rate !== rate || cache.smoothing !== cameraSmoothing;
             if (timingChanged) {
@@ -24211,11 +24455,14 @@
                 }
                 cache.preparedAttacks = cache.attacks; cache.rate = rate;
             }
-            // Smoothing changes only the time curve, never chart analysis or
-            // projected shapes. Still rejoin it continuously at the next frame.
-            const key = geometryKey + '/' + rate + '/' + cameraSmoothing;
+            // Motion controls change only the cached time curve, never chart
+            // analysis or projected shapes. Rejoin continuously next frame.
+            const key = [geometryKey, rate, cameraSmoothing, stableCameraDepartureDelay,
+                stableCameraTravelExtra, stableCameraSettleLimit, stableCameraExcursionThreshold,
+                stableCameraLongSwitchFrets].join('/');
             if (timingChanged || cache.key !== key) { cache.key = key; cache.revision++; }
-            hwyCameraPlanAt(cache.stops, now, rate, cameraSmoothing, cache.result);
+            hwyCameraPlanAt(cache.stops, now, rate, cameraSmoothing, cache.result,
+                stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit, stableCameraLongSwitchFrets);
             cache.result.direction = Math.sign(cache.result.velocity);
             if (!cache.result.direction) {
                 let a = 0, b = cache.stops.length;
@@ -24365,13 +24612,16 @@
                 let changed = s.planRevision !== plan.revision;
                 if (changed && s.following && Number.isFinite(s.planTime)) {
                     const previousPlan = hwyCameraPlanAt(_stablePlan.stops, s.planTime,
-                        _stablePlan.rate, cameraSmoothing, _stableViewFuturePlan);
+                        _stablePlan.rate, cameraSmoothing, _stableViewFuturePlan,
+                        stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit, stableCameraLongSwitchFrets);
                     changed = Math.abs(previousPlan.x - s.planX) > 1e-8
                         || Math.abs(previousPlan.velocity - s.planVelocity) > 1e-8;
                 }
                 if ((frameTime < s.resumeUntil || frameTime < s.rejoinEnd) && s.joinRate !== motionRate) changed = true;
                 if (changed || !s.following) {
                     const continuingResume = frameTime < s.resumeUntil;
+                    const previousArrivalTime = continuingResume ? s.resumeUntil : s.planArrivalTime;
+                    const previousArrivalX = continuingResume ? s.resumeTarget : s.planArrivalX;
                     const actualVelocity = s.following ? s.planVelocity + s.rejoinVelocity : 0;
                     s.rejoinStartOffset = s.x - plannedX;
                     s.rejoinStartVelocity = actualVelocity - (plan.velocity || 0);
@@ -24379,25 +24629,28 @@
                     s.joinRate = motionRate;
                     s.rejoinEnd = frameTime + 0.7 * motionRate;
                     s.resumeUntil = -Infinity;
-                    // Rate/follow changes preserve the actual pose and velocity
-                    // while retaining the next lasting lane's arrival deadline.
-                    for (const stop of _stablePlan.stops) {
-                        if (stop.time > frameTime && stop.lasting !== false) {
-                            s.rejoinEnd = Math.min(s.rejoinEnd, stop.time);
-                            if (continuingResume || Math.abs(actualVelocity) > 1e-8 || Math.abs(plan.velocity) > 1e-8) {
-                                const delta = stop.x - s.x;
-                                let duration = (stop.time - frameTime) / motionRate;
-                                // With zero terminal velocity, these Bernstein
-                                // derivative controls stay nonnegative. A rapid
-                                // slowdown can finish early, then hold until
-                                // the deadline instead of falling back behind.
-                                if (delta * actualVelocity > 0) duration = Math.min(duration,
-                                    2.5 * Math.abs(delta / actualVelocity));
-                                s.resumeStart = frameTime; s.resumeEnd = frameTime + duration * motionRate;
-                                s.resumeUntil = stop.time; s.resumeRate = motionRate;
-                                s.resumeFrom = s.x; s.resumeTarget = stop.x; s.resumeVelocity = actualVelocity;
-                            }
-                            break;
+                    // The scheduled arrival includes a tuned settling tail.
+                    // Removing tuning during that tail still finishes the
+                    // current destination continuously before rejoining.
+                    let arrivalTime = plan.arrivalTime, arrivalX = plan.arrivalX;
+                    if (s.following && previousArrivalTime > frameTime && previousArrivalTime < arrivalTime
+                        && Math.abs(previousArrivalX - plannedX) <= 1e-8) {
+                        arrivalTime = previousArrivalTime; arrivalX = previousArrivalX;
+                    }
+                    if (Number.isFinite(arrivalTime) && arrivalTime > frameTime) {
+                        s.rejoinEnd = Math.min(s.rejoinEnd, arrivalTime);
+                        if (continuingResume || Math.abs(actualVelocity) > 1e-8 || Math.abs(plan.velocity) > 1e-8) {
+                            const delta = arrivalX - s.x;
+                            let duration = (arrivalTime - frameTime) / motionRate;
+                            // With zero terminal velocity, these Bernstein
+                            // derivative controls stay nonnegative. A rapid
+                            // slowdown can finish early, then hold until
+                            // the deadline instead of falling back behind.
+                            if (delta * actualVelocity > 0) duration = Math.min(duration,
+                                2.5 * Math.abs(delta / actualVelocity));
+                            s.resumeStart = frameTime; s.resumeEnd = frameTime + duration * motionRate;
+                            s.resumeUntil = arrivalTime; s.resumeRate = motionRate;
+                            s.resumeFrom = s.x; s.resumeTarget = arrivalX; s.resumeVelocity = actualVelocity;
                         }
                     }
                 }
@@ -24431,7 +24684,8 @@
                 const futureTime = Math.min(frameTime + .4 * s.rate,
                     nextRegion ? Math.max(frameTime, nextRegion.time) : Infinity);
                 const future = hwyCameraPlanAt(_stablePlan.stops, futureTime,
-                    _stablePlan.rate, cameraSmoothing, _stableViewFuturePlan);
+                    _stablePlan.rate, cameraSmoothing, _stableViewFuturePlan,
+                    stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit, stableCameraLongSwitchFrets);
                 const futureX = frameTime < s.resumeUntil
                     ? futureTime < s.resumeUntil ? hwyCameraResumeAt(s, futureTime, future).x : future.x
                     : future.valid ? s.x + future.x - plan.x : s.x;
@@ -24464,6 +24718,7 @@
             s.planRevision = plan.revision;
             s.planTime = frameTime;
             s.planX = plan.x; s.planVelocity = plan.velocity || 0;
+            s.planArrivalTime = plan.arrivalTime; s.planArrivalX = plan.arrivalX;
             s.following = stableCameraFollow && bundle.isPlaying !== false && (snap || !resize);
             if ((snap || resize || (stableCameraFollow && bundle.isPlaying !== false)) && s.pointCount > 0) {
                 // Protect the actual built-in viewpoint, including its closer
@@ -24756,6 +25011,7 @@
 
         /* ── Teardown ────────────────────────────────────────────────────── */
         function teardown() {
+            stableCameraTuningOverlay?.destroy(); stableCameraTuningOverlay = null;
             document.fonts?.removeEventListener('loadingdone', _invalidateFpsTextCache);
             _invalidateFpsTextCache();
             _stableCam.active = _stableCam.initialized = false;
@@ -25593,6 +25849,16 @@
             default: BG_DEFAULTS.stableCameraPreset },
         { key: 'stableCameraFollow', label: 'Follow hand position (Stable)', type: 'toggle',
             default: BG_DEFAULTS.stableCameraFollow },
+        { key: 'stableCameraDepartureDelay', label: 'Stable departure delay (ms)', type: 'range',
+            min: 0, max: 200, step: 25, default: BG_DEFAULTS.stableCameraDepartureDelay },
+        { key: 'stableCameraTravelExtra', label: 'Stable extra travel time (%)', type: 'range',
+            min: 0, max: 30, step: 5, default: BG_DEFAULTS.stableCameraTravelExtra },
+        { key: 'stableCameraSettleLimit', label: 'Stable maximum settling time (ms)', type: 'range',
+            min: 0, max: 400, step: 25, default: BG_DEFAULTS.stableCameraSettleLimit },
+        { key: 'stableCameraExcursionThreshold', label: 'Stable short-excursion threshold (ms)', type: 'range',
+            min: 0, max: 1000, step: 50, default: BG_DEFAULTS.stableCameraExcursionThreshold },
+        { key: 'stableCameraLongSwitchFrets', label: 'Long switch: minimum fret change (Stable)', type: 'range',
+            min: 1, max: 12, step: 1, default: BG_DEFAULTS.stableCameraLongSwitchFrets },
         {
             key: 'notationStyle', label: 'Notation style', type: 'select',
             options: [{ id: 'current', label: 'Current' }, { id: 'rsplus', label: 'RS+ inspired' }],

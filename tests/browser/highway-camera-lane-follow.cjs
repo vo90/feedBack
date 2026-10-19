@@ -8,7 +8,10 @@
 // --source-ref HEAD --reference records old behavior without enforcing new policy.
 // --rates .5,1,2 --presets straight,angled --viewports 1920x1032,800x900
 // --fps 30 --song-fps 10 --case name-fragment --captures Name=15.359,16.586
-// --songs-only / --synthetic-only, --perf, --lifecycle are optional.
+// --range Name=start,end limits a focused song/performance passage.
+// --songs-only / --synthetic-only, --perf, --moving-perf, --lifecycle are optional.
+// --tuning-ui checks the live panel and captures wide/narrow screenshots on sustained cases.
+// Repeat --setting stableCameraDepartureDelay=0 etc. to exercise camera controls.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -29,6 +32,11 @@ const source = option('--source-ref') ? normalize(execFileSync('git', ['-C', roo
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const rates = option('--rates', '.5,1,2').split(',').map(Number);
 const presets = option('--presets', 'straight,angled').split(',');
+const cameraSettings = Object.fromEntries(repeated('--setting').map(value => {
+  const at=value.indexOf('='),key=value.slice(0,at),number=Number(value.slice(at+1));
+  assert.ok(at>0&&/^stableCamera[A-Za-z]+$/.test(key)&&Number.isFinite(number),'--setting stableCameraName=number');
+  return [key,number];
+}));
 const viewports = option('--viewports', '1920x1032,800x900').split(',').map(value => {
   const [width,height] = value.split('x').map(Number); return {width,height};
 });
@@ -62,6 +70,9 @@ fixtures.push({name:'rooted-riff',kind:'held',start:4,end:18,b:base({anchors:rif
 
 const captures = new Map(repeated('--captures').map(value => { const at=value.indexOf('=');
   assert.ok(at>0,'--captures Name=seconds,seconds');return [value.slice(0,at),value.slice(at+1).split(',').map(Number)]; }));
+const ranges = new Map(repeated('--range').map(value => { const at=value.indexOf('='),range=value.slice(at+1).split(',').map(Number);
+  assert.ok(at>0&&range.length===2&&range.every(Number.isFinite)&&range[1]>range[0],'--range Name=start,end');
+  return [value.slice(0,at),range]; }));
 const songs = repeated('--songs').map(value => {
   const at=value.indexOf('='); const file=path.resolve(at>0?value.slice(at+1):value);
   const name=at>0?value.slice(0,at):path.basename(file,'.json');
@@ -78,7 +89,9 @@ const cases=[];
 for(const fixture of inputs)for(const preset of presets)for(const rate of rates)for(const viewport of viewports) {
   const name=`${fixture.name}-${preset}-rate${rate}-${viewport.width}x${viewport.height}`;
   if(option('--case')&&!option('--case').split(',').some(part=>name.includes(part)))continue;
-  cases.push({...fixture,name,sourceName:fixture.name,preset,rate,viewport,fps:Number(option(fixture.kind==='song'?'--song-fps':'--fps',fixture.kind==='song'?'10':'30'))});
+  const range=ranges.get(fixture.name),start=Math.max(fixture.start,range?.[0]??fixture.start),end=Math.min(fixture.end,range?.[1]??fixture.end);
+  assert.ok(end>start,'Selected range must intersect the fixture');
+  cases.push({...fixture,name,sourceName:fixture.name,start,end,preset,rate,viewport,cameraSettings,fps:Number(option(fixture.kind==='song'?'--song-fps':'--fps',fixture.kind==='song'?'10':'30'))});
 }
 assert.ok(cases.length,'No cases selected');
 
@@ -108,15 +121,29 @@ function instrument(input) {
         position:cam.position.toArray(),quaternion:cam.quaternion.toArray(),fov:cam.fov,bounds,labels,
         requiredRegionDistance,requiredVisibleDistance};
     },
-    __lanePlan(){return {stops:_stablePlan.stops.map(r=>({...r})),regions:_stablePlan.regions.map(r=>({...r})),timeline:(_stablePlan.timeline||[]).map(r=>({...r}))};},
+    __lanePlan(){return {stops:_stablePlan.stops.map(r=>({...r})),motion:(_stablePlan.stops.motion||[]).map(r=>({...r})),regions:_stablePlan.regions.map(r=>({...r})),timeline:(_stablePlan.timeline||[]).map(r=>({...r}))};},
     __laneDisableGpu(){this.__laneGpu=ren.render.bind(ren);ren.render=()=>{};},
     __laneCapture(){this.__laneGpu(scene,cam);return ren.domElement.toDataURL('image/png');},
     __laneCpu(count){const a=[];for(let i=0;i<count+30;i++){window.__wall+=1000/60;const t=window.__realNow();camUpdate(window.bundle);if(i>=30)a.push(window.__realNow()-t);}return a;},
+    __laneMovingCpu(start,end,count){
+      const a=[];
+      for(let pass=0;pass<2;pass++){
+        window.bundle.currentTime=start;this.draw(window.bundle);
+        for(let i=1;i<=count;i++){
+          const time=start+(end-start)*i/count;
+          window.__wall+=(time-window.bundle.currentTime)/window.bundle.playbackRate*1000;
+          window.bundle.currentTime=time;const t=window.__realNow();this.draw(window.bundle);
+          if(pass)a.push(window.__realNow()-t);
+        }
+      }
+      return a;
+    },
     ${marker}`);
 }
 
 function validate(c, samples, plan) {
   const first=samples[0], width=first.fretWidth;
+  const threshold=(c.cameraSettings.stableCameraExcursionThreshold??500)/1000;
   const finite=samples.every(s=>[s.x,s.distance,...s.position,...s.quaternion].every(Number.isFinite));
   check(finite,c.name,'Non-finite camera state');
   check(samples.every(s=>s.fov===first.fov&&s.quaternion.every((v,i)=>Math.abs(v-first.quaternion[i])<1e-8)),c.name,'Automatic orientation/FOV changed');
@@ -130,26 +157,43 @@ function validate(c, samples, plan) {
   const boundary=[];
   for(let i=1;i<semantic.length;i++) {
     const row=semantic[i],duration=(semantic[i+1]?.time??Infinity)-row.time;
-    if(duration<.5-1e-8||row.time<c.start||row.time>c.end)continue;
-    const sample=samples.find(s=>Math.abs(s.time-row.time)<1e-6);if(!sample)continue;
+    if(row.lasting===false||duration<threshold-1e-8||row.time<c.start||row.time>c.end)continue;
+    const motion=plan.motion.find(s=>s.lasting&&Math.abs((s.nominalEnd??s.end)-row.time)<1e-7);
+    const arrival=motion?.end??row.time;
+    const sample=samples.find(s=>Math.abs(s.time-arrival)<1e-6);
+    if(!sample){check(arrival>c.end,c.name,'A scheduled arrival was not sampled',{time:row.time,arrival});continue;}
+    const onset=samples.find(s=>Math.abs(s.time-row.time)<1e-6);
     const target=row.kind==='riff-variation'?row.cameraX:row.x;
     const error=Math.abs(sample.plannedX-target)/width;
-    boundary.push({time:row.time,duration,firstFret:row.firstFret,lastFret:row.lastFret,kind:row.kind||'baseline-lasting',
-      target,planErrorFrets:error,actualErrorFrets:Math.abs(sample.x-target)/width});
+    boundary.push({time:row.time,arrival,duration,firstFret:row.firstFret,lastFret:row.lastFret,kind:row.kind||'baseline-lasting',
+      target,planErrorFrets:error,actualErrorFrets:Math.abs(sample.x-target)/width,
+      onsetErrorFrets:onset?Math.abs(onset.x-target)/width:null,onsetDistance:onset?.distance,onsetRequiredDistance:onset?.requiredVisibleDistance});
   }
   if(!args.includes('--reference')) {
-    check(boundary.every(b=>b.planErrorFrets<.05),c.name,'A lasting boundary was not fully reached by its start',boundary.filter(b=>b.planErrorFrets>=.05).slice(0,12));
-    check(boundary.every(b=>b.actualErrorFrets<.05),c.name,'The rendered camera missed a lasting boundary',boundary.filter(b=>b.actualErrorFrets>=.05).slice(0,12));
-    if(c.kind==='held'||c.kind==='threshold'&&c.duration<.5) {
+    check(boundary.every(b=>b.planErrorFrets<.05),c.name,'A lasting lane was not reached by its scheduled arrival',boundary.filter(b=>b.planErrorFrets>=.05).slice(0,12));
+    check(boundary.every(b=>b.actualErrorFrets<.05),c.name,'The rendered camera missed a scheduled arrival',boundary.filter(b=>b.actualErrorFrets>=.05).slice(0,12));
+    for(let i=0;i<plan.motion.length;i++) {
+      const s=plan.motion[i],next=plan.motion[i+1];
+      if(!Number.isFinite(s.nominalStart))continue;
+      check(s.end>=s.start&&(!i||s.start>=plan.motion[i-1].end-1e-8),c.name,'Motion segments overlap or have negative duration',{index:i,segment:s});
+      check(s.start>=s.nominalStart-1e-8&&s.end-s.start>=s.nominalEnd-s.nominalStart-1e-8,c.name,'Tuning departed earlier or shortened travel',{index:i,segment:s});
+      if(s.tuningEligible) {
+        const limit=(c.cameraSettings.stableCameraSettleLimit??250)/1000*c.rate;
+        check(s.end<=s.nominalEnd+limit+1e-8&&(!next||s.end<=next.nominalStart+1e-8),c.name,'Long switch exceeded its settling or next-movement deadline',{index:i,segment:s});
+      } else check(s.start===s.nominalStart&&s.end===s.nominalEnd,c.name,'Tuning changed an ineligible move or progressive chain',{index:i,segment:s});
+    }
+    const held=c.sourceName==='extension'||c.kind==='held'&&threshold>.3+1e-8||c.kind==='threshold'&&c.duration<threshold;
+    if(held) {
       const range=(Math.max(...samples.map(s=>s.x))-Math.min(...samples.map(s=>s.x)))/width;
       check(range<.05,c.name,'Suppressed excursion/width extension changed horizontal center',{rangeFrets:range});
     }
-    if(c.kind==='threshold'&&c.duration>=.5) {
-      const at=samples.find(s=>Math.abs(s.time-8)<1e-6);
+    if(c.kind==='threshold'&&c.duration>=threshold) {
+      const arrival=plan.motion.find(s=>Math.abs((s.nominalEnd??s.end)-8)<1e-6)?.end??8;
+      const at=samples.find(s=>Math.abs(s.time-arrival)<1e-6);
       check(at&&Math.abs(at.x-first.x)>width,c.name,'Lasting outside lane was suppressed');
     }
     if(c.kind==='chain')check(samples.every((s,i)=>!i||s.x>=samples[i-1].x-1e-5),c.name,'Forward chain reversed direction');
-    if(c.sourceName==='far-24') {
+    if(c.sourceName==='far-24'&&held) {
       const last=samples.at(-1),peak=Math.max(...samples.map(s=>s.distance));
       check(peak>first.distance*1.05,c.name,'Far fret did not exercise outward visibility zoom');
       check(Math.abs(last.distance-first.distance)<first.distance*.01,c.name,'Far excursion zoom did not return to the original close view',{before:first.distance,after:last.distance,peak});
@@ -166,6 +210,60 @@ function summary(samples) {
   let pan=0,maxVelocity=0,peakDistance=0,corrections=0;
   for(let i=0;i<samples.length;i++){const s=samples[i];peakDistance=Math.max(peakDistance,s.distance);maxVelocity=Math.max(maxVelocity,Math.abs(s.velocity||0));corrections+=s.correction?1:0;if(i)pan+=Math.abs(s.x-samples[i-1].x)/s.fretWidth;}
   return {frames:samples.length,panTravelFrets:pan,maxPlanVelocity:maxVelocity,peakDistance,corrections};
+}
+
+async function validateTuningUi(page,c) {
+  const root=page.locator('.h3d-camera-tuning'),toggle=root.locator('[data-camera-tuning-toggle]');
+  const panel=root.locator('[data-camera-tuning-panel]');
+  const number=key=>root.locator(`[data-camera-setting="${key}"][data-camera-input="number"]`);
+  const keys=['stableCameraDepartureDelay','stableCameraTravelExtra','stableCameraSettleLimit','stableCameraExcursionThreshold','stableCameraLongSwitchFrets'];
+  check(await root.count()===1&&await toggle.isVisible()&&await panel.isHidden(),c.name,'Live tuning control was missing, duplicated, or initially expanded');
+  await page.evaluate(()=>{window.__tuningKeyCount=0;window.__tuningKeyListener=()=>window.__tuningKeyCount++;document.addEventListener('keydown',window.__tuningKeyListener);});
+  await toggle.click();check(await panel.isVisible(),c.name,'Camera tuning did not open');
+  for(const [i,key] of keys.entries()) {
+    const value=[150,20,350,750,8][i];await number(key).fill(String(value));await number(key).press('Enter');
+    const stored=await page.evaluate(key=>localStorage.getItem('h3d_bg_'+key),key);
+    check(Number(stored)===value,c.name,'Live number control did not persist its committed value',{key,value,stored});
+  }
+  for(const [preset,values] of [['previous',[0,0,0,500,5]],['gentler',[100,10,250,500,5]]]) {
+    await root.locator(`[data-camera-tuning-preset="${preset}"]`).click();
+    const actual=await Promise.all(keys.map(key=>number(key).inputValue()));
+    check(actual.every((value,i)=>Number(value)===values[i]),c.name,'Live comparison button applied the wrong tuning',{preset,actual});
+  }
+  const follow=root.locator('[data-camera-setting="stableCameraFollow"]');
+  await follow.uncheck();check(await number(keys[0]).isDisabled(),c.name,'Follow off left motion fields enabled');await follow.check();
+  const view=root.locator('[data-camera-setting="stableCameraPreset"]');
+  await view.selectOption(c.preset==='straight'?'angled':'straight');await view.selectOption(c.preset);
+  await number(keys[0]).press('Escape');
+  check(await panel.isHidden(),c.name,'Escape did not close live camera tuning');
+  check(await page.evaluate(()=>document.activeElement?.hasAttribute('data-camera-tuning-toggle')),c.name,'Escape did not restore toggle focus');
+  check(await page.evaluate(()=>window.__tuningKeyCount)===0,c.name,'Live tuning keystrokes leaked to game keyboard listeners');
+  await page.evaluate(()=>document.removeEventListener('keydown',window.__tuningKeyListener));
+  await toggle.click();
+  const layout=[];
+  for(const viewport of [c.viewport,{width:390,height:740}]) {
+    await page.setViewportSize(viewport);
+    await panel.evaluate(element=>{element.scrollTop=0;});
+    await page.evaluate(viewport=>{r.resize(viewport.width,viewport.height);r.draw(bundle);r.__laneCapture();},viewport);
+    const bounds=await panel.boundingBox();
+    check(bounds&&bounds.x>=0&&bounds.y>=0&&bounds.x+bounds.width<=viewport.width+1&&bounds.y+bounds.height<=viewport.height+1,c.name,'Live tuning panel leaves the viewport',{viewport,bounds});
+    const noHorizontalOverflow=await panel.evaluate(element=>element.scrollWidth<=element.clientWidth+1);
+    check(noHorizontalOverflow,c.name,'Live tuning panel has horizontal overflow',{viewport});
+    await page.screenshot({path:path.join(out,`${c.name}-tuning-${viewport.width}x${viewport.height}.png`)});
+    layout.push({viewport,bounds,noHorizontalOverflow});
+  }
+  await page.setViewportSize(c.viewport);
+  const lifecycle=await page.evaluate(async()=>{
+    const old=document.querySelector('[data-camera-setting="stableCameraDepartureDelay"][data-camera-input="number"]');
+    r.destroy();const remaining=document.querySelectorAll('.h3d-camera-tuning').length;
+    old.value='200';old.dispatchEvent(new Event('change',{bubbles:true}));
+    const valueAfterDetachedEvent=localStorage.getItem('h3d_bg_stableCameraDepartureDelay');
+    window.r=feedBackViz_highway_3d();r.init(document.getElementById('highway'),bundle);await r.readyPromise;r.__laneDisableGpu();r.draw(bundle);
+    return {remaining,valueAfterDetachedEvent,recreated:document.querySelectorAll('.h3d-camera-tuning').length,
+      restored:document.querySelector('[data-camera-setting="stableCameraDepartureDelay"][data-camera-input="number"]').value};
+  });
+  check(lifecycle.remaining===0&&lifecycle.recreated===1&&lifecycle.valueAfterDetachedEvent==='100'&&lifecycle.restored==='100',c.name,'Live panel cleanup/recreation lost settings or retained old handlers',lifecycle);
+  return {layout,lifecycle};
 }
 
 async function main() {
@@ -192,13 +290,15 @@ async function main() {
       const initial=await page.evaluate(async c=>{
         window.r?.destroy();localStorage.clear();window.__h3dCamCtl=null;window.__wall=1000;
         const settings={cameraMode:'stable',stableCameraPreset:c.preset,stableCameraFollow:true,cameraSmoothing:.5,zoomSmoothing:.5,tiltSmoothing:.5,cameraLockLow:false,
-          notationStyle:'current',style:'off',glow:0,cinematic:false,sparks:false,bloom:false,verdictMarks:false,timingFx:false,streakFx:false,hitFx:0,chordDiagramVisible:false};
+          notationStyle:'current',style:'off',glow:0,cinematic:false,sparks:false,bloom:false,verdictMarks:false,timingFx:false,streakFx:false,hitFx:0,chordDiagramVisible:false,
+          ...c.cameraSettings};
         for(const[k,v]of Object.entries(settings)){localStorage.setItem('h3d_bg_'+k,String(v));window['h3dBgSet'+k[0].toUpperCase()+k.slice(1)]?.(v);}
         window.bundle={...c.b,currentTime:c.start,playbackRate:c.rate};window.r=feedBackViz_highway_3d();r.init(document.getElementById('highway'),bundle);await r.readyPromise;r.__laneDisableGpu();r.draw(bundle);
         return {sample:r.__laneAudit(true),plan:r.__lanePlan()};
       },c);
       const captureTimes=captures.get(c.sourceName)||[];
-      const times=new Set([c.start,c.end,...initial.plan.regions.map(r=>r.time).filter(t=>t>=c.start&&t<=c.end),...captureTimes.filter(t=>t>=c.start&&t<=c.end)]);
+      const boundariesAndMotion=[...initial.plan.regions.map(r=>r.time),...initial.plan.motion.flatMap(s=>[s.start,s.end,s.nominalStart,s.nominalEnd]).filter(Number.isFinite)];
+      const times=new Set([c.start,c.end,...boundariesAndMotion.filter(t=>t>=c.start&&t<=c.end),...captureTimes.filter(t=>t>=c.start&&t<=c.end)]);
       for(let t=c.start+c.rate/c.fps;t<c.end;t+=c.rate/c.fps)times.add(Math.round(t*1e9)/1e9);
       const ordered=[...times].sort((a,b)=>a-b),samples=[];
       for(let offset=0;offset<ordered.length;offset+=600) {
@@ -216,6 +316,19 @@ async function main() {
       let performanceDiagnostics;
       if(args.includes('--perf')){const times=await page.evaluate(()=>r.__laneCpu(200));const sorted=times.slice().sort((a,b)=>a-b);
         performanceDiagnostics={method:'Warm camera CPU, stationary song position, GPU disabled; not a live FPS measurement',meanMs:times.reduce((a,b)=>a+b,0)/times.length,p95Ms:sorted[Math.floor(sorted.length*.95)],maxMs:sorted.at(-1)};}
+      if(args.includes('--moving-perf')){
+        const inRange=s=>s.start>=c.start&&s.end<=c.end;
+        const movement=initial.plan.motion.find(s=>s.tuningEligible&&inRange(s))||initial.plan.motion.find(inRange);
+        if(movement){
+          const start=Math.max(c.start,movement.start),end=Math.min(c.end,movement.end);
+          if(end>start){
+            const times=await page.evaluate(({start,end})=>r.__laneMovingCpu(start,end,300),{start,end});
+            const sorted=times.slice().sort((a,b)=>a-b);
+            performanceDiagnostics={...performanceDiagnostics,moving:{method:'Warm production draw CPU over a camera movement, GPU rendering disabled; not live FPS',
+              start,end,frames:times.length,meanMs:times.reduce((a,b)=>a+b,0)/times.length,p95Ms:sorted[Math.floor(sorted.length*.95)],maxMs:sorted.at(-1)}};
+          }
+        }
+      }
       let lifecycle;
       if(args.includes('--lifecycle'))lifecycle=await page.evaluate(()=>{
         bundle.isPlaying=false;r.draw(bundle);const before=r.__laneAudit();window.__wall+=1000;r.draw(bundle);const after=r.__laneAudit();
@@ -232,14 +345,18 @@ async function main() {
           const rateChanges=[];
           for(const rate of [.5,2].filter(rate=>rate!==c.rate)) {
             await reset();advance(7.5);const before=r.__laneAudit();bundle.playbackRate=rate;r.draw(bundle);
-            const after=r.__laneAudit(),history=[after],arrival=advance(8,history);
-            rateChanges.push({from:c.rate,to:rate,before,after,arrival,history});
+            const after=r.__laneAudit(),history=[after];
+            const arrivalTime=r.__lanePlan().motion.find(s=>Math.abs((s.nominalEnd??s.end)-8)<1e-6)?.end??8;
+            const arrival=advance(arrivalTime,history);
+            rateChanges.push({from:c.rate,to:rate,before,after,arrivalTime,arrival,history});
           }
           await reset();advance(7.5);window.h3dBgSetStableCameraFollow(false);r.draw(bundle);
           const offBefore=r.__laneAudit(),offAfter=advance(7.7);
-          window.h3dBgSetStableCameraFollow(true);r.draw(bundle);const resume=r.__laneAudit(),resumeHistory=[resume],resumeArrival=advance(8,resumeHistory);
+          window.h3dBgSetStableCameraFollow(true);r.draw(bundle);const resume=r.__laneAudit(),resumeHistory=[resume];
+          const resumeArrivalTime=r.__lanePlan().motion.find(s=>Math.abs((s.nominalEnd??s.end)-8)<1e-6)?.end??8;
+          const resumeArrival=advance(resumeArrivalTime,resumeHistory);
           const target=r.__lanePlan().timeline.find(s=>Math.abs(s.time-8)<1e-6)?.x;
-          return {rateChanges,offBefore,offAfter,resume,resumeArrival,resumeHistory,target};
+          return {rateChanges,offBefore,offAfter,resume,resumeArrivalTime,resumeArrival,resumeHistory,target};
         },c);
         lifecycle.moving=moving;
         for(const change of moving.rateChanges) {
@@ -252,7 +369,8 @@ async function main() {
         check(Math.abs(moving.resumeArrival.x-moving.target)<1e-7,c.name,'Resuming Follow missed the next lasting arrival');
         check(moving.resumeHistory.every((s,i)=>!i||s.x>=moving.resumeHistory[i-1].x-1e-8),c.name,'Resuming Follow caused a reverse excursion');
       }
-      const run={name:c.name,sourceName:c.sourceName,kind:c.kind,preset:c.preset,rate:c.rate,fps:c.fps,viewport:c.viewport,start:c.start,end:c.end,
+      const tuningUi=args.includes('--tuning-ui')&&c.kind==='arrival'?await validateTuningUi(page,c):undefined;
+      const run={name:c.name,sourceName:c.sourceName,kind:c.kind,preset:c.preset,rate:c.rate,fps:c.fps,viewport:c.viewport,start:c.start,end:c.end,cameraSettings:c.cameraSettings,tuningUi,
         chartHash:c.chartHash,sourceHash:sha(source),metrics:summary(samples),boundaries,performanceDiagnostics,lifecycle,
         classification:initial.plan.timeline.map(s=>({time:s.time,end:s.end,duration:s.duration,firstFret:s.firstFret,kind:s.kind,lasting:s.lasting})),plan:initial.plan,samples};
       fs.writeFileSync(path.join(out,c.name+'.json'),JSON.stringify(run));

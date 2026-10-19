@@ -25,11 +25,15 @@ function load(initial = {}, { window = {}, unavailable = false } = {}) {
     for (const id of ['camera-mode', 'camera-smoothing', 'zoom-smoothing',
         'stable-camera-controls', 'stable-camera-preset', 'stable-camera-follow',
         'stable-camera-reset', 'stable-camera-reset-status', 'legacy-camera-controls',
+        'stable-camera-tuning-fields', 'stable-tuning-disabled', 'stable-tuning-status',
+        'stable-tuning-trial', 'stable-tuning-previous',
+        ...['departure-delay', 'travel-extra', 'settle-limit', 'excursion-threshold', 'long-switch-frets']
+            .flatMap(id => ['stable-' + id, 'stable-' + id + '-value']),
         'stable-camera-legacy-note', 'camera-smoothing-description', 'zoom-smoothing-description']) {
         const element = { value: '', checked: false, disabled: false, hidden: false,
             textContent: '', innerHTML: `Original ${id}`, listeners: {},
             addEventListener(event, callback) { (this.listeners[event] ??= []).push(callback); },
-            emit(event) { for (const callback of this.listeners[event] || []) callback.call(this); } };
+            emit(event, detail) { for (const callback of this.listeners[event] || []) callback.call(this, { detail }); } };
         elements.set('h3d-' + id, element);
     }
     const data = new Map(Object.entries(initial)), writes = [];
@@ -48,6 +52,7 @@ function load(initial = {}, { window = {}, unavailable = false } = {}) {
         ${extractFunction('coerceCameraMode')}
         ${extractFunction('coerceStableCameraPreset')}
         ${extractFunction('coerceBool')}
+        ${extractFunction('initStableCameraTuning')}
         ${extractFunction('initStableCameraControls')}
         const mode = document.getElementById('h3d-camera-mode');
         let stored = null;
@@ -59,6 +64,26 @@ function load(initial = {}, { window = {}, unavailable = false } = {}) {
     `)({ getElementById: id => elements.get(id) ?? null }, window, localStorage);
     return { ...api, window, data, writes, el: id => elements.get('h3d-' + id) };
 }
+
+test('live highway edits refresh the mounted settings page without rewriting preferences', () => {
+    const h = load({ h3d_bg_cameraMode: 'stable' });
+    const update = (key, value) => h.el('stable-camera-controls').emit('h3d:stable-camera-change', { key, value });
+    update('stableCameraDepartureDelay', 175);
+    assert.equal(h.el('stable-departure-delay').value, '175');
+    assert.equal(h.el('stable-departure-delay-value').value, '175');
+    update('stableCameraExcursionThreshold', 750);
+    assert.equal(h.el('stable-excursion-threshold-value').value, '750');
+    update('stableCameraPreset', 'angled');
+    assert.equal(h.el('stable-camera-preset').value, 'angled');
+    update('stableCameraFollow', false);
+    assert.equal(h.el('stable-camera-follow').checked, false);
+    assert.equal(h.el('stable-camera-tuning-fields').disabled, true);
+    update('stableCameraFollow', true);
+    assert.equal(h.el('stable-camera-tuning-fields').disabled, false);
+    update('cameraMode', 'steady');
+    assert.equal(h.el('stable-camera-controls').hidden, true);
+    assert.deepEqual(h.writes, []);
+});
 
 test('opening settings preserves the legacy default and does not migrate stored preferences', () => {
     const initial = { h3d_bg_cameraLockLow: 'true', h3d_bg_tiltSmoothing: '0.8' };
@@ -181,4 +206,76 @@ test('every settings script remains valid JavaScript', () => {
     for (const script of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
         assert.doesNotThrow(() => new vm.Script(script[1]));
     }
+});
+
+test('tuning opens with trial values without writing or changing camera behavior', () => {
+    const h = load({ h3d_bg_cameraMode: 'stable' });
+    for (const [id, value] of [['departure-delay', '100'], ['travel-extra', '10'],
+        ['settle-limit', '250'], ['excursion-threshold', '500'], ['long-switch-frets', '5']]) {
+        assert.equal(h.el('stable-' + id).value, value);
+        assert.equal(h.el('stable-' + id + '-value').value, value);
+    }
+    assert.equal(h.el('stable-camera-tuning-fields').disabled, false);
+    assert.equal(h.el('stable-tuning-disabled').hidden, true);
+    assert.deepEqual(h.writes, []);
+});
+
+test('tuning previews slider values then commits once through the live setter on release', () => {
+    const calls = [];
+    const h = load({ h3d_bg_cameraMode: 'stable' }, {window: {
+        h3dBgSetStableCameraDepartureDelay: value => calls.push(value),
+    }});
+    h.el('stable-departure-delay').value = '150';
+    h.el('stable-departure-delay').emit('input');
+    assert.equal(h.el('stable-departure-delay-value').value, '150');
+    assert.deepEqual(calls, []);
+    h.el('stable-departure-delay').emit('change');
+    assert.deepEqual(calls, [150]);
+    assert.deepEqual(h.writes, [], 'the renderer owns persistence when available');
+});
+
+test('advanced numeric controls persist, clamp invalid input, and hydrate on reopen', () => {
+    const h = load({ h3d_bg_cameraMode: 'stable', h3d_bg_stableCameraTravelExtra: 'garbage',
+        h3d_bg_stableCameraSettleLimit: '999', h3d_bg_stableCameraLongSwitchFrets: '0' });
+    assert.equal(h.el('stable-travel-extra').value, '10');
+    assert.equal(h.el('stable-settle-limit').value, '400');
+    assert.equal(h.el('stable-long-switch-frets').value, '1');
+    h.el('stable-excursion-threshold-value').value = '750';
+    h.el('stable-excursion-threshold-value').emit('change');
+    assert.equal(h.el('stable-excursion-threshold').value, '750');
+    assert.equal(h.data.get('h3d_bg_stableCameraExcursionThreshold'), '750');
+    h.el('stable-travel-extra-value').value = '-5';
+    h.el('stable-travel-extra-value').emit('change');
+    assert.equal(h.el('stable-travel-extra').value, '0');
+    h.el('stable-departure-delay-value').value = '112';
+    h.el('stable-departure-delay-value').emit('change');
+    assert.equal(h.el('stable-departure-delay').value, '100', 'numeric input uses the renderer step');
+    const reopened = load(Object.fromEntries(h.data));
+    assert.equal(reopened.el('stable-excursion-threshold-value').value, '750');
+    assert.equal(reopened.el('stable-travel-extra-value').value, '0');
+});
+
+test('comparison buttons set all five values and remain inactive outside Stable Follow', () => {
+    const h = load({ h3d_bg_cameraMode: 'stable' });
+    h.el('stable-tuning-previous').emit('click');
+    assert.equal(h.el('stable-departure-delay').value, '0');
+    assert.equal(h.el('stable-travel-extra').value, '0');
+    assert.equal(h.el('stable-settle-limit').value, '0');
+    assert.equal(h.el('stable-excursion-threshold').value, '500');
+    assert.match(h.el('stable-tuning-status').textContent, /Previous tuning/);
+    assert.equal(h.writes.length, 5);
+    h.el('stable-tuning-trial').emit('click');
+    assert.equal(h.el('stable-departure-delay').value, '100');
+    assert.equal(h.el('stable-travel-extra').value, '10');
+    assert.equal(h.el('stable-settle-limit').value, '250');
+    assert.equal(h.writes.length, 10);
+    h.el('stable-camera-follow').checked = false;
+    h.el('stable-camera-follow').emit('change');
+    assert.equal(h.el('stable-camera-tuning-fields').disabled, true);
+    assert.equal(h.el('stable-tuning-disabled').hidden, false);
+    h.el('stable-tuning-previous').emit('click');
+    assert.equal(h.writes.length, 11, 'only Follow was changed');
+    h.el('camera-mode').value = 'steady'; h.el('camera-mode').emit('change');
+    h.el('stable-tuning-trial').emit('click');
+    assert.equal(h.writes.length, 12, 'hidden tuning controls do not affect legacy views');
 });
