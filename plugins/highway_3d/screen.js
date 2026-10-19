@@ -3843,222 +3843,195 @@
         return result;
     }
 
-    // Camera stops are separate from musical regions. Brief detours can share
-    // a view only when their full footprint passes the caller's readable fit.
-    // Inspect at most 32 neighbours / 1.5 real seconds, never distant notes.
-    function hwyBuildCameraStops(regions, rate, canHold, sharedCentre = null, dominantInterval = null, attacks = null) {
-        rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
-        const stops = [];
-        let held = null;
-        for (let i = 0; i < regions.length; i++) {
-            const row = regions[i], next = regions[i + 1];
-            const duration = next ? (next.time - row.time) / rate : Infinity;
-            let x = row.x, reason = 'position';
-            if (held && Math.abs(x - held.x) > 1e-8) {
-                const width = Math.max(1e-8, held.maxX - held.minX, row.maxX - row.minX);
-                const displacement = Math.abs(x - held.x);
-                // Keep the preferred playing area inside a small tolerance.
-                // Repeated adjacent lanes must not restart the camera; steady
-                // migration eventually leaves this held view and gets one move.
-                if (displacement <= width * 0.3 && canHold(row, held.x)) {
-                    x = held.x; reason = 'tolerance';
-                } else if (duration < 0.8 + Math.min(0.3, displacement / width * 0.15)) {
-                    let returns = false;
-                    for (let j = i + 1; j < Math.min(regions.length, i + 33); j++) {
-                        const future = regions[j];
-                        if (future.time - row.time > 1.5 * rate) break;
-                        if ((x - held.x) * (future.x - x) < 0) { returns = true; break; }
-                    }
-                    const extension = Math.abs(row.minX - held.minX) < 1e-8
-                        || Math.abs(row.maxX - held.maxX) < 1e-8;
-                    if ((returns || extension) && displacement <= width + 1e-7 && canHold(row, held.x)) {
-                        x = held.x; reason = extension ? 'extension' : 'detour';
-                    } else if (returns && sharedCentre && (row.time - held.time) / rate >= 0.6) {
-                        // A late flourish starts a local group from the actual
-                        // preceding region, not all positions held long ago.
-                        const local = (row.time - held.time) / rate > 1.5;
-                        const previous = regions[i - 1];
-                        const group = local ? { ...previous, x: held.x,
-                            time: Math.max(previous.time, row.time - 0.6 * rate) } : held;
-                        const sharedWidth = Math.max(1e-8, group.maxX - group.minX, row.maxX - row.minX);
-                        const shared = Math.abs(x - group.x) <= sharedWidth * 3 ? sharedCentre(row, group) : NaN;
-                        if (Number.isFinite(shared)) {
-                            // Preserve every focus constraint accepted by this
-                            // group when another excursion shares its centre.
-                            const focusWidth = Math.min(group.maxX - group.minX, row.maxX - row.minX) * 1.5;
-                            const preferred = group.preferred ?? group.x, nextPreferred = row.preferred ?? row.x;
-                            group.focusMinX = Math.max(group.focusMinX ?? -Infinity,
-                                preferred - focusWidth, nextPreferred - focusWidth);
-                            group.focusMaxX = Math.min(group.focusMaxX ?? Infinity,
-                                preferred + focusWidth, nextPreferred + focusWidth);
-                            if (local) { held = group; stops.push(held); }
-                            held.x = x = shared;
-                            held.reason = reason = 'shared';
-                        }
-                    }
-                }
-            }
-            if (!held || Math.abs(x - held.x) > 1e-8) {
-                held = { ...row, x, reason };
-                stops.push(held);
-            }
-            // Any coalesced region may still be playing when this stop is
-            // adjusted later. Retain its visibility and individual focus bounds.
-            held.coverageMinX = Math.min(held.coverageMinX ?? held.minX, row.minX);
-            held.coverageMaxX = Math.max(held.coverageMaxX ?? held.maxX, row.maxX);
-            held.coverageFirstFret = Math.min(held.coverageFirstFret ?? held.firstFret, row.firstFret);
-            held.coverageLastFret = Math.max(held.coverageLastFret ?? held.lastFret, row.lastFret);
-            const focusWidth = (row.maxX - row.minX) * 1.5, preferred = row.preferred ?? row.x;
-            held.focusMinX = Math.max(held.focusMinX ?? -Infinity, preferred - focusWidth);
-            held.focusMaxX = Math.min(held.focusMaxX ?? Infinity, preferred + focusWidth);
+    // A deliberately narrow exception for a longer isolated riff variation.
+    // Compare neighbouring complete measures, never a guessed musical root or a
+    // distant matching phrase. Missing or contradictory evidence means follow.
+    function hwyCameraRiffVariationCandidates(spans, context = null) {
+        context = context || {};
+        const result = new Set(), beats = context.beats || [];
+        const starts = [];
+        for (const beat of beats) {
+            if (Number.isFinite(beat?.time) && Number.isFinite(beat.measure) && beat.measure >= 0
+                && (!starts.length || beat.time > starts[starts.length - 1])) starts.push(beat.time);
         }
-        if (!dominantInterval || !attacks?.length || regions.length < 2) return stops;
-
-        // Score elapsed playing time, not metadata rows or slide checkpoints.
-        // Keep the original plan as the fallback for infeasible shared views.
-        const spans = [], focusIds = new Map();
-        for (const row of regions) {
-            const previous = spans[spans.length - 1];
-            if (previous && previous.row.minX === row.minX && previous.row.maxX === row.maxX
-                && previous.row.preferred === row.preferred) continue;
-            if (previous) previous.end = row.time;
-            if (!focusIds.has(row.preferred)) focusIds.set(row.preferred, focusIds.size);
-            spans.push({ row, time: row.time, end: Infinity, frets: 0, focusId: focusIds.get(row.preferred) });
-        }
-        let attackIndex = 0;
-        for (const span of spans) {
-            while (attackIndex < attacks.length && attacks[attackIndex].time < span.time - 0.000501) attackIndex++;
-            while (attackIndex < attacks.length && attacks[attackIndex].time < span.end - 0.000501) {
-                span.frets |= attacks[attackIndex++].frets || 0;
+        if (starts.length < 4) return result;
+        const count = Number.isInteger(context.stringCount) && context.stringCount > 0 ? context.stringCount : 6;
+        const valid = n => n && Number.isInteger(n.s) && n.s >= 0 && n.s < count && isRenderableNote(n);
+        const detail = n => {
+            const out = {};
+            // Timing/identity and fingering metadata are not note techniques.
+            for (const key of ['sl', 'slu', 'su', 'slide_interval', 'bn', 'bnv', 'bt', 'vb', 'v',
+                'vibrato', 'vibrato_marks', 'tr', 'tremolo_marks', 'whammy', 'hm', 'hp', 'hn', 'hps',
+                'harmonic_target', 'harmonic_changes', 'harmonic_alias', 'ho', 'po', 'ln', 'mt', 'fhm',
+                'pm', 'tap', 'tp', 'accent', 'ac', 'ig', 'rh', 'pkd', 'sg', 'slp', 'plk', 'ghost',
+                'lr', 'let_ring_sus', 'slide_out', 'slideOut', 'slide_out_marks', 'slide_in_marks', 'pick_scrape_marks']) {
+                if (n[key] !== undefined) out[key] = n[key];
             }
-            const mask = ((1 << (span.row.lastFret + 1)) - 1) ^ ((1 << span.row.firstFret) - 1);
-            span.picked = !!(span.frets & mask);
-        }
-        const potential = new Float64Array(spans.length + 1);
-        for (let i = 0; i < spans.length; i++) {
-            const span = spans[i], duration = (span.end - span.time) / rate;
-            span.eligible = span.picked && duration >= 0.3;
-            potential[i + 1] = potential[i] + (span.eligible ? Math.min(4, duration) : 0);
-        }
-        const scores = Array.from({ length: focusIds.size }, () => ({ row: null, dwell: 0 }));
-        const analysis = { winner: null, limit: 0, duration: 0, end: 0 };
-        const analyse = (index, retain = false) => {
-            analysis.winner = null; analysis.limit = index; analysis.duration = 0;
-            const maximum = Math.min(spans.length, index + 32);
-            // An upper bound rejects rapid checkpoint-only windows in O(1).
-            if (!retain && potential[maximum] - potential[index] + 1e-8 < 2.4) return analysis;
-            for (const score of scores) { score.row = null; score.dwell = 0; }
-            const start = spans[index].time, horizon = start + 4 * rate;
-            let end = start, evidenceEnd = start;
-            for (let j = index; j < maximum && spans[j].time < horizon; j++) {
-                const span = spans[j], duration = (Math.min(span.end, horizon) - span.time) / rate;
-                end = Math.min(span.end, horizon); analysis.limit = j + 1;
-                if (span.picked) evidenceEnd = end;
-                // Endpoints without a new pick remain visibility constraints.
-                // Brief attacks cannot outweigh the sustained playing area.
-                if (!span.eligible) continue;
-                const score = scores[span.focusId];
-                if (!score.row) score.row = span.row;
-                score.dwell += duration;
-            }
-            // Trailing silence is not evidence for a different composition.
-            // Keep interior gaps and brief picked replies in the denominator,
-            // while all trailing geometry still constrains the shared view.
-            analysis.end = end; analysis.duration = (evidenceEnd - start) / rate;
-            const threshold = Math.max(2.4, analysis.duration * 0.6);
-            for (const score of scores) {
-                if (score.dwell + 1e-8 >= threshold
-                    && (!analysis.winner || score.dwell > analysis.winner.dwell)) analysis.winner = score;
-            }
-            return analysis;
+            return JSON.stringify(out);
         };
-        const groups = [];
-        let active = null, baselineIndex = 0;
-        for (let i = 0; i < spans.length; i++) {
-            const span = spans[i], row = span.row;
-            while (baselineIndex + 1 < stops.length && stops[baselineIndex + 1].time <= span.time) baselineIndex++;
-            const baselineUntil = stops[baselineIndex + 1]?.time ?? Infinity;
-            if (active && span.time >= active.baselineUntil) {
-                // Preserve the original stop and its early preparation when
-                // the chart genuinely changes position, even inside a region.
-                active.end = active.baselineUntil; active = null;
-            }
-            // Reject intentional phrase following before scoring its window.
-            const windowEnd = Math.min(span.time + 4 * rate, spans[i + 32]?.time ?? Infinity);
-            if (!active && baselineUntil < windowEnd) continue;
-            const analysis = analyse(i, !!active), candidate = analysis.winner;
-            const preferred = row.preferred, width = row.maxX - row.minX;
-            if (active) {
-                const interval = dominantInterval(row);
-                // A final short reply cannot overturn a sustained passage.
-                // Require the same evidence horizon used to establish it.
-                const lostDominance = analysis.duration + 1e-8 >= 2.4
-                    && scores[focusIds.get(active.dominantPreferred)].dwell + 1e-8 < analysis.duration * 0.5;
-                const changed = candidate && candidate.row.preferred !== active.dominantPreferred
-                    && preferred === candidate.row.preferred;
-                const unpickedMigration = !span.picked && preferred !== active.dominantPreferred
-                    && (span.end - span.time) / rate >= 2.4;
-                if (!interval.valid || active.x < interval.min || active.x > interval.max
-                    || Math.abs(active.x - preferred) > width * 1.5 || changed || unpickedMigration || lostDominance) {
-                    active.end = span.time; active = null;
-                }
-            }
-            if (!active && candidate) {
-                // Correct an inherited hold, never replace intentional phrase
-                // following with a compromised fixed view.
-                if (baselineUntil < analysis.end) continue;
-                const previous = stops[baselineIndex]?.x ?? row.x;
-                const tolerance = (candidate.row.maxX - candidate.row.minX) * 0.2;
-                // Even an unconstrained ideal cannot improve this hold enough.
-                // Avoid projection-key work for already well-framed repeats.
-                if (Math.abs(previous - candidate.row.preferred) < tolerance) continue;
-                let min = -Infinity, max = Infinity;
-                for (let j = i; j < analysis.limit; j++) {
-                    const member = spans[j].row, fit = dominantInterval(member);
-                    const focusWidth = (member.maxX - member.minX) * 1.5;
-                    if (!fit.valid) { min = Infinity; break; }
-                    min = Math.max(min, fit.min, member.preferred - focusWidth);
-                    max = Math.min(max, fit.max, member.preferred + focusWidth);
-                }
-                if (min <= max) {
-                    const target = Math.max(min, Math.min(max, candidate.row.preferred));
-                    // Keep an already better composition and its original
-                    // preparation for necessary position changes. This pass
-                    // only corrects a meaningful inherited focus error.
-                    if (Math.abs(previous - candidate.row.preferred)
-                        - Math.abs(target - candidate.row.preferred) < tolerance) continue;
-                    active = { ...row, time: span.time, end: baselineUntil, baselineUntil, x: target, reason: 'dominant',
-                        dominantPreferred: candidate.row.preferred, focusMinX: min, focusMaxX: max };
-                    groups.push(active);
-                }
-            }
+        const events = [];
+        for (const note of context.notes || []) {
+            if (Number.isFinite(note?.t) && valid(note)) events.push({ time: note.t, note,
+                members: [{ s: note.s, f: note.f, sus: Math.max(0, Number(note.sus) || 0), detail: detail(note) }] });
         }
-        const passages = groups.filter(group => group.end - group.time >= 1.2 * rate);
-        if (!passages.length) return stops;
-        const result = [];
-        const append = stop => {
-            const previous = result[result.length - 1];
-            if (previous && Math.abs(previous.x - stop.x) <= 1e-8) return;
-            if (previous?.time === stop.time) result.pop();
-            result.push(stop);
+        for (const chord of context.chords || []) {
+            if (!Number.isFinite(chord?.t) || chord.h3dSynth) continue;
+            const members = (chord.notes || []).filter(valid).map(n => ({ s: n.s, f: n.f,
+                sus: Math.max(0, Number(n.sus) || 0), detail: detail(n) }))
+                .sort((a, b) => a.s - b.s || a.f - b.f);
+            if (members.length) events.push({ time: chord.t, note: null, members });
+        }
+        events.sort((a, b) => a.time - b.time || Number(!!a.note) - Number(!!b.note)
+            || a.members[0].s - b.members[0].s || a.members[0].f - b.members[0].f);
+        const units = starts.slice(0, -1).map((time, i) => ({ time, end: starts[i + 1], events: [] }));
+        let unitIndex = 0;
+        for (const event of events) {
+            while (unitIndex < units.length && event.time >= units[unitIndex].end) unitIndex++;
+            if (unitIndex < units.length && event.time >= units[unitIndex].time) units[unitIndex].events.push(event);
+        }
+        const sections = (context.sections || []).map(row => Number(row?.time)).filter(Number.isFinite)
+            .sort((a, b) => a - b);
+        const proofs = new Map();
+        // Source timestamps are rounded to milliseconds. This is their existing
+        // coincidence tolerance, not another gameplay duration threshold.
+        const eps = 0.000501 * 2;
+        const compare = (a, b, allowVariation) => {
+            if (Math.abs((a.end - a.time) - (b.end - b.time)) > eps
+                || a.events.length !== b.events.length || !a.events.length) return null;
+            let variation = null;
+            for (let i = 0; i < a.events.length; i++) {
+                const x = a.events[i], y = b.events[i];
+                if (Math.abs((x.time - a.time) - (y.time - b.time)) > eps
+                    || !!x.note !== !!y.note || x.members.length !== y.members.length) return null;
+                for (let j = 0; j < x.members.length; j++) {
+                    const m = x.members[j], n = y.members[j];
+                    if (m.s !== n.s || Math.abs(m.sus - n.sus) > eps || m.detail !== n.detail) return null;
+                    if (m.f !== n.f) {
+                        if (!allowVariation || variation || !y.note || x.members.length !== 1) return null;
+                        variation = { note: y.note, homeFret: m.f };
+                    }
+                }
+            }
+            return { variation };
         };
-        let index = 0, prior = stops[0];
-        for (let i = 0; i < passages.length; i++) {
-            const group = passages[i];
-            // Keep a genuine boundary stop and its existing early preparation.
-            // The small composition correction can overlap it from this point.
-            while (index < stops.length && stops[index].time <= group.time) {
-                prior = stops[index++]; append(prior);
-            }
-            // Start preparation locally, never by rewriting a historical stop.
-            append({ ...group, time: group.time + (result.length ? 0.6 * rate : 0) });
-            while (index < stops.length && stops[index].time <= group.end) prior = stops[index++];
-            if (Number.isFinite(group.end) && passages[i + 1]?.time !== group.end) {
-                append(prior.time === group.end ? prior : { ...prior, time: group.end, reason: 'dominant-return' });
-            }
+        let sectionIndex = 0;
+        for (let i = 1; i + 1 < units.length; i++) {
+            const previous = units[i - 1], current = units[i], next = units[i + 1];
+            while (sectionIndex < sections.length && sections[sectionIndex] <= previous.time) sectionIndex++;
+            if (sectionIndex < sections.length && sections[sectionIndex] < next.end) continue;
+            if (!compare(previous, next, false)) continue;
+            const match = compare(previous, current, true)?.variation;
+            if (match) proofs.set(match.note, { ...match, baseline: previous.events });
         }
-        while (index < stops.length) append(stops[index++]);
+        let eventIndex = 0;
+        for (let i = 1; i + 1 < spans.length; i++) {
+            const span = spans[i], previous = spans[i - 1], next = spans[i + 1];
+            while (eventIndex < events.length && events[eventIndex].time < span.time) eventIndex++;
+            const first = eventIndex;
+            while (eventIndex < events.length && events[eventIndex].time < span.end) eventIndex++;
+            if (!span.lasting || eventIndex - first !== 1 || previous.base !== next.base
+                || previous.base === span.base || !Number.isFinite(previous.firstFret)
+                || !Number.isFinite(previous.lastFret)) continue;
+            const note = events[first].note, proof = proofs.get(note);
+            if (!proof || !(Number(note.sus) > 0.5) || !(note.f > previous.lastFret)
+                || proof.homeFret < previous.firstFret || proof.homeFret > previous.lastFret) continue;
+            if (proof.baseline.some(event => event.members.some(n => n.f > 0
+                && (n.f < previous.firstFret || n.f > previous.lastFret)))) continue;
+            result.add(i);
+        }
         return result;
+    }
+
+    // Camera positions are not metadata rows. The original regions continue to
+    // own every lane/box/zoom extent; this timeline owns only lateral decisions.
+    // regionStart is inclusive and regionEnd exclusive in the original array.
+    function hwyBuildCameraTimeline(regions, context = null) {
+        context = context || {};
+        const spans = [];
+        for (let i = 0; i < (regions?.length || 0); i++) {
+            const row = regions[i], preferred = Number.isFinite(row?.preferred) ? row.preferred : row?.x;
+            if (!Number.isFinite(row?.time) || !Number.isFinite(preferred)) continue;
+            const base = Number.isFinite(row.firstFret) ? 'f/' + row.firstFret : 'x/' + preferred;
+            let previous = spans[spans.length - 1];
+            if (previous?.time === row.time && previous.base !== base) {
+                spans.pop(); previous = spans[spans.length - 1];
+            }
+            if (previous?.base === base) {
+                previous.regionEnd = i + 1;
+                // Retain the initial preferred centre through same-base width
+                // extensions; their actual extents are still in `regions`.
+                previous.minX = Math.min(previous.minX, row.minX);
+                previous.maxX = Math.max(previous.maxX, row.maxX);
+                previous.lastFret = Math.max(previous.lastFret ?? 0, row.lastFret ?? 0);
+                continue;
+            }
+            spans.push({ ...row, x: preferred, preferred, base, time: row.time, end: Infinity,
+                regionStart: i, regionEnd: i + 1 });
+        }
+        for (let i = 0; i < spans.length; i++) {
+            const span = spans[i];
+            span.end = spans[i + 1]?.time ?? Infinity;
+            span.duration = span.end - span.time;
+            // Only compensate floating-point subtraction at exactly 500ms.
+            span.lasting = span.duration >= 0.5 - 1e-9;
+            span.kind = span.lasting ? 'lasting' : 'transit';
+            span.cameraX = span.x;
+        }
+        const ignore = (span, kind, home) => {
+            if (span.kind !== 'transit' && kind !== 'riff-variation') return;
+            span.kind = kind; span.lasting = false;
+            span.homeX = span.cameraX = home.x;
+        };
+        for (const i of hwyCameraRiffVariationCandidates(spans, context)) {
+            ignore(spans[i], 'riff-variation', spans[i - 1]);
+        }
+        const destinations = [];
+        for (let i = 0; i < spans.length; i++) if (!i || spans[i].lasting) destinations.push(i);
+        for (let k = 0; k + 1 < destinations.length; k++) {
+            const a = destinations[k], b = destinations[k + 1], home = spans[a], target = spans[b];
+            let away = a + 1;
+            for (let i = away; i <= b; i++) {
+                if (spans[i].base !== home.base) continue;
+                // Count the WHOLE departure, not each intermediate lane. A
+                // genuine lasting intermediate position terminates this block.
+                if (away < i && spans[i].time - spans[away].time < 0.5 - 1e-9) {
+                    for (let j = away; j < i; j++) ignore(spans[j], 'ignored-excursion', home);
+                }
+                away = i + 1;
+            }
+            if (away >= b || target.base === home.base
+                || target.time - spans[away].time >= 0.5 - 1e-9) continue;
+            const low = Math.min(home.x, target.x), high = Math.max(home.x, target.x);
+            for (let i = away; i < b; i++) {
+                // Only an off-route spike between ADJACENT lasting positions
+                // can be bypassed. Ordered intermediate lanes remain transit.
+                if (spans[i].x < low - 1e-8 || spans[i].x > high + 1e-8) {
+                    ignore(spans[i], 'ignored-overshoot', home);
+                }
+            }
+        }
+        return spans;
+    }
+
+    // The retained arguments keep callers compatible while lateral policy is
+    // independent of fit budgets and playback speed. Visibility is solved at
+    // the chosen centre; it must not silently delete an accepted destination.
+    function hwyBuildCameraStops(regions, rate, canHold, sharedCentre = null, dominantInterval = null, attacks = null, context = null) {
+        const timeline = hwyBuildCameraTimeline(regions, context), stops = [];
+        for (const span of timeline) {
+            if (span.kind.startsWith('ignored-') || span.kind === 'riff-variation') continue;
+            const previous = stops[stops.length - 1];
+            if (previous && Math.abs(previous.x - span.x) <= 1e-8) {
+                // An ignored excursion can return to the existing home without
+                // another motion. A real transit to another x retains return.
+                previous.end = span.end;
+                previous.lasting = previous.lasting || span.lasting;
+                continue;
+            }
+            stops.push({ ...span, reason: span.kind });
+        }
+        stops.timeline = timeline;
+        return stops;
     }
 
     // Attack/technique timing depends on the chart, not camera rate or framing.
@@ -4132,7 +4105,7 @@
             // slide-outs, silence, or a mixture across strings. Their visible
             // geometry remains protected by the existing camera fit. Only an
             // active significant technique can delay the extra preparation.
-            if (!stop.reason?.startsWith('dominant') && next && Math.abs(next.time - stop.time) <= eps) {
+            if (next && Math.abs(next.time - stop.time) <= eps) {
                 const start = Math.max(stop.time - 1.2 * rate,
                     previous ? previous.time + 0.3 * rate : 0,
                     previous?.busy ?? -Infinity);
@@ -4142,50 +4115,110 @@
         });
     }
 
-    // Compact quintic easing is a finite convolution of the stop timeline.
-    // Overlapping moves add smoothly (continuous velocity and acceleration),
-    // finish without residual drift, and evaluate identically after seeking.
-    function hwyCameraPlanAt(stops, now, rate, smoothing, out) {
-        out = out || {};
-        rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
-        const lead = 1.2 * rate; // maximum preparation; each stop has its own lead
-        const baseDuration = 0.6 + Math.max(0, Math.min(1, smoothing)) * 0.2;
-        const maxDuration = (baseDuration + 1.0) * rate;
-        let lo = 0, hi = stops.length;
-        while (lo < hi) {
-            const mid = (lo + hi) >>> 1;
-            if (stops[mid].time <= now + lead - maxDuration) lo = mid + 1;
-            else hi = mid;
+    // Timed Hermite segments share position, velocity and zero acceleration.
+    // Lasting lanes are arrival constraints; short waypoints are traversed
+    // without stopping. Bounded tangents prevent overshoot between waypoints.
+    function hwyBuildCameraMotion(stops, rate, smoothing) {
+        const segments = [];
+        const base = 0.6 + Math.max(0, Math.min(1, smoothing)) * 0.2;
+        let first = 0;
+        while (first + 1 < stops.length) {
+            let last = first + 1;
+            while (last + 1 < stops.length && stops[last].lasting === false) last++;
+            const from = stops[first], entry = stops[first + 1];
+            const width = Math.max(1e-8, from.maxX - from.minX, entry.maxX - entry.minX);
+            const extra = Math.min(0.4, Math.max(0, Math.abs(entry.x - from.x) / width - 1) * 0.8);
+            const lead = Math.max(entry.lead || 0.6, base + extra);
+            const start = Math.max(from.time, entry.time - lead * rate);
+            const points = [{ time: start, x: from.x, velocity: 0 }];
+            for (let i = first + 1; i <= last; i++) points.push({ time: stops[i].time, x: stops[i].x, velocity: 0 });
+            for (let i = 1; i + 1 < points.length; i++) {
+                const left = (points[i].x - points[i - 1].x) / Math.max(1e-9, points[i].time - points[i - 1].time);
+                const right = (points[i + 1].x - points[i].x) / Math.max(1e-9, points[i + 1].time - points[i].time);
+                if (left * right > 0) points[i].velocity = Math.sign(left) * Math.min(Math.abs(left), Math.abs(right));
+            }
+            for (let i = 1; i < points.length; i++) {
+                const a = points[i - 1], b = points[i];
+                if (b.time > a.time) segments.push({ start: a.time, end: b.time,
+                    from: a.x, to: b.x, v0: a.velocity, v1: b.velocity, lasting: i === points.length - 1 });
+            }
+            first = last;
         }
-        const first = Math.max(0, lo - 1);
-        let x = stops[first]?.x ?? 0, velocity = 0;
-        // Only transitions overlapping this instant contribute. This is a
-        // bounded time window; coalesced equal targets are absent entirely.
-        for (let i = first + 1; i < stops.length && stops[i].time < now + lead; i++) {
-            const delta = stops[i].x - stops[i - 1].x;
-            const stopLead = Math.max(0.6, Math.min(1.2, stops[i].lead || 0.6));
-            const width = Math.max(1e-8, stops[i].maxX - stops[i].minX,
-                stops[i - 1].maxX - stops[i - 1].minX);
-            // Crossing more than one whole playing area needs more time.
-            // Keep the early start, but do not race to the far side while the
-            // previous area's notes and labels still need to remain readable.
-            const extra = Math.min(0.4, Math.max(0, Math.abs(delta) / width - 1) * 0.8);
-            const duration = (baseDuration + extra + stopLead - 0.6) * rate;
-            const u = Math.max(0, Math.min(1, (now - stops[i].time + stopLead * rate) / duration));
-            x += delta * u * u * u * (10 + u * (-15 + 6 * u));
-            velocity += delta * 30 * u * u * (1 - u) * (1 - u) * rate / duration;
-        }
-        out.x = x; out.velocity = velocity; out.valid = stops.length > 0;
+        return segments;
+    }
+
+    // Quintic Hermite with zero endpoint acceleration. Velocities use the
+    // same units as duration (song time for paths, real time for corrections).
+    function hwyCameraSegmentAt(from, to, v0, v1, duration, u, out) {
+        u = Math.max(0, Math.min(1, u));
+        const delta = to - from, a = v0 * duration, b = v1 * duration;
+        const c3 = 10 * delta - 6 * a - 4 * b;
+        const c4 = -15 * delta + 8 * a + 7 * b;
+        const c5 = 6 * delta - 3 * a - 3 * b;
+        out.x = from + u * (a + u * u * (c3 + u * (c4 + u * c5)));
+        out.velocity = (a + u * u * (3 * c3 + u * (4 * c4 + u * 5 * c5))) / duration;
+        if (u === 1) { out.x = to; out.velocity = v1; }
         return out;
     }
 
-    // Only lifecycle changes need catch-up. Ordinary playback samples the
-    // scheduled curve directly, without stacking another lag filter on it.
+    // Evaluate a cached, non-overlapping trajectory. Every lasting stop is
+    // reached at its onset, independent of frame rate or seek history.
+    function hwyCameraPlanAt(stops, now, rate, smoothing, out) {
+        out = out || {};
+        rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
+        if (!stops.motion || stops.motionRate !== rate || stops.motionSmoothing !== smoothing) {
+            stops.motion = hwyBuildCameraMotion(stops, rate, smoothing);
+            stops.motionRate = rate; stops.motionSmoothing = smoothing;
+        }
+        const motion = stops.motion;
+        let lo = 0, hi = motion.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (motion[mid].end <= now) lo = mid + 1;
+            else hi = mid;
+        }
+        const segment = motion[lo];
+        if (segment && now >= segment.start) {
+            const duration = segment.end - segment.start;
+            hwyCameraSegmentAt(segment.from, segment.to, segment.v0, segment.v1,
+                duration, (now - segment.start) / duration, out);
+            out.velocity *= rate;
+        } else {
+            out.x = motion[lo - 1]?.to ?? stops[0]?.x ?? 0;
+            out.velocity = 0;
+        }
+        out.valid = stops.length > 0;
+        return out;
+    }
+
+    // Analytic damped response used by outward zoom; lateral movement samples
+    // its scheduled curve directly, without stacking another lag filter on it.
     function hwyCameraRejoin(offset, velocity, dt, omega = 16) {
         const c = velocity + omega * offset;
         const decay = Math.exp(-omega * dt);
         return { offset: (offset + c * dt) * decay,
             velocity: (velocity - omega * c * dt) * decay };
+    }
+
+    // A lifecycle correction must disappear by the next lasting arrival,
+    // rather than leaving an exponentially decaying position error there.
+    function hwyCameraJoinAt(offset, velocity, start, end, now, rate, out) {
+        out = out || {};
+        if (end <= start || now >= end) { out.x = out.velocity = 0; return out; }
+        return hwyCameraSegmentAt(offset, 0, velocity, 0, (end - start) / rate,
+            (now - start) / (end - start), out);
+    }
+
+    // A speed change during travel resumes from the actual pose. Returning to
+    // a newly delayed nominal curve would otherwise briefly move backwards.
+    function hwyCameraResumeAt(state, now, out) {
+        out = out || {};
+        const duration = state.resumeEnd - state.resumeStart;
+        if (duration <= 0 || now >= state.resumeEnd) {
+            out.x = state.resumeTarget; out.velocity = 0; return out;
+        }
+        return hwyCameraSegmentAt(state.resumeFrom, state.resumeTarget, state.resumeVelocity, 0,
+            duration / state.resumeRate, (now - state.resumeStart) / duration, out);
     }
 
     // A finite zoom return, with a quiet period before narrowing. Keep its
@@ -4211,7 +4244,7 @@
             // An outward visibility correction must come to rest smoothly
             // when its geometry disappears, rather than stop in one frame.
             const velocity = state.zoomVelocity || 0;
-            if (state.quietZoomTime <= wait && Math.abs(velocity) > 1e-10) {
+            if (state.quietZoomTime <= wait + 1e-9 && Math.abs(velocity) > 1e-10) {
                 const decay = Math.exp(-dt / .12);
                 const distance = state.distance + velocity * .12 * (1 - decay);
                 state.distance = Math.max(required, distance);
@@ -23964,6 +23997,8 @@
             cache.strings = 0; cache.uniform = null; cache.rows = [];
             _stableRegionResult.row = null;
             _stablePlan.rows = null; _stablePlan.stops = []; _stablePlan.regions = []; _stablePlan.zoomRegions = []; _stablePlan.key = '';
+            _stablePlan.semanticStops = null; _stablePlan.timeline = [];
+            _stablePlan.beats = _stablePlan.sections = null;
             _stablePlan.attackNotes = _stablePlan.attackChords = _stablePlan.attacks = _stablePlan.preparedAttacks = null;
             _stablePlan.geometryKey = '';
         }
@@ -24110,13 +24145,13 @@
                         const normal = { minX: Math.min(a, end), maxX: Math.max(a, end), firstFret: row.fret, lastFret: row.fret + Math.min(4, row.width) - 1 };
                         const closeDistance = stableRegionFitDistance(normal, preferred, baseDistance);
                         shape = { minX: Math.min(a, b), maxX: Math.max(a, b), preferred, closeDistance, firstFret: row.fret, lastFret: row.fret + row.width - 1 };
-                        const fit = stableRegionFraming(shape, preferred, closeDistance);
+                        const fit = stableRegionFraming(shape, preferred, closeDistance, true);
                         shape.x = fit.x; shape.distance = fit.distance;
                         shape.viewDistance = stableRegionViewDistance(shape, shape.distance);
                         shapes.set(key, shape);
                     }
-                    if (reuse) Object.assign(regions[i], shape);
-                    else regions[i] = { ...shape, time: row.time };
+                    if (reuse) Object.assign(regions[i], row, shape);
+                    else regions[i] = { ...row, ...shape };
                 }
                 cache.regions = regions;
                 cache.shapeCount = shapes.size;
@@ -24130,60 +24165,23 @@
                 cache.attackNoteCount = bundle.notes?.length || 0;
                 cache.attackChordCount = bundle.chords?.length || 0; cache.attackStrings = nStr;
             }
-            const timingChanged = geometryChanged || cache.rate !== rate || cache.attacks !== cache.preparedAttacks;
+            const semanticsChanged = geometryChanged || cache.attacks !== cache.preparedAttacks
+                || cache.beats !== bundle.beats || cache.sections !== bundle.sections
+                || cache.beatCount !== (bundle.beats?.length || 0)
+                || cache.sectionCount !== (bundle.sections?.length || 0);
+            if (semanticsChanged) {
+                // Geometry is visibility only. Neither fit tolerance nor a
+                // duration-dominance pass can cancel an accepted lane change.
+                cache.semanticStops = hwyBuildCameraStops(cache.regions, 1, null, null, null, cache.attacks,
+                    { notes: bundle.notes, chords: bundle.chords, beats: bundle.beats, sections: bundle.sections, stringCount: nStr });
+                cache.timeline = cache.semanticStops.timeline || [];
+                cache.beats = bundle.beats; cache.sections = bundle.sections;
+                cache.beatCount = bundle.beats?.length || 0; cache.sectionCount = bundle.sections?.length || 0;
+            }
+            const timingChanged = semanticsChanged || cache.rate !== rate || cache.smoothing !== cameraSmoothing;
             if (timingChanged) {
-                const holdFits = new Map(), sharedFits = new Map();
-                const canHold = (row, centre) => {
-                    const key = row.firstFret + '/' + row.lastFret + '/' + centre;
-                    if (!holdFits.has(key)) {
-                        stableRegionFootprint(row);
-                        holdFits.set(key, stableIntervalAt(row.distance + 1e-6, 0, .96, centre,
-                            _stableRegionPoints, 48).valid);
-                    }
-                    return holdFits.get(key);
-                };
-                const share = (row, held) => {
-                    const coverage = { minX: held.coverageMinX ?? held.minX, maxX: held.coverageMaxX ?? held.maxX,
-                        firstFret: held.coverageFirstFret ?? held.firstFret, lastFret: held.coverageLastFret ?? held.lastFret };
-                    const key = [coverage.firstFret, coverage.lastFret, held.firstFret, held.lastFret,
-                        row.firstFret, row.lastFret, held.x, held.focusMinX, held.focusMaxX].join('/');
-                    if (sharedFits.has(key)) return sharedFits.get(key);
-                    const distance = Math.max(held.viewDistance, row.viewDistance) * 1.25;
-                    stableRegionViewDistance(coverage, distance, held.x);
-                    const a = stableIntervalAt(distance, 0, .96, null,
-                        _stableViewRegionPoints, _stableViewRegionPoints.length, _stableViewBasis);
-                    let min = a.min, max = a.max;
-                    const valid = a.valid;
-                    stableRegionViewDistance(row, distance);
-                    const b = stableIntervalAt(distance, 0, .96, null,
-                        _stableViewRegionPoints, _stableViewRegionPoints.length, _stableViewBasis);
-                    // Sharing must also keep the preferred playing positions
-                    // reasonably close. Visibility alone permits distant areas
-                    // at the screen edge and is not a sufficient composition.
-                    const focusWidth = Math.min(held.maxX - held.minX, row.maxX - row.minX) * 1.5;
-                    min = Math.max(min, b.min, held.focusMinX ?? -Infinity,
-                        held.preferred - focusWidth, row.preferred - focusWidth);
-                    max = Math.min(max, b.max, held.focusMaxX ?? Infinity,
-                        held.preferred + focusWidth, row.preferred + focusWidth);
-                    const x = valid && b.valid && min <= max ? Math.max(min, Math.min(max, held.x)) : NaN;
-                    sharedFits.set(key, x);
-                    return x;
-                };
-                // Each member keeps its own existing framing distance. This
-                // composition preference never receives a widening budget.
-                const dominantFits = new Map();
-                const dominantInterval = row => {
-                    const key = row.firstFret * 32 + row.lastFret;
-                    if (!dominantFits.has(key)) {
-                        stableRegionViewDistance(row, row.viewDistance);
-                        const fit = stableIntervalAt(row.viewDistance + 1e-7, 0, .96, null,
-                            _stableViewRegionPoints, _stableViewRegionPoints.length, _stableViewBasis);
-                        dominantFits.set(key, { min: fit.min, max: fit.max, valid: fit.valid });
-                    }
-                    return dominantFits.get(key);
-                };
-                cache.stops = hwyBuildCameraStops(cache.regions, rate, canHold, share, dominantInterval, cache.attacks);
-                cache.stops = hwyPrepareCameraStops(cache.stops, bundle.notes, bundle.chords, rate, nStr, cache.attacks);
+                cache.stops = hwyPrepareCameraStops(cache.semanticStops, bundle.notes, bundle.chords, rate, nStr, cache.attacks);
+                cache.smoothing = cameraSmoothing;
                 const leads = new Map(cache.stops.map(stop => [stop.time, stop.lead]));
                 const compositionDistances = new Map();
                 const distanceAt = (region, centre) => {
@@ -24341,7 +24339,7 @@
                     : s.initialized ? s.x : curX;
                 const distance = Math.max(closeDistance, plan.distance);
                 const fits = stableIntervalAt(distance, prediction, 0.96, centre).valid;
-                const fit = stableSolve(centre, distance, prediction, fits ? 0.96 : 0.82);
+                const fit = stableSolve(centre, distance, prediction, fits ? 0.96 : 0.82, true);
                 s.x = fit.x; s.distance = fit.distance;
                 s.distance = Math.max(s.distance, plan.distance);
                 s.targetX = s.x; s.targetDistance = s.distance;
@@ -24352,8 +24350,8 @@
                 s.quietZoomTime = 0; s.initialized = true;
                 s.zoomReturnFrom = s.zoomRequired = s.distance;
                 s.zoomVelocity = 0;
-                s.rejoinOffset = s.rejoinVelocity = 0;
-                s.safetyOffset = s.x - centre; s.safetyVelocity = 0;
+                s.rejoinOffset = s.rejoinVelocity = 0; s.rejoinEnd = s.resumeUntil = -Infinity;
+                s.safetyOffset = s.safetyVelocity = 0;
             } else if (resize) {
                 // A resize can change distance, but never the held centre or
                 // viewing angle, even with following switched off.
@@ -24363,30 +24361,62 @@
                 s.quietPanTime = 0; s.panPending = false;
             } else if (stableCameraFollow && bundle.isPlaying !== false && focus.valid && !seek) {
                 const plannedX = plan.valid ? plan.x : focus.x;
-                if (s.planRevision !== plan.revision || !s.following) {
-                    if (!s.following) s.safetyVelocity = 0;
-                    s.rejoinOffset = s.x - plannedX - s.safetyOffset;
-                    s.rejoinVelocity = s.following
-                        ? s.planVelocity + s.rejoinVelocity - (plan.velocity || 0) : -(plan.velocity || 0);
+                const motionRate = _stablePlan.rate;
+                let changed = s.planRevision !== plan.revision;
+                if (changed && s.following && Number.isFinite(s.planTime)) {
+                    const previousPlan = hwyCameraPlanAt(_stablePlan.stops, s.planTime,
+                        _stablePlan.rate, cameraSmoothing, _stableViewFuturePlan);
+                    changed = Math.abs(previousPlan.x - s.planX) > 1e-8
+                        || Math.abs(previousPlan.velocity - s.planVelocity) > 1e-8;
                 }
-                const rejoin = hwyCameraRejoin(s.rejoinOffset, s.rejoinVelocity, dt);
-                s.rejoinOffset = rejoin.offset; s.rejoinVelocity = rejoin.velocity;
-                s.x = plannedX + rejoin.offset;
-                s.targetX = plannedX;
-                // Prefer a small lateral adjustment to a zoom change. The
-                // chart-derived plan already fits a whole passage, so normal
-                // notes within it cannot make this target chase individual gems.
+                if ((frameTime < s.resumeUntil || frameTime < s.rejoinEnd) && s.joinRate !== motionRate) changed = true;
+                if (changed || !s.following) {
+                    const continuingResume = frameTime < s.resumeUntil;
+                    const actualVelocity = s.following ? s.planVelocity + s.rejoinVelocity : 0;
+                    s.rejoinStartOffset = s.x - plannedX;
+                    s.rejoinStartVelocity = actualVelocity - (plan.velocity || 0);
+                    s.rejoinStart = frameTime;
+                    s.joinRate = motionRate;
+                    s.rejoinEnd = frameTime + 0.7 * motionRate;
+                    s.resumeUntil = -Infinity;
+                    // Rate/follow changes preserve the actual pose and velocity
+                    // while retaining the next lasting lane's arrival deadline.
+                    for (const stop of _stablePlan.stops) {
+                        if (stop.time > frameTime && stop.lasting !== false) {
+                            s.rejoinEnd = Math.min(s.rejoinEnd, stop.time);
+                            if (continuingResume || Math.abs(actualVelocity) > 1e-8 || Math.abs(plan.velocity) > 1e-8) {
+                                const delta = stop.x - s.x;
+                                let duration = (stop.time - frameTime) / motionRate;
+                                // With zero terminal velocity, these Bernstein
+                                // derivative controls stay nonnegative. A rapid
+                                // slowdown can finish early, then hold until
+                                // the deadline instead of falling back behind.
+                                if (delta * actualVelocity > 0) duration = Math.min(duration,
+                                    2.5 * Math.abs(delta / actualVelocity));
+                                s.resumeStart = frameTime; s.resumeEnd = frameTime + duration * motionRate;
+                                s.resumeUntil = stop.time; s.resumeRate = motionRate;
+                                s.resumeFrom = s.x; s.resumeTarget = stop.x; s.resumeVelocity = actualVelocity;
+                            }
+                            break;
+                        }
+                    }
+                }
+                const sample = s.rejoinSample || (s.rejoinSample = {});
+                if (frameTime < s.resumeUntil) {
+                    hwyCameraResumeAt(s, frameTime, sample);
+                    s.rejoinOffset = sample.x - plannedX; s.rejoinVelocity = sample.velocity - (plan.velocity || 0);
+                    s.x = sample.x; s.targetX = s.resumeTarget;
+                } else {
+                    hwyCameraJoinAt(s.rejoinStartOffset || 0, s.rejoinStartVelocity || 0,
+                        s.rejoinStart || 0, s.rejoinEnd ?? -Infinity, frameTime, motionRate, sample);
+                    s.rejoinOffset = sample.x; s.rejoinVelocity = sample.velocity;
+                    s.x = plannedX + sample.x; s.targetX = plannedX;
+                }
+                // Visibility may widen the view, but cannot select a second
+                // lateral path or override a deliberately held excursion.
+                s.safetyOffset = s.safetyVelocity = 0;
                 const plannedDistance = Math.max(closeDistance, plan.distance);
                 const comfortable = stableIntervalAt(plannedDistance, prediction, 0.96, s.x).valid;
-                const nearest = stableSolve(s.x, plannedDistance, prediction, comfortable ? 0.96 : 0.82);
-                let safetyTarget = comfortable ? 0 : nearest.x - s.x;
-                // Do not reintroduce a short right/left detour through the
-                // safety fit. If a correction opposes the scheduled move,
-                // preserve that move and fit the overlap with minimum zoom.
-                if (safetyTarget * plan.direction < 0) safetyTarget = 0;
-                const safety = hwyCameraRejoin(s.safetyOffset - safetyTarget, s.safetyVelocity, dt, 8);
-                s.safetyOffset = safetyTarget + safety.offset; s.safetyVelocity = safety.velocity;
-                s.x += s.safetyOffset;
                 const fit = stableSolve(s.x, closeDistance, prediction, comfortable ? 0.96 : 0.82, true);
                 // Feed the actual preset's visibility requirement into the
                 // zoom controller, including the short anticipation window.
@@ -24401,8 +24431,10 @@
                 const futureTime = Math.min(frameTime + .4 * s.rate,
                     nextRegion ? Math.max(frameTime, nextRegion.time) : Infinity);
                 const future = hwyCameraPlanAt(_stablePlan.stops, futureTime,
-                    s.rate, cameraSmoothing, _stableViewFuturePlan);
-                const futureX = future.valid ? s.x + future.x - plan.x : s.x;
+                    _stablePlan.rate, cameraSmoothing, _stableViewFuturePlan);
+                const futureX = frameTime < s.resumeUntil
+                    ? futureTime < s.resumeUntil ? hwyCameraResumeAt(s, futureTime, future).x : future.x
+                    : future.valid ? s.x + future.x - plan.x : s.x;
                 const panDistance = stableSolve(futureX, viewDistance, prediction, .96, true,
                     _stableViewPoints, s.viewPointCount, v).distance;
                 // While panning, the current area's reserved arrival envelope
@@ -24414,13 +24446,6 @@
                 s.centreCandidateX = plannedX;
                 s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
                 s.targetDistance = neutralDistance;
-                const settleEpsilon = 0.0001 * K;
-                if (Math.abs(s.safetyOffset) < settleEpsilon && Math.abs(s.safetyVelocity) < settleEpsilon) {
-                    s.x -= s.safetyOffset; s.safetyOffset = s.safetyVelocity = 0;
-                }
-                if (Math.abs(s.rejoinOffset) < settleEpsilon && Math.abs(s.rejoinVelocity) < settleEpsilon) {
-                    s.x = plannedX + s.safetyOffset; s.rejoinOffset = s.rejoinVelocity = 0;
-                }
                 hwyCameraZoom(s, neutralDistance, dt, zoomSmoothing);
             } else if (!focus.valid || !stableCameraFollow) {
                 // No usable position and Follow off hold the pose. Silence
@@ -24437,6 +24462,7 @@
                 }
             }
             s.planRevision = plan.revision;
+            s.planTime = frameTime;
             s.planX = plan.x; s.planVelocity = plan.velocity || 0;
             s.following = stableCameraFollow && bundle.isPlaying !== false && (snap || !resize);
             if ((snap || resize || (stableCameraFollow && bundle.isPlaying !== false)) && s.pointCount > 0) {

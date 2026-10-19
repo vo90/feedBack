@@ -1,5 +1,8 @@
 # Close and stable playing-area camera
 
+> Historical behavior and validation. Current Stable lane selection, arrival
+> timing and fixed-centre fitting are specified in [Stable camera lane following](highway-camera-lane-follow.md).
+
 This follow-up to the planned-transition camera keeps a normal four-fret
 composition when a chart's playing position gets wider. It is isolated on
 `fix/highway-camera-close-framing`, based on the transition-planning branch
