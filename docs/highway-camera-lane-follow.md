@@ -20,7 +20,16 @@ fitting cannot replace that position with a shared midpoint or a tolerance
 hold. Longer relocations, including whole-chord relocations, are followed.
 
 A short excursion returning to its home lane holds that home centre, even if
-its note is at fret 24. Short ordered intermediate positions remain waypoints
+its note is at fret 24. A complete local return can establish that home even
+when each individual visit is short. The whole time away is measured across
+all intermediate lanes; a lasting intermediate lane prevents suppression.
+Established homes win overlapping returns. An authored section's incoming lane
+can resolve an ambiguous overlap only when it starts at a lane boundary and
+has its own qualifying return within that section. A section marker alone
+does not choose a new home. Repeated held returns merge into a lasting camera
+stop, so the camera does not drift through a long riff of short visits.
+
+Short ordered intermediate positions remain waypoints
 in a continuous journey. A short off-route group between adjacent lasting
 positions can be bypassed: 9 → 13 for 251 ms → 8 follows 9 → 8 and fits the
 13th-fret notes. An intervening lasting lane is never skipped. Optional lower
@@ -86,7 +95,15 @@ panel updates on settings events, with no per-frame DOM updates or polling;
 closing it keeps the saved values. Renderer teardown removes its listeners.
 
 Rate changes during travel resume from the actual pose and velocity toward the
-lasting destination. If slowing playback requires an earlier finish to avoid
+lasting destination for direct moves. Transit chains and held positions instead
+rejoin the current trajectory locally, preserving intermediate waypoints. The
+offset and velocity correction ends within 700 ms of playback time; changing
+settings again restarts that bounded correction from the actual pose. A distant
+final destination must never replace the intermediate path after a live edit.
+An active correction is reconsidered when its future plan changes, even when
+the instantaneous planned position and velocity are unchanged.
+
+If slowing a direct move requires an earlier finish to avoid
 overshooting, the camera holds there until the scheduled arrival rather than
 backtracking to a delayed nominal path. Other lifecycle corrections end by the
 next scheduled arrival, including a permitted late tail. Equivalent cache rebuilds and numerical rate jitter do
@@ -122,6 +139,13 @@ uses Ghost's converted Absolution Lead (294.238 s) and Rats Lead (345.908 s),
 both presets, playback speeds, viewports and exact effective-lane boundaries.
 The reported Absolution regression is the lane beginning at 15.359 s, whose
 1.227-second duration was incorrectly fragmented at 15.851 s.
+
+`--live-consistency` also exercises actual panel commits during playback,
+pause/resume, Follow changes, speed changes, rapid edits and loop wraps. It
+checks continuity and convergence to the current trajectory without a seek.
+The Alison Hell Lead regression uses the loop from 194.419 to 212.784 seconds:
+1000/3000 ms hold the recurring fret-5 lane, while 500 ms retains the roughly
+900 ms chord cycles and still ignores the roughly 300 ms fret-12 replies.
 
 ### Original lane-follow implementation validation, 2026-10-19
 

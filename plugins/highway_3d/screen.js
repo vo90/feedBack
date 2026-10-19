@@ -3987,6 +3987,72 @@
         for (const i of hwyCameraRiffVariationCandidates(spans, context)) {
             ignore(spans[i], 'riff-variation', spans[i - 1]);
         }
+        // A short home dwell can still own a complete local return. Index the
+        // next matching lane and lasting barrier once, rather than searching
+        // ahead from every row or inheriting a remote lasting lane forever.
+        const nextSame = new Int32Array(spans.length), nextLasting = new Int32Array(spans.length);
+        const seen = new Map();
+        let lasting = spans.length;
+        for (let i = spans.length - 1; i >= 0; i--) {
+            nextSame[i] = seen.get(spans[i].base) ?? -1;
+            seen.set(spans[i].base, i);
+            nextLasting[i] = lasting;
+            if (spans[i].lasting) lasting = i;
+        }
+        const hasReturn = i => {
+            const end = nextSame[i];
+            return end > i + 1 && end <= nextLasting[i]
+                && spans[end].time - spans[i + 1].time < brief - 1e-9;
+        };
+        // Overlapping cycles may support several homes. An authored section
+        // can break that tie only when its incoming lane has a complete short
+        // return inside the section. A marker alone never invents a home.
+        const sections = [...new Set((context.sections || []).map(section => section?.time)
+            .filter(Number.isFinite))].sort((a, b) => a - b);
+        const sectionHomes = new Set();
+        let section = 0;
+        for (let i = 0; i < spans.length; i++) {
+            while (section < sections.length && sections[section] < spans[i].time - 1e-6) section++;
+            if (Math.abs(sections[section] - spans[i].time) <= 1e-6 && hasReturn(i)
+                && spans[nextSame[i]].time < (sections[section + 1] ?? Infinity) - 1e-6) sectionHomes.add(i);
+        }
+        const nextSectionHome = new Int32Array(spans.length);
+        let sectionHome = spans.length;
+        for (let i = spans.length - 1; i >= 0; i--) {
+            nextSectionHome[i] = sectionHome;
+            if (sectionHomes.has(i)) sectionHome = i;
+        }
+        seen.clear();
+        let protectedHome = -1;
+        const holdReturn = (start, end) => {
+            const home = spans[start];
+            home.localHome = spans[end].localHome = true;
+            for (let i = start + 1; i < end; i++) {
+                ignore(spans[i], 'ignored-excursion', home);
+                if (seen.get(spans[i].base) === i) seen.delete(spans[i].base);
+            }
+            protectedHome = end;
+        };
+        for (let i = 0; i < spans.length; i++) {
+            if (spans[i].kind === 'riff-variation') continue;
+            const previous = seen.get(spans[i].base);
+            // When no home is established, the first completed return is the
+            // evidence. Protect it against later overlapping return candidates.
+            if (previous !== undefined && previous >= protectedHome && i > previous + 1
+                && i <= nextSectionHome[previous]
+                && spans[i].time - spans[previous + 1].time < brief - 1e-9) holdReturn(previous, i);
+            if (!i || spans[i].lasting || spans[i].localHome || sectionHomes.has(i)) {
+                protectedHome = i;
+                // An established incoming home wins nested short returns.
+                // Consumed intervals are disjoint, so this pass stays linear.
+                while (hasReturn(i) && nextSame[i] <= nextSectionHome[i]) {
+                    const end = nextSame[i];
+                    holdReturn(i, end);
+                    i = end;
+                }
+            }
+            seen.set(spans[i].base, i);
+        }
         const destinations = [];
         for (let i = 0; i < spans.length; i++) if (!i || spans[i].lasting) destinations.push(i);
         for (let k = 0; k + 1 < destinations.length; k++) {
@@ -3994,11 +4060,6 @@
             let away = a + 1;
             for (let i = away; i <= b; i++) {
                 if (spans[i].base !== home.base) continue;
-                // Count the WHOLE departure, not each intermediate lane. A
-                // genuine lasting intermediate position terminates this block.
-                if (away < i && spans[i].time - spans[away].time < brief - 1e-9) {
-                    for (let j = away; j < i; j++) ignore(spans[j], 'ignored-excursion', home);
-                }
                 away = i + 1;
             }
             if (away >= b || target.base === home.base
@@ -4007,7 +4068,7 @@
             for (let i = away; i < b; i++) {
                 // Only an off-route spike between ADJACENT lasting positions
                 // can be bypassed. Ordered intermediate lanes remain transit.
-                if (spans[i].x < low - 1e-8 || spans[i].x > high + 1e-8) {
+                if (!spans[i].localHome && (spans[i].x < low - 1e-8 || spans[i].x > high + 1e-8)) {
                     ignore(spans[i], 'ignored-overshoot', home);
                 }
             }
@@ -4020,6 +4081,8 @@
     // the chosen centre; it must not silently delete an accepted destination.
     function hwyBuildCameraStops(regions, rate, canHold, sharedCentre = null, dominantInterval = null, attacks = null, context = null, excursionThreshold = 500) {
         const timeline = hwyBuildCameraTimeline(regions, context, excursionThreshold), stops = [];
+        const threshold = Number(excursionThreshold);
+        const brief = Math.max(0, Math.min(3000, Number.isFinite(threshold) ? threshold : 500)) / 1000;
         for (const span of timeline) {
             if (span.kind.startsWith('ignored-') || span.kind === 'riff-variation') continue;
             const previous = stops[stops.length - 1];
@@ -4027,7 +4090,11 @@
                 // An ignored excursion can return to the existing home without
                 // another motion. A real transit to another x retains return.
                 previous.end = span.end;
-                previous.lasting = previous.lasting || span.lasting;
+                previous.duration = previous.end - previous.time;
+                previous.localHome = previous.localHome || span.localHome;
+                previous.lasting = previous.lasting || span.lasting
+                    || (previous.localHome && previous.duration >= brief - 1e-9);
+                if (previous.lasting) previous.reason = 'lasting';
                 continue;
             }
             stops.push({ ...span, reason: span.kind });
@@ -4141,13 +4208,14 @@
                 if (left * right > 0) points[i].velocity = Math.sign(left) * Math.min(Math.abs(left), Math.abs(right));
             }
             const groupStart = segments.length;
+            const transit = last !== first + 1 || from.lasting === false || entry.lasting === false;
             const tuningEligible = last === first + 1 && from.lasting !== false && entry.lasting !== false
                 && Number.isFinite(from.firstFret) && Number.isFinite(entry.firstFret)
                 && Math.abs(entry.firstFret - from.firstFret) >= fretThreshold;
             for (let i = 1; i < points.length; i++) {
                 const a = points[i - 1], b = points[i];
                 if (b.time > a.time) segments.push({ start: a.time, end: b.time,
-                    nominalStart: a.time, nominalEnd: b.time, tuningEligible,
+                    nominalStart: a.time, nominalEnd: b.time, tuningEligible, transit,
                     from: a.x, to: b.x, v0: a.velocity, v1: b.velocity, lasting: i === points.length - 1 });
             }
             for (let i = groupStart; i < segments.length; i++) segments[i].arrivalIndex = segments.length - 1;
@@ -4209,7 +4277,8 @@
             else hi = mid;
         }
         const segment = motion[lo];
-        if (segment && now >= segment.start) {
+        out.moving = !!segment && now >= segment.start;
+        if (out.moving) {
             const duration = segment.end - segment.start;
             hwyCameraSegmentAt(segment.from, segment.to, segment.v0, segment.v1,
                 duration, (now - segment.start) / duration, out);
@@ -4221,6 +4290,8 @@
         const arrival = segment ? motion[segment.arrivalIndex] : null;
         out.arrivalTime = arrival?.end ?? Infinity;
         out.arrivalX = arrival?.to ?? out.x;
+        out.arrivalLaneTime = arrival?.nominalEnd ?? Infinity;
+        out.transit = !!segment?.transit;
         out.valid = stops.length > 0;
         return out;
     }
@@ -6749,7 +6820,7 @@
                 const value = _bgCoerce(key, input.value);
                 control.dirty = false; range.value = number.value = String(value);
                 if (read(key) !== value) write(key, value);
-                status.textContent = 'Applied. Replay the passage to compare.';
+                status.textContent = 'Applied live. Replay the same passage to compare.';
             };
             for (const input of [range, number]) {
                 listen(input, 'input', () => {
@@ -6765,7 +6836,8 @@
                 });
             }
         }
-        fields.appendChild(element('p', 'Excursions use original song time. Riff protections stay on.', 'margin:8px 0;color:#adc0d7;'));
+        fields.appendChild(element('p', 'Excursions count the whole time away and back, in original song time. Riff protections stay on.', 'margin:8px 0;color:#adc0d7;'));
+        fields.appendChild(element('p', 'Lower the minimum fret change to include smaller direct switches in timing adjustments.', 'margin:8px 0;color:#adc0d7;'));
         for (const [name, label, values] of [
             ['gentler', 'Gentler trial', [100, 10, 250, 500, 5]],
             ['previous', 'Previous tuning', [0, 0, 0, 500, 5]],
@@ -23797,7 +23869,7 @@
             focusValid: false, focusX: 0, focusMinX: 0, focusMaxX: 0,
             regionTime: NaN, regionSource: '', regionMinX: NaN, regionMaxX: NaN,
             panPending: false,
-            planRevision: -1, planX: 0, planVelocity: 0, following: false,
+            planRevision: -1, planMotionRevision: -1, planX: 0, planVelocity: 0, planTransit: false, planMoving: false, following: false,
             rejoinOffset: 0, rejoinVelocity: 0,
             safetyOffset: 0, safetyVelocity: 0,
         };
@@ -24464,6 +24536,22 @@
             if (timingChanged || cache.key !== key) { cache.key = key; cache.revision++; }
             hwyCameraPlanAt(cache.stops, now, rate, cameraSmoothing, cache.result,
                 stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit, stableCameraLongSwitchFrets);
+            if (cache.motion !== cache.stops.motion || cache.motionRate !== rate) {
+                // Equivalent metadata rebuilds must not repeatedly restart a
+                // live handoff. Compare only when the cached curve is rebuilt,
+                // including future waypoints that share today's x/velocity.
+                const previous = cache.motion, current = cache.stops.motion;
+                let same = cache.motionRate === rate && previous?.length === current.length;
+                for (let i = 0; same && i < current.length; i++) {
+                    const a = previous[i], b = current[i];
+                    same = a.start === b.start && a.end === b.end && a.from === b.from && a.to === b.to
+                        && a.v0 === b.v0 && a.v1 === b.v1 && a.arrivalIndex === b.arrivalIndex
+                        && a.nominalEnd === b.nominalEnd && a.transit === b.transit;
+                }
+                if (!same) cache.motionRevision = (cache.motionRevision || 0) + 1;
+                cache.motion = current; cache.motionRate = rate;
+            }
+            cache.result.motionRevision = cache.motionRevision;
             cache.result.direction = Math.sign(cache.result.velocity);
             if (!cache.result.direction) {
                 let a = 0, b = cache.stops.length;
@@ -24610,6 +24698,7 @@
             } else if (stableCameraFollow && bundle.isPlaying !== false && focus.valid && !seek) {
                 const plannedX = plan.valid ? plan.x : focus.x;
                 const motionRate = _stablePlan.rate;
+                const revised = s.planMotionRevision !== plan.motionRevision;
                 let changed = s.planRevision !== plan.revision;
                 if (changed && s.following && Number.isFinite(s.planTime)) {
                     const previousPlan = hwyCameraPlanAt(_stablePlan.stops, s.planTime,
@@ -24618,11 +24707,16 @@
                     changed = Math.abs(previousPlan.x - s.planX) > 1e-8
                         || Math.abs(previousPlan.velocity - s.planVelocity) > 1e-8;
                 }
+                // Equal instantaneous samples do not prove an active resume
+                // still targets the new future path. Rejoin from the actual
+                // pose whenever a revision arrives during a correction.
+                if (revised && (frameTime < s.resumeUntil || frameTime < s.rejoinEnd)) changed = true;
                 if ((frameTime < s.resumeUntil || frameTime < s.rejoinEnd) && s.joinRate !== motionRate) changed = true;
                 if (changed || !s.following) {
                     const continuingResume = frameTime < s.resumeUntil;
                     const previousArrivalTime = continuingResume ? s.resumeUntil : s.planArrivalTime;
                     const previousArrivalX = continuingResume ? s.resumeTarget : s.planArrivalX;
+                    const previousArrivalLaneTime = continuingResume ? s.resumeLaneTime : s.planArrivalLaneTime;
                     const actualVelocity = s.following ? s.planVelocity + s.rejoinVelocity : 0;
                     s.rejoinStartOffset = s.x - plannedX;
                     s.rejoinStartVelocity = actualVelocity - (plan.velocity || 0);
@@ -24634,13 +24728,27 @@
                     // Removing tuning during that tail still finishes the
                     // current destination continuously before rejoining.
                     let arrivalTime = plan.arrivalTime, arrivalX = plan.arrivalX;
-                    if (s.following && previousArrivalTime > frameTime && previousArrivalTime < arrivalTime
+                    let arrivalLaneTime = plan.arrivalLaneTime;
+                    const sameDirectDestination = previousArrivalLaneTime === arrivalLaneTime
+                        && Math.abs(previousArrivalX - arrivalX) <= 1e-8;
+                    // A local correction can move while the nominal plan is
+                    // holding. Its distant next arrival is not a pending pan.
+                    let resumeDirect = !plan.transit && (continuingResume || !s.planTransit)
+                        && (plan.moving || (sameDirectDestination && (continuingResume || s.planMoving)));
+                    if (s.following && (continuingResume || (!s.planTransit && s.planMoving))
+                        && previousArrivalTime > frameTime && previousArrivalTime < arrivalTime
                         && Math.abs(previousArrivalX - plannedX) <= 1e-8) {
                         arrivalTime = previousArrivalTime; arrivalX = previousArrivalX;
+                        arrivalLaneTime = previousArrivalLaneTime;
+                        resumeDirect = true;
                     }
                     if (Number.isFinite(arrivalTime) && arrivalTime > frameTime) {
                         s.rejoinEnd = Math.min(s.rejoinEnd, arrivalTime);
-                        if (continuingResume || Math.abs(actualVelocity) > 1e-8 || Math.abs(plan.velocity) > 1e-8) {
+                        // A chain's final arrival can be many seconds away.
+                        // Keep its intermediate waypoints by fading the local
+                        // offset into the moving plan, rather than replacing
+                        // the whole chain with one destination-only curve.
+                        if (resumeDirect && (continuingResume || Math.abs(actualVelocity) > 1e-8 || Math.abs(plan.velocity) > 1e-8)) {
                             const delta = arrivalX - s.x;
                             let duration = (arrivalTime - frameTime) / motionRate;
                             // With zero terminal velocity, these Bernstein
@@ -24651,6 +24759,7 @@
                                 2.5 * Math.abs(delta / actualVelocity));
                             s.resumeStart = frameTime; s.resumeEnd = frameTime + duration * motionRate;
                             s.resumeUntil = arrivalTime; s.resumeRate = motionRate;
+                            s.resumeLaneTime = arrivalLaneTime;
                             s.resumeFrom = s.x; s.resumeTarget = arrivalX; s.resumeVelocity = actualVelocity;
                         }
                     }
@@ -24687,9 +24796,14 @@
                 const future = hwyCameraPlanAt(_stablePlan.stops, futureTime,
                     _stablePlan.rate, cameraSmoothing, _stableViewFuturePlan,
                     stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit, stableCameraLongSwitchFrets);
-                const futureX = frameTime < s.resumeUntil
+                let futureX = frameTime < s.resumeUntil
                     ? futureTime < s.resumeUntil ? hwyCameraResumeAt(s, futureTime, future).x : future.x
                     : future.valid ? s.x + future.x - plan.x : s.x;
+                if (!(frameTime < s.resumeUntil) && frameTime < s.rejoinEnd && future.valid) {
+                    const futurePlanX = future.x;
+                    futureX = futurePlanX + hwyCameraJoinAt(s.rejoinStartOffset || 0, s.rejoinStartVelocity || 0,
+                        s.rejoinStart || 0, s.rejoinEnd, futureTime, _stablePlan.rate, future).x;
+                }
                 const panDistance = stableSolve(futureX, viewDistance, prediction, .96, true,
                     _stableViewPoints, s.viewPointCount, v).distance;
                 // While panning, the current area's reserved arrival envelope
@@ -24717,9 +24831,13 @@
                 }
             }
             s.planRevision = plan.revision;
+            s.planMotionRevision = plan.motionRevision;
             s.planTime = frameTime;
             s.planX = plan.x; s.planVelocity = plan.velocity || 0;
             s.planArrivalTime = plan.arrivalTime; s.planArrivalX = plan.arrivalX;
+            s.planArrivalLaneTime = plan.arrivalLaneTime;
+            s.planTransit = plan.transit;
+            s.planMoving = plan.moving;
             s.following = stableCameraFollow && bundle.isPlaying !== false && (snap || !resize);
             if ((snap || resize || (stableCameraFollow && bundle.isPlaying !== false)) && s.pointCount > 0) {
                 // Protect the actual built-in viewpoint, including its closer
