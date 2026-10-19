@@ -1,5 +1,8 @@
 # Stable camera passage planning
 
+> Historical behavior and validation. Current Stable lane selection, arrival
+> timing and fixed-centre fitting are specified in [Stable camera lane following](highway-camera-lane-follow.md).
+
 ## Objective
 
 Keep the Straight and Angled presets close to the current playing area without

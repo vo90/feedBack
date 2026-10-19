@@ -1,5 +1,8 @@
 # Planned stable-camera transitions
 
+> Historical behavior and validation. Current Stable lane selection, arrival
+> timing and fixed-centre fitting are specified in [Stable camera lane following](highway-camera-lane-follow.md).
+
 The playing-area camera previously centred every meaningful lane change only
 after it arrived. In Six, the 58.612s high-fret area lasts 0.601s before a much
 lower position; following each midpoint caused an unnecessary reversal and

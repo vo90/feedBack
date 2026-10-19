@@ -18,7 +18,7 @@ function extract(name) {
 const { prepare, at } = new Function(`
     const NFRETS = 24;
     ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote'].map(extract).join('\n')}
-    ${['hwyBuildCameraAttackIndex','hwyPrepareCameraStops','hwyCameraPlanAt'].map(extract).join('\n')}
+    ${['hwyBuildCameraAttackIndex','hwyPrepareCameraStops','hwyBuildCameraMotion','hwyCameraSegmentAt','hwyCameraPlanAt'].map(extract).join('\n')}
     return {prepare:hwyPrepareCameraStops,at:hwyCameraPlanAt};
 `)();
 const note = (t, f = 2, extra = {}) => ({t, f, s: 0, sus: .25, ...extra});
@@ -43,15 +43,16 @@ test('plain held chord prepares the next position 1.2 seconds early', () => {
     assert.equal(p[1].lead, 1.2);
     assert.equal(at(p, 2.8, 1, .5).x, 5);
     assert.ok(at(p, 3.1, 1, .5).x > 5);
-    assert.equal(at(stops, 3.1, 1, .5).x, 5);
-    assert.equal(at(p, 4.5, 1, .5).x, 12);
+    assert.ok(at(p, 3.1, 1, .5).x > at(stops, 3.1, 1, .5).x,
+        'quiet preparation starts earlier than the normal arrival-constrained pan');
+    assert.equal(at(p, 4, 1, .5).x, 12);
     assert.equal(JSON.stringify(stops), original);
 });
 
 test('shorter holds leave 300ms after the strike before extra preparation', () => {
     const p = plan([note(4)], [chord(3,1)]);
     assert.ok(Math.abs(p[1].lead - .7) < 1e-10);
-    assert.equal(at(p, 3.3, 1, .5).x, 5);
+    assert.equal(at(p, 4, 1, .5).x, 12, 'the preparation preference cannot delay arrival');
     assert.equal(plan([note(4)], [chord(3.4,.6)])[1].lead, .6);
 });
 

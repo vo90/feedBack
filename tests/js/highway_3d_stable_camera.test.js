@@ -4,239 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
-
-function extractFunction(name, input = source) {
-    const source = input;
-    const start = source.indexOf(`function ${name}(`);
-    assert.ok(start >= 0, name);
-    const open = source.indexOf('{', start);
-    let depth = 1, end = open + 1;
-    while (depth && end < source.length) {
-        if (source[end] === '{') depth++;
-        else if (source[end] === '}') depth--;
-        end++;
-    }
-    assert.equal(depth, 0, name);
-    return source.slice(start, end);
-}
-
-function harness(subject = source, three = null) {
-    const source = subject;
-    const extract = name => extractFunction(name, subject);
-    const constants = ['STABLE_CAMERA_FOV', 'STABLE_CAMERA_PITCH', 'STABLE_CAMERA_YAW', 'STABLE_CAMERA_SHIFT', 'STABLE_CAMERA_VIEWS']
-        .map(name => source.match(new RegExp(`const ${name} = [^;]+;`))[0]).join('\n');
-    const stateStart = source.indexOf('const _stableCam = {');
-    const stateEnd = source.indexOf('function stableAddPoint(', stateStart);
-    assert.ok(stateStart >= 0 && stateEnd > stateStart);
-    return new Function('Three', `
-        const K = 1, TS = 230, AHEAD = 3, CAM_LOCK_CENTER_FRET = 6, NFRETS = 24;
-        ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote'].map(extract).join('\n')}
-        const rawPoints = [];
-        ${constants}
-        ${source.slice(stateStart, stateEnd).replace('function stableSupportReset() {', 'function stableSupportReset() { rawPoints.length = 0;')}
-        let _stableCameraResetSerial = 0, stableCameraPreset = 'straight', stableCameraFollow = true;
-        let _leftyCached = false, _songKey = 'song', nStr = 6, cameraSmoothing = .5, zoomSmoothing = .5;
-        let wall = 0, fixturePoints = [], fixtureObjects = null, segmentCalls = 0, depthCalls = 0,
-            regionFixture = null, regionRows = null, lastRegionTime = NaN, curX = 60;
-        const S_GAP = 4, NH = 3, _textSizeMul = 1, _frameNow = 0;
-        const pNote = {forEachActive(visitor) { fixtureObjects?.forEach(visitor); }},
-            pSus = null, pSusRibbon = null, pChordBox = null,
-            pRsChordFrame = null, pArpBracket = null, pSusRail = null, pTechPlane = null;
-        const _incomingFloorLabelCount = 0, _incomingFloorLabels = [];
-        let _incomingFixedFretLabels = {};
-        let ctl = null, tgtX = 0, curDist = 0, tgtDist = 0, _fretRowFitBoost = 1;
-        const highwayCanvas = {}, _freeCamFor = () => ctl;
-        const cam = { aspect: 16 / 9, fov: STABLE_CAMERA_FOV,
-            projectionMatrix: {elements: Object.assign([], {9: STABLE_CAMERA_SHIFT})},
-            position: {set(...values) { this.values = values; }}, up: {set() {}},
-            lookAt(...values) { this.target = values; }, updateMatrixWorld() {} };
-        const T = Three || { Vector3: class {} }; // sprite-only tests need no vector methods
-        const performance = { now: () => wall * 1000 };
-        ${extract('createPresentationClock')}
-        const _presentationClock = createPresentationClock();
-        const sY = string => (3 + (nStr - 1 - string) * 4) * K;
-        const xFretMid = fret => fret * 10 - 5, xFret = fret => fret * 10;
-        const fretLabelScaleForFret = () => 1;
-        const _stablePlan = {rows:null,key:'',stops:[],revision:0,result:{}};
-        let mockRegionKey='', mockRegionAnchors=[];
-        const dZ = time => { depthCalls++; return -time * TS; };
-        ${extract('stableAddPoint').replace('_stablePointSamples++;', 'rawPoints.push([x,y,z]); _stablePointSamples++;')}
-        ${extract('stableAddSegment').replace('{', '{ segmentCalls++;')}
-        ${extract('stableCollectObject')}
-        ${extract('stableConstrain')}
-        ${extract('stableIntervalAt')}
-        ${extract('stableSolve')}
-        ${['hwyBuildCameraStops','hwyBuildCameraAttackIndex','hwyPrepareCameraStops','hwyCameraPlanAt','hwyCameraRejoin','hwyCameraZoom','stableRegionFitDistance','stableRegionFootprint','stableRegionFraming','stableRegionViewDistance','stableCameraPlan','stableCamUpdate'].map(extract).join('\n')}
-        ${extract('stableCollectGeometry').replace('function stableCollectGeometry(', 'function collectRealRegionGeometry(')}
-        function stableCollectGeometry(region) {
-            if (fixtureObjects) return collectRealRegionGeometry(region);
-            stableSupportReset();
-            _stableCam.pointCount = fixturePoints.length * 3;
-            _stableCam.viewPointCount = fixturePoints.length ? _stableViewPoints.length : 0;
-            _stableCam.minX = Infinity; _stableCam.maxX = -Infinity;
-            fixturePoints.forEach((point, index) => {
-                _stablePoints.set(point, index * 3);
-                ${extract('stableCollectViewPoint').startsWith('function stableCollectViewPoint(point)')
-                    ? '_stablePointInput.set(point); stableCollectViewPoint(_stablePointInput);'
-                    : 'stableCollectViewPoint(...point);'}
-                _stableCam.minX = Math.min(_stableCam.minX, point[0]);
-                _stableCam.maxX = Math.max(_stableCam.maxX, point[0]);
-            });
-        }
-        // Resolver behavior is covered separately; these fixtures isolate the
-        // controller's playing-area target from secondary note geometry.
-        function stablePlayingRegion(bundle, renderTime) {
-            lastRegionTime = renderTime;
-            if (regionRows?.length) {
-                let region = regionRows[0];
-                for (const row of regionRows) if (row.time <= renderTime) region = row;
-                return region;
-            }
-            if (regionFixture) return regionFixture;
-            const minX = Math.min(...fixturePoints.map(p => p[0]));
-            const maxX = Math.max(...fixturePoints.map(p => p[0]));
-            return { valid: fixturePoints.length > 0, x: (minX + maxX) / 2, minX, maxX,
-                dMin: minX / 10, dMax: maxX / 10, time: 0, source: 'fixture', row: null };
-        }
-        function stableRegionAnchors() {
-            const regions = regionRows || (regionFixture ? (regionFixture.valid ? [regionFixture] : [])
-                : fixturePoints.length ? [{time:0,minX:Math.min(...fixturePoints.map(p=>p[0])),maxX:Math.max(...fixturePoints.map(p=>p[0]))}] : []);
-            const key=JSON.stringify(regions.map(r=>[r.time,r.minX,r.maxX]));
-            if(key!==mockRegionKey){mockRegionKey=key;mockRegionAnchors=regions.map(r=>({time:r.time,fret:r.minX/10+1,width:(r.maxX-r.minX)/10}));}
-            return mockRegionAnchors;
-        }
-        function stableApplyPose() { curX = _stableCam.x; }
-        ${extract('stableApplyPose').replace('function stableApplyPose(', 'function applyRealPose(')}
-        const bundle = { currentTime: 0, isPlaying: true, notes: [], chords: [], anchors: [] };
-        return {
-            setObjects(objects) { fixtureObjects = objects; },
-            collection() {
-                return { raw:rawPoints.map(p=>p.slice()), points:Array.from(_stablePoints.slice(0,_stableCam.pointCount)),
-                    view:Array.from(_stableViewPoints), maxima:_stableSupport.map(q=>Array.from(q.maxima)),
-                    bins:_stableBins.map(b=>({...b})), sampleCount:_stablePointSamples,
-                    pointCount:_stableCam.pointCount, viewPointCount:_stableCam.viewPointCount,
-                    minX:_stableCam.minX, maxX:_stableCam.maxX };
-            },
-            collectObjects() {
-                segmentCalls = depthCalls = 0; collectRealRegionGeometry(null);
-                return {segmentCalls, depthCalls};
-            },
-            setPoints(points) { fixturePoints = points; },
-            setRegion(minX, maxX, time = 0) {
-                regionFixture = { valid: true, x: (minX + maxX) / 2, minX, maxX,
-                    dMin: minX / 10, dMax: maxX / 10, time, source: 'anchor',
-                    row: { time, dMin: minX / 10, dMax: maxX / 10 } };
-            },
-            setRegionTimeline(rows) {
-                regionRows = rows.map(({time,minX,maxX}) => ({valid:true,time,minX,maxX,x:(minX+maxX)/2,
-                    dMin:minX/10,dMax:maxX/10,source:'anchor',row:null}));
-            },
-            regionLookupTime() { return lastRegionTime; },
-            setFocus(x, minX = x, maxX = x) {
-                regionFixture = {valid:true,x,minX,maxX,dMin:minX/10,dMax:maxX/10,time:0,source:'fixture',row:null};
-            },
-            noRegion() { regionFixture = {valid:false,x:0,minX:Infinity,maxX:-Infinity,time:0,row:null}; },
-            replaceAnchors(rows = []) { bundle.anchors = rows; },
-            appendAnchor(row) { bundle.anchors.push(row); },
-            settings(values) {
-                if ('follow' in values) stableCameraFollow = values.follow;
-                if ('preset' in values) stableCameraPreset = values.preset;
-                if ('lefty' in values) _leftyCached = values.lefty;
-                if ('aspect' in values) cam.aspect = values.aspect;
-                if ('strings' in values) nStr = values.strings;
-                if ('pan' in values) cameraSmoothing = values.pan;
-                if ('rate' in values) bundle.playbackRate = values.rate;
-                if ('epoch' in values) bundle.transport = {epoch: values.epoch};
-            },
-            frame(time, elapsed = 1 / 60, playing = true, frameTime) {
-                wall += elapsed; bundle.currentTime = time; bundle.isPlaying = playing;
-                stableCamUpdate(bundle, frameTime); return { ..._stableCam };
-            },
-            clockFrame(raw, wallMs, timestamp, options = {}, frameTime) {
-                wall = wallMs / 1000;
-                bundle.currentTime = raw;
-                bundle.transport = options.transport === null ? null : {
-                    epoch: 1, generation: 1, state: 'playing', rate: 1,
-                    position: raw, sampledAt: wallMs, freshAt: wallMs,
-                    endTime: Infinity, ...options,
-                };
-                bundle.isPlaying = !bundle.transport || bundle.transport.state === 'playing';
-                const time = bundle.transport
-                    ? _presentationClock.sample(raw, wallMs, bundle.transport, timestamp) : raw;
-                stableCamUpdate(bundle, frameTime ?? time);
-                return {state: {..._stableCam}, time, motionDt: _presentationClock.frameMotionDelta()};
-            },
-            resetClock() { _presentationClock.reset(); },
-            solve(x, distance, prediction = 0, margin = .90, fixed = false) {
-                stableCollectGeometry(); return { ...stableSolve(x, distance, prediction, margin, fixed) };
-            },
-            interval(distance, prediction = 0, margin = .90, fixed = null) {
-                stableCollectGeometry(); return { ...stableIntervalAt(distance, prediction, margin, fixed) };
-            },
-            renderedPose(bridge = null) {
-                ctl = bridge; applyRealPose();
-                return {position: cam.position.values, target: cam.target, fov: cam.fov};
-            },
-            viewFits(point, state) {
-                const p = Float64Array.from(point);
-                return stableIntervalAt(state.distance, 0, .96, state.x, p, 3, _stableViewBasis).valid;
-            },
-            compareSupportedGeometry(points) {
-                stableSupportReset();
-                for(const point of points) {
-                    ${extract('stableAddPoint').startsWith('function stableAddPoint(input)')
-                        ? '_stablePointInput.set(point); stableAddPoint(_stablePointInput);'
-                        : 'stableAddPoint(...point);'}
-                }
-                const all=Float64Array.from(rawPoints.flat());
-                const selected=_stableViewPoints.slice();
-                const prediction=Math.min(AHEAD,.15*_stableCam.rate);
-                return [[prediction,.96,_stableViewBasis],[0,.96,_stableViewBasis]]
-                    .flatMap(([prediction,margin,basis])=>[false,true].map(fixed=>({
-                        exact:{...stableSolve(35,100,prediction,margin,fixed,all,all.length,basis)},
-                        reduced:{...stableSolve(35,100,prediction,margin,fixed,selected,selected.length,basis)},
-                        selectedCount:selected.length/3,inputCount:all.length/3,
-                    })));
-            },
-            collectRegion(region, labels = []) {
-                _incomingFixedFretLabels = {};
-                for (const {fret, x, y, z, size} of labels) {
-                    _incomingFixedFretLabels[fret] = { visible: true, isSprite: true, userData: {},
-                        material: {opacity: 1}, center: {x: .5, y: 1}, updateWorldMatrix() {},
-                        matrixWorld: {elements: [size,0,0,0,0,size,0,0,0,0,1,0,x,y,z,1]} };
-                }
-                collectRealRegionGeometry(region);
-                return rawPoints.map(p=>p.slice());
-            },
-            spritePoints({ x, y, z, size, centerY }) {
-                stableSupportReset();
-                stableCollectObject({ visible: true, isSprite: true, userData: {}, material: { opacity: 1 },
-                    center: { x: .5, y: centerY }, updateWorldMatrix() {},
-                    matrixWorld: { elements: [size, 0, 0, 0, 0, size, 0, 0, 0, 0, 1, 0, x, y, z, 1] } });
-                return rawPoints.map(p=>p.slice());
-            },
-            segmentPoints(a, b) {
-                stableSupportReset();
-                ${extract('stableAddSegment').startsWith('function stableAddSegment(points,')
-                    ? 'stableAddSegment(Float64Array.from([...a, ...b]), 0, 3);'
-                    : 'stableAddSegment(...a, ...b);'}
-                return rawPoints.map(([x,y,z])=>({minX:x,maxX:x,minY:y,maxY:y,minZ:z,maxZ:z}));
-            },
-            projected(point, x, distance, prediction = 0) {
-                const b = _stableBasis, dx = point[0] - x - b.x, y = point[1] - b.y;
-                const z = Math.max(point[2], Math.min(0, point[2] + prediction * TS));
-                const depth = distance - b.bx * dx - b.by * y - b.bz * z;
-                const tangent = Math.tan(STABLE_CAMERA_FOV * Math.PI / 360);
-                return { x: (b.rx * dx + b.rz * z) / (depth * tangent * cam.aspect),
-                    y: (b.ux * dx + b.uy * y + b.uz * z) / (depth * tangent) - STABLE_CAMERA_SHIFT,
-                    depth };
-            },
-            reset() { ++_stableCameraResetSerial; },
-            changeSong() { _songKey += '-next'; bundle.notes = []; bundle.chords = []; bundle.anchors = []; },
-        };
-    `)(three);
-}
+const { source, extractFunction, harness } = require('../helpers/highway_camera_harness.cjs');
 
 const cameraFrameDtSelection = `// Share the normal visual frame interval, but retain wall timing
             // for every clock fallback and all freshness/rate/seek bookkeeping.
@@ -299,11 +67,10 @@ test('stable camera rejoin, safety, zoom and rest widening follow the same frame
                 h.settings({preset, rate, aspect: 3440/1420}); setup(h, 0);
                 h.clockFrame(0, 0, 100, {rate}, 0);
             }
-            let legacyDifference = 0;
             for (let i = 1; i <= 200; ++i) {
                 const grid = i * 10, wall = grid + (i % 2 ? 3 : 0);
                 for (const h of [uniform, jittered, old]) setup(h, i);
-                const a = uniform.clockFrame(grid/1000*rate, grid, grid+100, {rate}, grid/1000*rate);
+                uniform.clockFrame(grid/1000*rate, grid, grid+100, {rate}, grid/1000*rate);
                 const b = jittered.clockFrame(wall/1000*rate, wall, grid+100, {rate}, grid/1000*rate);
                 const c = old.clockFrame(wall/1000*rate, wall, grid+100, {rate}, grid/1000*rate);
                 assert.equal(b.motionDt, .01);
@@ -311,9 +78,10 @@ test('stable camera rejoin, safety, zoom and rest widening follow the same frame
                 for (const field of ['lastWall', 'lastTime', 'rateWall', 'rateTime', 'rate', 'epoch', 'clockReset']) {
                     assert.equal(b.state[field], c.state[field], `wall bookkeeping ${field}`);
                 }
-                legacyDifference = Math.max(legacyDifference, Math.abs(c.state.x-a.state.x));
             }
-            if (name === 'rejoin') assert.ok(legacyDifference > .1, `${preset}/${rate}: fixture must expose old jitter`);
+            // The finite camera trajectory itself is independent of frame dt.
+            // Its lifecycle correction no longer has an old wall-damped path
+            // that is required to disagree with the presentation-clock path.
         }
     }
 });
@@ -347,9 +115,9 @@ test('uniform and dropped-frame clocks bound decimal rounding at the zoom quiet-
                 h.clockFrame(wallMs/1000, wallMs, wallMs+100);
             }
             const a = current.renderedPose(), b = old.renderedPose();
-            // .01 summed across frames can cross the existing .5s quiet-time
-            // threshold one rounding step earlier than wall subtraction.
-            // Keep that camera math unchanged, with a subpixel regression bound.
+            // Summed .01 intervals and wall subtraction can lie on opposite
+            // sides of .5 by a rounding error. They must take the same quiet
+            // return branch rather than gain a whole extra outward frame.
             for (const key of ['position', 'target']) for (let j = 0; j < 3; ++j) {
                 assert.ok(Math.abs(a[key][j]-b[key][j]) < .002, `${preset}/${intervalMs}/${i}/${key}/${j}`);
             }
@@ -731,15 +499,15 @@ test('changing distant extrema cannot block return to the current group', () => 
     assert.equal(settled.distance, expected.distance);
 });
 
-test('necessary secondary widening uses the closest feasible framing before sacrificing size', () => {
+test('necessary secondary widening preserves the playing centre', () => {
     for (const preset of ['straight', 'angled']) {
         const h = harness(); h.settings({ preset }); h.setFocus(20);
         const points = [[20, 13, 0], [300, 13, -30]];
         h.setPoints(points); const s = h.frame(0, 0);
         const fixed = h.solve(20, 100, .6, .82, true);
-        assert.ok(s.x > 20 && s.x < 300, 'both playing locations share the closer view');
+        assert.equal(s.x, 20, 'secondary visibility cannot choose a lateral compromise');
         assert.ok(s.distance > 100);
-        assert.ok(s.distance < fixed.distance, 'lateral framing avoids unnecessary zoom-out');
+        assert.ok(s.distance >= fixed.distance - 1e-8, 'fixed-centre geometry receives the required room');
         assertFits(h, points, s, .6, .82);
     }
 });
@@ -797,15 +565,16 @@ test('open strings, fretted notes and chords within one playing area leave the c
     }
 });
 
-test('a disjoint playing-area change follows during a rest and settles without waiting for a note', () => {
+test('a newly received disjoint playing area rejoins during a rest without waiting for a note', () => {
     for (const preset of ['straight', 'angled']) {
         const h = harness(); h.settings({ preset }); h.setRegion(20, 50); h.setPoints([]);
         const original = h.frame(108.7, 0);
         h.setRegion(100, 130, 108.72);
         const first = h.frame(108.75, .05);
-        assert.ok(first.x > original.x, 'the current chart area immediately starts a smooth move');
-        assert.ok(first.x < 115, 'ordinary playback must not snap to the new area');
-        const settled = advanceCamera(h, 108.75, 1, 60);
+        assert.equal(first.x, original.x, 'late chart data preserves the pose at the instant of rejoining');
+        const next = h.frame(108.8, .05);
+        assert.ok(next.x > original.x && next.x < 115, 'the following frames travel smoothly');
+        const settled = advanceCamera(h, 108.8, 1, 60);
         assert.ok(Math.abs(settled.x - 115) < Math.abs(original.x - 115) * .05,
             `${preset}: after one second camera is not 95% settled: ${settled.x}`);
         assert.equal(settled.focusValid, true, 'a current area remains valid without attacks');
@@ -822,7 +591,8 @@ test('a currently marked area remains primary while upcoming geometry moves with
         assert.equal(state.x, initial.x, 'future geometry must not anticipate the next chart position');
     }
     h.setRegion(100, 130, 2);
-    assert.ok(h.frame(2.05, .05).x > initial.x, 'following starts at the effective area boundary');
+    assert.equal(h.frame(2.05, .05).x, initial.x, 'an unannounced lane change rejoins from the current pose');
+    assert.ok(h.frame(2.1, .05).x > initial.x, 'following begins on the next frame');
 });
 
 test('equal-bounds markers do not restart a playing-area transition', () => {
@@ -833,6 +603,10 @@ test('equal-bounds markers do not restart a playing-area transition', () => {
         h.setRegion(100, 130, i / 60);
         const state = h.frame(i / 60, 1 / 60);
         assert.ok(state.x >= previous, `same bounds reversed transition at ${i / 60}s`);
+        if(i>=45) {
+            assert.equal(state.x,115, 'equivalent metadata cannot keep restarting the finite rejoin');
+            assert.equal(state.rejoinVelocity,0);
+        }
         previous = state.x;
     }
     assert.ok(Math.abs(previous - 115) < .15);
@@ -860,11 +634,84 @@ test('a lasting lane transition begins early, ends finitely and uses the same vi
     const rows=[{time:0,minX:20,maxX:60},{time:2,minX:100,maxX:140}];
     const h=harness();h.setRegionTimeline(rows);h.frame(0,0);
     const at=[];for(let i=1;i<=180;i++)at.push(h.frame(i/60,1/60));
-    assert.equal(at[82].x,40);
+    assert.equal(at[53].x,40, 'the large move begins 1.1 seconds before its destination');
     assert.ok(at[104].x>40&&at[104].x<120);
+    assert.equal(at[119].x,120, 'the destination is reached exactly at its onset');
+    assert.equal(at[119].planVelocity,0);
     assert.equal(at[155].x,120);
     const direct=harness();direct.setRegionTimeline(rows);
     assert.equal(at[104].x,direct.frame(1.75,0,false).x);
+});
+
+test('changing speed mid-pan preserves pose and velocity without reversing before the lasting arrival',()=>{
+    for(const preset of ['straight','angled']) for(const rate of [.5,2]) {
+        const h=harness();h.settings({preset,rate:1});
+        h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:2,minX:100,maxX:140}]);
+        h.frame(0,0);
+        let before;
+        for(let i=1;i<=90;i++) before=h.frame(i/60,1/60);
+        h.settings({rate});
+        let state=h.frame(1.5,0),previous=state.x;
+        assert.equal(state.x,before.x,`${preset}/${rate}: rate changes must preserve the current pose`);
+        assert.ok(Math.abs(state.planVelocity+state.rejoinVelocity-before.planVelocity-before.rejoinVelocity)<1e-8,
+            `${preset}/${rate}: rate changes must preserve the current velocity`);
+        for(let i=1;i<=100;i++) {
+            state=h.frame(1.5+i*.005,.005/rate);
+            assert.ok(state.x>=previous-1e-8,`${preset}/${rate}: camera reversed at ${1.5+i*.005}`);
+            assert.ok(state.x<=120+1e-8,`${preset}/${rate}: camera overshot its destination`);
+            previous=state.x;
+        }
+        assert.equal(state.x,120);
+        assert.equal(state.planVelocity+state.rejoinVelocity,0);
+    }
+});
+
+test('a second speed change preserves actual resume velocity even while nominal plans are both resting',()=>{
+    const h=harness();h.settings({rate:2});
+    h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:2,minX:100,maxX:140}]);
+    h.frame(0,0);
+    for(let i=1;i<=50;i++) h.frame(i*.01,.005);
+    h.settings({rate:1});h.frame(.5,0);
+    let before;
+    for(let i=1;i<=10;i++) before=h.frame(.5+i*.01,.01);
+    const velocity=before.planVelocity+before.rejoinVelocity;
+    assert.ok(velocity>0,'fixture must still be resuming towards the future lane');
+    h.settings({rate:.5});
+    const changed=h.frame(.6,0),epsilon=.000001;
+    assert.equal(changed.x,before.x);
+    assert.ok(Math.abs(changed.planVelocity+changed.rejoinVelocity-velocity)<1e-8);
+    const next=h.frame(.6+epsilon,epsilon/.5);
+    const actualVelocity=(next.x-changed.x)/epsilon*.5;
+    assert.ok(Math.abs(actualVelocity-velocity)<.01,
+        `rendered velocity changed from ${velocity} to ${actualVelocity}`);
+});
+
+test('pause and follow-off retain a pending resumed destination without backtracking',()=>{
+    for(const hold of ['pause','follow-off']) {
+        const h=harness();h.settings({rate:2});
+        h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:2,minX:100,maxX:140}]);
+        h.frame(0,0);
+        for(let i=1;i<=50;i++) h.frame(i*.01,.005);
+        h.settings({rate:1});h.frame(.5,0);
+        let before;
+        for(let i=1;i<=10;i++) before=h.frame(.5+i*.01,.01);
+        let time=.6;
+        if(hold==='follow-off') {h.settings({follow:false});time=.7;}
+        const held=h.frame(time,.1,hold!=='pause');
+        assert.equal(held.x,before.x);
+        h.settings({follow:true});
+        let state=h.frame(time,0,true),previous=state.x;
+        assert.equal(state.x,before.x);
+        const count=Math.round((2-time)/.01);
+        for(let i=1;i<=count;i++) {
+            state=h.frame(time+(2-time)*i/count,(2-time)/count);
+            assert.ok(state.x>=previous-1e-8,`${hold}: resuming travelled backwards`);
+            assert.ok(state.x<=120+1e-8,`${hold}: resuming overshot the destination`);
+            previous=state.x;
+        }
+        assert.equal(state.x,120);
+        assert.equal(state.planVelocity+state.rejoinVelocity,0);
+    }
 });
 
 test('safety fitting protects notes during early framing changes', () => {
@@ -883,15 +730,16 @@ test('resize reclassification rejoins a new plan without a next-frame position j
     assert.ok(Math.abs(next.x-resized.x)<2, 'narrow-view reclassification must smoothly rejoin');
 });
 
-test('unexpected geometry can recover readability without snapping to a suppressed position', () => {
+test('unexpected geometry widens the view without moving a suppressed excursion', () => {
     const h = harness();
-    h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:2,minX:55,maxX:95},{time:2.6,minX:20,maxX:60}]);
-    h.frame(0,0);
+    h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:2,minX:55,maxX:95},{time:2.3,minX:20,maxX:60}]);
+    const initial=h.frame(0,0);
     h.setPoints([[150,13,0]]);
     let state;
     for (let i=1;i<=132;i++) state=h.frame(i/60,1/60);
-    assert.ok(state.safetyOffset>0, 'real geometry overrides an inadequate shared footprint');
-    assert.ok(state.x>40&&state.x<75, 'only a limited smooth correction is taken');
+    assert.equal(state.safetyOffset,0);
+    assert.equal(state.x,40, 'actual geometry cannot override the held lane');
+    assert.ok(state.distance>initial.distance, 'unexpected geometry is protected through widening');
     assertFits(h,[[150,13,0]],state,0,.96);
     h.setPoints([]);
     const settled=advanceCamera(h,2.2,3);
@@ -978,7 +826,9 @@ test('the playing-area lookup crosses a boundary with the visible render clock b
     const crossed = h.frame(.989, .016, true, 1.008);
     assert.equal(h.regionLookupTime(), 1.008, 'camera and rendered lane must resolve the same current area');
     assert.equal(crossed.focusX, 115, 'the visually current new lane is already the camera target');
-    assert.ok(crossed.x > initial.x && crossed.x < 115, 'the boundary begins a smooth pan, not a seek snap');
+    assert.ok(initial.x < 115, 'the early preparation is still in flight before onset');
+    assert.equal(crossed.x,115, 'the camera has already arrived when the rendered lane changes');
+    assert.equal(crossed.planVelocity,0);
     assert.equal(crossed.lastTime, .989, 'the audio time still controls seek and rate bookkeeping');
 });
 
@@ -1047,14 +897,14 @@ test('five and seven fret passages preserve the centre and smoothly return to ca
     }
 });
 
-test('a lateral adjustment that fits at close distance does not zoom out', () => {
+test('a visible outlier receives necessary zoom while preserving the lane centre', () => {
     const reference = harness(); reference.setRegion(0, 40);
     const close = reference.frame(0, 0);
     const h = harness(); h.setRegion(0, 40);
     h.setPoints([[-10, 13, 0], [130, 13, 0]]);
     const state = h.frame(0, 0);
-    assert.equal(state.distance, close.distance);
-    assert.ok(state.x > 20 && state.x < 65, 'take only the necessary step from the preferred centre');
+    assert.ok(state.distance > close.distance);
+    assert.equal(state.x,20, 'fitting cannot replace the lane centre with a lateral compromise');
     assertFits(h, [[-10, 13, 0], [130, 13, 0]], state, 0, .82);
 });
 
