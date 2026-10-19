@@ -8,10 +8,11 @@ RS+-inspired (Angled). Other camera modes keep their existing behavior.
 The shared effective lane timeline remains authoritative for lane rendering,
 chord boxes and labels. A separate camera timeline merges metadata-only
 boundaries and same-base width changes. Durations are measured in original
-song time, independent of playback speed. The adjustable short-excursion
+song time, independent of playback speed. The adjustable short-lane
 threshold defaults to 500 ms: a lane lasting exactly the threshold counts as
-lasting; only whole excursions shorter than it can be suppressed. Zero turns
-off brief-excursion suppression. The separate motif/riff-extension protections
+lasting; every intermediate lane in a suppressed excursion must be individually
+shorter than it. Total time around a repeating riff does not limit this rule.
+Zero turns off short-lane suppression. The separate motif/riff-extension protections
 retain their established criteria.
 
 The preferred centre remains between the middle two columns of the normal
@@ -19,10 +20,19 @@ four-fret lane. Extending the upper edge does not change this centre. Geometry
 fitting cannot replace that position with a shared midpoint or a tolerance
 hold. Longer relocations, including whole-chord relocations, are followed.
 
-A short excursion returning to its home lane holds that home centre, even if
-its note is at fret 24. A complete local return can establish that home even
-when each individual visit is short. The whole time away is measured across
-all intermediate lanes; a lasting intermediate lane prevents suppression.
+A single short out-and-back holds its home centre, even if its note is at
+fret 24. A multi-lane return holds only with positive repeating-riff evidence:
+the immediately preceding or following complete cycle must have the same
+ordered lane bases, and every intermediate lane in both cycles must be short.
+Widths, metadata boundaries and home dwell times do not change that ordered
+pattern. A lasting intermediate lane prevents suppression. Three consecutive
+lane changes in one direction, or three successively rising or falling local
+peaks or troughs, identify a travelling run, including across the join between
+repeated cycles. Those runs still travel, even with small backward steps.
+A one-off long
+climb and descent therefore follows the fretboard even if it returns home.
+A qualifying complete local return can establish a home even when each
+individual visit is short.
 Established homes win overlapping returns. An authored section's incoming lane
 can resolve an ambiguous overlap only when it starts at a lane boundary and
 has its own qualifying return within that section. A section marker alone
@@ -30,9 +40,13 @@ does not choose a new home. Repeated held returns merge into a lasting camera
 stop, so the camera does not drift through a long riff of short visits.
 
 Short ordered intermediate positions remain waypoints
-in a continuous journey. A short off-route group between adjacent lasting
-positions can be bypassed: 9 → 13 for 251 ms → 8 follows 9 → 8 and fits the
-13th-fret notes. An intervening lasting lane is never skipped. Optional lower
+in a continuous journey. A single short off-route spike between adjacent
+lasting positions can be bypassed: 9 → 13 for 300 ms → 8 follows 9 → 8
+at a 500 ms threshold and fits the outlying notes. Multi-lane off-route groups
+need the repeating-riff evidence above; being outside the direct route alone
+does not suppress them. Thus 9 → 13 → 14 → 8 still travels, as does a
+zigzag climb. An isolated spike during an otherwise progressive journey can
+still fit without following it. An intervening lasting lane is never skipped. Optional lower
 fret bias for ambiguous alternating riffs is deferred.
 
 The longer riff-variation exception requires positive local evidence. The
@@ -67,7 +81,7 @@ controls expose five persisted values:
 | Departure delay | 100 ms | 0–1000 ms | Start a long direct switch later. |
 | Extra travel time | 10% | 0–200% | Lengthen that switch's travel time. |
 | Maximum settling time | 250 ms | 0–3000 ms | Bound completion after the lane begins. |
-| Short-excursion threshold | 500 ms | 0–3000 ms | Ignore shorter whole excursions; original song time. |
+| Short-lane threshold (ms) | 500 ms | 0–3000 ms | Compare each lane's original song duration; hold qualifying short repeated riffs. |
 | Long switch: minimum fret change | 5 frets | 1–24 frets | Minimum absolute change in the lane's first fret for timing adjustments. |
 
 Delay and settling limits use real playback time. Timing tuning applies to
@@ -78,7 +92,7 @@ arrival. Geometry fitting continues to keep playable notes visible during
 the late tail, without moving the chosen horizontal centre.
 
 The **Gentler trial** button restores all five trial values. **Previous tuning**
-selects 0 ms delay, 0% extra travel, 0 ms settling, 500 ms excursions, and a
+selects 0 ms delay, 0% extra travel, 0 ms settling, 500 ms per lane, and a
 5-fret threshold, reproducing the preceding camera timing. Sliders apply on
 release; numeric inputs allow precise values. The settings persist on this
 device and work for both Stable viewpoints. Follow off disables the controls.
@@ -119,15 +133,19 @@ the necessary width through the existing return delay instead of pumping.
 
 Chart analysis, projected lane shapes and timed movement have separate caches.
 Playback-speed and timing-control changes reschedule movement without changing
-semantic decisions. Changing the short-excursion threshold rebuilds the camera
+semantic decisions. Changing the short-lane threshold rebuilds the camera
 timeline, while keeping the rendered lane timeline unchanged.
 Per-frame trajectory sampling uses binary search; chart scans happen only on
-cache rebuilds. Teardown releases the camera timeline and chart references.
+cache rebuilds. Exact repeated-cycle comparisons are bounded by the physical
+fret vocabulary; indexed return, lasting-barrier and directional-run checks
+avoid repeated look-ahead scans. Unknown geometry-only homes conservatively
+retain multi-lane journeys. Teardown releases the camera timeline and chart references.
 
 ## Verification
 
 Unit coverage includes metadata fragmentation, 499/500/501 ms boundaries at
-multiple speeds, full excursion duration, progressive travel, overshoots,
+multiple speeds, individual lane durations, repeated ordered cycles, lasting
+barriers, progressive travel and repeated climbs, overshoots,
 positive and rejected motif evidence, exact arrivals, lifecycle continuity,
 fixed-centre projection, minimum necessary zoom, return behavior and caches.
 
@@ -144,8 +162,10 @@ The reported Absolution regression is the lane beginning at 15.359 s, whose
 pause/resume, Follow changes, speed changes, rapid edits and loop wraps. It
 checks continuity and convergence to the current trajectory without a seek.
 The Alison Hell Lead regression uses the loop from 194.419 to 212.784 seconds:
-1000/3000 ms hold the recurring fret-5 lane, while 500 ms retains the roughly
-900 ms chord cycles and still ignores the roughly 300 ms fret-12 replies.
+500/1000/3000 ms hold the recurring fret-5 lane because each intermediate
+lane is roughly 300 ms, even though the complete chord cycle is longer.
+Lower thresholds retain individually longer lane visits; progressive scale
+fixtures continue travelling even when their entire phrase repeats.
 
 ### Original lane-follow implementation validation, 2026-10-19
 

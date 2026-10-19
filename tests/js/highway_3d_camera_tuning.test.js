@@ -240,18 +240,19 @@ test('late-tail evaluation reports its actual remaining destination',()=>{
     assert.ok(after.arrivalTime>8&&after.arrivalX===60);
 });
 
-test('the excursion control measures original whole-excursion duration independently of speed',()=>{
-    const rows=[row(0,1),row(2,7),row(2.2,9),row(2.45,1)];
-    for(const threshold of [0,400,450,500,1000]) for(const rate of [.5,1,2]) {
+test('the excursion control measures each original lane duration independently of speed and trip length',()=>{
+    const rows=[row(0,1),row(2,7),row(2.2,9),row(2.45,1),row(2.65,7),row(2.85,9),row(3.1,1)];
+    for(const threshold of [0,200,250,300,400,450,500,1000]) for(const rate of [.5,1,2]) {
         const stops=buildStops(rows,rate,null,null,null,null,null,threshold);
-        if(threshold>450) assert.deepEqual(stops.map(s=>s.firstFret),[1]);
-        else assert.ok(stops.length>1,'a group reaching the cutoff must be followed');
+        if(threshold>250) assert.deepEqual(stops.map(s=>s.firstFret),[1]);
+        else assert.ok(stops.length>1,'an individual lane reaching the cutoff must be followed');
     }
 });
 
-test('a three-second excursion threshold uses the whole source-time departure and follows its exact boundary',()=>{
+test('a three-second threshold holds longer complete returns but follows an individual lane at the exact boundary',()=>{
     for(const duration of [1.001,2.5,2.999,3]) for(const rate of [.5,1,2]) {
-        const rows=[row(0,1),row(5,7),row(5+duration/2,9),row(5+duration,1)];
+        const rows=[row(0,1),row(5,7),row(5+duration,9),row(5+duration*2,1),
+            row(5+duration*3,7),row(5+duration*4,9),row(5+duration*5,1)];
         const stops=buildStops(rows,rate,null,null,null,null,null,3000);
         if(duration<3) assert.deepEqual(stops.map(s=>s.firstFret),[1],
             'the expanded value must not silently retain the old one-second cap');

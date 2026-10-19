@@ -484,13 +484,13 @@
                     <p id="h3d-stable-settle-limit-description" class="text-xs text-gray-400 mt-1">Allow the last part of a long switch to finish after the new lane starts. Zero keeps exact arrival. Departure delay and extra travel are reduced when this limit or the next move leaves less room.</p>
                 </div>
                 <div class="mt-4 pt-3 border-t border-gray-700">
-                    <label for="h3d-stable-excursion-threshold" class="text-xs font-medium text-gray-300">Short-excursion threshold</label>
+                    <label for="h3d-stable-excursion-threshold" class="text-xs font-medium text-gray-300">Short-lane threshold (ms)</label>
                     <div class="flex items-center gap-3 mt-1">
                         <input type="range" id="h3d-stable-excursion-threshold" min="0" max="3000" step="50" value="500" class="w-full accent-accent" aria-describedby="h3d-stable-excursion-threshold-description">
-                        <input type="number" id="h3d-stable-excursion-threshold-value" min="0" max="3000" step="50" value="500" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Short-excursion threshold in original song milliseconds">
+                        <input type="number" id="h3d-stable-excursion-threshold-value" min="0" max="3000" step="50" value="500" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Short-lane threshold in original song milliseconds per lane">
                         <span class="text-xs text-gray-400">ms</span>
                     </div>
-                    <p id="h3d-stable-excursion-threshold-description" class="text-xs text-gray-400 mt-1">Hold the home lane when the whole trip away and back is shorter than this, including trips through several lanes. Uses original song time at every playback speed. Zero disables this rule. Riff-extension protections still apply, and progressive runs still travel.</p>
+                    <p id="h3d-stable-excursion-threshold-description" class="text-xs text-gray-400 mt-1">Compare each lane with this duration in original song time. Individually short lanes in a repeating riff hold the home lane; progressive journeys still travel. A single short out-and-back can also hold. Zero disables short-lane suppression. Riff-extension protections still apply.</p>
                 </div>
                 <div class="mt-3">
                     <label for="h3d-stable-long-switch-frets" class="text-xs font-medium text-gray-300">Long switch: minimum fret change</label>
@@ -1573,8 +1573,8 @@
                     if (row.number) row.number.addEventListener('change', () => commit(row, row.number.value));
                 }
                 for (const [id, values, message] of [
-                    ['trial', [100, 10, 250, 500, 5], 'Gentler trial: 100 ms delay, 10% extra travel, up to 250 ms settling; 500 ms excursions and 5-fret long switches.'],
-                    ['previous', [0, 0, 0, 500, 5], 'Previous tuning: exact arrival, 500 ms excursions, and no added delay or travel time.'],
+                    ['trial', [100, 10, 250, 500, 5], 'Gentler trial: 100 ms delay, 10% extra travel, up to 250 ms settling; 500 ms per lane and 5-fret long switches.'],
+                    ['previous', [0, 0, 0, 500, 5], 'Previous tuning: exact arrival, 500 ms per lane, and no added delay or travel time.'],
                 ]) {
                     const button = document.getElementById('h3d-stable-tuning-' + id);
                     if (button) button.addEventListener('click', () => {
