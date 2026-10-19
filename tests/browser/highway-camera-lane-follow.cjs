@@ -241,7 +241,8 @@ function validate(c, samples, plan) {
         check(sample&&Math.abs(sample.x-high)<width*.05,c.name,
           'An all-short repeated climb and descent was suppressed instead of following the high lane',{time,high,sample});
       }
-      check(Math.abs(samples.at(-1).x-first.x)<width*.05,c.name,'The progressive return did not settle back at its final lane');
+      check(Math.abs(samples.at(-1).x-plan.stops.at(-1).x)<width*.05,c.name,
+        'The progressive return did not settle back at its final lane');
     }
     if(c.sourceName==='far-24'&&held) {
       const last=samples.at(-1),peak=Math.max(...samples.map(s=>s.distance));
