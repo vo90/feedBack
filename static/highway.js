@@ -4,6 +4,7 @@
  */
 import { whammyApi } from './js/whammy.js';
 import { getLyricLines } from './js/lyric-lines.js';
+import { joinPhraseHandShapes } from './js/handshape-continuity.js';
 import { shouldUseNativeBacking } from './js/native-backing-route.js';
 import { loadCoreBackingTrack } from './js/transport.js';
 window.feedBackWhammy = whammyApi;
@@ -1625,7 +1626,7 @@ function createHighway() {
         // didn't ship handshapes via phrases at all and we should fall
         // back to the flat arrangement-root list (DLC pattern).
         let anyHandShapeInPhrases = false;
-        for (const p of hwState._phrases) {
+        for (const [phraseIndex, p] of hwState._phrases.entries()) {
             const n = p.levels.length;
             if (n === 0) continue;
             // Map slider fraction to a level index. `n` already equals
@@ -1641,7 +1642,9 @@ function createHighway() {
             // the highway panning into empty regions — filter them to
             // the same level as the notes they pair with.
             for (const x of lv.anchors) outAnchors.push(x);
-            for (const x of (lv.handshapes || [])) outHandShapes.push(x);
+            for (const shape of (lv.handshapes || [])) {
+                outHandShapes.push({ shape, phrase: p, phraseIndex });
+            }
             if (!anyHandShapeInPhrases) {
                 for (const level of p.levels) {
                     if (level.handshapes && level.handshapes.length > 0) {
@@ -1654,10 +1657,7 @@ function createHighway() {
         hwState._filteredNotes = outNotes;
         hwState._filteredChords = outChords;
         hwState._filteredAnchors = outAnchors;
-        if (outHandShapes.length) {
-            outHandShapes.sort((a, b) => a.start_time - b.start_time);
-        }
-        hwState._filteredHandShapes = outHandShapes;
+        hwState._filteredHandShapes = joinPhraseHandShapes(outHandShapes, hwState.handShapes);
         hwState._phrasesHaveHandShapes = anyHandShapeInPhrases;
         _restageChartTransform();
     }

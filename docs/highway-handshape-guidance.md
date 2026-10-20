@@ -47,3 +47,51 @@ Git whitespace checks also pass.
 This is a renderer-only source change. Song packages and scoring inputs are
 unchanged. Validation uses executable renderer tests, not an interactive
 in-game visual inspection. The running runtime has not been updated.
+
+## Continuity across phrase boundaries
+
+Some packages clip a continuous arrangement handshape into separate
+per-phrase difficulty rows. Previously, selecting those rows created a new
+synthetic chord at each clipped start, including starts in the middle of a
+sustaining note. An inclusive endpoint lookup could then select the preceding
+handshape and give the extra arpeggio frame ordinary strum styling.
+
+The mastery filter now joins adjacent selected fragments when one unique
+original handshape with the same template and metadata covers both sides.
+The fragments must meet at consecutive phrase boundaries. Only the resulting
+display interval is copied: authored notes, chords, durations, and source
+handshapes remain unchanged. This applies to ordinary and arpeggio guidance,
+including runs across more than two phrases. Phrase timestamps are rounded
+on the playback wire; their comparison allows that rounding, while fragment
+endpoints must agree within one microsecond.
+
+Do not merge merely because shapes touch or share a chord name. Genuine
+adjacent source occurrences, gaps, changed grips or arpeggio flags, missing
+selected guidance, and ambiguous source intervals retain separate onsets.
+Reduced-difficulty templates absent from the original list cannot borrow
+continuity from a different full-difficulty template, even if their fret
+patterns are subsets and their timing matches. Recovering that case requires
+original per-difficulty span identity from the converter.
+
+For genuine adjacent spans, renderer lookups prefer the matching new onset
+over an inclusive match on the preceding endpoint. Note guidance caches must
+also follow the effective chart inputs when mastery changes.
+
+`handshape_continuity.test.js` exercises the actual mastery-filter and
+synthetic-chord paths, including the sustained-note regression, repeated
+mastery changes, source immutability, and preserved real chord attacks.
+`highway_3d_handshape_boundary.test.js` covers renderer boundary selection
+and cache invalidation.
+
+Validation of this change:
+
+- All 22 new regressions and all 1,217 3D highway tests pass.
+- The remaining highway tests pass 259 of 264 checks. The five failures in
+  `highway_audio_barrier`, `highway_ghost_notes`, and `highway_note_state`
+  reproduce unchanged on the starting revision.
+- A read-only audit of the Rush arrangement at 0%, 25%, 50%, 75%, and 100%
+  mastery removes both arpeggio splits at 447.167999 and 481.598999 seconds.
+  Full mastery joins five confirmed continuations and preserves two ambiguous
+  boundaries where the original chart also contains a separate onset.
+- JavaScript syntax and Git whitespace checks pass. This validates source
+  behavior; the running application has not been refreshed.

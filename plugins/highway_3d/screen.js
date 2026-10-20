@@ -15455,14 +15455,20 @@
                 if (!Number.isNaN(tLo) && !Number.isNaN(tHi)
                     && !(t + 1e-4 < tLo || t > tHi + 1e-4)
                     && sameId) {
-                    const explicit = handShapeMarkedArpeggio(hs, chordTemplates);
-                    result = {
-                        explicit,
-                        covered: true,
-                        hs,
-                        fallbackInferenceStopBefore: null,
-                    };
-                    break;
+                    // Touching authored spans both contain their shared boundary.
+                    // Prefer the span beginning here, while retaining inclusive
+                    // endpoint tolerance when there is no new occurrence.
+                    const atStart = Math.abs(tNum - tLo) <= 1e-4;
+                    if (result === _HINT_NONE || atStart) {
+                        result = {
+                            explicit: handShapeMarkedArpeggio(hs, chordTemplates),
+                            covered: true,
+                            hs,
+                            fallbackInferenceStopBefore: null,
+                        };
+                    }
+                    if (atStart) break;
+                    continue;
                 }
 
                 // Some legacy charts attach a stale/wrong chord id to a hand-shape
@@ -16005,6 +16011,7 @@
         function arpeggioChordIdForNote(n, handShapes, chordTemplates, notesArr) {
             if (!handShapes || handShapes.length === 0 || !notesArr || notesArr.length === 0) return null;
             if (!validString(n.s)) return null;
+            let result = null;
             for (let i = 0; i < handShapes.length; i++) {
                 const hs = handShapes[i];
                 const hsLo = hsStart(hs);
@@ -16023,9 +16030,13 @@
                 const shape = mergeChordShape(fakeCh, synthNotes, chordTemplates);
                 const tw = { tLo: hsLo - 0.06, tHi: hsHi + 0.06 };
                 if (handShapeChartSpanSec(hs) < ARP_INFER_MIN_HAND_SHAPE_SPAN_S) continue;
-                if (inferArpeggioFromNotePattern(fakeCh, shape, notesArr, tw, handShapes)) return cid;
+                if (inferArpeggioFromNotePattern(fakeCh, shape, notesArr, tw, handShapes)) {
+                    const atStart = Math.abs(n.t - hsLo) <= 1e-4;
+                    if (result == null || atStart) result = cid;
+                    if (atStart) break;
+                }
             }
-            return null;
+            return result;
         }
 
         /**
@@ -16128,15 +16139,21 @@
             }
         }
 
-        // Chart-static WeakMap cache: note object → chord-id (or null sentinel).
-        // The result depends only on the note's (t, s, f) and the chart's handShapes
-        // + chordTemplates, which never change after load. Keyed by note object so
-        // switching songs/arrangements drops the entries with the old array.
+        // Weak keys release old notes on arrangement changes. Input references
+        // also matter: mastery/transform changes can reuse a note while replacing
+        // its hand shapes, templates or inference source.
         const _ARP_CID_NULL = Object.freeze({});
         const _arpCidCache = new WeakMap();
         function arpeggioChordIdForNoteWithInferCache(n, handShapes, chordTemplates, notesArr, hsInferFlags) {
             const cached = _arpCidCache.get(n);
-            if (cached !== undefined) return cached === _ARP_CID_NULL ? null : cached;
+            if (cached !== undefined && cached.handShapes === handShapes
+                && cached.chordTemplates === chordTemplates && cached.notesArr === notesArr
+                && cached.hsInferFlags === hsInferFlags) {
+                return cached.result === _ARP_CID_NULL ? null : cached.result;
+            }
+            // Mastery can reuse a note object while replacing its hand shapes.
+            // Its cached occurrence bounds depend on this same selection.
+            _arpBoundsCache.delete(n);
             let result = null;
             if (!handShapes || handShapes.length === 0 || !notesArr || notesArr.length === 0 || !hsInferFlags) {
                 result = arpeggioChordIdForNote(n, handShapes, chordTemplates, notesArr);
@@ -16154,39 +16171,54 @@
                     if (!tmpl || !Array.isArray(tmpl.frets)) continue;
                     const tf = tmpl.frets[n.s];
                     if (typeof tf !== 'number' || tf < 0 || n.f !== tf) continue;
-                    result = cid;
-                    break;
+                    const atStart = Math.abs(n.t - hsLo) <= 1e-4;
+                    if (result == null || atStart) result = cid;
+                    if (atStart) break;
                 }
             }
-            _arpCidCache.set(n, result === null ? _ARP_CID_NULL : result);
+            _arpCidCache.set(n, {
+                handShapes, chordTemplates, notesArr, hsInferFlags,
+                result: result === null ? _ARP_CID_NULL : result,
+            });
             return result;
         }
 
         /** Returns {start, end} chart-time bounds of the arpeggio handshape that contains
          *  this note, or null when not found.  Uses hsInferFlags to skip ruled-out
          *  handshapes; falls back to a full scan when hsInferFlags is null. */
-        // WeakMap cache — arpHsBoundsForNote result is chart-static (note, handShapes,
-        // and hsInferFlags never change after chart load). Each renderer instance has
-        // its own WeakMap, so splitscreen panels don't interfere.
+        // Cache each note's selected occurrence and chart inputs. Mastery changes
+        // can reuse the note while replacing its hand shapes; note-selection
+        // invalidation above also releases bounds when template/inference inputs change.
         // Sentinel: _ARP_BOUNDS_NULL = {} distinguishes "no matching hs" from "uncached".
         const _ARP_BOUNDS_NULL = Object.freeze({});
         const _arpBoundsCache = new WeakMap();
-        function arpHsBoundsForNote(n, handShapes, hsInferFlags) {
+        function arpHsBoundsForNote(n, handShapes, hsInferFlags, chordId = null) {
             if (!handShapes || handShapes.length === 0) return null;
             const cached = _arpBoundsCache.get(n);
-            if (cached !== undefined) return cached === _ARP_BOUNDS_NULL ? null : cached;
+            if (cached !== undefined && cached.chordId === chordId
+                && cached.handShapes === handShapes && cached.hsInferFlags === hsInferFlags) {
+                return cached.bounds === _ARP_BOUNDS_NULL ? null : cached.bounds;
+            }
             let result = null;
             for (let i = 0; i < handShapes.length; i++) {
                 if (hsInferFlags && !hsInferFlags[i]) continue;
                 const hs = handShapes[i];
+                // Use the same template selected by the note's string/fret
+                // lookup so an overlapping shape cannot lend it other bounds.
+                const hsId = hsChordIdNorm(hs);
+                if (chordId != null && (hsId == null || Number(hsId) !== Number(chordId))) continue;
                 const lo = hsStart(hs);
                 const hi = hsEnd(hs);
                 if (Number.isNaN(lo) || Number.isNaN(hi)) continue;
                 if (n.t + 1e-4 < lo || n.t > hi + 1e-4) continue;
-                result = { start: lo, end: hi };
-                break;
+                const atStart = Math.abs(n.t - lo) <= 1e-4;
+                if (result == null || atStart) result = { start: lo, end: hi };
+                if (atStart) break;
             }
-            _arpBoundsCache.set(n, result === null ? _ARP_BOUNDS_NULL : result);
+            _arpBoundsCache.set(n, {
+                handShapes, hsInferFlags, chordId,
+                bounds: result === null ? _ARP_BOUNDS_NULL : result,
+            });
             return result;
         }
 
@@ -16687,7 +16719,7 @@
                 const strum = _authoredStrumCache?.byNote.has(n);
                 const cid = strum ? null : arpeggioChordIdForNoteWithInferCache(
                     n, handShapes, templates, notes, _arpGhostHsInferScratch);
-                if (cid != null && arpHsBoundsForNote(n, handShapes, _arpGhostHsInferScratch) == null) continue;
+                if (cid != null && arpHsBoundsForNote(n, handShapes, _arpGhostHsInferScratch, cid) == null) continue;
                 add(n.t, n.f, harmonicLabel(n), naturalNode(n));
             }
 
@@ -18011,7 +18043,7 @@
                         arpGhostHsInfer,
                     );
                     const _arpBoundsForNote = arGhostCid != null
-                        ? arpHsBoundsForNote(n, bundle.handShapes, arpGhostHsInfer)
+                        ? arpHsBoundsForNote(n, bundle.handShapes, arpGhostHsInfer, arGhostCid)
                         : null;
                     drawNote(
                         n,
