@@ -36,7 +36,7 @@ function factory() {
         dispose() { this.disposed = true; }
     }
     const T = { SpriteMaterial: Material, MeshBasicMaterial: Material,
-        CanvasTexture: class { constructor(image) { this.image = image; } dispose() { this.disposed = true; } },
+        CanvasTexture: class { constructor(image) { this.image = image; this.userData = {}; } dispose() { this.disposed = true; } },
         DoubleSide: 2, SRGBColorSpace: 'srgb' };
     return new Function('document', 'T', `
         const _techMatCache = new Map(), _techMeshMatClones = new Set();

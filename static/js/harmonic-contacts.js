@@ -1,5 +1,5 @@
 // Additive one-contact contract. The initial picked attack never changes.
-import { createHarmonicContactOverlay } from './harmonic-contact-overlay.js';
+import { createHarmonicContactOverlay, techniqueCaptionStyle } from './harmonic-contact-overlay.js';
 const pitches = new Map([[12,12],[7,19],[19,19],[5,24],[24,24],[4,28],[9,28],[16,28],
     [3.2,31],[2.7,34],[5.8,34],[9.6,34],[14.7,34],[21.7,34],[2.4,36],[8.2,36],[17,36]]);
 const keys = (x,k) => x && typeof x==='object' && !Array.isArray(x)
@@ -56,4 +56,5 @@ export function harmonicAttackDeadline(note,onset,tolerance,grace=0) {
 }
 export const harmonicContactsApi=Object.freeze({version:1,events:harmonicContacts,at:harmonicContactAt,
     label:harmonicContactLabel,fret:harmonicContactFret,slide:harmonicContactSlide,
-    attackDeadline:harmonicAttackDeadline,createOverlay:createHarmonicContactOverlay});
+    attackDeadline:harmonicAttackDeadline,createOverlay:createHarmonicContactOverlay,
+    captionStyle:techniqueCaptionStyle});

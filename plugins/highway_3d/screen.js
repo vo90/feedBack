@@ -8217,8 +8217,8 @@
         let _laneTargetColor = null;
         let _renderScale = 1;
         let lyricsCanvas = null, lyricsCtx = null;
-        let contactOverlay = null;
-        const timedContactLabels = [];
+        let captionOverlay = null;
+        const techniqueCaptions = [];
         // FPS counter overlay. EMA-smoothed over ~30 frames so the readout doesn't
         // jitter every rAF tick. Controlled by the 'fpsVisible' setting (BG_DEFAULTS).
         // Legacy 'h3d_showFps' localStorage key and window.h3dShowFps are no longer
@@ -9077,7 +9077,7 @@
         }
 
         // Object pools
-        let pNote, pSus, pLbl, pBeat, pSec, pWah;
+        let pNote, pSus, pLbl, pBeat, pSec;
         let wahRefs = [], wahCues = [];
         let pFretLbl, pLane, pLaneDivider;
         // Reused label-layout records; no per-frame geometry or texture creation.
@@ -9645,6 +9645,13 @@
                 wideFont: 'bold 64px sans-serif',
                 srcH: 128, stroke: '#0a1018', strokeW: 6, shadow: null,
             },
+            // Supplementary captions on older hosts without the crisp overlay.
+            // A digit and a long caption have the same font and optical height.
+            caption: {
+                font:     'bold 64px Arial, sans-serif',
+                wideFont: 'bold 64px Arial, sans-serif',
+                srcH: 128, stroke: '#0a1018', strokeW: 6, shadow: null,
+            },
             // Open-string "0" label on the note body itself.
             open: {
                 font:     'bold 80px sans-serif',
@@ -9773,12 +9780,13 @@
                 depthTest: false,
                 depthWrite: false,
             });
-            if (sName === 'fretRow' || sName === 'noteFret') {
+            if (sName === 'fretRow' || sName === 'noteFret' || sName === 'caption' || sName === 'technique') {
                 // Optical bounds exclude transparent canvas padding. Cache once
                 // with the texture so arrival handoff needs no pixel readback.
                 const metrics = x.measureText(str), pad = (sp.strokeW || 0) * 0.5;
                 if (Number.isFinite(metrics.actualBoundingBoxAscent)) {
-                    mat.map.userData.hwyLabelInk = {
+                    const key = sName === 'caption' || sName === 'technique' ? 'hwyCaptionInk' : 'hwyLabelInk';
+                    mat.map.userData[key] = {
                         minX: (drawX - metrics.actualBoundingBoxLeft - pad) / w,
                         maxX: (drawX + metrics.actualBoundingBoxRight + pad) / w,
                         minY: 1 - (drawY + metrics.actualBoundingBoxDescent + pad) / h,
@@ -9957,6 +9965,11 @@
             // Canvas CSS colors are sRGB. Treating them as linear would make a
             // string-colored bend brighter than its matching note face.
             texture.colorSpace = T.SRGBColorSpace;
+            if (kind === 'naturalHarmonic' || kind === 128) {
+                // Circle radius .25 plus half its .117 keyline. The remaining
+                // transparent face padding must not push a nearby number away.
+                texture.userData.hwyCaptionInk = {minX: .1915, maxX: .8085, minY: .1915, maxY: .8085};
+            }
             const mat = new T.SpriteMaterial({
                 map: texture, transparent: true, opacity: 1,
                 depthTest: false, depthWrite: false, fog: false, toneMapped: false,
@@ -10082,6 +10095,8 @@
                 depthWrite: false,
                 opacity: 0.96,
             });
+            // Bound the solid ring, leaving its soft halo outside text layout.
+            mat.map.userData.hwyCaptionInk = {minX: .19, maxX: .81, minY: .19, maxY: .81};
             txtCache[k] = mat;
             return mat;
         }
@@ -11848,7 +11863,7 @@
             _probe = new T.Vector3();
             ren.setClearColor(0x101820, _bcActive() ? 0 : 1);
             wrap.appendChild(ren.domElement);
-            contactOverlay = window.feedBackHarmonicContacts?.createOverlay?.(ren.domElement) || null;
+            captionOverlay = window.feedBackHarmonicContacts?.createOverlay?.(ren.domElement) || null;
 
             // WebGL context-loss recovery (see the _ctxLost declaration). Bound
             // on Three's own canvas — the context that actually resets on a GPU
@@ -12276,7 +12291,6 @@
             pLbl  = pool(lblG,  () => new T.Sprite(txtMat('0', '#fff', false, 'technique')));
             pBeat = pool(beatG, () => new T.Line(gBeat, mBeatQ));
             pSec  = pool(lblG,  () => new T.Sprite(txtMat('', '#0dd', true, 'section')));
-            pWah = pool(lblG, () => new T.Sprite(txtMat('WAH ○', '#d8f3f5', true, 'technique')));
 
             // Chord sustain length indicator — thin horizontal plane rails.
             // Unit plane (1×1 in XZ) laid flat; scaled to (railWidth, 1, railLen).
@@ -15943,7 +15957,7 @@
                 out.minY = v.y - object.center.y * sy;
                 out.maxY = out.minY + sy;
                 out.spriteHeight = sy;
-                const ink = inkOnly && object.material.map?.userData.hwyLabelInk;
+                const ink = inkOnly && (object.material.map?.userData.hwyCaptionInk || object.material.map?.userData.hwyLabelInk);
                 if (ink) {
                     out.maxX = out.minX + ink.maxX * sx;
                     out.minX += ink.minX * sx;
@@ -15955,11 +15969,18 @@
                 const geometry = object.geometry;
                 if (!geometry.boundingBox) geometry.computeBoundingBox();
                 const box = geometry.boundingBox;
+                // Text planes can contain substantial transparent padding (the
+                // scrape X in particular). Attach captions to their visible ink.
+                const ink = inkOnly && (object.material.map?.userData.hwyCaptionInk || object.material.map?.userData.hwyLabelInk);
+                const minX = ink ? box.min.x + (box.max.x - box.min.x) * ink.minX : box.min.x;
+                const maxX = ink ? box.min.x + (box.max.x - box.min.x) * ink.maxX : box.max.x;
+                const minY = ink ? box.min.y + (box.max.y - box.min.y) * ink.minY : box.min.y;
+                const maxY = ink ? box.min.y + (box.max.y - box.min.y) * ink.maxY : box.max.y;
                 out.minX = out.minY = Infinity;
                 out.maxX = out.maxY = -Infinity;
                 for (let i = 0; i < 8; i++) {
-                    v.set(i & 1 ? box.max.x : box.min.x,
-                        i & 2 ? box.max.y : box.min.y,
+                    v.set(i & 1 ? maxX : minX,
+                        i & 2 ? maxY : minY,
                         i & 4 ? box.max.z : box.min.z)
                         .applyMatrix4(object.matrixWorld).project(cam);
                     out.minX = Math.min(out.minX, v.x); out.maxX = Math.max(out.maxX, v.x);
@@ -16648,7 +16669,7 @@
             _syncOpenStringPitchLabels(bundle);
 
             pNote.reset(); pNoteEdge.reset(); pSus.reset(); pSusOutline.reset(); pSusRibbon.reset(); pSusRibbonOl.reset(); pTapChevron.reset(); pAccentHalo.reset(); pLbl.reset();
-            pBeat.reset(); pSec.reset(); pWah.reset();
+            pBeat.reset(); pSec.reset();
             if (projMeshArr) for (const arr of projMeshArr) for (const m of arr) m.visible = false;
             _incomingFloorLabelCount = _incomingLabelOccluderCount = 0;
             _incomingFixedFretLabels.fill(null);
@@ -16668,7 +16689,7 @@
             pFretColMarker.reset(); pSusRail.reset(); pTechPlane.reset();
             // Clear per-frame queues in-place (avoid reallocating the array object).
             _ndLabels.length = 0;
-            timedContactLabels.length = 0;
+            techniqueCaptions.length = 0;
 
             // Prune expired notedetect marks once per frame instead of
             // once per drawNote call (issue #9 perf nit). drawNote then
@@ -17996,17 +18017,16 @@
             // ── Beat lines ────────────────────────────────────────────────
             updateBeatLines(beats, now, t0, t1);
 
-            // Pedal guidance stays above the musical position inside the lanes.
+            // Pedal instructions use the same close caption as note techniques.
+            // Their timed lane position remains independent of any single gem.
             const refs=[bundle.wah,notes,bundle.chords,bundle.anchors];
             if(refs.some((r,i)=>r!==wahRefs[i])) { wahRefs=refs; wahCues=buildWahGuidance(bundle); }
             if(wahGuidanceVisible) {
                 for(let i=lowerBoundT(wahCues,t0); i<wahCues.length && wahCues[i].t<=t1; i++) {
-                    const cue=wahCues[i], label=pWah.get();
-                    label.material=txtMat(cue.text, '#d8f3f5', true, 'technique');
-                    label.scale.set(24*K*_textSizeMul, 6*K*_textSizeMul, 1);
-                    label.renderOrder=renderOrderForLayerAtZ(dZ(cue.t-now), 'TECHNIQUE_MARKER');
-                    label.position.set(xFretMid(cue.fret), Math.max(sY(0),sY(nStr-1))+(4+cue.row*5)*K,
-                                       dZ(cue.t-now));
+                    const cue = wahCues[i];
+                    queueTechniqueCaption(cue.text, xFretMid(cue.fret),
+                        Math.max(sY(0), sY(nStr - 1)), dZ(cue.t - now),
+                        NW, NH);
                 }
             }
 
@@ -21559,6 +21579,7 @@
                 && (nxFrame == null || nxFrame.t > n.t - 1e-6);
             const isNextOnString = nextTAligned || ghostPastHold;
             const y = sY(s);
+            let captionMesh = null;
             const susEnd = n.t + (n.sus || 0);
             const hasSus = n.sus > 0 && !isPlainDeadNote(sourceNote);
             const visualTrailStart = slideInVisualStart(n);
@@ -22125,6 +22146,9 @@
                     hwyShapeOpenGhostGeometry(core, core.geometry, bodyWidth, markerScale, NW, _ownedSharedGeos);
                 }
                 _registerIncomingLabelOccluder(core, noteZ, outline);
+                // RS+ reuses the outline as an optional, offset vertical stem
+                // for open strings. The caption belongs to the playable bar.
+                captionMesh = rsPlusNotation && n.f === 0 ? core : outline;
                 trailYieldGemRecord = trailYieldRegisterGem(
                     trailYieldGemEvent, noteZ, outline, core, noteFaceMesh, noteHaloMesh,
                 );
@@ -22132,16 +22156,8 @@
                     n, dt, trailYieldGemEvent, outline, core,
                 );
                 if (naturalNode(n) !== null) {
-                    const label = pTeachMarkLbl.get();
-                    const mat = txtMat(harmonicLabel(n), FRET_LABEL_GOLD_HEX, false, 'noteFret');
-                    _setLabelMap(label, mat);
-                    label.center.set(0.5, 0);
-                    const size = 7 * K * 0.8 * _textSizeMul * fretLabelScaleForFret(n.hn);
-                    const aspect = mat.map.image.width / mat.map.image.height;
-                    label.scale.set(size * aspect, size, 1);
-                    label.position.set(x, y + techniqueYNow + NH * 2.5, noteZ + K);
-                    label.renderOrder = renderOrderForLayerAtZ(noteZ, 'NOTE_FRET_LABEL');
-                    label.material.opacity = Math.min(1, Math.max(0, (AHEAD - dt) / .35));
+                    queueTechniqueCaption(harmonicLabel(n), x, y + techniqueYNow, noteZ + K,
+                        NW, NH, Math.min(1, Math.max(0, (AHEAD - dt) / .35)), captionMesh);
                 }
                 // Fret digits on fretted (n.f > 0) flying notes deliberately
                 // omitted except for the precise harmonic playing cue: the showFretOnNote setting and its UI helper text
@@ -22513,21 +22529,10 @@
                                     }
                                     trailYieldRegisterTargetTrail(trailYieldTargetEvent,bars[0],bars[1]);
                                     trailYieldRegisterTargetTrail(trailYieldTargetEvent,bars[2],bars[3]);
-                                    if(si===0 && contactOverlay) {
-                                        timedContactLabels.push({x:cx,y:cy,z:cz,width,height,
-                                            label:window.feedBackHarmonicContacts.label(n,contact)});
-                                    } else if(si===0) {
-                                        const label=pTechPlane.get();
-                                        const text=txtMat(window.feedBackHarmonicContacts.label(n,contact),'#ffffff',true,'technique');
-                                        label.material=_spriteMat2MeshMat(label,text);
-                                        const scale=(1+Math.max(0,Math.min(1,(contactTime-now)/AHEAD))*1.5)*_textSizeMul;
-                                        const size=NH*1.4*scale;
-                                        label.scale.set(size*text.map.image.width/text.map.image.height,size,1);
-                                        label.position.set(cx,cy+bendVisualDirY(s)*NH*1.9*scale,cz+K);
-                                        label.rotation.set(0,0,0);
-                                        label.material.opacity=Math.min(1,Math.max(0,(AHEAD-(contactTime-now))/.35));
-                                        label.renderOrder=renderOrderForLayerAtZ(cz,'NOTE_FRET_LABEL');
-                                        _registerIncomingLabelOccluder(label,cz);
+                                    if (si === 0) {
+                                        queueTechniqueCaption(window.feedBackHarmonicContacts.label(n, contact),
+                                            cx, cy, cz, width, height,
+                                            Math.min(1, Math.max(0, (AHEAD - (contactTime - now)) / .35)));
                                     }
                                 }
                                 trailOcclusionRegisterRelationships(
@@ -22568,18 +22573,10 @@
                 const captionKey = scrapeGeometry.scrapeGroupKey(n);
                 if (_pickScrapeCaptionOwners.get(captionKey) !== sourceNote) return;
                 _pickScrapeCaptionOwners.delete(captionKey);
-                const label = pTechPlane.get();
                 // The arrow preserves the source up/down sign. It is not a
                 // fret trajectory or an instruction to move toward nut/bridge.
-                const text = txtMat(scrapeGeometry.scrapeCaption(n, at - n.t), '#ffffff', true, 'technique');
-                label.material = _spriteMat2MeshMat(label, text);
-                const size = NH * .95 * cueScale;
-                label.scale.set(size * text.map.image.width / text.map.image.height, size, 1);
-                label.position.set(sx, y + NH * 2.0 * cueScale, noteZ + K);
-                label.rotation.set(0, 0, 0);
-                label.renderOrder = renderOrderForLayerAtZ(noteZ, 'NOTE_FRET_LABEL');
-                label.material.opacity = .9;
-                _registerIncomingLabelOccluder(label, noteZ);
+                queueTechniqueCaption(scrapeGeometry.scrapeCaption(n, at - n.t),
+                    sx, y, noteZ + K, NH * 1.4 * cueScale, NH * 1.4 * cueScale, .9, mark);
                 return;
             }
 
@@ -22839,18 +22836,9 @@
                 // fret-row/camera targets (contacts may be above fret 24).
                 const contactCue = harmonicContactLabel(n);
                 if (contactCue) {
-                    const label = pTechPlane.get();
-                    const text = txtMat(contactCue, '#ffffff', true, 'technique');
-                    label.material = _spriteMat2MeshMat(label, text);
-                    const cueScale = (1 + Math.max(0, Math.min(1, dt / AHEAD)) * 1.5) * _textSizeMul;
-                    const size = NH * 1.75 * cueScale;
-                    label.material.opacity = dt >= 0 ? Math.min(1, (AHEAD - dt) / .35) : sustained ? .85 : 0;
-                    label.scale.set(size * text.map.image.width / text.map.image.height, size, 1);
-                    label.position.set(x, y + techniqueYNow + bendVisualDirY(s) * NH * 1.7 * cueScale, noteZ + K);
-                    // Text stays upright; only the gem/face symbols rotate.
-                    label.rotation.set(0, 0, 0);
-                    label.renderOrder = renderOrderForLayerAtZ(noteZ, 'NOTE_FRET_LABEL');
-                    _registerIncomingLabelOccluder(label, noteZ);
+                    queueTechniqueCaption(contactCue, x, y + techniqueYNow, noteZ + K,
+                        NW, NH, dt >= 0 ? Math.min(1, (AHEAD - dt) / .35) : sustained ? .85 : 0,
+                        captionMesh);
                 }
 
                 // ── Per-note fret connector label ─────────────────────────
@@ -23283,29 +23271,73 @@
             }
         }
 
-        function drawTimedContactLabels() {
-            if (!contactOverlay || !ren || !cam) return;
-            const canvas=ren.domElement, W=canvas.width, H=canvas.height;
-            contactOverlay.beginFrame(W,H,false); // projection already includes handedness
-            if (!timedContactLabels.length) return;
-            const rect=_newLabelRect();
-            for(let i=0;i<_incomingLabelOccluderCount;i++) {
-                const mesh=_incomingLabelOccluders[i].mesh;
-                if (!mesh.visible || mesh.material.opacity<=0 || !_incomingLabelScreenRect(mesh,rect)) continue;
-                contactOverlay.addGem({x:(1+(rect.minX+rect.maxX)/2)*W/2,
-                    y:(1-(rect.minY+rect.maxY)/2)*H/2,
-                    rx:(rect.maxX-rect.minX)*W/4,ry:(rect.maxY-rect.minY)*H/4});
+        function queueTechniqueCaption(text, x, y, z, width, height, opacity = 1, mesh = null) {
+            if (!text || !(opacity > 0)) return;
+            if (captionOverlay) {
+                techniqueCaptions.push({x, y, z, width, height, label: String(text), opacity, mesh});
+                return;
             }
-            const fontSize=14*H/Math.max(1,canvas.clientHeight);
-            for(const item of timedContactLabels) {
-                _probe.set(item.x,item.y,item.z).project(cam);
-                if (_probe.z < -1 || _probe.z > 1 || Math.abs(_probe.x)>1 || Math.abs(_probe.y)>1) continue;
-                const x=(_probe.x*.5+.5)*W,y=(-_probe.y*.5+.5)*H;
-                _probe.set(item.x+item.width/2,item.y+item.height/2,item.z).project(cam);
-                contactOverlay.addGem({x,y,rx:Math.max(1,Math.abs((_probe.x*.5+.5)*W-x)),
-                    ry:Math.max(1,Math.abs((-_probe.y*.5+.5)*H-y)),label:item.label,fontSize});
+            // Compatibility with hosts that have not loaded the overlay API.
+            // All caption kinds still use one font, optical size and short gap.
+            const label = pTechPlane.get();
+            const material = txtMat(text, '#ffffff', true, 'caption');
+            const ink = material.map.userData.hwyCaptionInk || {minY: 0, maxY: 1};
+            const scale = _textSizeMul;
+            const inkHeight = NH * .65 * scale;
+            const size = inkHeight / Math.max(.1, ink.maxY - ink.minY);
+            label.material = _spriteMat2MeshMat(label, material);
+            label.scale.set(size * material.map.image.width / material.map.image.height, size, 1);
+            label.position.set(x, y + height / 2 + NH * .2 * scale
+                + inkHeight / 2 - ((ink.minY + ink.maxY) / 2 - .5) * size, z);
+            label.rotation.set(0, 0, 0);
+            label.material.opacity = opacity;
+            label.renderOrder = renderOrderForLayerAtZ(z, 'NOTE_FRET_LABEL');
+            _registerIncomingLabelOccluder(label, z);
+        }
+
+        function drawTechniqueCaptions() {
+            if (!captionOverlay || !ren || !cam) return;
+            const canvas = ren.domElement, W = canvas.width, H = canvas.height;
+            captionOverlay.beginFrame(W, H, false); // camera already includes handedness
+            if (!techniqueCaptions.length) return;
+            const rect = _newLabelRect();
+            for (let i = 0; i < _incomingLabelOccluderCount; i++) {
+                const record = _incomingLabelOccluders[i];
+                for (let part = 0; part < 2; part++) {
+                    const mesh = part === 0 ? record.mesh : record.outline;
+                    if (!mesh?.visible || mesh.material.opacity <= 0 || !_incomingLabelScreenRect(mesh, rect, true)) continue;
+                    captionOverlay.addGem({x: (1 + (rect.minX + rect.maxX) / 2) * W / 2,
+                        y: (1 - (rect.minY + rect.maxY) / 2) * H / 2,
+                        rx: (rect.maxX - rect.minX) * W / 4, ry: (rect.maxY - rect.minY) * H / 4});
+                }
             }
-            contactOverlay.flush();
+            // Screen-pixel sizing avoids the previous differences between
+            // sprites, technique planes and delayed-contact labels. Quality,
+            // camera distance, fret width and string order do not change it.
+            const style = window.feedBackHarmonicContacts?.captionStyle;
+            const fontSize = (style?.fontSize || 14) * _textSizeMul * H / Math.max(1, canvas.clientHeight);
+            for (const item of techniqueCaptions) {
+                _probe.set(item.x, item.y, item.z).project(cam);
+                if (_probe.z < -1 || _probe.z > 1 || Math.abs(_probe.x) > 1 || Math.abs(_probe.y) > 1) continue;
+                if (item.mesh) {
+                    if (!item.mesh.visible || item.mesh.material.opacity <= 0
+                        || !_incomingLabelScreenRect(item.mesh, rect, true)) continue;
+                } else {
+                    rect.minX = rect.minY = Infinity;
+                    rect.maxX = rect.maxY = -Infinity;
+                    for (let corner = 0; corner < 4; corner++) {
+                        _probe.set(item.x + (corner & 1 ? 1 : -1) * item.width / 2,
+                            item.y + (corner & 2 ? 1 : -1) * item.height / 2, item.z).project(cam);
+                        rect.minX = Math.min(rect.minX, _probe.x); rect.maxX = Math.max(rect.maxX, _probe.x);
+                        rect.minY = Math.min(rect.minY, _probe.y); rect.maxY = Math.max(rect.maxY, _probe.y);
+                    }
+                }
+                captionOverlay.addGem({x: (1 + (rect.minX + rect.maxX) / 2) * W / 2,
+                    y: (1 - (rect.minY + rect.maxY) / 2) * H / 2,
+                    rx: (rect.maxX - rect.minX) * W / 4, ry: (rect.maxY - rect.minY) * H / 4,
+                    label: item.label, fontSize, opacity: item.opacity});
+            }
+            captionOverlay.flush();
         }
 
         function drawNotedetectLabels(ctx, W, H) {
@@ -24914,7 +24946,7 @@
             mBarre?.dispose?.(); mBarre = null;
             _paletteColorTmp = null;
             lyricsCanvas = lyricsCtx = null;
-            contactOverlay?.destroy();contactOverlay=null;timedContactLabels.length=0;
+            captionOverlay?.destroy();captionOverlay=null;techniqueCaptions.length=0;
             projMeshArr = null;
             _probe = null;
             _incomingLabelProbe = null;
@@ -24935,7 +24967,7 @@
             _fwHitPrevTime = -Infinity;
             _renderScale = 1;
             mBeatM = mBeatQ = null;
-            wahRefs=[]; wahCues=[]; pWah=null;
+            wahRefs=[]; wahCues=[];
             pNote = pNoteEdge = pSus = pSusOutline = pSusRibbon = pSusRibbonOl = pLbl = pBeat = pSec = null;
             pFretLbl = pLane = pLaneDivider = pGhostFretLbl = pChordBox = pChordFrameFill = pChordLbl = pBarreLine = pArpBracket = pNoteFretLabel = pConnectorLine = pDropLine = pTapChevron = pAccentHalo = pHaloBar = pPMXFill = pFHXFill = pMuteXLines = pFHXLines = pTeachMarkLbl = null;
             if (gPMXFill) { gPMXFill.dispose(); gPMXFill = null; }
@@ -25363,7 +25395,7 @@
                         pbBeg(6, 1); ren.render(scene, cam); pbEnd(6);
                     }
                 }
-                drawTimedContactLabels();
+                drawTechniqueCaptions();
                 if (lyricsCtx && lyricsCanvas) {
                     lyricsCtx.clearRect(0, 0, lyricsCanvas.width, lyricsCanvas.height);
                     // Capture the actual lyrics-banner bottom so overlay cards
