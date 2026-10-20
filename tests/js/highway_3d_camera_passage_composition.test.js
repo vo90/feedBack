@@ -40,6 +40,7 @@ function harness(rows, {aspect=16/9,preset='straight',lefty=false,rate=1,notes=[
         const cam={aspect},stableCameraPreset=preset,_leftyCached=lefty,cameraSmoothing=.5;
         const stableCameraDepartureDelay=0,stableCameraTravelExtra=0,stableCameraSettleLimit=0;
         const stableCameraPreparationMode='auto',stableCameraPreparationMs=700;
+        const stableCameraDirectTiming={startBeforeMs:700,arriveAfterMs:0};
         const stableCameraExcursionThreshold=500,stableCameraLongSwitchFrets=5;
         const xFret=f=>f*10*(lefty?-1:1),xFretMid=f=>(f*10-5)*(lefty?-1:1);
         const sY=s=>3+(5-s)*4,fretLabelScaleForFret=()=>1;

@@ -425,7 +425,7 @@ test('zero brief-excursion tolerance retains same-base and proven riff-variation
 
 const gentle={departureDelay:100,travelExtra:10,settleLimit:250,excursionThreshold:500,longSwitchFrets:5};
 function controller(preset='straight') {
-    const h=harness();h.settings({...gentle,preset,rate:1});
+    const h=harness();h.settings({...gentle,preset,rate:1,startBeforeMs:700,arriveAfterMs:210});
     h.setRegionTimeline([{time:0,minX:0,maxX:40},{time:4,minX:160,maxX:200}]);
     h.frame(0,0);return h;
 }
@@ -440,12 +440,12 @@ function journeyController(preset='straight',rate=1) {
     h.frame(0,0);return h;
 }
 
-test('timing and manual preparation rebuild motion without reclassifying lanes or reprojecting geometry',()=>{
+test('direct timing edits rebuild motion without reclassifying lanes or reprojecting geometry',()=>{
     const h=controller(),cache=h.planCache();
     const semantic=cache.semanticStops,timeline=cache.timeline,regions=cache.regions,attacks=cache.attacks;
     const objects=regions.slice(),stops=cache.stops;
-    for(const settings of [{departureDelay:1000},{travelExtra:200},{settleLimit:3000},
-        {preparationMode:'manual'},{preparationMs:1500},{preparationMode:'auto'}]) {
+    for(const settings of [{startBeforeMs:1000},{arriveAfterMs:0},
+        {startBeforeMs:25},{arriveAfterMs:3000},{startBeforeMs:1500},{arriveAfterMs:210}]) {
         const oldMotion=cache.stops.motion,revision=cache.revision;
         h.settings(settings);h.frame(0,0);
         assert.equal(cache.semanticStops,semantic);assert.equal(cache.timeline,timeline);
@@ -458,18 +458,18 @@ test('timing and manual preparation rebuild motion without reclassifying lanes o
     }
 });
 
-test('live manual preparation edits preserve pose and velocity before settling to the scheduled destination',()=>{
+test('live direct timing edits preserve pose and velocity before reaching the scheduled destination',()=>{
     for(const preset of ['straight','angled']) for(const rate of [.5,1,2]) {
         const h=controller(preset);h.settings({rate});h.frame(0,0);
         let before=advance(h,0,3.8,rate);
         const cache=h.planCache(),semantic=cache.semanticStops,regions=cache.regions;
-        for(const settings of [{preparationMode:'manual',preparationMs:1000},
-            {preparationMs:25},{preparationMs:3000},{preparationMode:'auto'}]) {
+        for(const settings of [{startBeforeMs:1000},{startBeforeMs:25},
+            {startBeforeMs:3000},{arriveAfterMs:500},{startBeforeMs:700,arriveAfterMs:210}]) {
             h.settings(settings);
             const after=h.frame(3.8,0);
-            near(after.x,before.x,'manual preparation edit preserves position');
+            near(after.x,before.x,'direct timing edit preserves position');
             near(after.planVelocity+after.rejoinVelocity,before.planVelocity+before.rejoinVelocity,
-                'manual preparation edit preserves velocity');
+                'direct timing edit preserves velocity');
             assert.equal(cache.semanticStops,semantic);assert.equal(cache.regions,regions);
             before=after;
         }
@@ -500,11 +500,14 @@ test('excursion changes intentionally rebuild semantics while retaining projecte
     assert.equal(cache.regions,regions);assert.equal(cache.attacks,attacks);
 });
 
-test('both Stable presets honor the tuned late arrival during ordinary playback',()=>{
-    for(const preset of ['straight','angled']) {
-        const h=controller(preset),atOnset=advance(h,0,4);
-        assert.ok(atOnset.x<180,'enabled tuning must still be travelling at the original boundary');
-        const state=advance(h,4,4.21);
+test('both Stable presets honor direct start and arrival in real playback time',()=>{
+    for(const preset of ['straight','angled']) for(const rate of [.5,1,2]) {
+        const h=controller(preset);h.settings({rate});h.frame(0,0);
+        const segment=h.planCache().stops.motion[0];
+        near(segment.start,4-.7*rate);near(segment.end,4+.21*rate);
+        const atOnset=advance(h,0,4,rate);
+        assert.ok(atOnset.x<180,'a requested late arrival must still be travelling at the lane onset');
+        const state=advance(h,4,4+.21*rate,rate);
         assert.equal(state.x,180);assert.equal(state.planVelocity+state.rejoinVelocity,0);
     }
 });
@@ -614,15 +617,15 @@ test('rate changes within the late tail preserve pose and converge to the resche
     }
 });
 
-test('turning timing adjustments off during a late tail rejoins smoothly without overshooting',()=>{
+test('changing direct arrival to zero during a late tail rejoins smoothly without overshooting',()=>{
     const h=controller(),before=advance(h,0,4.1);
-    h.settings({departureDelay:0,travelExtra:0,settleLimit:0});
+    h.settings({arriveAfterMs:0});
     let state=h.frame(4.1,0),previous=state.x;
     assert.equal(state.x,before.x);
     near(state.planVelocity+state.rejoinVelocity,before.planVelocity+before.rejoinVelocity);
     for(let i=1;i<=100;i++) {
         state=h.frame(4.1+i*.01,.01);
-        assert.ok(state.x>=previous-1e-8&&state.x<=180+1e-8,'disabling timing adjustments reversed or overshot');
+        assert.ok(state.x>=previous-1e-8&&state.x<=180+1e-8,'changing direct arrival reversed or overshot');
         previous=state.x;
     }
     assert.equal(state.x,180);assert.equal(state.planVelocity+state.rejoinVelocity,0);
@@ -630,9 +633,9 @@ test('turning timing adjustments off during a late tail rejoins smoothly without
 
 test('repeated late-tail slider changes preserve the active resume instead of jumping or restarting backwards',()=>{
     const h=controller();let state=advance(h,0,4.1),time=4.1;
-    const changes=[{departureDelay:0,travelExtra:0,settleLimit:0},
-        {departureDelay:200,travelExtra:30,settleLimit:400},
-        {departureDelay:0,travelExtra:0,settleLimit:0}];
+    const changes=[{arriveAfterMs:0},
+        {startBeforeMs:1000,arriveAfterMs:400},
+        {startBeforeMs:700,arriveAfterMs:0}];
     for(const change of changes) {
         const before=state;h.settings(change);state=h.frame(time,0);
         assert.equal(state.x,before.x);

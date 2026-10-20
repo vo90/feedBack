@@ -75,6 +75,7 @@ function harness(subject = source, three = null) {
         let _stableCameraResetSerial = 0, stableCameraPreset = 'straight', stableCameraFollow = true;
         let stableCameraDepartureDelay = 0, stableCameraTravelExtra = 0, stableCameraSettleLimit = 0;
         let stableCameraPreparationMode = 'auto', stableCameraPreparationMs = 700;
+        const stableCameraDirectTiming = {startBeforeMs:700,arriveAfterMs:0};
         let stableCameraExcursionThreshold = 500, stableCameraLongSwitchFrets = 5;
         let _leftyCached = false, _songKey = 'song', nStr = 6, cameraSmoothing = .5, zoomSmoothing = .5;
         let wall = 0, fixturePoints = [], fixtureObjects = null, segmentCalls = 0, depthCalls = 0,
@@ -195,6 +196,8 @@ function harness(subject = source, three = null) {
                 if ('settleLimit' in values) stableCameraSettleLimit = values.settleLimit;
                 if ('preparationMode' in values) stableCameraPreparationMode = values.preparationMode;
                 if ('preparationMs' in values) stableCameraPreparationMs = values.preparationMs;
+                if ('startBeforeMs' in values) stableCameraDirectTiming.startBeforeMs = values.startBeforeMs;
+                if ('arriveAfterMs' in values) stableCameraDirectTiming.arriveAfterMs = values.arriveAfterMs;
                 if ('excursionThreshold' in values) stableCameraExcursionThreshold = values.excursionThreshold;
                 if ('longSwitchFrets' in values) stableCameraLongSwitchFrets = values.longSwitchFrets;
             },

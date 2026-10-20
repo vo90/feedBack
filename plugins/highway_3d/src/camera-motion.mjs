@@ -9,6 +9,10 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
     }
     const normalizePreparation = value => value == null || !Number.isFinite(Number(value))
         ? null : Math.max(25, Math.min(3000, Number(value)));
+    const directStartBefore = value => Math.max(25, Math.min(3000,
+        value != null && Number.isFinite(Number(value)) ? Number(value) : 700));
+    const directArriveAfter = value => Math.max(0, Math.min(3000,
+        value != null && Number.isFinite(Number(value)) ? Number(value) : 0));
     // Attack/technique timing depends on the chart, not camera rate or framing.
     // Keep this index reusable when only the composition plan changes.
     function hwyBuildCameraAttackIndex(notes, chords, stringCount = 6) {
@@ -93,7 +97,7 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
     // Timed Hermite segments share position, velocity and zero acceleration.
     // Lasting lanes are arrival constraints; short waypoints are traversed
     // without stopping. Bounded tangents prevent overshoot between waypoints.
-    function hwyBuildCameraMotion(stops, rate, smoothing, departureDelay = 0, travelExtra = 0, settleLimit = 250, preparationMs = null) {
+    function hwyBuildCameraMotion(stops, rate, smoothing, departureDelay = 0, travelExtra = 0, settleLimit = 250, preparationMs = null, directTiming = null) {
         const segments = [], journeys = [];
         const manualPreparationMs = normalizePreparation(preparationMs);
         const base = 0.6 + Math.max(0, Math.min(1, smoothing)) * 0.2;
@@ -198,7 +202,90 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
         // Keep the legacy segment-array interface and enumeration intact.
         // Journey records are created only when this cached schedule rebuilds.
         Object.defineProperty(segments, 'journeys', { value: journeys });
+        if (directTiming && typeof directTiming === 'object') {
+            applyDirectCameraTiming(stops, segments, rate,
+                directStartBefore(directTiming.startBeforeMs), directArriveAfter(directTiming.arriveAfterMs));
+        }
         return segments;
+    }
+
+    /**
+     * Exact endpoints are an opt-in overlay on the unchanged cached schedule.
+     * A direct move must fit between its neighbours' LEGACY intervals, so
+     * replacing or reverting any neighbour cannot create a new conflict.
+     * Progressive and conflicting moves retain that legacy schedule exactly;
+     * their diagnostics state that the direct controls were not applied.
+     */
+    function applyDirectCameraTiming(stops, segments, rate, startBeforeMs, arriveAfterMs) {
+        const journeys = segments.journeys;
+        // Collect all candidates before changing any segment or timing object.
+        // This prevents traversal order from deciding which move wins a gap.
+        for (let index = 0; index < journeys.length; index++) {
+            const journey = journeys[index];
+            const first = segments[journey.first], last = segments[journey.last];
+            const requestedStart = journey.firstLaneTime - startBeforeMs / 1000 * rate;
+            const requestedEnd = journey.firstLaneTime + arriveAfterMs / 1000 * rate;
+            let fallbackReason = 'none';
+            if (journey.first !== journey.last || first.transit) {
+                fallbackReason = 'progressive-journey';
+            } else if (requestedStart < stops[journey.fromStop].time) {
+                fallbackReason = 'previous-lane';
+            } else if (index > 0 && requestedStart < segments[journeys[index - 1].last].end
+                || index + 1 < journeys.length && requestedEnd > segments[journeys[index + 1].first].start) {
+                fallbackReason = 'adjacent-journey-overlap';
+            }
+            journey.directCandidate = {
+                requestedStart, requestedEnd, fallbackReason,
+                fitsLegacyGap: fallbackReason === 'none',
+                legacyStart: first.start, legacyEnd: last.end,
+            };
+        }
+        // Even when both candidates fit the original free gap, their exact
+        // requests can overlap each other. Neither receives hidden priority.
+        for (let index = 0; index + 1 < journeys.length; index++) {
+            const left = journeys[index].directCandidate, right = journeys[index + 1].directCandidate;
+            if (left.fitsLegacyGap && right.fitsLegacyGap
+                && left.requestedEnd > right.requestedStart) {
+                left.fallbackReason = right.fallbackReason = 'adjacent-journey-overlap';
+            }
+        }
+        for (const journey of journeys) {
+            const candidate = journey.directCandidate, legacyTiming = journey.timing;
+            const direct = candidate.fallbackReason === 'none';
+            const first = segments[journey.first], last = segments[journey.last];
+            if (direct) {
+                // This is one lasting-to-lasting segment, with zero endpoint
+                // velocity/acceleration. Its implicit duration is before+after.
+                first.start = candidate.requestedStart;
+                first.end = candidate.requestedEnd;
+                first.nominalStart = first.start;
+            }
+            const timing = {
+                ...legacyTiming,
+                mode: direct ? 'direct' : 'chart-paced-fallback',
+                fallbackReason: candidate.fallbackReason,
+                requestedStartBeforeMs: startBeforeMs, requestedArriveAfterMs: arriveAfterMs,
+                requestedStart: candidate.requestedStart, requestedEnd: candidate.requestedEnd,
+                actualFirstLaneArrivalTime: first.end,
+                actualArriveAfterMs: (first.end - journey.firstLaneTime) / rate * 1000,
+                finalLaneTime: stops[journey.toStop].time,
+            };
+            if (direct) Object.assign(timing, {
+                legacyTiming,
+                nominalStart: first.start, start: first.start,
+                nominalEnd: journey.firstLaneTime, end: first.end,
+                preparedLeadMs: startBeforeMs, appliedLeadMs: startBeforeMs,
+                nominalDurationMs: startBeforeMs, appliedDurationMs: startBeforeMs + arriveAfterMs,
+                appliedLatenessMs: arriveAfterMs,
+                preparationReason: 'direct', preparationLimitReason: 'none',
+                preparationRequestedMs: startBeforeMs, preparationAppliedMs: startBeforeMs,
+                // Legacy modifiers do not contribute to an exact direct move.
+                requestedDelayMs: 0, appliedDelayMs: 0, requestedExtraMs: 0, appliedExtraMs: 0,
+                limitingReason: 'none', extraLimitingReason: 'none', delayLimitingReason: 'none',
+            });
+            journey.timing = timing;
+            for (let index = journey.first; index <= journey.last; index++) segments[index].timing = timing;
+        }
     }
 
     // Quintic Hermite with zero endpoint acceleration. Velocities use the
@@ -217,18 +304,24 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
 
     // Evaluate a cached, non-overlapping trajectory. Lasting stops use their
     // scheduled arrival, independent of frame rate or seek history.
-    function hwyCameraPlanAt(stops, now, rate, smoothing, out, departureDelay = 0, travelExtra = 0, settleLimit = 250, preparationMs = null) {
+    function hwyCameraPlanAt(stops, now, rate, smoothing, out, departureDelay = 0, travelExtra = 0, settleLimit = 250, preparationMs = null, directTiming = null) {
         out = out || {};
         rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
         preparationMs = normalizePreparation(preparationMs);
+        const direct = directTiming && typeof directTiming === 'object';
+        const startBeforeMs = direct ? directStartBefore(directTiming.startBeforeMs) : null;
+        const arriveAfterMs = direct ? directArriveAfter(directTiming.arriveAfterMs) : null;
         if (!stops.motion || stops.motionRate !== rate || stops.motionSmoothing !== smoothing
             || stops.motionDepartureDelay !== departureDelay || stops.motionTravelExtra !== travelExtra
-            || stops.motionSettleLimit !== settleLimit || stops.motionPreparationMs !== preparationMs) {
-            stops.motion = hwyBuildCameraMotion(stops, rate, smoothing, departureDelay, travelExtra, settleLimit, preparationMs);
+            || stops.motionSettleLimit !== settleLimit || stops.motionPreparationMs !== preparationMs
+            || stops.motionDirectStartBeforeMs !== startBeforeMs || stops.motionDirectArriveAfterMs !== arriveAfterMs) {
+            stops.motion = hwyBuildCameraMotion(stops, rate, smoothing, departureDelay, travelExtra, settleLimit, preparationMs, directTiming);
             stops.motionRate = rate; stops.motionSmoothing = smoothing;
             stops.motionDepartureDelay = departureDelay; stops.motionTravelExtra = travelExtra;
             stops.motionSettleLimit = settleLimit;
             stops.motionPreparationMs = preparationMs;
+            stops.motionDirectStartBeforeMs = startBeforeMs;
+            stops.motionDirectArriveAfterMs = arriveAfterMs;
         }
         const motion = stops.motion;
         let lo = 0, hi = motion.length;

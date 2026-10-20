@@ -455,50 +455,24 @@
         <details id="h3d-stable-camera-tuning" class="mt-4 rounded-lg border border-gray-700 bg-dark-700/40" open>
             <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-gray-300">Camera movement tuning</summary>
             <fieldset id="h3d-stable-camera-tuning-fields" class="px-3 pb-3">
-                <p class="text-xs text-gray-400 mb-3">Timing controls apply to every followed journey, including intermediate lanes and smaller moves. Changes apply when you release a slider and are saved for both Stable viewpoints. Extra travel gets room before departure delay. The in-song Camera tuning panel shows the requested and applied times for the current or next journey.</p>
+                <p class="text-xs text-gray-400 mb-3">Choose when an ordinary move starts and arrives relative to the next lane. Travel duration follows from these two times. Both Stable viewpoints share these settings. Dense lane sequences retain their existing handling; the in-song Camera tuning panel shows the actual timing and any fallback.</p>
                 <div class="mt-3">
-                    <label for="h3d-stable-preparation-mode" class="text-xs font-medium text-gray-300">Movement preparation</label>
-                    <select id="h3d-stable-preparation-mode" class="w-full bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 mt-1">
-                        <option value="auto">Automatic — current behaviour</option>
-                        <option value="manual">Manual lead time</option>
-                    </select>
-                    <p class="text-xs text-gray-400 mt-1">Automatic uses the existing ordinary, large-move and quiet-passage preparation. Manual replaces those rules with the lead time below. Departure delay then shifts the prepared start later.</p>
-                </div>
-                <div class="mt-3">
-                    <label for="h3d-stable-preparation-time" class="text-xs font-medium text-gray-300">Manual preparation before the first lane</label>
+                    <label for="h3d-stable-start-before" class="text-xs font-medium text-gray-300">Start before next lane (ms)</label>
                     <div class="flex items-center gap-3 mt-1">
-                        <input type="range" id="h3d-stable-preparation-time" min="25" max="3000" step="25" value="700" class="w-full accent-accent" disabled>
-                        <input type="number" id="h3d-stable-preparation-time-value" min="25" max="3000" step="25" value="700" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Manual preparation in milliseconds" disabled>
+                        <input type="range" id="h3d-stable-start-before" min="25" max="3000" step="25" value="700" class="w-full accent-accent" aria-describedby="h3d-stable-start-before-description">
+                        <input type="number" id="h3d-stable-start-before-value" min="25" max="3000" step="25" value="700" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Start before next lane in milliseconds">
                         <span class="text-xs text-gray-400">ms</span>
                     </div>
-                    <p class="text-xs text-gray-400 mt-1">Uses real playback time at every speed. With departure delay at zero, this is how early movement starts when the preceding lane leaves enough time. A smaller lead makes the initial move quicker. The in-song panel shows any shortening and the actual travel duration.</p>
+                    <p id="h3d-stable-start-before-description" class="text-xs text-gray-400 mt-1">How early an ordinary camera move starts, in real playback time. A smaller value starts later and makes the move quicker when the arrival time stays the same.</p>
                 </div>
                 <div class="mt-3">
-                    <label for="h3d-stable-departure-delay" class="text-xs font-medium text-gray-300">Departure delay</label>
+                    <label for="h3d-stable-arrive-after" class="text-xs font-medium text-gray-300">Arrive after next lane (ms)</label>
                     <div class="flex items-center gap-3 mt-1">
-                        <input type="range" id="h3d-stable-departure-delay" min="0" max="1000" step="25" value="100" class="w-full accent-accent" aria-describedby="h3d-stable-departure-delay-description">
-                        <input type="number" id="h3d-stable-departure-delay-value" min="0" max="1000" step="25" value="100" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Departure delay in milliseconds">
+                        <input type="range" id="h3d-stable-arrive-after" min="0" max="3000" step="25" value="0" class="w-full accent-accent" aria-describedby="h3d-stable-arrive-after-description">
+                        <input type="number" id="h3d-stable-arrive-after-value" min="0" max="3000" step="25" value="0" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Arrive after next lane in milliseconds">
                         <span class="text-xs text-gray-400">ms</span>
                     </div>
-                    <p id="h3d-stable-departure-delay-description" class="text-xs text-gray-400 mt-1">Request a later start relative to the prepared departure time. The settling limit and the next journey can cap the actual delay. Increasing this value never speeds up planned travel.</p>
-                </div>
-                <div class="mt-3">
-                    <label for="h3d-stable-travel-extra" class="text-xs font-medium text-gray-300">Extra travel time</label>
-                    <div class="flex items-center gap-3 mt-1">
-                        <input type="range" id="h3d-stable-travel-extra" min="0" max="200" step="5" value="10" class="w-full accent-accent" aria-describedby="h3d-stable-travel-extra-description">
-                        <input type="number" id="h3d-stable-travel-extra-value" min="0" max="200" step="5" value="10" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Extra travel time in percent">
-                        <span class="text-xs text-gray-400">%</span>
-                    </div>
-                    <p id="h3d-stable-travel-extra-description" class="text-xs text-gray-400 mt-1">Give the whole journey more time to travel, keeping every intermediate lane. Available time goes to slower travel first, then to departure delay.</p>
-                </div>
-                <div class="mt-3">
-                    <label for="h3d-stable-settle-limit" class="text-xs font-medium text-gray-300">Maximum settling time</label>
-                    <div class="flex items-center gap-3 mt-1">
-                        <input type="range" id="h3d-stable-settle-limit" min="0" max="3000" step="25" value="250" class="w-full accent-accent" aria-describedby="h3d-stable-settle-limit-description">
-                        <input type="number" id="h3d-stable-settle-limit-value" min="0" max="3000" step="25" value="250" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Maximum settling time in milliseconds">
-                        <span class="text-xs text-gray-400">ms</span>
-                    </div>
-                    <p id="h3d-stable-settle-limit-description" class="text-xs text-gray-400 mt-1">Bound how late the camera may reach a lane. Zero keeps exact arrival. The next journey's prepared start is also a hard limit, so raising this value may not create more room.</p>
+                    <p id="h3d-stable-arrive-after-description" class="text-xs text-gray-400 mt-1">How long after the next lane begins the camera arrives. Zero arrives when that lane starts. For example, starting 700 ms before and arriving 200 ms after gives an ordinary move 900 ms of travel.</p>
                 </div>
                 <div class="mt-4 pt-3 border-t border-gray-700">
                     <label for="h3d-stable-excursion-threshold" class="text-xs font-medium text-gray-300">Short-lane threshold (ms)</label>
@@ -509,11 +483,7 @@
                     </div>
                     <p id="h3d-stable-excursion-threshold-description" class="text-xs text-gray-400 mt-1">Compare each lane with this duration in original song time. Individually short lanes in a repeating riff hold the home lane; progressive journeys still travel. A single short out-and-back can also hold. Zero disables short-lane suppression. Riff-extension protections still apply.</p>
                 </div>
-                <p class="text-xs text-gray-400 mt-3">Departure and settling times use playback time. Notes remain in view while the camera moves.</p>
-                <div class="flex flex-wrap gap-2 mt-3">
-                    <button type="button" id="h3d-stable-tuning-trial" class="text-xs px-3 py-2 rounded-lg bg-dark-700 border border-gray-600 text-gray-200">Gentler trial</button>
-                    <button type="button" id="h3d-stable-tuning-previous" class="text-xs px-3 py-2 rounded-lg bg-dark-700 border border-gray-700 text-gray-300">Previous tuning</button>
-                </div>
+                <p class="text-xs text-gray-400 mt-3">Start and arrival times use playback time at every speed. Changes apply when you release a slider. Notes remain in view while the camera moves.</p>
                 <p id="h3d-stable-tuning-status" class="text-xs text-gray-400 mt-2" role="status" aria-live="polite"></p>
             </fieldset>
             <p id="h3d-stable-tuning-disabled" class="px-3 pb-3 text-xs text-gray-400" hidden>Turn on Follow hand position to adjust camera movement.</p>
@@ -1412,7 +1382,7 @@
          no-selection / NaN state. -->
     <script>
         (function () {
-            const DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, stableCameraPreparationMode: 'auto', stableCameraPreparationMs: 700, stableCameraDepartureDelay: 100, stableCameraTravelExtra: 10, stableCameraSettleLimit: 250, stableCameraExcursionThreshold: 500, stableCameraLongSwitchFrets: 5, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, letRingTrailsVisible: false, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, trailYieldEnabled: true, trailYieldGemInFront: false, trailYieldIncludeTrails: false, trailYieldMinScale: 0.30, trailYieldLeadTime: 0.50, trailYieldTaperDuration: 0.05, trailYieldHoldAfter: 0.05, trailYieldRecoverDuration: 0.05, trailYieldEndLeadTime: 0.50, trailYieldEndTaperDuration: 0.05, trailYieldSameStringEnabled: true, trailYieldSameStringMaxGap: 0.05, trailYieldSameStringLeadTime: 0.10 };
+            const DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, stableCameraStartBeforeMs: 700, stableCameraArriveAfterMs: 0, stableCameraPreparationMode: 'auto', stableCameraPreparationMs: 700, stableCameraDepartureDelay: 100, stableCameraTravelExtra: 10, stableCameraSettleLimit: 250, stableCameraExcursionThreshold: 500, stableCameraLongSwitchFrets: 5, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, letRingTrailsVisible: false, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, trailYieldEnabled: true, trailYieldGemInFront: false, trailYieldIncludeTrails: false, trailYieldMinScale: 0.30, trailYieldLeadTime: 0.50, trailYieldTaperDuration: 0.05, trailYieldHoldAfter: 0.05, trailYieldRecoverDuration: 0.05, trailYieldEndLeadTime: 0.50, trailYieldEndTaperDuration: 0.05, trailYieldSameStringEnabled: true, trailYieldSameStringMaxGap: 0.05, trailYieldSameStringLeadTime: 0.10 };
             const VALID_STYLES = new Set(['off', 'particles', 'silhouettes', 'lights', 'geometric', 'butterchurn', 'image', 'video']);
             // Scene color themes — the single id+label source for BOTH the
             // Background and Highway dropdowns AND the validator below. The
@@ -1537,43 +1507,18 @@
                 return fallback;
             }
 
-            function initStableCameraTuning(mode, follow, onPreparationChange) {
+            function initStableCameraTuning(mode, follow) {
                 const fields = document.getElementById('h3d-stable-camera-tuning-fields');
                 const disabledNote = document.getElementById('h3d-stable-tuning-disabled');
                 const status = document.getElementById('h3d-stable-tuning-status');
-                const preparationMode = document.getElementById('h3d-stable-preparation-mode');
-                const preparationValue = () => preparationMode && preparationMode.value === 'manual' ? 'manual' : 'auto';
-                if (preparationMode) {
-                    let stored;
-                    try { stored = localStorage.getItem('h3d_bg_stableCameraPreparationMode'); } catch (_) {}
-                    preparationMode.value = stored === 'manual' ? 'manual' : 'auto';
-                    preparationMode.addEventListener('change', () => {
-                        if (!enabled()) return;
-                        const value = preparationValue();
-                        if (typeof window.h3dBgSetStableCameraPreparationMode === 'function') window.h3dBgSetStableCameraPreparationMode(value);
-                        else { try { localStorage.setItem('h3d_bg_stableCameraPreparationMode', value); } catch (_) {} }
-                        syncPreparation();
-                        onPreparationChange?.();
-                        if (status) status.textContent = value === 'manual'
-                            ? 'Manual lead selected. Check the actual start, travel and arrival in the in-song panel.'
-                            : 'Automatic preparation restored.';
-                    });
-                }
                 const rows = [
-                    ['departure-delay', 'stableCameraDepartureDelay', 0, 1000, 100, 25],
-                    ['travel-extra', 'stableCameraTravelExtra', 0, 200, 10, 5],
-                    ['settle-limit', 'stableCameraSettleLimit', 0, 3000, 250, 25],
+                    ['start-before', 'stableCameraStartBeforeMs', 25, 3000, 700, 25],
+                    ['arrive-after', 'stableCameraArriveAfterMs', 0, 3000, 0, 25],
                     ['excursion-threshold', 'stableCameraExcursionThreshold', 0, 3000, 500, 50],
-                    ['preparation-time', 'stableCameraPreparationMs', 25, 3000, 700, 25],
                 ].map(([id, key, min, max, fallback, step]) => ({key, min, max, fallback, step,
                     slider: document.getElementById('h3d-stable-' + id),
                     number: document.getElementById('h3d-stable-' + id + '-value')}));
                 const enabled = () => mode && mode.value === 'stable' && follow && follow.checked;
-                function syncPreparation() {
-                    const row = rows[4], disabled = preparationValue() !== 'manual';
-                    if (row.slider) row.slider.disabled = disabled;
-                    if (row.number) row.number.disabled = disabled;
-                }
                 function value(row, raw) {
                     const number = raw === null || raw === undefined || String(raw).trim() === '' ? NaN : Number(raw);
                     return Number.isFinite(number) ? Math.max(row.min, Math.min(row.max,
@@ -1586,16 +1531,22 @@
                     return next;
                 }
                 function commit(row, raw) {
-                    if (!enabled() || (row.key === 'stableCameraPreparationMs' && preparationValue() !== 'manual')) return;
+                    if (!enabled()) return;
                     const next = show(row, raw);
                     const setter = 'h3dBgSet' + row.key[0].toUpperCase() + row.key.slice(1);
                     if (typeof window[setter] === 'function') window[setter](next);
                     else { try { localStorage.setItem('h3d_bg_' + row.key, String(next)); } catch (_) {} }
-                    if (status) status.textContent = 'Tuning applied. Replay the passage to compare.';
+                    if (status) status.textContent = 'Timing saved. Check the actual start and arrival in the in-song panel.';
                 }
                 for (const row of rows) {
                     let raw = null;
-                    try { raw = localStorage.getItem('h3d_bg_' + row.key); } catch (_) {}
+                    try {
+                        raw = localStorage.getItem('h3d_bg_' + row.key);
+                        // Read the previous lead only when this new setting is
+                        // absent. Opening settings never migrates saved values.
+                        if (raw === null && row.key === 'stableCameraStartBeforeMs')
+                            raw = localStorage.getItem('h3d_bg_stableCameraPreparationMs');
+                    } catch (_) {}
                     show(row, raw);
                     if (row.slider) {
                         row.slider.addEventListener('input', () => show(row, row.slider.value));
@@ -1603,29 +1554,9 @@
                     }
                     if (row.number) row.number.addEventListener('change', () => commit(row, row.number.value));
                 }
-                for (const [id, values, message] of [
-                    ['trial', [100, 10, 250, 500], 'Gentler trial: request 100 ms delay and 10% extra travel, with up to 250 ms settling; 500 ms per lane.'],
-                    ['previous', [0, 0, 0, 500], 'Previous tuning: exact arrival, 500 ms per lane, and no added delay or travel time.'],
-                ]) {
-                    const button = document.getElementById('h3d-stable-tuning-' + id);
-                    if (button) button.addEventListener('click', () => {
-                        if (!enabled()) return;
-                        if (preparationMode) {
-                            preparationMode.value = 'auto';
-                            if (typeof window.h3dBgSetStableCameraPreparationMode === 'function') window.h3dBgSetStableCameraPreparationMode('auto');
-                            else { try { localStorage.setItem('h3d_bg_stableCameraPreparationMode', 'auto'); } catch (_) {} }
-                        }
-                        syncPreparation();
-                        rows.slice(0, 4).forEach((row, index) => commit(row, values[index]));
-                        onPreparationChange?.();
-                        if (status) status.textContent = message;
-                    });
-                }
                 return (changedKey, raw) => {
-                    if (changedKey === 'stableCameraPreparationMode' && preparationMode) preparationMode.value = raw === 'manual' ? 'manual' : 'auto';
                     const changed = rows.find(row => row.key === changedKey);
                     if (changed) show(changed, raw);
-                    syncPreparation();
                     if (fields) fields.disabled = !enabled();
                     if (disabledNote) disabledNote.hidden = !!enabled();
                 };
@@ -1641,7 +1572,7 @@
                 const legacyNote = document.getElementById('h3d-stable-camera-legacy-note');
                 const descriptions = [
                     [document.getElementById('h3d-camera-smoothing-description'),
-                        'Automatic preparation: ordinary lead ranges from 600 to 800 ms. Large moves and quiet passages can prepare earlier. Manual preparation replaces these rules.'],
+                        'Stable uses Start before next lane and Arrive after next lane to set ordinary camera travel. X-pan smoothing applies only to the other camera views.'],
                     [document.getElementById('h3d-zoom-smoothing-description'),
                         'Controls how gently the view returns after making room for a wide passage. Nearby notes still get the room they need.'],
                 ].map(([element, stable]) => ({ element, stable, original: element ? element.innerHTML : '' }));
@@ -1654,7 +1585,7 @@
                 }
                 if (preset) preset.value = coerceStableCameraPreset(read('stableCameraPreset'));
                 if (follow) follow.checked = coerceBool(read('stableCameraFollow'), DEFAULTS.stableCameraFollow);
-                const syncTuning = initStableCameraTuning(mode, follow, sync);
+                const syncTuning = initStableCameraTuning(mode, follow);
                 function sync() {
                     const stable = !!(mode && mode.value === 'stable');
                     const fixed = stable && follow && !follow.checked;
@@ -1664,7 +1595,7 @@
                     if (reset) reset.disabled = !stable;
                     if (legacy) legacy.disabled = stable;
                     if (legacyNote) legacyNote.hidden = !stable;
-                    if (panSmoothing) panSmoothing.disabled = !!fixed || (stable && document.getElementById('h3d-stable-preparation-mode')?.value === 'manual');
+                    if (panSmoothing) panSmoothing.disabled = stable;
                     if (zoomSmoothing) zoomSmoothing.disabled = !!fixed;
                     syncTuning();
                     for (const item of descriptions) {

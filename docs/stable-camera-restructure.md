@@ -2,10 +2,11 @@
 
 The current gameplay policy is
 [Stable camera lane following](highway-camera-lane-follow.md).
-This document describes the module boundaries and preparation controls.
-Automatic preparation preserves the established camera policy and schedule.
-Manual preparation is the explicit additional choice; it changes when a
-journey prepares without changing which lanes are followed or held.
+This document describes the module boundaries and current direct-timing baseline.
+Both Stable Straight and RS+-inspired use the same lane decisions and timing.
+Separated lane changes have exact start-before and arrive-after controls.
+Crowded sequences retain their established schedule pending a separate design
+for overlapping transitions; the live panel identifies this explicitly.
 
 The older playing-area, transitions and passage-plan documents record earlier
 designs and investigations. Their lateral comfort zones, tolerance holds and
@@ -60,10 +61,12 @@ span's lasting barrier. Reordering these stages can change gameplay even if
 each individual rule appears unchanged.
 
 Motion keeps its stop/segment interface. `hwyBuildCameraMotion` accepts
-`(stops, rate, smoothing, departureDelay, travelExtra, settleLimit, preparationMs)`;
+`(stops, rate, smoothing, departureDelay, travelExtra, settleLimit, preparationMs, directTiming)`;
 `hwyCameraPlanAt` accepts the same controls after `(stops, now, rate, smoothing, out)`.
-`preparationMs === null` selects Automatic. A finite value selects Manual,
-bounded to 25–3000 ms. The returned segment array has cached `journeys` records;
+The renderer passes `directTiming: { startBeforeMs, arriveAfterMs }` as the last
+argument. Omitting it retains the former schedule for compatibility tests.
+Legacy parameters remain available only to preserve crowded-sequence behaviour;
+they no longer appear as timing controls. The returned segment array has cached `journeys` records;
 segments in a journey share its timing record. Sampling returns the current
 or upcoming `journey` and `timing` without reconstructing them.
 
@@ -76,76 +79,58 @@ holds are distinct diagnostics; their display is not another movement rule.
 
 | Control | Default / range | Contract |
 | --- | --- | --- |
-| Preparation mode | Automatic / Automatic or Manual | Automatic retains ordinary, large-move and quiet-passage preparation. Manual replaces those rules. |
-| Manual preparation | 700 ms / 25–3000 ms | Lead in real playback time before the **first retained lane** of a journey. The preceding stop can shorten it. |
-| Departure delay | 100 ms / 0–1000 ms | Requests a later start relative to that prepared departure, subject to remaining budget. |
-| Extra travel | 10% / 0–200% | Lengthens the complete baseline journey, preserving its normalized path and shared waypoint velocities. |
-| Maximum settling | 250 ms / 0–3000 ms | Bounds lateness after original lane onsets; the next journey's nominal departure may impose a tighter limit. |
-| Short-lane threshold | 500 ms / 0–3000 ms | Classifies each coalesced lane in **original song time**. It does not measure playback time or the entire trip. |
+| Start before next lane | Saved manual preparation, otherwise 700 ms / 25–3000 ms | Exact departure before a separated followed lane begins. |
+| Arrive after next lane | 0 ms / 0–3000 ms | Exact arrival after that lane begins, not an allowance. Zero means on time. |
+| Short-lane threshold | 500 ms / 0–3000 ms | Classifies each coalesced lane in original song time, with existing riff and progressive-run protections. |
 
-Manual lead concerns the first lane, not the final destination. A journey may
-continue through several short lanes after that first onset. Its distance and
-intermediate lane timestamps still determine the shape and speed of each leg.
-For example, a 700 ms lead before a first lane at 4.0 s prepares at 3.3 s when
-room is available; a final lane at 4.4 s makes the baseline journey 1.1 s at
-100% speed. This is not a constant-speed or 700 ms whole-journey promise.
+Start and arrival use real playback milliseconds. For a lane at song time T,
+playback rate R, start-before B and arrive-after A (milliseconds):
 
-A shorter Manual lead intentionally permits a quicker initial move. It does
-not inherit quiet-passage or large-move preparation, and Automatic pan
-smoothing does not extend it. After either preparation choice, the existing
-budget order is unchanged:
+- Departure = T − B × R / 1000.
+- Arrival = T + A × R / 1000.
+- Real transition duration = B + A.
 
-1. Limit extra time to the smaller of the settling allowance and the gap to
-   the next journey's nominal prepared departure.
-2. Reserve as much requested extra travel as fits.
-3. Give departure delay the remaining room.
-4. Apply one shift and stretch to the complete journey.
+For example B=600, A=100 yields a 700 ms transition. Small and large moves use
+that same duration and the existing smooth quintic easing. Distance determines
+speed; there is no independently editable transition-duration control.
 
-Increasing departure delay cannot take away an already granted slower journey.
-It may apply only partly or not at all. The next journey is not pushed back,
-and the chosen baseline travel is not accelerated to fit a delay. This
-guarantee compares timing requests for the same preparation choice; selecting
-a shorter Manual lead changes the baseline itself.
+The exact baseline applies to a single lasting-to-lasting movement when its
+requested departure is no earlier than its source lane, and the complete
+interval fits between neighbouring existing movements. Adjacent exact requests
+must also not overlap. Neither conflicting request is given hidden priority.
+This is conservative: it preserves neighbouring schedules instead of rescheduling
+a crowded passage. Multi-waypoint journeys and conflicts keep their entire
+previous trajectory, including the saved legacy timing preferences. The panel
+says **Existing sequence timing retained**, names the reason, and explicitly
+states that the exact controls do not apply there yet. Handling those overlaps
+with the same two controls is deferred gameplay work, not an implicit clamp.
 
-The live panel reports actual first-lane lead, whole-journey travel and final
-arrival lateness. Details show preparation, requested/applied adjustments,
-remaining budget and song timestamps. A signed negative lead means departure
-is after the first lane begins. During a live edit the camera can temporarily
-follow a continuity correction; the panel identifies that mode separately
-from the cached schedule.
+The panel shows requested times, actual departure lead, actual duration, first
+lane arrival offset, final journey arrival timestamp, and live continuity mode.
+It distinguishes paused/Follow-off holds and live-edit corrections from the
+cached schedule. Held riffs remain held regardless of these timing values.
 
-Settings, the in-song panel and split-screen controls use
-`stableCameraPreparationMode` (`auto`/`manual`) and
-`stableCameraPreparationMs`. Manual lead does not affect scheduling in
-Automatic mode; the dedicated settings and in-song inputs are disabled there.
-Gentler trial and Previous tuning both select Automatic and retain the saved
-Manual value. The retired minimum fret-change setting remains compatibility
-data and does not gate motion.
-
-These controls schedule lateral travel. Visibility anticipation and zoom
-recovery retain their own fitting rules; selecting a short Manual lead does
-not remove the room needed for approaching notes.
+Settings, the in-song panel and split-screen controls expose
+`stableCameraStartBeforeMs`, `stableCameraArriveAfterMs` and the unchanged
+`stableCameraExcursionThreshold`. When the new start key is absent, it reads the
+saved `stableCameraPreparationMs` through the same scope precedence. No keys
+are written during hydration. Old timing values remain stored for rollback and
+crowded-sequence continuity; maximum settling is deliberately not migrated to
+exact arrive-after, because those meanings differ. Camera X-pan smoothing is
+disabled in Stable settings; direct times govern ordinary lateral transitions.
+Zoom fitting and recovery retain their own controls and behaviour.
 
 ## Tuning a passage
 
-Keep Automatic selected for the existing behavior. To set the start yourself,
-select Manual and initially set Departure delay and Extra travel to zero.
-A 700 ms Manual preparation requests movement 700 playback milliseconds before
-the first followed lane. Check **Starts** in the panel; the preceding lane is
-the remaining preparation limit.
+Start with 600 ms before and 100 ms after for a 700 ms separated transition.
+Replay from before departure and look for **Exact start and arrival applied**.
+Increasing before starts earlier; increasing after finishes later. Both increase
+the derived duration. Zero after reaches the lane at its onset.
 
-Then adjust Extra travel to make the journey slower, and Maximum settling to
-set how late it may arrive. Check **Travel** and **Arrival** together: a tight
-settling limit or the next journey can prevent the requested slowdown.
-Departure delay spends whatever room remains after that slowdown. Its
-requested/applied readout explains a capped result.
-
-Replay the same passage from before departure after each change. An edit
-during movement preserves the actual camera position and velocity, so its
-temporary correction is not a clean measurement of the new schedule.
-Held riffs still do not become followed journeys just because timing changes.
-Use the displayed lane decision to distinguish a deliberate hold from a
-limited timing request.
+An edit during movement preserves the actual camera position and velocity,
+then rejoins the new schedule. For timing comparisons, replay the passage.
+Use the lane decision and sequence status to distinguish a deliberate riff
+hold or retained crowded sequence from an exact separated movement.
 
 ## Cache and performance contract
 
@@ -159,6 +144,24 @@ Preserve both numerical output and cache lifetime when restructuring. Repeated
 equivalent rebuilds must not restart an active local correction. A shorter
 implementation that scans all chart rows during playback would violate this
 contract.
+
+## Direct-timing baseline validation (2026-10-20)
+
+- 326 focused camera tests pass, including exact timings across distances and
+  playback speeds, legacy trajectory equality for deferred crowded sequences,
+  lifecycle continuity, riff policy, cache lifetime and settings preservation.
+- Full JavaScript suite: 2850/2855 pass. Baseline `49d90d6` passes 2842/2847;
+  the same five unrelated provider-verdict, ghost-geometry and audio-barrier
+  failures remain.
+- Isolated browser: both Stable presets apply 500 ms before + 200 ms after as
+  departure 7.500 s, arrival 8.200 s, duration 700 ms for a lane at 8.000 s.
+  All three controls remain usable clear of the left menu at 1920×1032,
+  390×740 and 800×450. No browser errors or motion-assertion failures.
+- One paired RTX 4080/D3D11 comparison of Absolution at 100% playback stayed
+  near 60 FPS in both builds; frame p95 was 16.7–16.8 ms, max 16.8 ms.
+  Moving draw CPU means: Straight 0.464→0.486 ms, Angled 0.696→0.810 ms;
+  p95 remained 0.6/1.0 ms. These are isolated renderer measurements, not a
+  native Electron gameplay comparison with audio.
 
 ## Acceptance procedure
 
