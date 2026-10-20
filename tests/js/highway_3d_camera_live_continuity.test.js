@@ -116,6 +116,9 @@ test('a future-path revision cancels an active direct resume even when the curre
     const timeline = [[0, 1], [8, 9], [8.6, 4], [9.2, 5], [9.8, 6], [10.4, 12]]
         .map(([time, fret]) => ({ time, minX: (fret - 1) * 10, maxX: (fret + 3) * 10 }));
     const h = controller(500, 1, 'straight', timeline);
+    // Preserve this fixture's original 1.1-second approach so the Follow
+    // toggle interrupts motion and creates the direct resume under test.
+    h.settings({ startBeforeMs: 1100 });
     advance(h, 0, 6.95);
     h.settings({ follow: false }); h.frame(7, .05);
     h.settings({ follow: true }); h.frame(7, 0);

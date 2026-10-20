@@ -634,7 +634,7 @@ test('a lasting lane transition begins early, ends finitely and uses the same vi
     const rows=[{time:0,minX:20,maxX:60},{time:2,minX:100,maxX:140}];
     const h=harness();h.setRegionTimeline(rows);h.frame(0,0);
     const at=[];for(let i=1;i<=180;i++)at.push(h.frame(i/60,1/60));
-    assert.equal(at[53].x,40, 'the large move begins 1.1 seconds before its destination');
+    assert.equal(at[77].x,40, 'the direct move begins 700 milliseconds before its destination');
     assert.ok(at[104].x>40&&at[104].x<120);
     assert.equal(at[119].x,120, 'the destination is reached exactly at its onset');
     assert.equal(at[119].planVelocity,0);
@@ -667,7 +667,9 @@ test('changing speed mid-pan preserves pose and velocity without reversing befor
 });
 
 test('a second speed change preserves actual resume velocity even while nominal plans are both resting',()=>{
-    const h=harness();h.settings({rate:2});
+    // The original 1.1-second approach must already be moving at .5 seconds
+    // at double speed, so the rate edit creates the resume under test.
+    const h=harness();h.settings({rate:2,startBeforeMs:1100});
     h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:2,minX:100,maxX:140}]);
     h.frame(0,0);
     for(let i=1;i<=50;i++) h.frame(i*.01,.005);
@@ -688,13 +690,17 @@ test('a second speed change preserves actual resume velocity even while nominal 
 
 test('pause and follow-off retain a pending resumed destination without backtracking',()=>{
     for(const hold of ['pause','follow-off']) {
-        const h=harness();h.settings({rate:2});
+        // Explicit lead keeps the pending-resume scenario independent of
+        // the shorter default lead used for ordinary direct timing.
+        const h=harness();h.settings({rate:2,startBeforeMs:1100});
         h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:2,minX:100,maxX:140}]);
         h.frame(0,0);
         for(let i=1;i<=50;i++) h.frame(i*.01,.005);
         h.settings({rate:1});h.frame(.5,0);
         let before;
         for(let i=1;i<=10;i++) before=h.frame(.5+i*.01,.01);
+        assert.ok(before.planVelocity+before.rejoinVelocity>0,
+            'fixture must be resuming before pause or Follow-off');
         let time=.6;
         if(hold==='follow-off') {h.settings({follow:false});time=.7;}
         const held=h.frame(time,.1,hold!=='pause');

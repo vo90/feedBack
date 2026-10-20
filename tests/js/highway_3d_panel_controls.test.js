@@ -13,11 +13,12 @@ const SCREEN_JS = path.join(__dirname, '..', '..', 'plugins', 'highway_3d', 'scr
 // 'palette' was removed — per-string colors are now set via the core
 // "Highway String Colors" UI, which drives both highways by named string.
 const REQUIRED_KEYS = ['cameraMode', 'stableCameraPreset', 'stableCameraFollow',
-    'stableCameraPreparationMode', 'stableCameraPreparationMs',
-    'stableCameraDepartureDelay', 'stableCameraTravelExtra', 'stableCameraSettleLimit',
+    'stableCameraStartBeforeMs', 'stableCameraArriveAfterMs',
     'stableCameraExcursionThreshold',
     'notationStyle', 'noteStemsVisible', 'letRingTrailsVisible', 'openStringStemsVisible', 'chordBoxTop', 'repeatChordFullBorder', 'glow', 'bloom', 'cameraSmoothing', 'cameraLockLow', 'cameraLockZoom'];
-const FORBIDDEN_KEYS = ['customImageDataUrl', 'customImageName', 'customVideoName', 'stableCameraLongSwitchFrets'];
+const FORBIDDEN_KEYS = ['customImageDataUrl', 'customImageName', 'customVideoName', 'stableCameraLongSwitchFrets',
+    'stableCameraPreparationMode', 'stableCameraPreparationMs', 'stableCameraDepartureDelay',
+    'stableCameraTravelExtra', 'stableCameraSettleLimit'];
 const VALID_TYPES = new Set(['select', 'range', 'toggle']);
 
 function loadHighway3dStatics() {
@@ -190,12 +191,11 @@ test('3D Highway exposes static panelControls descriptors for per-panel hosts', 
     assert.equal(cameraLockZoom.default, defaults.cameraLockZoom);
 });
 
-test('per-panel camera tuning exposes the expanded ranges with the original defaults and steps', () => {
+test('per-panel camera tuning exposes direct start and arrival timing with the threshold unchanged', () => {
     const controls = loadHighway3dStatics().feedBackViz_highway_3d.panelControls;
     for (const [key, min, max, step, initial] of [
-        ['stableCameraDepartureDelay', 0, 1000, 25, 100],
-        ['stableCameraTravelExtra', 0, 200, 5, 10],
-        ['stableCameraSettleLimit', 0, 3000, 25, 250],
+        ['stableCameraStartBeforeMs', 25, 3000, 25, 700],
+        ['stableCameraArriveAfterMs', 0, 3000, 25, 0],
         ['stableCameraExcursionThreshold', 0, 3000, 50, 500],
     ]) {
         const control = controls.find(item => item.key === key);

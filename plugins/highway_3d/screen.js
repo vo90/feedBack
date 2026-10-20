@@ -5701,7 +5701,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, stableCameraPreparationMode: 'auto', stableCameraPreparationMs: 700, stableCameraDepartureDelay: 100, stableCameraTravelExtra: 10, stableCameraSettleLimit: 250, stableCameraExcursionThreshold: 500, stableCameraLongSwitchFrets: 5, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, wahGuidanceVisible: true, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, letRingTrailsVisible: false, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration, trailYieldSameStringEnabled: TRAIL_YIELD_DEFAULTS.sameStringEnabled, trailYieldSameStringMaxGap: TRAIL_YIELD_DEFAULTS.sameStringMaxGap, trailYieldSameStringLeadTime: TRAIL_YIELD_DEFAULTS.sameStringLeadTime };
+    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, stableCameraPreparationMode: 'auto', stableCameraPreparationMs: 700, stableCameraStartBeforeMs: 700, stableCameraArriveAfterMs: 0, stableCameraDepartureDelay: 100, stableCameraTravelExtra: 10, stableCameraSettleLimit: 250, stableCameraExcursionThreshold: 500, stableCameraLongSwitchFrets: 5, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, wahGuidanceVisible: true, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, letRingTrailsVisible: false, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration, trailYieldSameStringEnabled: TRAIL_YIELD_DEFAULTS.sameStringEnabled, trailYieldSameStringMaxGap: TRAIL_YIELD_DEFAULTS.sameStringMaxGap, trailYieldSameStringLeadTime: TRAIL_YIELD_DEFAULTS.sameStringLeadTime };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -6093,6 +6093,8 @@
         // memory value is at least as fresh as the persisted one.
         if (key in _bgMemFallback) return _bgCoerce(key, _bgMemFallback[key]);
         if (globalVal !== null && globalVal !== undefined) return _bgCoerce(key, globalVal);
+        // Adopt the saved lead without rewriting either the old or new settings.
+        if (key === 'stableCameraStartBeforeMs') return _bgReadSetting(panelKey, 'stableCameraPreparationMs');
         return BG_DEFAULTS[key];
     }
     // Read a setting's GLOBAL value, ignoring any per-panel override. The
@@ -6108,6 +6110,7 @@
         try { globalVal = localStorage.getItem('h3d_bg_' + key); } catch (_) { /* storage blocked */ }
         if (key in _bgMemFallback) return _bgCoerce(key, _bgMemFallback[key]);
         if (globalVal !== null && globalVal !== undefined) return _bgCoerce(key, globalVal);
+        if (key === 'stableCameraStartBeforeMs') return _bgReadGlobal('stableCameraPreparationMs');
         return BG_DEFAULTS[key];
     }
     // Shared "stored string -> bool" coercion for every boolean
@@ -6128,7 +6131,8 @@
     // shaped settings share the same parse + clamp behaviour.
     const _BG_FLOAT_KEYS = new Set(['intensity', 'cameraSmoothing', 'zoomSmoothing', 'tiltSmoothing', 'cameraLockZoom', 'textSize', 'vibrancy', 'glow', 'chordDiagramSize', 'sectionHudSize', 'toneHudSize', 'hitFx', 'trailYieldMinScale', 'trailYieldLeadTime', 'trailYieldTaperDuration', 'trailYieldHoldAfter', 'trailYieldRecoverDuration', 'trailYieldEndLeadTime', 'trailYieldEndTaperDuration', 'trailYieldSameStringMaxGap', 'trailYieldSameStringLeadTime']);
     function _bgCoerce(key, val) {
-        const stableRange = key === 'stableCameraPreparationMs' ? [25, 3000, 25]
+        const stableRange = key === 'stableCameraPreparationMs' || key === 'stableCameraStartBeforeMs' ? [25, 3000, 25]
+            : key === 'stableCameraArriveAfterMs' ? [0, 3000, 25]
             : key === 'stableCameraDepartureDelay' ? [0, 1000, 25]
             : key === 'stableCameraTravelExtra' ? [0, 200, 5]
             : key === 'stableCameraSettleLimit' ? [0, 3000, 25]
@@ -6291,17 +6295,10 @@
         const follow = element('input'); follow.type = 'checkbox'; follow.dataset.cameraSetting = 'stableCameraFollow';
         followLabel.appendChild(follow); followLabel.appendChild(element('span', 'Follow hand position')); panel.appendChild(followLabel);
         const fields = element('fieldset', '', 'min-width:0;border:0;padding:0;margin:0;');
-        const actions = element('div', '', 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;');
-        fields.appendChild(element('p', 'Applies to all followed journeys. Extra travel gets time before delay; release a slider to apply.', 'margin:0 0 8px;color:#adc0d7;'));
-        const preparationLabel = element('label', 'Preparation ', 'display:flex;align-items:center;gap:8px;margin:8px 0;');
-        const preparationMode = element('select', '', inputStyle + 'flex:1;');
-        preparationMode.dataset.cameraSetting = 'stableCameraPreparationMode';
-        for (const [value, label] of [['auto', 'Automatic'], ['manual', 'Manual lead time']]) {
-            const option = element('option', label); option.value = value; preparationMode.appendChild(option);
-        }
-        preparationLabel.appendChild(preparationMode); fields.appendChild(preparationLabel);
-        fields.appendChild(element('p', 'Manual lead replaces automatic preparation. Departure delay shifts that prepared start later. Closely spaced lanes can shorten preparation; the applied times below show the result.', 'margin:4px 0;color:#adc0d7;'));
-        const preparationControls = element('div'); fields.appendChild(preparationControls);
+        fields.appendChild(element('p', 'Separated lane changes use these exact playback times. Travel duration is start-before + arrive-after. Release a slider to apply.', 'margin:0 0 8px;color:#adc0d7;'));
+        fields.appendChild(element('p', 'Crowded sequences retain their existing continuous movement for now. The readout identifies when exact timing cannot apply.', 'margin:4px 0;color:#adc0d7;'));
+        const durationReadout = element('p', '', 'margin:8px 0;color:#e5edf7;');
+        durationReadout.dataset.cameraDuration = '';
         const timingBox = element('div', '', 'margin:8px 0;padding:8px;border:1px solid #50637b;border-radius:5px;color:#adc0d7;');
         timingBox.dataset.cameraTiming = '';
         timingBox.className = 'fb-selectable';
@@ -6309,10 +6306,10 @@
         const timingDetails = element('details', '', 'margin-top:6px;');
         timingDetails.dataset.cameraTimingDetails = '';
         timingDetails.appendChild(element('summary', 'Timing details', 'cursor:pointer;'));
-        timingDetails.appendChild(element('p', 'All durations below use playback milliseconds. Start lead is measured before the first lane; arrival lateness is measured after the final lane. Extra travel receives available time before departure delay.', 'margin:4px 0 0;'));
+        timingDetails.appendChild(element('p', 'Durations use real playback milliseconds. Song timestamps identify the scheduled movement; a live edit can temporarily blend into that path.', 'margin:4px 0 0;'));
         const timingLines = {};
         for (const name of ['decision', 'mode', 'starts', 'travel', 'lateness', 'limit',
-            'delay', 'extra', 'preparation', 'budget', 'departure', 'arrival']) {
+            'requested', 'departure', 'arrival']) {
             const line = element('p', '', 'margin:4px 0 0;');
             line.dataset.cameraTimingField = name;
             (['decision', 'mode', 'starts', 'travel', 'lateness', 'limit'].includes(name)
@@ -6321,11 +6318,9 @@
         }
         timingBox.appendChild(timingDetails);
         const rows = [
-            ['stableCameraDepartureDelay', 'Departure delay (ms)', 0, 1000, 25],
-            ['stableCameraTravelExtra', 'Extra travel time (%)', 0, 200, 5],
-            ['stableCameraSettleLimit', 'Maximum settling time (ms)', 0, 3000, 25],
+            ['stableCameraStartBeforeMs', 'Start before next lane (ms)', 25, 3000, 25],
+            ['stableCameraArriveAfterMs', 'Arrive after next lane (ms)', 0, 3000, 25],
             ['stableCameraExcursionThreshold', 'Short-lane threshold (ms)', 0, 3000, 50],
-            ['stableCameraPreparationMs', 'Manual preparation before first lane (ms)', 25, 3000, 25],
         ];
         const read = key => _bgReadSetting(_bgPanelKey(getCanvas()), key);
         const write = (key, value) => _bgWriteScoped(_bgPanelKey(getCanvas()), key, value);
@@ -6347,7 +6342,7 @@
                 line.appendChild(input);
             }
             row.appendChild(line);
-            (key === 'stableCameraPreparationMs' ? preparationControls : fields).appendChild(row);
+            fields.appendChild(row);
             const control = { key, range, number, dirty: false }; controls.push(control);
             const commit = input => {
                 if (destroyed || fields.disabled || input.disabled) return;
@@ -6370,23 +6365,9 @@
                 });
             }
         }
+        fields.appendChild(durationReadout);
         fields.appendChild(timingBox);
-        fields.appendChild(actions);
         fields.appendChild(element('p', 'The threshold applies to each lane in original song time. Short repeated riffs hold; progressive runs still travel. Riff protections stay on.', 'margin:8px 0;color:#adc0d7;'));
-        for (const [name, label, values] of [
-            ['gentler', 'Gentler trial', [100, 10, 250, 500]],
-            ['previous', 'Previous tuning', [0, 0, 0, 500]],
-        ]) {
-            const button = element('button', label, buttonStyle); button.type = 'button';
-            button.dataset.cameraTuningPreset = name; actions.appendChild(button);
-            listen(button, 'click', () => {
-                if (fields.disabled) return;
-                controls.forEach(control => { control.dirty = false; });
-                if (read('stableCameraPreparationMode') !== 'auto') write('stableCameraPreparationMode', 'auto');
-                rows.slice(0, 4).forEach(([key], index) => { if (read(key) !== values[index]) write(key, values[index]); });
-                sync(); status.textContent = label + ' applied.';
-            });
-        }
         panel.appendChild(fields); panel.appendChild(status);
         root.appendChild(toggle); root.appendChild(panel); host.appendChild(root);
         function renderTiming(force = false) {
@@ -6413,8 +6394,8 @@
             timingLines.mode.textContent = modes[motionMode] || '';
             if (!timing) {
                 timingLines.starts.textContent = 'No current or upcoming camera movement.';
-                for (const name of ['delay', 'extra', 'departure', 'arrival', 'limit',
-                    'travel', 'lateness', 'preparation', 'budget']) timingLines[name].textContent = '';
+                for (const name of ['requested', 'departure', 'arrival', 'limit',
+                    'travel', 'lateness']) timingLines[name].textContent = '';
                 return;
             }
             const ms = value => Math.round(value) + ' ms';
@@ -6425,22 +6406,21 @@
             timingLines.travel.textContent = Number.isFinite(timing.appliedDurationMs)
                 ? 'Travel: ' + ms(timing.appliedDurationMs) + ' through ' + timing.waypointCount
                     + (timing.waypointCount === 1 ? ' lane.' : ' lanes.') : '';
-            timingLines.lateness.textContent = Number.isFinite(timing.appliedLatenessMs)
-                ? 'Arrival: ' + ms(timing.appliedLatenessMs) + ' after the final lane begins.' : '';
-            timingLines.delay.textContent = 'Departure delay: ' + ms(timing.requestedDelayMs) + ' requested; ' + ms(timing.appliedDelayMs) + ' applied.';
-            timingLines.extra.textContent = 'Extra travel: ' + ms(timing.requestedExtraMs) + ' requested; ' + ms(timing.appliedExtraMs) + ' applied.';
-            const preparation = { ordinary: 'ordinary preparation', 'large-move': 'extra preparation for a large move',
-                'quiet-passage': 'extra preparation in a quiet passage', manual: 'manual preparation' };
-            timingLines.preparation.textContent = Number.isFinite(timing.preparedLeadMs)
-                ? 'Prepared lead: ' + ms(timing.preparedLeadMs) + ' (' + (preparation[timing.preparationReason] || 'automatic')
-                    + (timing.preparationLimitReason === 'previous-lane' ? '; shortened by the preceding lane' : '') + ').' : '';
-            timingLines.budget.textContent = Number.isFinite(timing.availableRoomMs)
-                ? 'Available extra time: ' + ms(timing.availableRoomMs) + '. Slower travel uses '
-                    + ms(timing.appliedExtraMs) + '; ' + ms(timing.delayRoomMs) + ' remains for delay.' : '';
-            timingLines.departure.textContent = 'Song departure: ' + seconds(timing.start) + ' (prepared ' + seconds(timing.nominalStart) + ').';
+            timingLines.lateness.textContent = Number.isFinite(timing.actualArriveAfterMs)
+                ? 'Next lane reached ' + ms(timing.actualArriveAfterMs) + ' after it begins.' : '';
+            timingLines.requested.textContent = Number.isFinite(timing.requestedStartBeforeMs)
+                ? 'Requested: start ' + ms(timing.requestedStartBeforeMs) + ' before; arrive '
+                    + ms(timing.requestedArriveAfterMs) + ' after.' : '';
+            timingLines.departure.textContent = 'Song departure: ' + seconds(timing.start) + '.';
             timingLines.arrival.textContent = 'Song arrival: ' + seconds(timing.end) + ' (final lane begins ' + seconds(timing.nominalEnd) + ').';
-            timingLines.limit.textContent = timing.limitingReason === 'settling-limit' ? 'Limited by Maximum settling time.'
-                : timing.limitingReason === 'next-journey' ? 'Limited by the next journey.' : 'Full timing requests applied.';
+            const fallback = {
+                'progressive-journey': 'Several short lanes form one continuous journey.',
+                'previous-lane': 'The requested departure falls before the preceding lane.',
+                'adjacent-journey-overlap': 'The requested movement overlaps a neighbouring movement.',
+            };
+            timingLines.limit.textContent = timing.mode === 'direct' ? 'Exact start and arrival applied.'
+                : 'Existing sequence timing retained. ' + (fallback[timing.fallbackReason] || 'This passage needs continuous movement.')
+                    + ' The two exact timing controls do not apply here yet.';
         }
         function setTiming(value, nextDecision = null, nextMode = '') {
             if (destroyed || (timing === value && decision === nextDecision && motionMode === nextMode)) return;
@@ -6458,22 +6438,20 @@
             const stable = read('cameraMode') === 'stable'; root.hidden = !stable;
             if (!stable) setExpanded(false);
             preset.value = read('stableCameraPreset'); follow.checked = read('stableCameraFollow');
-            preparationMode.value = read('stableCameraPreparationMode');
             fields.disabled = !follow.checked;
             for (const control of controls) {
                 if (control.dirty && key !== control.key) continue;
                 control.dirty = false;
                 control.range.value = control.number.value = String(read(control.key));
-                control.range.disabled = control.number.disabled = control.key === 'stableCameraPreparationMs' && preparationMode.value !== 'manual';
+                control.range.disabled = control.number.disabled = !follow.checked;
             }
+            durationReadout.textContent = 'Separated transition duration: '
+                + (read('stableCameraStartBeforeMs') + read('stableCameraArriveAfterMs')) + ' ms.';
             if (!follow.checked) status.textContent = 'Turn on Follow hand position to adjust movement.';
             else if (status.textContent === 'Turn on Follow hand position to adjust movement.') status.textContent = '';
         }
         listen(toggle, 'click', () => setExpanded(!expanded));
         listen(close, 'click', () => setExpanded(false, true));
-        listen(preparationMode, 'change', () => {
-            if (!fields.disabled) write('stableCameraPreparationMode', _bgCoerce('stableCameraPreparationMode', preparationMode.value));
-        });
         listen(preset, 'change', () => write('stableCameraPreset', _bgCoerce('stableCameraPreset', preset.value)));
         listen(follow, 'change', () => write('stableCameraFollow', follow.checked));
         listen(root, 'keydown', event => {
@@ -6557,6 +6535,8 @@
     window.h3dBgSetStableCameraPreset = (v) => _bgWriteGlobal('stableCameraPreset', _bgCoerce('stableCameraPreset', v));
     window.h3dBgSetStableCameraFollow = (v) => _bgWriteGlobal('stableCameraFollow', !!v);
     window.h3dBgSetStableCameraPreparationMode = (v) => _bgWriteGlobal('stableCameraPreparationMode', _bgCoerce('stableCameraPreparationMode', v));
+    window.h3dBgSetStableCameraStartBeforeMs = (v) => _bgWriteGlobal('stableCameraStartBeforeMs', _bgCoerce('stableCameraStartBeforeMs', v));
+    window.h3dBgSetStableCameraArriveAfterMs = (v) => _bgWriteGlobal('stableCameraArriveAfterMs', _bgCoerce('stableCameraArriveAfterMs', v));
     window.h3dBgSetStableCameraPreparationMs = (v) => _bgWriteGlobal('stableCameraPreparationMs', _bgCoerce('stableCameraPreparationMs', v));
     window.h3dBgSetStableCameraDepartureDelay = (v) => _bgWriteGlobal('stableCameraDepartureDelay', _bgCoerce('stableCameraDepartureDelay', v));
     window.h3dBgSetStableCameraTravelExtra = (v) => _bgWriteGlobal('stableCameraTravelExtra', _bgCoerce('stableCameraTravelExtra', v));
@@ -8825,6 +8805,7 @@
         let stableCameraFollow = BG_DEFAULTS.stableCameraFollow;
         let stableCameraPreparationMode = BG_DEFAULTS.stableCameraPreparationMode;
         let stableCameraPreparationMs = BG_DEFAULTS.stableCameraPreparationMs;
+        let stableCameraDirectTiming = { startBeforeMs: BG_DEFAULTS.stableCameraStartBeforeMs, arriveAfterMs: BG_DEFAULTS.stableCameraArriveAfterMs };
         let stableCameraDepartureDelay = BG_DEFAULTS.stableCameraDepartureDelay;
         let stableCameraTravelExtra = BG_DEFAULTS.stableCameraTravelExtra;
         let stableCameraSettleLimit = BG_DEFAULTS.stableCameraSettleLimit;
@@ -13166,6 +13147,7 @@
                     changedKey === 'cameraLockZoom' || changedKey === 'cameraMode' ||
                     changedKey === 'stableCameraPreset' || changedKey === 'stableCameraFollow' ||
                     changedKey === 'stableCameraPreparationMode' || changedKey === 'stableCameraPreparationMs' ||
+                    changedKey === 'stableCameraStartBeforeMs' || changedKey === 'stableCameraArriveAfterMs' ||
                     changedKey === 'stableCameraDepartureDelay' || changedKey === 'stableCameraTravelExtra' ||
                     changedKey === 'stableCameraSettleLimit' || changedKey === 'stableCameraExcursionThreshold' ||
                     changedKey === 'textSize' ||
@@ -13501,6 +13483,8 @@
             stableCameraFollow = _bgReadSetting(panelKey, 'stableCameraFollow');
             stableCameraPreparationMode = _bgReadSetting(panelKey, 'stableCameraPreparationMode');
             stableCameraPreparationMs = _bgReadSetting(panelKey, 'stableCameraPreparationMs');
+            stableCameraDirectTiming = { startBeforeMs: _bgReadSetting(panelKey, 'stableCameraStartBeforeMs'),
+                arriveAfterMs: _bgReadSetting(panelKey, 'stableCameraArriveAfterMs') };
             stableCameraDepartureDelay = _bgReadSetting(panelKey, 'stableCameraDepartureDelay');
             stableCameraTravelExtra = _bgReadSetting(panelKey, 'stableCameraTravelExtra');
             stableCameraSettleLimit = _bgReadSetting(panelKey, 'stableCameraSettleLimit');
@@ -24172,11 +24156,12 @@
             // analysis or projected shapes. Rejoin continuously next frame.
             const key = [geometryKey, rate, cameraSmoothing, stableCameraDepartureDelay,
                 stableCameraTravelExtra, stableCameraSettleLimit, stableCameraExcursionThreshold,
-                stableCameraPreparationMode, stableCameraPreparationMs].join('/');
+                stableCameraPreparationMode, stableCameraPreparationMs,
+                stableCameraDirectTiming.startBeforeMs, stableCameraDirectTiming.arriveAfterMs].join('/');
             if (timingChanged || cache.key !== key) { cache.key = key; cache.revision++; }
             hwyCameraPlanAt(cache.stops, now, rate, cameraSmoothing, cache.result,
                 stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit,
-                stableCameraPreparationMode === 'manual' ? stableCameraPreparationMs : null);
+                stableCameraPreparationMode === 'manual' ? stableCameraPreparationMs : null, stableCameraDirectTiming);
             if (cache.motion !== cache.stops.motion || cache.motionRate !== rate) {
                 // Equivalent metadata rebuilds must not repeatedly restart a
                 // live handoff. Compare only when the cached curve is rebuilt,
@@ -24249,7 +24234,7 @@
         function stableSampleCameraPlan(time, out) {
             return hwyCameraPlanAt(_stablePlan.stops, time, _stablePlan.rate, cameraSmoothing, out,
                 stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit,
-                stableCameraPreparationMode === 'manual' ? stableCameraPreparationMs : null);
+                stableCameraPreparationMode === 'manual' ? stableCameraPreparationMs : null, stableCameraDirectTiming);
         }
 
         function stableCamUpdate(bundle, frameTime = Number(bundle.currentTime) || 0) {
@@ -24379,7 +24364,7 @@
                 const future = hwyCameraPlanAt(_stablePlan.stops, futureTime,
                     _stablePlan.rate, cameraSmoothing, _stableViewFuturePlan,
                     stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit,
-                    stableCameraPreparationMode === 'manual' ? stableCameraPreparationMs : null);
+                    stableCameraPreparationMode === 'manual' ? stableCameraPreparationMs : null, stableCameraDirectTiming);
                 let futureX = frameTime < s.resumeUntil
                     ? futureTime < s.resumeUntil ? hwyCameraResumeAt(s, futureTime, future).x : future.x
                     : future.valid ? s.x + future.x - plan.x : s.x;
@@ -25562,17 +25547,10 @@
             default: BG_DEFAULTS.stableCameraPreset },
         { key: 'stableCameraFollow', label: 'Follow hand position (Stable)', type: 'toggle',
             default: BG_DEFAULTS.stableCameraFollow },
-        { key: 'stableCameraPreparationMode', label: 'Stable preparation', type: 'select',
-            options: [{ id: 'auto', label: 'Automatic' }, { id: 'manual', label: 'Manual lead time' }],
-            default: BG_DEFAULTS.stableCameraPreparationMode },
-        { key: 'stableCameraPreparationMs', label: 'Stable manual preparation (ms)', type: 'range',
-            min: 25, max: 3000, step: 25, default: BG_DEFAULTS.stableCameraPreparationMs },
-        { key: 'stableCameraDepartureDelay', label: 'Stable departure delay (ms)', type: 'range',
-            min: 0, max: 1000, step: 25, default: BG_DEFAULTS.stableCameraDepartureDelay },
-        { key: 'stableCameraTravelExtra', label: 'Stable extra travel time (%)', type: 'range',
-            min: 0, max: 200, step: 5, default: BG_DEFAULTS.stableCameraTravelExtra },
-        { key: 'stableCameraSettleLimit', label: 'Stable maximum settling time (ms)', type: 'range',
-            min: 0, max: 3000, step: 25, default: BG_DEFAULTS.stableCameraSettleLimit },
+        { key: 'stableCameraStartBeforeMs', label: 'Start before next lane (ms)', type: 'range',
+            min: 25, max: 3000, step: 25, default: BG_DEFAULTS.stableCameraStartBeforeMs },
+        { key: 'stableCameraArriveAfterMs', label: 'Arrive after next lane (ms)', type: 'range',
+            min: 0, max: 3000, step: 25, default: BG_DEFAULTS.stableCameraArriveAfterMs },
         { key: 'stableCameraExcursionThreshold', label: 'Stable short-lane threshold (ms)', type: 'range',
             min: 0, max: 3000, step: 50, default: BG_DEFAULTS.stableCameraExcursionThreshold },
         {
