@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
+const {copyState}=require('./highway-bend-layout-fixture.js');
 
 const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 function fn(name) {
@@ -75,6 +76,7 @@ function harness(extracted, cameraMode = 'stable') {
     };
     env.phaseRecords = phaseRecords;
     const result = new Function('env', `with (env) {
+        ${copyState}
         const _chordFrameResult = {};
         ${phase}
         const actualPhase = updateChordPhase;

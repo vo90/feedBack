@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { solve, rendererState, rendererLookup } = require('./highway-bend-layout-fixture.js');
 
 const src = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 function extract(name) {
@@ -19,7 +20,7 @@ function offset(n, now, sustained, dir = 1) {
         'techniqueYOffsetWorld','prebendOffsetWorld'].map(extract).join('\n');
     return new Function('n','now','sustained','dir', `
         const dt=n.t-now, hasSus=n.sus>0, susEnd=n.t+(n.sus||0);
-        const BEND_HALFSTEP_WORLD_Y=1, bendVisualDirY=()=>dir;
+        const BEND_HALFSTEP_WORLD_Y=.8, FINGER_BEND_WORLD_Y=1, bendVisualDirY=()=>dir;
         const BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.30, VIBRATO_HALF_WAVE_S=.08;
         const _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap();
         const _linkedVibratoRuns=new WeakMap();
@@ -35,15 +36,17 @@ const train = {t:22.172001,s:3,f:14,sus:1.68,bn:2,bnv:[
     {t:.157999,v:2},{t:.316999,v:2},{t:.632999,v:0},{t:1.230999,v:2},
 ]};
 
-const alignment = new Function('n', 'now', 'nStr', '_invertedCached', `
-    const BEND_HALFSTEP_WORLD_Y=1, BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.3;
+const alignmentImpl = new Function('n', 'now', 'nStr', '_invertedCached', 'solveBendLayout', `
+    const BEND_HALFSTEP_WORLD_Y=.8, FINGER_BEND_WORLD_Y=1, BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.3;
     const VIBRATO_HALF_WAVE_S=.08, SLIDE_RIBBON_SAMPLES=8;
     const _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap();
     const _linkedVibratoRuns=new WeakMap(), _slideRibbonTimesScratch=[];
+    ${rendererState}
     ${src.slice(src.indexOf('    function slideTrailEnd('), src.indexOf('    // Camera tgtDist building blocks'))}
     const TRAIL_YIELD_DEFAULTS={minScale:.3};
     const dZ=t=>-t*10, sustainTrailCenterXAt=(n,x,t,st,w,out)=>{if(out){out[0]=x;return;}return x;};
     ${extract('bendVisualDirY')}
+    ${rendererLookup}
     ${extract('noteHasVibrato')}
     ${extract('bnvSampleAt')}
     ${extract('bendCurveStartSemis')}
@@ -63,8 +66,9 @@ const alignment = new Function('n', 'now', 'nStr', '_invertedCached', `
     slideRibbonUpdatePair(outline,body,5,1,.4,.8,.2,y,
         n.t+n.sus-susStart,susStart,now,n,null);
     const center=geo=>(geo.attributes.position.array[1]+geo.attributes.position.array[7])/2;
-    return {gem:y+techniqueYNow, body:center(body), outline:center(outline), dir:bendVisualDirY(n.s)};
+    return {gem:y+techniqueYNow, body:center(body), outline:center(outline), dir:bendVisualDirY(n.s,n)};
 `);
+const alignment = (n, now, count, inverted) => alignmentImpl(n, now, count, inverted, solve);
 
 test('authored initial bend is already displaced during approach and at onset', () => {
     for(const time of [86.4,86.738,86.739]) assert.equal(offset(mamma,time,false),2);

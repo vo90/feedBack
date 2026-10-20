@@ -80,7 +80,7 @@ if(orientationOnly)for(const [anchor,name,kind] of [
   ['const edges = pNoteEdge.get();','edges','verdict-edge'],
 ]){
   const instrumented=`${anchor}
-  if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'${kind}',mesh:${name}});`;
+  if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'${kind}',bendDirection:${kind==='bend'?'bendVisualDirY(n.s,n)':'undefined'},mesh:${name}});`;
   // Both the timed and legacy direction-only slide paths use this local name.
   if(kind==='slide'){
     assert.ok(served.includes(anchor),'Missing slide marker instrumentation anchor');
@@ -88,7 +88,7 @@ if(orientationOnly)for(const [anchor,name,kind] of [
   }else served=once(served,anchor,instrumented);
 }
 if(bendsOnly&&!orientationOnly)served=once(served,'const l = pTechPlane.get();',`const l = pTechPlane.get();
-  if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'bend',steps,mesh:l});`);
+  if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'bend',steps,bendDirection:bendVisualDirY(n.s,n),mesh:l});`);
 if(readabilityOnly){
   if(!orientationOnly)served=once(served,'const face = pTechPlane.get();',`const face = pTechPlane.get();
     if(window.__notationProbe)window.__notationProbe.markers.push({note:{...n},dt,kind:'face',mesh:face});`);
@@ -100,6 +100,7 @@ if(readabilityOnly){
 served = once(served, "contextType: 'webgl2',", `__notationAudit() { return {
   scene, cam, ren, noteG, pNote, pTechPlane, projMeshArr, composer:_composer, bloom:_bloom,
   openStemFloor:Math.min(sY(0),sY(nStr-1))-S_GAP*.55, noteHeight:NH,
+  bendLayoutPending:typeof _bendLayoutJob!=='undefined'&&!!_bendLayoutJob,
   style:typeof rsPlusNotation === 'undefined' ? 'current' : rsPlusNotation ? 'rsplus' : 'current',
   settings:{glow:glowMul,vibrancy,cinematic:_cinematic,hitFx:_hitFx,bloom:_bloom,
     ${readabilityOnly?'trailYield:{...trailYieldSettings},sustainStroke:rsPlusNotation?RSPLUS_SUSTAIN_STROKE_SCALE:1,':''}},
@@ -177,9 +178,10 @@ async function main() {
       if(u.origin!=='http://notation-fixture.test') return route.fulfill({status:403,body:'External network forbidden by fixture'});
       if(u.pathname==='/') return route.fulfill({contentType:'text/html',body:`<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:#101820}#host{position:relative;width:100vw;height:100vh}canvas{width:100%;height:100%;display:block}</style><div id="host"><canvas id="highway"></canvas></div><script src="/screen.js"></script>`});
       if(u.pathname==='/screen.js') return route.fulfill({contentType:'text/javascript',body:served});
-      const file=path.resolve(repo,'.'+decodeURIComponent(u.pathname));
+      const assetPath=decodeURIComponent(u.pathname).replace(/^\/api\/plugins\/highway_3d\/(?:g\/camera-\d+\/)?src\//,'/plugins/highway_3d/src/');
+      const file=path.resolve(repo,'.'+assetPath);
       if(file.startsWith(repo+path.sep)&&fs.existsSync(file)&&fs.statSync(file).isFile())
-        return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.png')?'image/png':'application/octet-stream',body:fs.readFileSync(file)});
+        return route.fulfill({contentType:/\.(js|mjs)$/.test(file)?'text/javascript':file.endsWith('.png')?'image/png':'application/octet-stream',body:fs.readFileSync(file)});
       return route.fulfill({status:404,body:'Unknown isolated fixture asset'});
     });
     await page.goto('http://notation-fixture.test/');
@@ -239,7 +241,18 @@ async function main() {
           if(typeof setter==='function')setter(v);
         }
         if(settings.customColors)h3dBgSetStringColors(settings.customColors);
+        const targetTime=b.currentTime;
+        const onsets=[...b.notes,...b.chords].map(n=>n.t).filter(Number.isFinite);
+        b.currentTime=Math.min(targetTime,...onsets)-.5;
         window.bundle=b;window.r=feedBackViz_highway_3d();r.init(document.getElementById('highway'),bundle);await r.readyPromise;
+        r.draw(bundle);
+        const preparationDeadline=performance.now()+20000;
+        while(r.__notationAudit().bendLayoutPending){
+          if(performance.now()>preparationDeadline)throw new Error('Grouped bend preparation did not complete');
+          await new Promise(resolve=>setTimeout(resolve,0));
+        }
+        // Publish completed choices before advancing into a running gesture.
+        r.draw(bundle);bundle.currentTime=targetTime;
         if(settings.scored)bundle.getNoteState=note=>({state:note.s%3===0?'hit':note.s%3===1?'miss':'active',alpha:1});
         for(let i=0;i<45;i++)r.draw(bundle);
       },{b,settings});
@@ -386,7 +399,9 @@ async function main() {
         pm:false,mt:false,fhm:false,vb:false,tr:false,ac:false,tp:false,slp:false,plk:false,...n});
       function bendScene(amount,{strings=[0,1,2,5],inverted=false,lefty=false,curveOnly=false,chord=false}={}){
         const b=baseBundle();b.inverted=inverted;b.lefty=lefty;b.anchors=[{time:0,fret:3,width:4}];
-        const notes=strings.map(s=>member({t:onset,s,f:5,bn:curveOnly?0:amount,
+        // Keep the disconnected outer-string example at a separate fret so
+        // this texture/color probe does not deliberately trigger a crossing.
+        const notes=strings.map(s=>member({t:onset,s,f:strings.length>2&&s===5?9:5,bn:curveOnly?0:amount,
           bnv:[{t:0,v:0},{t:.7,v:amount},{t:1.3,v:amount}]}));
         if(chord){
           b.chordTemplates=[{name:'Bend',frets:[-1,-1,5,5,-1,-1],fingers:[-1,-1,1,1,-1,-1]}];
@@ -395,7 +410,7 @@ async function main() {
         }else b.notes=notes;
         return b;
       }
-      function assertBends(proof,label,{amount,strings,inverted=false}={}){
+      function assertBends(proof,label,{amount,strings,inverted=false,physicalDirections}={}){
         const markers=proof.markers.filter(m=>m.kind==='bend');
         check(markers.length===strings.length,`${label}: expected ${strings.length} bend marker meshes, got ${markers.length}`);
         for(const marker of markers){
@@ -404,14 +419,20 @@ async function main() {
           check(marker.steps===expectedSteps,`${label}: note ${marker.note.s} got wrong semitone amount`);
           check(marker.texture?.centerRuns.length===expectedRuns,`${label}: note ${marker.note.s} texture has ${marker.texture?.centerRuns.length} chevrons, expected ${expectedRuns}`);
           check(marker.mesh.visible&&marker.mesh.material.opacity===1,`${label}: bend marker disappeared or faded`);
-          const visualString=inverted?marker.note.s:5-marker.note.s;
-          const expectedRotation=(proof.style==='rsplus'?0:.15/3*Math.PI/2)+(visualString>=2.5?Math.PI:0);
+          // The mesh must follow the resolved note/group side, including pooled
+          // chord views. Fixed fixture expectations separately verify the rule.
+          const expectedRotation=(proof.style==='rsplus'?0:.15/3*Math.PI/2)+(marker.bendDirection<0?Math.PI:0);
           check(Math.abs(marker.mesh.rotation[2]-expectedRotation)<1e-8,`${label}: bend direction or orientation changed`);
+          if(physicalDirections&&!reference){
+            const expected=physicalDirections[strings.indexOf(marker.note.s)]*(inverted?1:-1);
+            check(marker.bendDirection===expected,`${label}: resolved group side differs from fixture expectation on string ${marker.note.s}`);
+          }
         }
       }
       async function captureBends(name,b,amount,strings,config=settings){
         const proof=await capture(name,b,config,{expectBodies:true});
-        assertBends(proof,name,{amount,strings,inverted:b.inverted});
+        const physicalDirections=strings.map(s=>s>=3&&strings.every(v=>v>=3)?-1:s===5?-1:1);
+        assertBends(proof,name,{amount,strings,inverted:b.inverted,physicalDirections});
         const marker=proof.markers.find(m=>m.kind==='bend');
         const [px,py]=marker.screen,clipWidth=Math.min(width,600),clipHeight=Math.min(height,450);
         await page.screenshot({path:path.join(out,name+'-close.png'),clip:{
@@ -429,7 +450,7 @@ async function main() {
       const passes=[];
       for(const style of ['rsplus','current','rsplus','current']){
         const proof=await page.evaluate(style=>{h3dBgSetNotationStyle(style);for(let i=0;i<45;i++)r.draw(bundle);return __captureNotation();},style);
-        assertBends(proof,`bend live ${style}`,{amount:2,strings:[0,1,2,5]});passes.push(proof);
+        assertBends(proof,`bend live ${style}`,{amount:2,strings:[0,1,2,5],physicalDirections:[1,1,1,-1]});passes.push(proof);
       }
       results.push({name:'bend-live-style-reuse',passes});
     }
@@ -684,8 +705,7 @@ async function main() {
         }
         for(const marker of proof.markers){
           const {note,kind,mesh}=marker;
-          const visualString=inverted?note.s:5-note.s;
-          const expected=kind==='bend'&&visualString>=2.5?Math.PI:0;
+          const expected=kind==='bend'&&marker.bendDirection<0?Math.PI:0;
           check(Math.abs(mesh.rotation[0])+Math.abs(mesh.rotation[1])<1e-10&&Math.abs(mesh.rotation[2]-expected)<1e-10,
             `${label}: ${kind} marker lost stable orientation/direction for string ${note.s}`);
         }

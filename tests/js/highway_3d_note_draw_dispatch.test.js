@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
 const { extractFunction } = require('./test_utils');
+const {copyState}=require('./highway-bend-layout-fixture.js');
 
 const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 const scrapeSource = fs.readFileSync(path.join(__dirname, '../../static/js/pick-scrapes.js'), 'utf8').replace(/export /g, '');
@@ -22,6 +23,7 @@ const observedDraw = draw.slice(0, geometryStart) + `return observeDraw(${names}
 
 function harness() {
     return new Function('scrapeGeometry', `
+        ${copyState}
         let _collectNoteDraws=false, _noteDrawCount=0, _noteDrawParts=null, _noteDrawEvent=null;
         const _noteDrawQueue=[], _visibleTrailEvents=[], _scrChordNote={};
         const _pickScrapeCaptionOwners=new Map(), sY=s=>-s;

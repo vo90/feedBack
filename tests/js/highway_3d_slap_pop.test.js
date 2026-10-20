@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const {copyState}=require('./highway-bend-layout-fixture.js');
 const src = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 
 function fn(name) {
@@ -60,6 +61,7 @@ test('optional attack flags do not leak from one reused chord member to the next
     const end = src.indexOf('drawNote(', start);
     assert.ok(start > 0 && end > start);
     const copy = new Function(`
+        ${copyState}
         const _linkedBendStarts = new WeakMap(), _linkedBendEnds = new WeakMap();
         const _linkedVibratoRuns = new WeakMap();
         const _linkedTrailPaths = { byNote: new WeakMap() };

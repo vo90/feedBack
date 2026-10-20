@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { solve, rendererState, rendererLookup } = require('./highway-bend-layout-fixture.js');
 
 const src = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 function fn(name) {
@@ -32,7 +33,7 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
     assert.ok(cutoff > 0);
     const gate = draw.match(/if \((visualParts\.head)\)/);
     assert.ok(gate, 'drawNote has an explicit gem visibility gate');
-    return new Function('_invertedCached', '_scrEventTimes', 'verdict', `
+    return new Function('_invertedCached', '_scrEventTimes', 'verdict', 'solveBendLayout', `
         const nStr = 6, NFRETS = 24, S_COL = Array(6), _oobStringWarned = true;
         const BEND_ENV_RISE_FRAC = ${constant('BEND_ENV_RISE_FRAC')};
         const BEND_ENV_RELEASE_FRAC = ${constant('BEND_ENV_RELEASE_FRAC')};
@@ -41,7 +42,7 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
         const VIBRATO_HALF_WAVE_S = ${constant('VIBRATO_HALF_WAVE_S')};
         const NOTEDETECT_GEM_VERDICT_WINDOW = ${constant('NOTEDETECT_GEM_VERDICT_WINDOW')};
         const GHOST_HOLD_AFTER_ONSET = ${constant('CHORD_HWY_LINGER_S')};
-        const BEND_HALFSTEP_WORLD_Y = 3.2;
+        const BEND_HALFSTEP_WORLD_Y = 3.2, FINGER_BEND_WORLD_Y = 4;
         const _drawNextByString = null, sY = s => s;
         const _collectNoteDraws = false;
         let _noteDrawParts = null;
@@ -53,6 +54,7 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
         const _ndGetNoteState = () => { probes++; return verdict; };
         let _linkedBendStarts = new WeakMap(), _linkedBendEnds = new WeakMap();
         let _linkedVibratoRuns = new WeakMap();
+        ${rendererState}
         ${['validString', 'isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote',
             '_firstEventTimeGreaterThan', 'hwyShouldSuppressNoteBody', 'hwyNoteVisualParts',
             'bnvSampleAt', 'bendCurveStartSemis', 'bendCurveSemisAt',
@@ -61,6 +63,8 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
             'techniqueYOffsetWorld', 'hwyLinkNextTargetNotes',
             'resolveLinkedBendEnds', 'resolveLinkedBendStarts',
             'resolveLinkedVibratoRuns'].map(fn).join('\n')}
+        ${fn('copyBendLayout')}
+        ${rendererLookup}
         ${draw.slice(0, cutoff)}
             return {
                 offset: techniqueYNow, sustained, hit, hitFade,
@@ -87,12 +91,13 @@ function harness({ inverted = false, eventTimes = [], verdict } = {}) {
                 _linkedBendEnds = resolveLinkedBendEnds(links);
                 _linkedBendStarts = resolveLinkedBendStarts(links, _linkedBendEnds);
                 _linkedVibratoRuns = resolveLinkedVibratoRuns(links);
+                _bendLayout=solveBendLayout(notes,[],nStr,{links,starts:_linkedBendStarts,ends:_linkedBendEnds});
                 return targets;
             },
             latch: _susVerdictLatch,
             probeCount: () => probes,
         };
-    `)(inverted, [...eventTimes].sort((a, b) => a - b), verdict);
+    `)(inverted, [...eventTimes].sort((a, b) => a - b), verdict, solve);
 }
 
 const held = changes => ({
@@ -111,7 +116,7 @@ test('a short held bend keeps its terminal pose until the existing linger deadli
     for (const now of [10.05, 10.050001, 10.075, 10.1]) {
         const pose = h.pose(n, now);
         assert.equal(pose.bodyVisible, true);
-        close(pose.offset, 3.2);
+        close(pose.offset, 4);
         close(pose.deadline, 10.1);
         assert.equal(pose.sustained, now <= end(n));
     }
@@ -155,8 +160,8 @@ test('approach and active motion remain chart-time based in every string orienta
         const h = harness({ inverted });
         for (const s of [0, 3, 5]) {
             const n = held({ s, bnv: [{ t: 0, v: 1 }, { t: .05, v: 2 }] });
-            close(h.pose(n, 9.9).offset, 3.2 * h.direction(s));
-            close(h.pose(n, 10).offset, 3.2 * h.direction(s));
+            close(h.pose(n, 9.9).offset, 4 * h.direction(s,n));
+            close(h.pose(n, 10).offset, 4 * h.direction(s,n));
             close(h.pose(n, 10.025).offset, h.sample(n, 10.025));
             close(h.pose(n, 10.075).offset, h.sample(n, end(n)));
         }
@@ -166,7 +171,7 @@ test('approach and active motion remain chart-time based in every string orienta
 test('seeking back through linger never changes the next sampled position', () => {
     const h = harness(), n = held({ vb: true });
     for (const time of [10.075, 9.9, 10.025, 10.09, 10, 10.05, 10.025]) {
-        const expected = time <= n.t ? 3.2 : h.sample(n, Math.min(time, end(n)));
+        const expected = time <= n.t ? 4 : h.sample(n, Math.min(time, end(n)));
         close(h.pose(n, time).offset, expected);
     }
 });
@@ -183,7 +188,7 @@ test('notes without sustain keep the normal position and original lifetime', () 
 test('a next event still truncates extra linger and long sustains gain no extra lifetime', () => {
     const h = harness({ eventTimes: [10, 10.07, 11] });
     const short = held();
-    close(h.pose(short, 10.06).offset, 3.2);
+    close(h.pose(short, 10.06).offset, 4);
     close(h.pose(short, 10.06).deadline, 10.07);
     assert.equal(h.pose(short, 10.070001), undefined);
     const long = held({ sus: .5 });
@@ -259,7 +264,7 @@ test('linked targets remain hidden while ordinary skipped repeats appear at impa
 test('chord members share the same terminal pose without changing their chosen linger', () => {
     const h = harness(), n = held();
     const options = { fromChord: true, linger: .15 };
-    close(h.pose(n, 10.125, options).offset, 3.2);
+    close(h.pose(n, 10.125, options).offset, 4);
     close(h.pose(n, 10.125, options).deadline, 10.15);
     assert.equal(h.pose(n, 10.150001, options), undefined);
 });

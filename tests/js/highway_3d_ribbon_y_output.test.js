@@ -1,5 +1,6 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const {solve,rendererState,rendererLookup}=require('./highway-bend-layout-fixture.js');
 const source=fs.readFileSync(path.join(__dirname,'../../plugins/highway_3d/screen.js'),'utf8').replace(/\r\n/g,'\n');
 function fn(name,input=source){
  const start=input.indexOf('function '+name+'('),open=input.indexOf('{',start);assert.ok(start>=0,name);
@@ -7,11 +8,10 @@ function fn(name,input=source){
  return input.slice(start,end);
 }
 // Retained scalar Y/geometry regression coverage from the output-storage experiment.
-// Complete, frozen functions from 168c12bed22d9a463d1d3a962fc505056405e2c3.
+// The ribbon writer is frozen from 168c12bed22d9a463d1d3a962fc505056405e2c3.
+// Its Y reference includes the declared grouped-bend scale and neutral mode.
 const yBaseline=`function techniqueYOffsetWorld(n, chartTime) {
             if (!(n?.sus > 0)) return 0;
-            const bendSemi = bendSemisAtTime(n, chartTime);
-            const vibratoSemi = vibratoSemisAtTime(n, chartTime);
             const barSemi = n.whammy?.version === 1 ? (window.feedBackWhammy?.visual(n,chartTime-n.t) || 0) : 0;
             // The source performer writes bar and finger-bend pitch events
             // separately, not additively. Show the bar contour while it is
@@ -19,8 +19,13 @@ const yBaseline=`function techniqueYOffsetWorld(n, chartTime) {
             if (n.whammy?.version === 1 && window.feedBackWhammy?.segment(n,chartTime-n.t)?.curve?.length) {
                 return BEND_HALFSTEP_WORLD_Y * barSemi;
             }
+            const direction = bendVisualDirY(n.s,n);
+            if (direction === 0) return BEND_HALFSTEP_WORLD_Y * barSemi;
+            const bendSemi = bendSemisAtTime(n, chartTime);
+            const vibratoSemi = vibratoSemisAtTime(n, chartTime);
             if (bendSemi === 0 && vibratoSemi === 0 && barSemi === 0) return 0;
-            return BEND_HALFSTEP_WORLD_Y * (bendVisualDirY(n.s) * (bendSemi + vibratoSemi) + barSemi);
+            return direction * (FINGER_BEND_WORLD_Y * bendSemi + BEND_HALFSTEP_WORLD_Y * vibratoSemi)
+                + BEND_HALFSTEP_WORLD_Y * barSemi;
         }`;
 const ribbonBaseline=`function slideRibbonUpdatePair(
             outlineGeom, bodyGeom, strandBaseX,
@@ -130,20 +135,22 @@ const ribbonBaseline=`function slideRibbonUpdatePair(
         }`;
 
 const baseline=source.replace(fn('techniqueYOffsetWorld'),yBaseline).replace(fn('slideRibbonUpdatePair'),ribbonBaseline);
-test('scalar Y helper and ribbon retain the established sampling expressions',()=>{
- assert.equal(fn('techniqueYOffsetWorld'),yBaseline);
+test('grouped bend sampling keeps the established ribbon geometry writer',()=>{
  assert.equal(fn('slideRibbonUpdatePair'),ribbonBaseline);
 });
 
 function helpers(input=source,window={},scale=4.8){
- return new Function('window','BEND_HALFSTEP_WORLD_Y',`
+ return new Function('window','BEND_HALFSTEP_WORLD_Y','solveBendLayout',`
   const BEND_ENV_RISE_FRAC=.35,BEND_ENV_RELEASE_FRAC=.3,VIBRATO_HALF_WAVE_S=.08,nStr=6;
   let _invertedCached=false;
   const _linkedBendStarts=new WeakMap(),_linkedBendEnds=new WeakMap(),_linkedVibratoRuns=new WeakMap();
+  const FINGER_BEND_WORLD_Y=BEND_HALFSTEP_WORLD_Y/0.8;
+  ${rendererState}
   ${['bnvSampleAt','bendCurveStartSemis','bendCurveSemisAt','bendSemisAtElapsed','bendSemisAtTime','bendVisualDirY','noteHasVibrato','vibratoSemisAtTime','techniqueYOffsetWorld'].map(n=>fn(n,input)).join('\n')}
+  ${rendererLookup}
   return {y:techniqueYOffsetWorld,inverted(v){_invertedCached=v;},
    starts:_linkedBendStarts,ends:_linkedBendEnds,runs:_linkedVibratoRuns};
- `)(window,scale);
+ `)(window,scale,solve);
 }
 
 test('scalar Y branches preserve finite, nonfinite and signed zero behavior',async()=>{

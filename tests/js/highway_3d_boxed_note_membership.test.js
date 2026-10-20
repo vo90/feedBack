@@ -29,6 +29,7 @@ function membershipHarness() {
         'use strict';
         ${['NFRETS', 'ARP_FRAME_ONSET_PAD_S', 'ARP_FRAME_ONSET_CLUSTER_S'].map(constant).join('\n')}
         let nStr=6, _oobStringWarned=true, _boxedChordMembership=null, _filterValidNotesCache=new WeakMap();
+        const resetBendLayout=()=>{}; // Bend cache lifetime is covered separately.
         let _chordShapeCache=new WeakMap(), _chordSigCache=new WeakMap();
         let _coincidentRepeatNoteSet, _coincidentRepeatNotesRef, _coincidentRepeatChordsRef, _mergeCacheResult;
         const trailVisibilityReleaseChartReferences=()=>{};

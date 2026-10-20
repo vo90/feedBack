@@ -398,13 +398,19 @@ test('direction glyphs switch one outline with dark custom palettes without alte
 
 test('bend amounts use one proportional plane with unchanged gem clearance and correct string direction', () => {
     const f = factory();
-    const start = src.indexOf('                const _bnvPeak =');
+    const start = src.indexOf('                const bendLayout = _bendLayout.byNote.get(n);');
     const end = src.indexOf('\n                if (rsPlusNotation) {', start);
     assert.ok(start >= 0 && end > start);
     const run = new Function('f', 'n', 'options', `
         const rsPlusNotation=options.rs !== false, NH=1, NW=2, K=.1, x=5, y=10,
             techniqueYNow=.5, noteZ=-1, approachRot=.2, s=options.string ?? 0;
         const nStr=6, _invertedCached=!!options.inverted;
+        const _bendLayoutForceNeutral=false, _bendLayoutJob=null, _linkedBendStarts=new WeakMap();
+        // This fixture isolates unchanged chevron artwork from fit selection.
+        // Even a deliberately oversized amount exercises the four-step cap.
+        const _bendLayout={byNote:new WeakMap([[n,{group:{direction:s===0?1:-1},
+            peak:Math.max(n.bn||0,...(n.bnv||[]).map(p=>p.v||0))}]])};
+        ${fn('hwyBendLayoutDirection')}
         ${fn('bendVisualDirY')}
         const activePalette=Array(6).fill(options.color ?? 0x22aaff);
         const techniqueMarkerRenderOrder=20, meshes=[], registrations=[], legacyCounts=[];
