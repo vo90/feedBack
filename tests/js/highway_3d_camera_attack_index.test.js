@@ -1,38 +1,16 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-
-const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
-
-function extract(name) {
-    const start = source.indexOf(`function ${name}(`);
-    assert.ok(start >= 0, name);
-    const open = source.indexOf('{', start);
-    let depth = 1, end = open + 1;
-    while (depth && end < source.length) {
-        if (source[end] === '{') depth++;
-        else if (source[end] === '}') depth--;
-        end++;
-    }
-    assert.equal(depth, 0, name);
-    return source.slice(start, end);
-}
+const {cameraApi} = require('../helpers/highway_camera_harness.cjs');
 
 function harness() {
-    return new Function(`
-        const NFRETS = 24;
-        let builds = 0;
-        ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote'].map(extract).join('\n')}
-        ${extract('hwyBuildCameraAttackIndex').replace('function hwyBuildCameraAttackIndex(', 'function buildIndex(')}
-        function hwyBuildCameraAttackIndex(...args) { builds++; return buildIndex(...args); }
-        ${extract('hwyPrepareCameraStops')}
-        return {
-            // Timing assertions deliberately ignore composition-only metadata.
-            build: (...args) => hwyBuildCameraAttackIndex(...args).map(({frets,...event})=>event),
-            focus: hwyBuildCameraAttackIndex, prepare: hwyPrepareCameraStops, builds: () => builds
-        };
-    `)();
+    let visits = 0;
+    const {hwyBuildCameraAttackIndex:build,hwyPrepareCameraStops:prepare} =
+        cameraApi({onRenderableNote:()=>visits++});
+    return {
+        // Timing assertions deliberately ignore composition-only metadata.
+        build: (...args) => build(...args).map(({frets,...event})=>event),
+        focus: build, prepare, visits: () => visits,
+    };
 }
 
 const stops = Object.freeze([
@@ -93,9 +71,9 @@ test('prepared attack indexes preserve timing across rate changes without rescan
     const forbiddenInputs = new Proxy([], { get() { throw new Error('prepared index rescanned chart'); } });
     for (const rate of [0.25, 0.5, 1, 2, 4]) {
         const expected = h.prepare(stops, notes, chords, rate);
-        const builds = h.builds();
+        const visits = h.visits();
         assert.deepEqual(h.prepare(stops, forbiddenInputs, forbiddenInputs, rate, 6, attacks), expected);
-        assert.equal(h.builds(), builds);
+        assert.equal(h.visits(), visits);
     }
     assert.equal(notes[0].t, 4, 'building the index must not sort source arrays');
 });
@@ -107,7 +85,7 @@ test('an empty prepared index and trivial stop plan require no chart scan', () =
         stops.map(stop => ({ ...stop, lead: 0.6 })));
     assert.deepEqual(h.prepare(stops.slice(0, 1), forbiddenInputs, forbiddenInputs, 1),
         [{ ...stops[0], lead: 0.6 }]);
-    assert.equal(h.builds(), 0);
+    assert.equal(h.visits(), 0);
 });
 
 test('attack index respects effective string count and ignores non-renderable notes', () => {

@@ -1,26 +1,8 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
-function extract(name) {
-    const start = source.indexOf(`function ${name}(`), open = source.indexOf('{', start);
-    assert.ok(start >= 0);
-    let depth = 1, end = open + 1;
-    while (depth) {
-        if (source[end] === '{') depth++;
-        if (source[end] === '}') depth--;
-        end++;
-    }
-    return source.slice(start, end);
-}
-const { prepare, at } = new Function(`
-    const NFRETS = 24;
-    ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote'].map(extract).join('\n')}
-    ${['hwyBuildCameraAttackIndex','hwyPrepareCameraStops','hwyBuildCameraMotion','hwyCameraSegmentAt','hwyCameraPlanAt'].map(extract).join('\n')}
-    return {prepare:hwyPrepareCameraStops,at:hwyCameraPlanAt};
-`)();
+const {cameraApi} = require('../helpers/highway_camera_harness.cjs');
+const {hwyPrepareCameraStops:prepare,hwyCameraPlanAt:at} = cameraApi();
 const note = (t, f = 2, extra = {}) => ({t, f, s: 0, sus: .25, ...extra});
 const chord = (t = 1, sus = 3, extra = {}) => ({t,
     notes: [5,7,7].map((f,s) => ({f,s,sus,...extra}))});

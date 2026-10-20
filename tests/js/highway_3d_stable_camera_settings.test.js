@@ -26,8 +26,8 @@ function load(initial = {}, { window = {}, unavailable = false } = {}) {
         'stable-camera-controls', 'stable-camera-preset', 'stable-camera-follow',
         'stable-camera-reset', 'stable-camera-reset-status', 'legacy-camera-controls',
         'stable-camera-tuning-fields', 'stable-tuning-disabled', 'stable-tuning-status',
-        'stable-tuning-trial', 'stable-tuning-previous',
-        ...['departure-delay', 'travel-extra', 'settle-limit', 'excursion-threshold']
+        'stable-tuning-trial', 'stable-tuning-previous', 'stable-preparation-mode',
+        ...['departure-delay', 'travel-extra', 'settle-limit', 'excursion-threshold', 'preparation-time']
             .flatMap(id => ['stable-' + id, 'stable-' + id + '-value']),
         'stable-camera-legacy-note', 'camera-smoothing-description', 'zoom-smoothing-description']) {
         const element = { value: '', checked: false, disabled: false, hidden: false,
@@ -73,6 +73,15 @@ test('live highway edits refresh the mounted settings page without rewriting pre
     assert.equal(h.el('stable-departure-delay-value').value, '175');
     update('stableCameraExcursionThreshold', 750);
     assert.equal(h.el('stable-excursion-threshold-value').value, '750');
+    update('stableCameraPreparationMode', 'manual');
+    update('stableCameraPreparationMs', 1050);
+    assert.equal(h.el('stable-preparation-mode').value, 'manual');
+    assert.equal(h.el('stable-preparation-time-value').value, '1050');
+    assert.equal(h.el('stable-preparation-time').disabled, false);
+    assert.equal(h.el('camera-smoothing').disabled, true);
+    update('stableCameraPreparationMode', 'auto');
+    assert.equal(h.el('stable-preparation-time').disabled, true);
+    assert.equal(h.el('camera-smoothing').disabled, false);
     update('stableCameraPreset', 'angled');
     assert.equal(h.el('stable-camera-preset').value, 'angled');
     update('stableCameraFollow', false);
@@ -125,7 +134,7 @@ test('saved stable fixed view hydrates, then legacy mode restores controls witho
     assert.equal(h.el('zoom-smoothing').disabled, false);
     assert.equal(h.el('stable-camera-preset').value, 'angled');
     assert.equal(h.data.get('h3d_bg_stableCameraFollow'), 'true');
-    assert.match(h.el('camera-smoothing-description').textContent, /Small movements stay/);
+    assert.match(h.el('camera-smoothing-description').textContent, /Automatic preparation: ordinary lead ranges from 600 to 800 ms/);
 });
 
 test('corrupt saved choices use safe defaults and the historical classic alias still works', () => {
@@ -284,7 +293,7 @@ test('settings accept the expanded experiment ranges and retain them on reopen',
     }
 });
 
-test('comparison buttons set four values, preserve legacy storage and remain inactive outside Stable Follow', () => {
+test('comparison buttons restore Auto, set four values, and remain inactive outside Stable Follow', () => {
     const h = load({ h3d_bg_cameraMode: 'stable', h3d_bg_stableCameraLongSwitchFrets: '24' });
     h.el('stable-tuning-previous').emit('click');
     assert.equal(h.el('stable-departure-delay').value, '0');
@@ -292,12 +301,13 @@ test('comparison buttons set four values, preserve legacy storage and remain ina
     assert.equal(h.el('stable-settle-limit').value, '0');
     assert.equal(h.el('stable-excursion-threshold').value, '500');
     assert.match(h.el('stable-tuning-status').textContent, /Previous tuning/);
-    assert.equal(h.writes.length, 4);
+    assert.equal(h.writes.length, 5);
     h.el('stable-tuning-trial').emit('click');
     assert.equal(h.el('stable-departure-delay').value, '100');
     assert.equal(h.el('stable-travel-extra').value, '10');
     assert.equal(h.el('stable-settle-limit').value, '250');
-    assert.equal(h.writes.length, 8);
+    assert.equal(h.writes.length, 10);
+    assert.equal(h.el('stable-preparation-mode').value,'auto');
     assert.equal(h.data.get('h3d_bg_stableCameraLongSwitchFrets'), '24');
     assert.doesNotMatch(html, /id="h3d-stable-long-switch-frets/);
     h.el('stable-camera-follow').checked = false;
@@ -305,8 +315,52 @@ test('comparison buttons set four values, preserve legacy storage and remain ina
     assert.equal(h.el('stable-camera-tuning-fields').disabled, true);
     assert.equal(h.el('stable-tuning-disabled').hidden, false);
     h.el('stable-tuning-previous').emit('click');
-    assert.equal(h.writes.length, 9, 'only Follow was changed');
+    assert.equal(h.writes.length, 11, 'only Follow was changed');
     h.el('camera-mode').value = 'steady'; h.el('camera-mode').emit('change');
     h.el('stable-tuning-trial').emit('click');
-    assert.equal(h.writes.length, 10, 'hidden tuning controls do not affect legacy views');
+    assert.equal(h.writes.length, 12, 'hidden tuning controls do not affect legacy views');
+});
+
+test('manual preparation hydrates, quantizes and persists without changing Auto defaults', () => {
+    const h=load({h3d_bg_cameraMode:'stable'});
+    const mode=h.el('stable-preparation-mode'),slider=h.el('stable-preparation-time'),number=h.el('stable-preparation-time-value');
+    assert.equal(mode.value,'auto');assert.equal(number.value,'700');
+    assert.equal(slider.disabled,true);assert.equal(h.el('camera-smoothing').disabled,false);
+    assert.deepEqual(h.writes,[]);
+    number.value='2000';number.emit('change');assert.deepEqual(h.writes,[]);
+    mode.value='manual';mode.emit('change');
+    assert.equal(slider.disabled,false);assert.equal(h.el('camera-smoothing').disabled,true);
+    for(const [input,expected]of [['1012','1000'],['-5','25'],['9999','3000'],['invalid','700']]) {
+        number.value=input;number.emit('change');
+        assert.equal(slider.value,expected);assert.equal(number.value,expected);
+        assert.equal(h.data.get('h3d_bg_stableCameraPreparationMs'),expected);
+    }
+    const reopened=load(Object.fromEntries(h.data));
+    assert.equal(reopened.el('stable-preparation-mode').value,'manual');
+    assert.equal(reopened.el('stable-preparation-time-value').value,'700');
+    assert.equal(reopened.el('camera-smoothing').disabled,true);
+    reopened.el('stable-tuning-previous').emit('click');
+    assert.equal(reopened.el('stable-preparation-mode').value,'auto');
+    assert.equal(reopened.el('stable-preparation-time').disabled,true);
+    assert.equal(reopened.el('camera-smoothing').disabled,false);
+    assert.equal(reopened.el('stable-preparation-time-value').value,'700');
+});
+
+test('manual preparation uses live setters and rejects changes while Follow is disabled', () => {
+    const calls=[],h=load({h3d_bg_cameraMode:'stable'},{window:{
+        h3dBgSetStableCameraPreparationMode:value=>calls.push(['mode',value]),
+        h3dBgSetStableCameraPreparationMs:value=>calls.push(['ms',value]),
+    }});
+    const mode=h.el('stable-preparation-mode'),number=h.el('stable-preparation-time-value');
+    mode.value='manual';mode.emit('change');number.value='1500';number.emit('change');
+    assert.deepEqual(calls,[['mode','manual'],['ms',1500]]);
+    assert.deepEqual(h.writes,[],'renderer owns persistence when connected');
+    h.el('stable-camera-follow').checked=false;h.el('stable-camera-follow').emit('change');
+    mode.value='auto';mode.emit('change');number.value='2000';number.emit('change');
+    assert.deepEqual(calls,[['mode','manual'],['ms',1500]]);
+    const invalid=load({h3d_bg_cameraMode:'stable',h3d_bg_stableCameraPreparationMode:'invalid',
+        h3d_bg_stableCameraPreparationMs:'invalid'});
+    assert.equal(invalid.el('stable-preparation-mode').value,'auto');
+    assert.equal(invalid.el('stable-preparation-time-value').value,'700');
+    assert.deepEqual(invalid.writes,[]);
 });

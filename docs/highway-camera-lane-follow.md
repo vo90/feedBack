@@ -2,6 +2,10 @@
 
 This is the current lateral-camera policy for Stable Straight and Stable
 RS+-inspired (Angled). Other camera modes keep their existing behavior.
+See [Stable camera restructuring](stable-camera-restructure.md) for module
+APIs, control units and the acceptance procedure. Earlier comfort-zone,
+hysteresis and shared-centre descriptions in the historical camera notes
+are superseded by this policy.
 
 ## Camera positions
 
@@ -64,26 +68,37 @@ Non-overlapping quintic Hermite segments reach each lasting lane with zero
 velocity and acceleration. The untuned plan arrives at its onset; the optional
 journey timing below permits bounded settling after onset. Short progressive waypoints share a
 bounded velocity, so the camera continues through them without overshooting.
-Default ordinary preparation is 700 ms at the default smoothing setting;
-large moves can prepare up to 400 ms earlier, and quiet holds can prepare up
-to 1.2 seconds early. Preparation never starts before the preceding lasting
-arrival. Closely spaced destinations compress the movement into available
-time, including at faster playback speeds. Tuning never shortens that baseline
-travel time to make room for a later departure.
+Automatic preparation retains the existing schedule: ordinary preparation is
+700 ms at default smoothing, large moves can prepare up to 400 ms earlier,
+and quiet holds can prepare up to 1.2 seconds early. Manual preparation
+replaces all three rules with a chosen 25–3000 ms lead before the first
+retained lane in a journey. Both use real playback time. Preparation never
+starts before the preceding stop, so closely spaced destinations can shorten
+the lead, including at faster playback speeds.
+
+Manual preparation changes the baseline journey. A shorter lead can make its
+initial move faster; neither Manual nor Automatic promises one speed through
+a multi-lane chain. Intermediate lane times and distances still shape that
+chain. Departure delay acts afterward, shifting the prepared start later.
+The delay/extra-travel budget never shortens the chosen baseline journey to
+make room for a later departure.
 
 ### Testing controls
 
 The Stable camera settings, in-song **Camera tuning** panel and per-panel
-controls expose four persisted values:
+controls expose these persisted values:
 
 | Control | Trial value | Range | Meaning |
 | --- | --- | --- | --- |
+| Movement preparation | Automatic | Automatic / Manual | Automatic preserves existing preparation; Manual replaces it with the selected lead. |
+| Manual preparation before the first lane | 700 ms | 25–3000 ms | Real playback lead before the first retained lane; only used in Manual mode. |
 | Departure delay | 100 ms | 0–1000 ms | Request a later start relative to a journey's prepared departure. |
 | Extra travel time | 10% | 0–200% | Lengthen the whole journey's travel time. |
 | Maximum settling time | 250 ms | 0–3000 ms | Bound completion after the lane begins. |
 | Short-lane threshold (ms) | 500 ms | 0–3000 ms | Compare each lane's original song duration; hold qualifying short repeated riffs. |
 
-Delay and settling limits use real playback time. Timing tuning applies to
+Preparation, delay and settling limits use real playback time. The short-lane
+threshold alone measures original song time. Timing tuning applies to
 every followed journey, including smaller moves and progressive chains through
 short lanes. A journey runs from its prepared departure through each retained
 waypoint to the next lasting stop. The semantic lane and riff decisions stay
@@ -104,15 +119,22 @@ than their lane onsets, within the same settling allowance. Geometry fitting
 keeps playable notes visible during the late tail without moving the chosen
 horizontal centre.
 
-The live panel shows requested and applied departure delay and extra travel
-for the current or next journey, plus the prepared/actual departure and
-nominal/actual final arrival in song seconds. It names the settling limit or
-next journey when either caps the request. Delay is measured from the prepared
-departure, not from lane onset, and can be zero when no time remains.
+The live panel explains the current lane decision and distinguishes an ordinary
+scheduled move from a live correction, pause or Follow hold. For the current or
+next journey it shows the actual lead before the first lane, total travel time
+and final-arrival lateness. Details include requested/applied delay and extra
+travel, the preparation rule, available budget, and prepared/actual departure
+and nominal/actual final arrival in song seconds. It names the settling limit
+or next journey when either caps the request. Delay is measured from prepared
+departure, not lane onset, and can be zero when no time remains. If it exceeds
+the prepared lead, actual departure can be after the first lane starts, within
+the same final-arrival limits.
 
-The **Gentler trial** button restores all four trial values. **Previous tuning**
-selects 0 ms delay, 0% extra travel, 0 ms settling and 500 ms per lane,
-reproducing the untuned camera timing. Sliders apply on
+The **Gentler trial** button selects Automatic preparation and restores the
+four existing trial values. **Previous tuning** selects Automatic,
+0 ms delay, 0% extra travel, 0 ms settling and 500 ms per lane, reproducing
+the untuned camera timing. Both retain the saved Manual lead for later use.
+Sliders apply on
 release; numeric inputs allow precise values. The settings persist on this
 device and work for both Stable viewpoints. Follow off disables the controls.
 These are testing defaults, pending the user's tuning feedback. The widened
@@ -153,16 +175,26 @@ more distance than the instantaneous fit. Closely repeated excursions hold
 the necessary width through the existing return delay instead of pumping.
 
 Chart analysis, projected lane shapes and timed movement have separate caches.
-Playback-speed and timing-control changes reschedule movement without changing
-semantic decisions. Changing the short-lane threshold rebuilds the camera
+The semantic, motion and lifecycle modules have explicit dependencies and no
+implicit access to the renderer. Playback-speed, preparation and timing-control
+changes reschedule movement without changing semantic decisions. Changing the
+short-lane threshold rebuilds the camera
 timeline, while keeping the rendered lane timeline unchanged.
 Per-frame trajectory sampling uses binary search; chart scans happen only on
 cache rebuilds. Exact repeated-cycle comparisons are bounded by the physical
 fret vocabulary; indexed return, lasting-barrier and directional-run checks
 avoid repeated look-ahead scans. Unknown geometry-only homes conservatively
 retain multi-lane journeys. Teardown releases the camera timeline and chart references.
+Each semantic span carries a cached explanation with its decision, reason,
+home and supporting interval where available. The frame loop selects this
+record; opening the panel does not run classification again.
 
 ## Verification
+
+The dated results below describe earlier implementations, not validation of
+the module restructuring or Manual preparation. Record new results once for
+the exact tested build using the
+[current acceptance procedure](stable-camera-restructure.md#acceptance-procedure).
 
 Unit coverage includes metadata fragmentation, 499/500/501 ms boundaries at
 multiple speeds, individual lane durations, repeated ordered cycles, lasting

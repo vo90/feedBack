@@ -1,27 +1,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-
-const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
-function extract(name) {
-    const start = source.indexOf(`function ${name}(`), open = source.indexOf('{', start);
-    assert.ok(start >= 0, name);
-    let depth = 1, end = open + 1;
-    while (depth && end < source.length) {
-        if (source[end] === '{') depth++;
-        else if (source[end] === '}') depth--;
-        end++;
-    }
-    assert.equal(depth, 0, name);
-    return source.slice(start, end);
-}
-const api = new Function(`
-    const NFRETS = 24;
-    ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote',
-        'hwyCameraRiffVariationCandidates', 'hwyBuildCameraTimeline', 'hwyBuildCameraStops'].map(extract).join('\n')}
-    return { timeline: hwyBuildCameraTimeline, stops: hwyBuildCameraStops };
-`)();
+const {legacyCameraApi} = require('../helpers/highway_camera_harness.cjs');
+const {hwyBuildCameraTimeline: timeline, hwyBuildCameraStops: stops} = legacyCameraApi();
+const api = {timeline,stops};
 const row = (time, fret, width = 4, extra = {}) => ({time, firstFret:fret, lastFret:fret+width-1,
     minX:(fret-1)*10, maxX:(fret+width-1)*10, preferred:(fret+1)*10, x:(fret+1)*10, ...extra});
 const build = (rows, context = null, rate = 1, threshold = 500) =>

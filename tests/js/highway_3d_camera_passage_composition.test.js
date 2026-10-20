@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const {cameraApi} = require('../helpers/highway_camera_harness.cjs');
 
 const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 function extract(name) {
@@ -29,15 +30,16 @@ function extract(name) {
 function harness(rows, {aspect=16/9,preset='straight',lefty=false,rate=1,notes=[],chords=[],beats=[],sections=[]}={}) {
     const constants=['STABLE_CAMERA_FOV','STABLE_CAMERA_PITCH','STABLE_CAMERA_YAW','STABLE_CAMERA_SHIFT','STABLE_CAMERA_VIEWS']
         .map(name=>source.match(new RegExp(`const ${name} = [^;]+;`))[0]).join('\n');
-    const cameraHelpers=[...source.matchAll(/function (hwy(?:BuildCamera|PrepareCamera|Camera)[A-Za-z0-9_]*)\(/g)].map(match=>match[1]);
-    const functions=['isPlayableFret','isPlainDeadNote','isUnpitchedMute','isRenderableNote',...cameraHelpers,
-        'stableConstrain','stableIntervalAt','stableSolve','stableRegionFitDistance',
+    const api=cameraApi();
+    const functions=['stableConstrain','stableIntervalAt','stableSolve','stableRegionFitDistance',
         'stableRegionFootprint','stableRegionFraming','stableRegionViewDistance','stableCameraPlan'];
-    return new Function('rows','aspect','preset','lefty','rate','notes','chords','beats','sections',`
+    return new Function('rows','aspect','preset','lefty','rate','notes','chords','beats','sections','cameraApi',`
         const K=1,TS=230,NFRETS=24,nStr=6,S_GAP=4,NH=3,_textSizeMul=1;
         ${constants}
+        const {${Object.keys(api).join(',')}}=cameraApi;
         const cam={aspect},stableCameraPreset=preset,_leftyCached=lefty,cameraSmoothing=.5;
         const stableCameraDepartureDelay=0,stableCameraTravelExtra=0,stableCameraSettleLimit=0;
+        const stableCameraPreparationMode='auto',stableCameraPreparationMs=700;
         const stableCameraExcursionThreshold=500,stableCameraLongSwitchFrets=5;
         const xFret=f=>f*10*(lefty?-1:1),xFretMid=f=>(f*10-5)*(lefty?-1:1);
         const sY=s=>3+(5-s)*4,fretLabelScaleForFret=()=>1;
@@ -64,7 +66,7 @@ function harness(rows, {aspect=16/9,preset='straight',lefty=false,rate=1,notes=[
                 return stableIntervalAt(distance,0,.96,x,_stableViewRegionPoints,_stableViewRegionPoints.length,_stableViewBasis).valid;
             }
         };
-    `)(rows,aspect,preset,lefty,rate,notes,chords,beats,sections);
+    `)(rows,aspect,preset,lefty,rate,notes,chords,beats,sections,api);
 }
 const focus=(fret,lefty=false)=>(fret+1)*10*(lefty?-1:1);
 const rowsFor=entries=>entries.map(([time,fret,width=4])=>({time,fret,width}));

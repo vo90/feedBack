@@ -1,8 +1,15 @@
-# Stable camera comparison
+# Stable camera
 
-This branch adds an opt-in **Stable comparison** camera under 3D Highway settings.
-Existing installations keep their saved camera mode; the comparison runtime uses
-Stable with **Straight** and **Follow hand position** enabled.
+Select **Stable comparison** in 3D Highway settings to use **Straight** or
+**RS+-inspired** with **Follow hand position**. Existing installations retain
+their saved camera mode.
+
+The current behavior contract is
+[Stable camera lane following](../../docs/highway-camera-lane-follow.md).
+The module boundaries, control definitions and acceptance procedure are in
+[Stable camera restructuring](../../docs/stable-camera-restructure.md).
+Earlier descriptions of a lateral comfort zone, pan dwell or tolerance-based
+recentering are historical; they do not describe the current Stable camera.
 
 ## Comparing the views
 
@@ -23,7 +30,23 @@ Stable with **Straight** and **Follow hand position** enabled.
 - Change the preset while paused or playing. **Reset to preset** reframes the
   current passage; it does not seek or overwrite Camera Director preferences.
 
-## Following and visibility
+## Following, timing and visibility
+
+The cached lane plan selects the horizontal centre. Normal four-fret lanes
+focus between their middle columns; same-base width extensions and qualifying
+riff variations retain that focus. Short returns, repeated lane cycles and
+progressive runs use the explicit rules in the behavior contract. Notes,
+labels and other visible geometry determine the distance needed to fit;
+they do not select a competing horizontal target.
+
+**Automatic preparation** retains the existing ordinary, large-move and
+quiet-passage scheduling. **Manual lead time** replaces those preparation
+rules with 25–3000 ms before the first retained lane of a journey. It uses real
+playback time and can be shortened by the preceding lane. A shorter lead can
+make the first move quicker. It does not set one speed for an entire chain.
+Departure delay subsequently requests a later start; extra travel receives
+available settling time first. The panel reports the applied start, travel,
+arrival and limiting reason rather than assuming every request can fit.
 
 The controller uses the meshes already emitted by this frame's renderer:
 playable gems, open-string bars, chord frames, arpeggio brackets, visible sustain
@@ -34,34 +57,16 @@ Consequently, missing anchors or handshapes do not prevent a usable view. Chart
 guidance that determines an actual chord frame also determines that frame's
 camera bounds; distant unused anchor ranges cannot force a zoom change.
 
-There is no nine-measure preview in this mode. The geometry window is the
-renderer's three chart seconds. Within that window the camera prepares for about
-1.2 real seconds of approach, adjusted for playback speed. It projects that
-geometry toward the play line before solving the safe frame. Playback speed is
-estimated across multiple audio samples when the host does not supply it.
+Distance anticipates visible requirements and returns gently after them;
+closely repeated excursions can retain their wider view. Visibility fitting
+keeps the chosen horizontal centre and can widen promptly when required.
 
-The horizontal comfort region occupies 68% of the view. Playback and seeking
-use the same preferred centre and required distance for the current passage.
-During a changing passage, the camera makes only the movement needed to fit.
-Once the preferred centre remains within a small tolerance for 0.6 seconds, it
-gently returns toward that composition. The tolerance is approximately 1% of the
-horizontal half-view at the play line; small note/label fluctuations therefore
-do not make the camera chase each note. A correction needed for visibility is
-never adopted as the permanent resting centre. A wider view is held briefly
-before returning all the way, without the former 3% residual zoom offset.
-Pan and zoom smoothing control this movement using elapsed time, independently
-of BPM and render frame rate. The pan dwell boundary splits a frame's damping
-time so a low frame rate does not receive an extra frame of return movement.
-A second fit against actual geometry protects against clipping after an unusually
-large frame step. An extreme passage can therefore require a prompt correction.
-
-Pause freezes automatic following. Turning Follow off holds the base pose through
-playback and seeks. Reset, preset changes and a new arrangement explicitly
-establish a new composition. Resizing retains the centre and angle while fitting
-the changed viewport. Silence holds the last useful composition. Silence and
-Follow off clear pending settling time; paused time does not advance it. The
-first playable passage after silence establishes its own return target. With Follow on,
-seeks and loop jumps reframe directly rather than flying from the old passage.
+Pause and Follow off hold the pose. Following seeks and loop wraps reframe
+directly. Playback-rate and live setting changes preserve the current pose
+and velocity while rejoining the scheduled path. Short intermediate lanes
+remain in that path. A chart-defined lane can change during silence; silence
+alone does not disable a valid lane plan. Resizing preserves the centre and
+angle while fitting the changed viewport.
 
 ## Camera Director and legacy views
 
@@ -82,15 +87,27 @@ values are retained for switching back.
 
 ## Implementation and verification
 
-`stableCamUpdate` in `screen.js` owns the experimental controller. The rendered
-geometry is accumulated into 32 reusable depth bins. Static mesh bounds are
+`src/camera-semantics.mjs` classifies cached lane spans,
+`src/camera-motion.mjs` schedules and samples journeys, and
+`src/camera-controller.mjs` handles lateral continuity during live changes.
+`screen.js` owns chart input, caches, renderer geometry, preset fitting,
+transport state and the user interface. Modules are loaded with the renderer
+dependencies through `/api/plugins/highway_3d/g/camera-N/src/`, using a fresh
+generation per plugin-script evaluation and reusing it across renderer instances.
+
+The rendered geometry is accumulated into 32 reusable depth bins. Static mesh bounds are
 cached; dynamic ribbons read only their populated vertices. A fixed-orientation
 perspective fit intersects linear constraints on the camera centre and uses
 bounded bisection only when a larger distance is needed. No additional full-chart
 scan, geometry allocation, shader or draw call is added per frame.
 
-Unit coverage is in `tests/js/highway_3d_stable_camera*.test.js`. The actual
-WebGL acceptance harness is `tests/browser/highway-stable-camera.cjs`. Run it
+Use the direct module tests and current production-renderer fixtures in the
+[acceptance procedure](../../docs/stable-camera-restructure.md#acceptance-procedure).
+Browser CPU measurements are separate from native gameplay FPS; both need
+recording for the tested build.
+
+Additional geometry coverage is in `tests/js/highway_3d_stable_camera*.test.js`.
+The earlier WebGL harness is `tests/browser/highway-stable-camera.cjs`. Run it
 with an existing Playwright installation; `PLAYWRIGHT_MODULE` may point at that
 installation. Optional `--nexus` and `--amaranthine` arguments accept local chart
 JSON files. Private charts and generated captures are not committed.

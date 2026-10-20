@@ -279,11 +279,15 @@ test('both Stable views share tuning and disabling Follow blocks movement edits 
     assert.equal(h.data.get(stored('stableCameraPreset')), 'angled');
     assert.equal(h.api.read('main', 'cameraMode'), 'stable');
     follow.checked = false; follow.emit('change');
+    const followWarning = () => o.root.querySelectorAll('p')
+        .some(element => element.textContent === 'Turn on Follow hand position to adjust movement.');
+    assert.equal(followWarning(),true);
     const before = h.writes.length;
     o.input(keys[0], 'number').value = '200'; o.input(keys[0], 'number').emit('change');
     o.query('[data-camera-tuning-preset="previous"]').click();
     assert.equal(h.writes.length, before, 'disabled fieldset handlers cannot change tuning');
     follow.checked = true; follow.emit('change');
+    assert.equal(followWarning(),false,'resuming Follow clears its disabled-status message');
     assert.deepEqual(values(o), [100, 10, 250, 500]);
     assert.equal(preset.value, 'angled');
     o.toggle.click();
@@ -313,8 +317,19 @@ test('journey timing reports requested and applied values and both limiting reas
     const h = load({h3d_bg_cameraMode: 'stable'}), o = h.create();
     const field = name => o.query(`[data-camera-timing-field="${name}"]`);
     const timing = {requestedDelayMs: 1000, appliedDelayMs: 140, requestedExtraMs: 110, appliedExtraMs: 110,
-        limitingReason: 'settling-limit', nominalStart: 49.623, start: 49.763, nominalEnd: 50.723, end: 50.973};
-    o.setTiming(timing); o.toggle.click();
+        limitingReason: 'settling-limit', nominalStart: 49.623, start: 49.763, nominalEnd: 50.723, end: 50.973,
+        appliedLeadMs:960, appliedDurationMs:1210, appliedLatenessMs:250, waypointCount:3,
+        preparedLeadMs:1100, preparationReason:'manual', preparationLimitReason:'previous-lane',
+        availableRoomMs:250, delayRoomMs:140};
+    const decision = {decision:'hold',reason:'repeated-cycle',home:{firstFret:5}};
+    o.setTiming(timing,decision,'local-rejoin'); o.toggle.click();
+    assert.equal(field('decision').textContent, 'Hold lane 5: matching repeated short cycles.');
+    assert.match(field('mode').textContent, /smoothly rejoining/);
+    assert.equal(field('starts').textContent, 'Starts 960 ms before the first lane.');
+    assert.equal(field('travel').textContent, 'Travel: 1210 ms through 3 lanes.');
+    assert.equal(field('lateness').textContent, 'Arrival: 250 ms after the final lane begins.');
+    assert.equal(field('budget').textContent, 'Available extra time: 250 ms. Slower travel uses 110 ms; 140 ms remains for delay.');
+    assert.match(field('preparation').textContent, /1100 ms \(manual preparation; shortened by the preceding lane\)/);
     assert.equal(field('delay').textContent, 'Departure delay: 1000 ms requested; 140 ms applied.');
     assert.equal(field('extra').textContent, 'Extra travel: 110 ms requested; 110 ms applied.');
     assert.equal(field('departure').textContent, 'Song departure: 49.763 s (prepared 49.623 s).');
@@ -327,25 +342,26 @@ test('journey timing reports requested and applied values and both limiting reas
     o.setTiming({...timing, requestedDelayMs: 140, limitingReason: 'none'});
     assert.equal(field('limit').textContent, 'Full timing requests applied.');
     o.setTiming(null);
-    assert.equal(field('delay').textContent, 'No current or upcoming camera movement.');
-    for (const name of ['extra', 'departure', 'arrival', 'limit']) assert.equal(field(name).textContent, '');
+    assert.equal(field('starts').textContent, 'No current or upcoming camera movement.');
+    for (const name of ['delay', 'extra', 'departure', 'arrival', 'limit', 'travel', 'lateness', 'budget', 'preparation'])
+        assert.equal(field(name).textContent, '');
     assert.deepEqual(h.writes, [], 'reading a cached journey never writes settings');
 });
 
-test('timing details follow the controls and keep applied delay and limit outside the disclosure', () => {
+test('timing details follow controls and keep actual start, travel, arrival and limits visible', () => {
     const h = load({h3d_bg_cameraMode: 'stable'}), o = h.create();
     const report = o.query('[data-camera-timing]'), details = o.query('[data-camera-timing-details]');
     const field = name => o.query(`[data-camera-timing-field="${name}"]`);
     const fieldset = report.parentNode, reportIndex = fieldset.children.indexOf(report);
-    for (const key of keys) {
+    for (const key of [...keys,'stableCameraPreparationMs']) {
         let row = o.input(key);
         while (row.parentNode !== fieldset) row = row.parentNode;
         assert.ok(fieldset.children.indexOf(row) < reportIndex, key + ' must precede diagnostics');
     }
     assert.equal(details.tagName, 'DETAILS');
     assert.equal(details.getAttribute('open'), null, 'extended timings start collapsed');
-    for (const name of ['delay', 'limit']) assert.equal(field(name).parentNode, report);
-    for (const name of ['extra', 'departure', 'arrival']) assert.equal(field(name).parentNode, details);
+    for (const name of ['decision','mode','starts','travel','lateness','limit']) assert.equal(field(name).parentNode, report);
+    for (const name of ['delay','extra','preparation','budget','departure','arrival']) assert.equal(field(name).parentNode, details);
 });
 
 test('cached timing does no warm-frame or closed-panel DOM writes and reopening shows the latest journey', () => {
@@ -354,22 +370,67 @@ test('cached timing does no warm-frame or closed-panel DOM writes and reopening 
     const writes = () => lines.reduce((total, line) => total + line.textWrites, 0);
     const timing = {requestedDelayMs: 100, appliedDelayMs: 100, requestedExtraMs: 70, appliedExtraMs: 70,
         limitingReason: 'none', nominalStart: 5, start: 5.1, nominalEnd: 5.7, end: 5.87};
+    const decision = {decision:'follow',reason:'lasting-lane',home:null};
     const closedWrites = writes();
-    o.setTiming(timing);
+    o.setTiming(timing,decision,'scheduled');
     assert.equal(writes(), closedWrites, 'closed panels retain data without updating hidden text');
     o.toggle.click();
     const openWrites = writes();
     assert.ok(openWrites > closedWrites);
-    for (let frame = 0; frame < 120; frame++) o.setTiming(timing);
-    assert.equal(writes(), openWrites, 'the same cached object never rewrites the readout');
+    for (let frame = 0; frame < 120; frame++) o.setTiming(timing,decision,'scheduled');
+    assert.equal(writes(), openWrites, 'the same timing, decision and mode never rewrite the readout');
+    o.setTiming(timing,decision,'paused');
+    assert.match(o.query('[data-camera-timing-field="mode"]').textContent,/Paused/);
+    const pausedWrites=writes();
+    for(let frame=0;frame<120;frame++)o.setTiming(timing,decision,'paused');
+    assert.equal(writes(),pausedWrites);
     o.toggle.click();
-    o.setTiming({...timing, requestedDelayMs: 1000, appliedDelayMs: 0, limitingReason: 'next-journey'});
-    assert.equal(writes(), openWrites);
+    o.setTiming({...timing, requestedDelayMs: 1000, appliedDelayMs: 0, limitingReason: 'next-journey'},
+        {decision:'hold',reason:'single-return',home:{firstFret:5}},'follow-off');
+    assert.equal(writes(), pausedWrites);
     o.toggle.click();
-    assert.match(lines[0].textContent, /1000 ms requested; 0 ms applied/);
+    assert.match(o.query('[data-camera-timing-field="delay"]').textContent, /1000 ms requested; 0 ms applied/);
+    assert.match(o.query('[data-camera-timing-field="decision"]').textContent,/Hold lane 5: brief out-and-back/);
+    assert.match(o.query('[data-camera-timing-field="mode"]').textContent,/Follow is off/);
     assert.match(o.query('[data-camera-timing-field="limit"]').textContent, /next journey/);
     const finalWrites = writes();
     o.destroy(); o.setTiming(timing);
     assert.equal(writes(), finalWrites, 'destroyed overlays ignore further renderer samples');
     assert.deepEqual(h.writes, []);
+});
+
+test('manual preparation persists with quantized values, resynchronizes panels and comparison restores Auto', () => {
+    const h=load({h3d_bg_cameraMode:'stable'}),main=h.create(),split=h.create(1);
+    const select=o=>o.query('[data-camera-setting="stableCameraPreparationMode"]');
+    const input=o=>o.input('stableCameraPreparationMs','number');
+    assert.equal(select(main).value,'auto');assert.equal(input(main).value,'700');
+    assert.equal(input(main).disabled,true);assert.deepEqual(h.writes,[]);
+    select(main).value='manual';select(main).emit('change');
+    assert.equal(input(main).disabled,false);assert.equal(select(split).value,'manual');
+    input(main).value='1012';input(main).emit('change');
+    assert.equal(input(main).value,'1000');assert.equal(input(split).value,'1000');
+    input(split).value='3075';input(split).emit('change');
+    assert.equal(input(split).value,'3000');assert.equal(input(main).value,'1000');
+    select(split).value='auto';select(split).emit('change');
+    assert.equal(input(split).disabled,true);assert.equal(select(main).value,'manual');
+    main.destroy();const reopened=h.create();
+    assert.equal(select(reopened).value,'manual');assert.equal(input(reopened).value,'1000');
+    reopened.query('[data-camera-tuning-preset="gentler"]').click();
+    assert.equal(select(reopened).value,'auto');assert.equal(input(reopened).disabled,true);
+    assert.equal(input(reopened).value,'1000','Auto retains the saved manual preference');
+    assert.equal(h.data.get(stored('stableCameraPreparationMode')),'auto');
+    assert.deepEqual(h.errors,[]);
+});
+
+test('Auto and Follow-off reject manual preparation edits and invalid saved mode uses Auto', () => {
+    const h=load({h3d_bg_cameraMode:'stable',h3d_bg_stableCameraPreparationMode:'invalid'}),o=h.create();
+    const mode=o.query('[data-camera-setting="stableCameraPreparationMode"]');
+    const number=o.input('stableCameraPreparationMs','number');
+    assert.equal(mode.value,'auto');assert.equal(number.disabled,true);
+    number.value='2000';number.emit('change');assert.deepEqual(h.writes,[]);
+    const follow=o.query('[data-camera-setting="stableCameraFollow"]');
+    follow.checked=false;follow.emit('change');const before=h.writes.length;
+    mode.value='manual';mode.emit('change');number.value='2000';number.emit('change');
+    assert.equal(h.writes.length,before,'disabled mode and number handlers must not write');
+    assert.equal(h.api.read('main','stableCameraPreparationMode'),'auto');
 });

@@ -1,38 +1,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-
-const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
-function extract(name) {
-    const start = source.indexOf(`function ${name}(`);
-    assert.ok(start >= 0, name);
-    let signature = source.indexOf('(',start)+1, parentheses=1;
-    while(parentheses) {
-        if(source[signature]==='(') parentheses++;
-        if(source[signature]===')') parentheses--;
-        signature++;
-    }
-    const open=source.indexOf('{',signature);
-    let depth = 1, end = open + 1;
-    while (depth && end < source.length) {
-        if (source[end] === '{') depth++;
-        if (source[end] === '}') depth--;
-        end++;
-    }
-    assert.equal(depth, 0, name);
-    return source.slice(start, end);
-}
-// Exercise the production camera helpers together, without duplicating their
-// internal stages in the tests.
-const cameraHelpers = [...source.matchAll(/function (hwy(?:BuildCamera|PrepareCamera|Camera)[A-Za-z0-9_]*)\(/g)]
-    .map(match => match[1]);
-const { build, prepare, at, rejoin, joinAt, zoom } = new Function(`
-    const NFRETS = 24;
-    ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote'].map(extract).join('\n')}
-    ${cameraHelpers.map(extract).join('\n')}
-    return {build:hwyBuildCameraStops,prepare:hwyPrepareCameraStops,at:hwyCameraPlanAt,rejoin:hwyCameraRejoin,joinAt:hwyCameraJoinAt,zoom:hwyCameraZoom};
-`)();
+const {legacyCameraApi} = require('../helpers/highway_camera_harness.cjs');
+const {hwyBuildCameraStops:build,hwyPrepareCameraStops:prepare,hwyCameraPlanAt:at,
+    hwyCameraRejoin:rejoin,hwyCameraJoinAt:joinAt,hwyCameraZoom:zoom} = legacyCameraApi();
 const row = (time, x, width = 4) => ({ time, x, preferred:x, minX:x-2, maxX:x-2+width,
     firstFret:x-1, lastFret:x-2+width });
 const fits = () => true;
@@ -254,9 +224,9 @@ test('lifecycle correction preserves initial position and velocity then ends at 
 
 test('empty and one-position charts have finite resting plans', () => {
     assert.deepEqual(sample([],20),{x:0,velocity:0,valid:false,arrivalTime:Infinity,arrivalX:0,
-        moving:false,transit:false,arrivalLaneTime:Infinity,timing:null});
+        moving:false,transit:false,arrivalLaneTime:Infinity,timing:null,journey:null});
     assert.deepEqual(sample(build([row(3,9)],1,fits),0),{x:9,velocity:0,valid:true,arrivalTime:Infinity,arrivalX:9,
-        moving:false,transit:false,arrivalLaneTime:Infinity,timing:null});
+        moving:false,transit:false,arrivalLaneTime:Infinity,timing:null,journey:null});
 });
 
 test('necessary zoom waits 500ms and returns fully over 800ms at every frame rate', () => {
