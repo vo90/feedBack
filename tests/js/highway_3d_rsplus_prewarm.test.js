@@ -29,7 +29,7 @@ function harness() {
         let canvases=0;
         const context=new Proxy({}, {get(target,key){return key in target?target[key]:(()=>{});}});
         const document={createElement(){canvases++;return {width:0,height:0,getContext(){return context;}};}};
-        const T={SRGBColorSpace:'srgb',CanvasTexture:class{constructor(image){this.image=image;}},
+        const T={SRGBColorSpace:'srgb',CanvasTexture:class{constructor(image){this.image=image;this.userData={};}},
             SpriteMaterial:class{constructor(props){Object.assign(this,props);this.userData={};}}};
         const console={warn(...args){warnings.push(args);}};
         let ren={initTexture(texture){uploads.push(texture);}};
@@ -221,10 +221,16 @@ test('real text cache separates RS+ sRGB labels while Current and other text sty
             assert.equal(h.get(false,style).map.userData.hwyLabelInk,ink, 'cached text reuses its optical bounds');
         } else assert.equal(rs.map.userData.hwyLabelInk,undefined);
     }
-    for(const style of ['technique','section','open']) {
+    for(const style of ['technique','caption','section','open']) {
         const current=h.get(false,style);
         assert.equal(h.get(true,style),current,'unrelated labels retain their original texture');
         assert.equal(current.map.colorSpace,'');
         assert.equal(current.map.userData.hwyLabelInk,undefined, 'unrelated labels do not acquire floor-layout metadata');
+        if (style === 'technique' || style === 'caption') {
+            const ink = current.map.userData.hwyCaptionInk;
+            assert.ok(ink && Object.values(ink).every(Number.isFinite), 'captions cache separate optical bounds');
+            assert.ok(ink.minX < ink.maxX && ink.minY < ink.maxY);
+            assert.equal(h.get(false,style).map.userData.hwyCaptionInk,ink, 'cached captions reuse their optical bounds');
+        } else assert.equal(current.map.userData.hwyCaptionInk,undefined);
     }
 });

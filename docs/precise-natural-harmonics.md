@@ -13,8 +13,14 @@ Legacy packages without the pair keep their previous handling.
 
 The 3D renderer positions the gem, sustain and landing cue using `fretX(hn)`
 with the same handedness and fret-spacing transform as the fret wires. The
-natural-harmonic ring is unchanged. A compact numeric touch label uses the
-existing typography at 80% character height; no explanatory text is added.
+natural-harmonic ring is unchanged. Its touch label shows only the number,
+preserving decimals (for example, `5` or `3.2`), with no `NH` prefix.
+It shares the supplementary-caption style with BAR, AH/TH, pick scrape, wah,
+and timed harmonic-contact instructions: bold white Arial with a thin dark
+outline, 14 CSS pixels at the default text size. Captions sit about 4 CSS pixels
+above the visible marker; collision placement moves them only when needed.
+The text-size setting scales all these captions together, independently of
+render quality, camera distance, fret width, and string order.
 The 2D renderer keeps its harmonic diamond and shows the precise number.
 
 The Note Detection and Desktop feature branches must accompany this core

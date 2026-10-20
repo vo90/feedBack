@@ -29,6 +29,7 @@ import { hasBar, barVisual, barBoundaries } from './whammy.js';
 import { getLyricLines } from './lyric-lines.js';
 import { harmonicContacts, harmonicContactSlide, harmonicContactFret,
     harmonicContactLabel as timedContactLabel } from './harmonic-contacts.js';
+import { techniqueCaptionStyle } from './harmonic-contact-overlay.js';
 import {
     _shimmerNoise, bendToneLabel, bnvNormalizedPoints, chordHarmonyLabels, project, roundRect,
     teachingDegreeLabel, teachingFingerLabel,
@@ -228,7 +229,7 @@ export function drawNote(hwState, W, H, x, y, scale, string, fret, opts, ns) {
         x:openBar ? W/2 : x, y,
         rx:openBar ? W*.26*scale+2 : half*1.15+4,
         ry:openBar ? Math.max(6,sz*.45)/2+2 : half*1.15+4,
-        label:showContact ? contactLabel : '', fontSize:80*scale*(H/900)*.28, pm:palmMute,
+        label:showContact ? contactLabel : '', fontSize:techniqueCaptionStyle.fontSize*contactPixelRatio, pm:palmMute,
     });
     // When lit, bump the body one step brighter and the backing-glow
     // one step up from STRING_DIM, so even shapes that don't get the
@@ -710,7 +711,8 @@ export function drawHarmonicContact2D(hwState, W, H, n, onset=n.t) {
         ctx.strokeRect(p.x-width/2,p.y-height/2,width,height);
         const label=timedContactLabel(n,event),fontSize=Math.max(11,15*p.scale);
         if(hwState._harmonicContactOverlay)hwState._harmonicContactOverlay.addGem({
-            x:p.x,y:p.y,rx:width/2,ry:height/2,fontSize,label});
+            x:p.x,y:p.y,rx:width/2,ry:height/2,
+            fontSize:techniqueCaptionStyle.fontSize*(hwState.canvas?.clientHeight>0?H/hwState.canvas.clientHeight:1),label});
         else {ctx.font=`bold ${fontSize}px sans-serif`;ctx.fillStyle='#fff';
             ctx.textAlign='center';fillTextReadable(hwState,label,p.x,p.y-height-5);}
     }

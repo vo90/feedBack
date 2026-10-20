@@ -85,12 +85,13 @@ test('anchorless bounds do not treat unpitched mute sentinels as fret 127', () =
         [{ t: 10, id: 0 }], [{ frets: [-1, 0, 127] }], 10, 4), 9);
 });
 
-test('2D note rendering sends one compound contact cue to the crisp layer without duplicate canvas captions', () => {
+test('2D note rendering sends one compound contact cue to the crisp layer without duplicate canvas captions', async () => {
+    const {techniqueCaptionStyle}=await import('../../static/js/harmonic-contact-overlay.js');
     const labels=[],gems=[];
     const ctx=new Proxy({}, {get:(o,k)=>o[k]||(()=>{}),set:(o,k,v)=>(o[k]=v,true)});
-    const draw=new Function('bendToneLabel','noteFretLabel','bnvNormalizedPoints','roundRect','_paintGemGlow','fillTextReadable',
+    const draw=new Function('bendToneLabel','noteFretLabel','bnvNormalizedPoints','roundRect','_paintGemGlow','fillTextReadable','techniqueCaptionStyle',
         extract(drawSource,'harmonicContactLabel')+extract(drawSource,'drawNote')+'; return drawNote;')(
-        bendToneLabel,load(geometry,'noteFretLabel'),load(geometry,'bnvNormalizedPoints'),()=>{},()=>{},(_s,text)=>labels.push(String(text)));
+        bendToneLabel,load(geometry,'noteFretLabel'),load(geometry,'bnvNormalizedPoints'),()=>{},()=>{},(_s,text)=>labels.push(String(text)),techniqueCaptionStyle);
     const state={ctx,canvas:{clientHeight:900},STRING_COLORS:['#f00'],STRING_DIM:['#500'],STRING_BRIGHT:['#f88'],
         _harmonicContactOverlay:{addGem:g=>gems.push(g)}};
     for(const [fret,kind,text] of [[17,'artificial','AH 31.7'],[0,'tapped','TH 12']]) {
