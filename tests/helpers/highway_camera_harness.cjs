@@ -24,6 +24,7 @@ function extractFunction(name, input = source) {
 function cameraApi({onRenderableNote} = {}) {
     const {createCameraSemantics} = require('../../plugins/highway_3d/src/camera-semantics.mjs');
     const {createCameraMotion} = require('../../plugins/highway_3d/src/camera-motion.mjs');
+    const {createCameraTapping} = require('../../plugins/highway_3d/src/camera-tapping.mjs');
     const predicates = new Function(`const NFRETS=24;
         ${['isPlayableFret','isPlainDeadNote','isUnpitchedMute','isRenderableNote'].map(name=>extractFunction(name)).join('\n')}
         return {isRenderableNote,isUnpitchedMute};
@@ -35,7 +36,8 @@ function cameraApi({onRenderableNote} = {}) {
             return renderable(...args);
         };
     }
-    return {...createCameraSemantics({NFRETS:24,...predicates}),...createCameraMotion(predicates)};
+    return {...createCameraSemantics({NFRETS:24,...predicates}),...createCameraMotion(predicates),
+        ...createCameraTapping({NFRETS:24,...predicates})};
 }
 
 // Preserve the old tests' positional calls while exercising production module

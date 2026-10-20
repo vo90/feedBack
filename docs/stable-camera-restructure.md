@@ -9,11 +9,12 @@ use the selected policy; they never restore hidden legacy timing.
 | Module | Responsibility |
 | --- | --- |
 | `src/camera-semantics.mjs` | Coalesce lanes, classify riffs/excursions/progressive runs, retain stops and cached explanations. |
+| `src/camera-tapping.mjs` | Compile repeated tapping areas and centre them when their cycles are held. |
 | `src/camera-motion.mjs` | Build cached motion segments, sample them, and provide join/resume/zoom mathematics. |
 | `src/camera-controller.mjs` | Preserve lateral pose and velocity while live changes rejoin the current schedule. |
 | `screen.js` | Geometry, caches, projection, transport lifecycle, settings, zoom and the tuning panel. |
 
-The three modules live under `plugins/highway_3d/`. Factories keep each
+The four modules live under `plugins/highway_3d/`. Factories keep each
 renderer's state separate. They do not import Three.js or read browser settings.
 Generation-prefixed module URLs avoid stale graphs after a plugin upgrade.
 Renderer recreation within one script evaluation reuses its module graph.
@@ -107,11 +108,57 @@ write defaults or overwrite existing values. A missing start-before key still
 reads saved preparation through existing scope precedence. Legacy timing values
 remain stored for rollback but have no lateral effect in either new mode.
 
-Lane classification is unchanged. Same-base extensions retain four-fret focus.
-Recognized riffs and brief excursions can hold home; progressive travel retains
-meaningful targets. Lowering the threshold can produce more movement without
-changing movement policy. Camera X-pan smoothing remains disabled in Stable;
-zoom smoothing is disabled while automatic zoom is off.
+### Predictable short-lane filtering
+
+The chart is compiled into coalesced lanes, protected travel, fixed pattern
+ownership and suppression candidates before applying the threshold. Slider edits
+only activate those candidates. Once a destination is removed, a larger threshold
+cannot restore it or move its pattern to another home. The guarantee concerns
+lane destinations; removing a waypoint can still change the interpolated path.
+
+- Same-base extensions retain their initial four-fret centre.
+- A single out-and-back reply belongs to the preceding home.
+- Multi-lane riffs require two adjacent cycles with the same ordered lane bases.
+  Each away lane in the supporting pair must be individually shorter than the
+  threshold; elapsed time for the whole trip is never used.
+- A surrounding riff owns nested replies. A new local home wins only if two
+  matching cycles finish before the surrounding home returns. Authored section
+  boundaries can support ownership, but do not prove a riff by themselves.
+- Three consecutive moves in one direction protect the route, including its
+  start and turn. Advancing zigzags protect travel when both highs and lows move
+  in the same direction. Replies around a fixed home do not meet that test.
+- An isolated peak outside an otherwise continuing route may be held. Ambiguous
+  travel follows, instead of inventing a detour from slider-dependent neighbours.
+- Exact note/measure proofs still protect established riff variations regardless
+  of this duration control. Zero disables duration-based suppression.
+
+### Held tapping areas
+
+A proven lane pattern can become a tapping area when at least two adjacent
+cycles have the same ordered note/string/tap/hammer/pull sequence, contain a
+marked tap, and cover more than one fret. All participating fretted notes and
+real chord members determine the bounds, including hammer-ons and pull-offs.
+Open strings, unpitched mutes and synthetic chord overlays do not widen it.
+This is ordered-note evidence, not a claim of identical rhythm or sustain.
+
+Once the threshold holds every cycle in that fixed area, its camera target is
+the physical midpoint between the first fret's left edge and the last fret's
+right edge. Repeated high or low notes cannot bias it. A frets 5–12 tapping
+pattern with uniform fret spacing therefore centres between columns 8 and 9,
+rather than at the usual 5–8 lane centre. It is one fixed target for the passage,
+not a sliding average.
+A matching final return prefix stays centred until the next event or home end;
+ordinary notes on the same lane end that extension. Notes sustained into the
+area from before its start and slide endpoints are not part of these bounds.
+
+The usual motion planner handles entering and leaving the area with the saved
+start-before, arrive-after and movement mode. Automatic zoom keeps its existing
+behaviour, including remaining completely off when disabled. The tuning panel
+identifies the active tapping area and its fret range. Ordinary held riffs keep
+their existing home focus.
+
+Camera X-pan smoothing remains disabled in Stable; zoom smoothing is disabled
+while automatic zoom is off.
 
 A useful comparison is 400 ms before, 50 ms after and a 400–500 ms threshold.
 Test 200 ms separately to expose more short targets. These are suggestions,
@@ -119,10 +166,11 @@ not values written over the user's saved settings.
 
 ## Performance and validation
 
-Classification and explanations run when the semantic cache rebuilds.
-Projected shapes and attack evidence have separate caches. Timing/movement
-changes rebuild motion without scanning chart evidence again. Warm frames
-sample the cached path and explanations by binary search. The tuning panel
+Pattern ownership, note evidence and tapping bounds compile when chart or
+geometry evidence changes. Threshold edits only filter that cached evidence;
+they do not scan notes or discover patterns again. Projected shapes and attacks
+have separate caches. Timing/movement changes rebuild motion without scanning
+chart evidence again. Warm frames sample the cached path and explanations by binary search. The tuning panel
 updates only when its cached record, decision or lifecycle state changes.
 Fixed-distance frames skip live visibility collection and distance solvers.
 
@@ -161,3 +209,32 @@ Straight/Angled, 0.298/0.468 ms for Reach, 0.299/0.481 ms for Latest, and
 these bounded comparisons are not identical-frame or long-duration guarantees.
 Machine-local evidence and native-session restoration results are retained
 outside the repository.
+
+### Predictable threshold and tapping validation
+
+Against integration baseline `76d60e7`, the focused camera suite passed 326/326.
+The full JavaScript suite passed 2972/2975, versus 2955/2958 on that baseline;
+the same three unrelated audio-barrier/provider-verdict failures remained.
+
+Fresh production regions from Alison Hell, Absolution, Rats and Ride the
+Lightning passed 2,607 threshold selections, including either side of every
+coalesced lane-duration boundary within the control range. Destinations only
+disappear as the threshold rises; pattern homes and evidence intervals stay
+fixed. Alison holds at 350/500/900 ms and follows at 250 ms. Absolution's opening
+3→5→7→10 climb remains at 200/250/500 ms, and its 1.227-second fret-7 lane
+follows at 500 ms. Tapping tests cover physical centring, real chord members,
+technique evidence, exact-threshold exclusion, mirrored geometry and returning
+to ordinary notes without an anchor change.
+
+Cache tests verify that threshold edits reuse pattern and tapping evidence,
+while timing edits rebuild only the motion schedule. Four-module browser
+reload tests cover recreation, upgrade and rollback, including a stale-module
+negative control. Private charts and machine measurements remain outside the
+repository.
+
+The production renderer passed 60 cases across those four songs, both Stable
+presets, both movement modes and 0.5/1/2 playback speeds. The Ride tapping area
+also passed at a 150 ms threshold with zoom disabled, and two captured views
+confirmed its composition. All warm-frame checks reported zero evidence,
+threshold, tapping, attack or motion rebuilds; zoom-off cases also performed no
+live zoom-geometry collection. There were no browser errors.

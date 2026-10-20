@@ -2,8 +2,9 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createCameraSemantics } = require('../../plugins/highway_3d/src/camera-semantics.mjs');
 
-// Frozen dd9ed24 classification oracle. Kept independent of the extracted module:
-// matching it must not depend on renderer source names or Git history at test time.
+// Frozen dd9ed24 oracle for source-span coalescing and note-variation evidence.
+// Its old gameplay decisions are superseded by the predictable-threshold suite.
+// The retained checks do not depend on renderer names or Git history at test time.
 function createBaseline({ NFRETS, isRenderableNote }) {
     function hwyCameraRiffVariationCandidates(spans, context = null) {
         context = context || {};
@@ -334,31 +335,33 @@ function freeze(value) {
     return value;
 }
 
-function withoutExplanation(value) {
-    if (!value || typeof value !== 'object') return value;
-    const copy = Array.isArray(value) ? [] : {};
-    for (const key of Object.keys(value)) {
-        if (key !== 'explanation') copy[key] = withoutExplanation(value[key]);
-    }
-    return copy;
-}
-
+// The approved structural classifier deliberately replaces the old decisions:
+// progressive entry lanes are protected, homes are threshold-independent,
+// and repeated local cycles resolve nested ownership before duration filtering.
+// Keep the frozen implementation as an independent oracle for chart coalescing
+// and note-variation evidence, not for those retired gameplay decisions.
 function assertParity(rows, context = null, excursionThreshold = 500) {
     freeze(rows); freeze(context);
     const options = { context, excursionThreshold };
     const expectedTimeline = baseline.hwyBuildCameraTimeline(rows, context, excursionThreshold);
     const actualTimeline = current.hwyBuildCameraTimeline(rows, options);
-    assert.deepEqual(withoutExplanation(actualTimeline), expectedTimeline);
-    const expectedStops = baseline.hwyBuildCameraStops(rows, 1, null, null, null, null, context, excursionThreshold);
+    const sourceFields = ['time','end','duration','base','firstFret','lastFret','minX','maxX',
+        'x','preferred','closeDistance','viewDistance','regionStart','regionEnd','h3dResolvedChordLane'];
+    const sourceSpan = span => Object.fromEntries(sourceFields.filter(key => key in span).map(key=>[key,span[key]]));
+    assert.deepEqual(actualTimeline.map(sourceSpan), expectedTimeline.map(sourceSpan));
     const actualStops = current.hwyBuildCameraStops(rows, options);
-    assert.deepEqual(withoutExplanation(actualStops), expectedStops);
+    for (const stop of actualStops) {
+        const original = actualTimeline.find(span => span.time === stop.time);
+        assert.ok(original, 'a retained destination must come from a coalesced source span');
+        assert.equal(stop.x, original.cameraX);
+        assert.notEqual(original.explanation.decision, 'hold');
+    }
     // The public evidence collector takes coalesced spans before decisions.
-    // Restore their duration classification because a successful variation in
-    // the final timeline has already had its lasting flag cleared.
-    const rawThreshold = Number(excursionThreshold);
-    const brief = Math.max(0, Math.min(3000, Number.isFinite(rawThreshold) ? rawThreshold : 500)) / 1000;
+    // Structural variation evidence is now collected before the threshold.
+    // Force the legacy collector's retired eligibility flag so it compares the
+    // same unchanged rhythm/pitch/technique proof independently of duration.
     const candidates = expectedTimeline.map(span => ({ ...span,
-        lasting: span.duration > 0 && span.duration >= brief - 1e-9 }));
+        lasting: true }));
     assert.deepEqual([...current.hwyCameraRiffVariationCandidates(candidates, context)],
         [...baseline.hwyCameraRiffVariationCandidates(candidates, context)]);
     return actualStops;
@@ -376,7 +379,7 @@ function variationFixture() {
             sections: [{ time: 0, name: 'riff' }] } };
 }
 
-test('the module matches the frozen planner for threshold, repetition, progression and overlapping-home cases', () => {
+test('structural classification preserves frozen source spans across threshold and home-policy changes', () => {
     const cases = [
         [], [row(0, 5)],
         [row(0, 1), row(632.272, 7), row(633.499, 1)],
@@ -424,7 +427,7 @@ test('longer note variations preserve exact evidence requirements and precedence
     }
 });
 
-test('seeded generated lane sequences preserve every baseline decision and numerical field', () => {
+test('seeded generated lane sequences preserve baseline coalescing, geometry and note evidence', () => {
     let seed = 0x5eedcab;
     const random = limit => {
         seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
@@ -481,7 +484,7 @@ test('held lanes explain their home and supporting evidence while kept lanes ret
     const lasting = assertParity([row(0, 1), row(2, 7), row(3, 9)]);
     assert.equal(lasting.timeline[1].explanation.reason, 'lasting-lane');
     const run = assertParity(path([1, 3, 5, 7]));
-    assert.equal(run.timeline[1].explanation.reason, 'short-waypoint');
+    assert.equal(run.timeline[1].explanation.reason, 'progressive-run');
 });
 
 test('independent factory instances use only their explicit chart dependencies', () => {
