@@ -12,15 +12,22 @@ const geometry = fs.readFileSync(path.join(root, 'static/js/highway-geometry.js'
 function extract(src, name) {
     const start = src.indexOf('function ' + name + '(');
     assert.ok(start >= 0, name);
+    return extractBlock(src, start);
+}
+function extractBlock(src, start) {
+    assert.ok(start >= 0, 'block exists');
     const open = src.indexOf('{', start);
+    assert.ok(open >= 0, 'block has an opening brace');
     let depth = 0;
     for (let i = open; i < src.length; i++) {
         if (src[i] === '{') depth++;
         else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1);
     }
-    throw Error('Unbalanced function ' + name);
+    throw Error('Unbalanced block at ' + start);
 }
 function load(src, name) { return new Function((src === draw && name !== 'harmonicContactLabel' ? extract(draw, 'harmonicContactLabel') : '') + extract(src, name) + '; return ' + name)(); }
+const notePredicates = ['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute']
+    .map(name => extract(screen, name)).join('\n');
 
 test('actual Three geometry brackets the gem without a label or additional mesh', async () => {
     const T = await import(pathToFileURL(path.join(root, 'static/vendor/three/three.module.min.js')).href);
@@ -176,10 +183,15 @@ test('chord scratch resets the omitted ghost field after a marked member', () =>
 
 test('ghost geometry stays under the existing body, culling and physical-order gates', () => {
     const body = extract(screen, 'drawNote');
-    const outline = body.indexOf('outline.geometry = n.ghost === true');
-    assert.ok(outline > body.indexOf('if (!effSkipBody'));
-    assert.ok(outline < body.indexOf('trailYieldRegisterGem('));
-    assert.ok(outline < body.indexOf('trailOrderRegisterUpcomingGem('));
+    // The renderer now shares head/trail visibility with its overlap index.
+    // Check the complete guarded block, not a later technique-marker gate.
+    const head = extractBlock(body, body.indexOf('if (visualParts.head)'));
+    for (const mesh of ['outline', 'core']) {
+        const shape = head.indexOf(mesh + '.geometry = n.ghost === true');
+        assert.ok(shape >= 0, mesh + ' ghost geometry stays inside the head gate');
+        assert.ok(shape < head.indexOf('trailYieldRegisterGem('));
+        assert.ok(shape < head.indexOf('trailOrderRegisterUpcomingGem('));
+    }
     assert.doesNotMatch(body, /sourceTechniqueLabel|txtMat\(['"]\(/);
     // Shape changes only; source x/y, rotation, material, depth and label settings
     // continue through the same outline mesh and ordering callback.
@@ -188,6 +200,26 @@ test('ghost geometry stays under the existing body, culling and physical-order g
     assert.match(body, /outline\.position\.set\(x, y \+ techniqueYNow, noteZ\)/);
     assert.match(body, /outline\.rotation\.z = approachRot/);
     assert.match(body, /core\.geometry = n\.ghost === true/);
+});
+
+test('ghost heads respect continuation suppression, expiry and the visible horizon', () => {
+    const {parts, suppress} = new Function('const NFRETS=24;\n' + notePredicates
+        + extract(screen, 'hwyNoteVisualParts') + extract(screen, 'hwyShouldSuppressNoteBody')
+        + '; return {parts:hwyNoteVisualParts,suppress:hwyShouldSuppressNoteBody};')();
+    const note = {t: 10, s: 0, f: 7, sus: 2, ghost: true};
+    for (const now of [9.8, 10, 11.9]) {
+        const visible = parts(note, now, 3, .1, Infinity, note.t, false, false);
+        assert.equal(visible.head, true, 'an ordinary ghost keeps its playable head');
+        const linked = parts(note, now, 3, .1, Infinity, note.t,
+            suppress(false, true, note.t - now), false);
+        assert.equal(linked.head, false, 'a continuation must not gain another attack');
+        assert.equal(linked.trail, true, 'its authored sustain stays visible');
+    }
+    for (const now of [6.9, 12.1]) {
+        const hidden = parts(note, now, 3, .1, Infinity, note.t, false, false);
+        assert.equal(hidden.head, false, 'expired and out-of-horizon ghosts have no head');
+        assert.equal(hidden.trail, false);
+    }
 });
 
 test('rotated ghost bounds enter the actual upcoming-gem ordering index', () => {
@@ -231,11 +263,19 @@ test('rotated ghost bounds enter the actual upcoming-gem ordering index', () => 
 });
 
 test('the chart footprint index retains a ghost on either coincident source', () => {
-    const build = new Function('const NFRETS=24;' + extract(screen, 'hwyBuildTrailEventEndIndex')
+    const build = new Function('const NFRETS=24;\n' + notePredicates + extract(screen, 'hwyBuildTrailEventEndIndex')
         + extract(screen, 'hwyBuildTrailYieldEvents')
         + '; return hwyBuildTrailYieldEvents;')();
-    const a = build([{t: 1, s: 0, f: 7}], [{t: 1, notes: [{s: 0, f: 7, ghost: true}]}], 6);
-    assert.equal(a[7].length, 1);
-    assert.equal(a[7][0].ghost, true);
+    for (const [standaloneGhost, chordGhost] of [[false, true], [true, false], [true, true], [false, false]]) {
+        const a = build([{t: 1, s: 0, f: 7, ghost: standaloneGhost}],
+            [{t: 1, notes: [{s: 0, f: 7, ghost: chordGhost}]}], 6);
+        assert.equal(a[7].length, 1, 'coincident representations share one footprint');
+        assert.equal(a[7][0].ghost, standaloneGhost || chordGhost);
+    }
     assert.equal(build([{t: 1, s: 0, f: 7, ln: true}], [], 6)[7][0].ghost, false);
+    const muted = Object.freeze({t: 1, s: 0, f: 127, mt: true, ghost: true, sus: 2});
+    const event = build([muted], [], 6)[0][0];
+    assert.equal(event.ghost, true, 'unpitched ghost mutes retain their cue');
+    assert.equal(event.sourceFret, 127, 'the source sentinel is preserved');
+    assert.equal(event.trailVisible, false, 'plain dead notes do not acquire sustain trails');
 });
