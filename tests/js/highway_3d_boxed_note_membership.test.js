@@ -31,7 +31,7 @@ function membershipHarness() {
         let nStr=6, _oobStringWarned=true, _boxedChordMembership=null, _filterValidNotesCache=new WeakMap();
         const resetBendLayout=()=>{}; // Bend cache lifetime is covered separately.
         let _chordShapeCache=new WeakMap(), _chordSigCache=new WeakMap();
-        let _coincidentRepeatNoteSet, _coincidentRepeatNotesRef, _coincidentRepeatChordsRef, _mergeCacheResult;
+        let _coincidentRepeatNoteSet, _coincidentRepeatNotesRef, _coincidentRepeatChordsRef, _mergeCacheResult, _arpBracketGuideCache;
         const trailVisibilityReleaseChartReferences=()=>{};
         const coincidentSustainView={clear:()=>{}};
         ${['validString', 'isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote',
@@ -70,7 +70,7 @@ const dispatch = new Function('n', 'now', 'boxedChordMembers', 'options', `
     const _ghostPrevBuf=new Map(), GHOST_HOLD_AFTER_ONSET=.1;
     let args;
     const drawNote=(...a)=>{args=a;};
-    ${between('const _isLinkNextTgt =', 'if (arGhostCid != null) {', dispatchStart)}
+    ${between('const _isLinkNextTgt =', 'lastFretForString[n.s] = n.f;', dispatchStart)}
     return args;
 `);
 
