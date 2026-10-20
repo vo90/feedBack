@@ -33,6 +33,10 @@ assert.ok(!fs.existsSync(out), 'Use a fresh output directory');
 const normalize = value => value.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
 const source = option('--source-ref') ? normalize(execFileSync('git', ['-C', root, 'show', `${option('--source-ref')}:plugins/highway_3d/screen.js`],
   {encoding:'utf8', maxBuffer:8*1024*1024})) : normalize(fs.readFileSync(path.join(root, 'plugins/highway_3d/screen.js'), 'utf8'));
+const railFixture=args.includes('--tuning-ui')?{
+  html:fs.readFileSync(path.join(root,'static/v3/index.html'),'utf8'),
+  css:fs.readFileSync(path.join(root,'static/v3/v3.css'),'utf8'),
+}:null;
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const rates = option('--rates', '.5,1,2').split(',').map(Number);
 const presets = option('--presets', 'straight,angled').split(',');
@@ -277,6 +281,20 @@ function summary(samples) {
 }
 
 async function validateTuningUi(page,c) {
+  // Use the actual player rail and its invisible pointer catcher. A blank canvas
+  // host cannot detect a camera control hidden underneath the game's menu.
+  if(!(await page.locator('#camera-test-rail-css').count())) {
+    const style=await page.addStyleTag({content:railFixture.css});
+    await style.evaluate(element=>{element.id='camera-test-rail-css';});
+  }
+  await page.evaluate(html=>{
+    document.getElementById('v3-railzone')?.remove();
+    const markup=new DOMParser().parseFromString(html,'text/html');
+    const rail=markup.getElementById('v3-railzone');
+    if(!rail)throw new Error('Production player rail markup missing');
+    rail.querySelector('#v3-player-rail').style.cssText='opacity:1;transform:none;transition:none;';
+    document.getElementById('host').appendChild(document.importNode(rail,true));
+  },railFixture.html);
   const root=page.locator('.h3d-camera-tuning'),toggle=root.locator('[data-camera-tuning-toggle]');
   const panel=root.locator('[data-camera-tuning-panel]');
   const details=root.locator('[data-camera-timing-details]');
@@ -322,7 +340,7 @@ async function validateTuningUi(page,c) {
   await page.evaluate(()=>document.removeEventListener('keydown',window.__tuningKeyListener));
   await toggle.click();
   const layout=[];
-  for(const viewport of [c.viewport,{width:390,height:740}]) {
+  for(const viewport of [c.viewport,{width:390,height:740},{width:800,height:450}]) {
     await page.evaluate(()=>document.activeElement?.blur());
     await page.setViewportSize(viewport);
     await page.evaluate(viewport=>{r.resize(viewport.width,viewport.height);r.draw(bundle);r.__laneCapture();},viewport);
@@ -331,6 +349,35 @@ async function validateTuningUi(page,c) {
     check(bounds&&bounds.x>=0&&bounds.y>=0&&bounds.x+bounds.width<=viewport.width+1&&bounds.y+bounds.height<=viewport.height+1,c.name,'Live tuning panel leaves the viewport',{viewport,bounds});
     const noHorizontalOverflow=await panel.evaluate(element=>element.scrollWidth<=element.clientWidth+1);
     check(noHorizontalOverflow,c.name,'Live tuning panel has horizontal overflow',{viewport});
+    const menu=await page.evaluate(()=>{
+      const zone=document.getElementById('v3-railzone'),rect=zone.getBoundingClientRect(),catcher=getComputedStyle(zone,'::before');
+      const iconRight=Math.max(...[...zone.querySelectorAll('.v3-rail-icon')].map(element=>element.getBoundingClientRect().right));
+      const right=Math.max(rect.left+parseFloat(catcher.left)+parseFloat(catcher.width),iconRight);
+      const toggle=document.querySelector('[data-camera-tuning-toggle]'),button=toggle.getBoundingClientRect();
+      return {right,catcherWidth:parseFloat(catcher.width),toggleLeft:button.left,
+        toggleReceivesPointer:toggle.contains(document.elementFromPoint(button.left+button.width/2,button.top+button.height/2)),
+        popoversHidden:[...zone.querySelectorAll('.v3-rail-pop')].every(element=>getComputedStyle(element).display==='none')};
+    });
+    check(bounds.x>=menu.right&&menu.toggleLeft>=menu.right,c.name,'Camera tuning overlaps the real player rail or its pointer catcher',{viewport,bounds,menu});
+    check(menu.toggleReceivesPointer&&menu.popoversHidden,c.name,'Player rail intercepted Camera tuning or a fixture popover was open',{viewport,menu});
+    const inputs=[];
+    for(const key of keys) {
+      const input=number(key);await input.scrollIntoViewIfNeeded();await input.click();
+      const hit=await input.evaluate(element=>{
+        const rect=element.getBoundingClientRect();
+        return document.activeElement===element&&document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2)===element;
+      });
+      const range=root.locator(`[data-camera-setting="${key}"][data-camera-input="range"]`);
+      const rangeHit=await range.evaluate(element=>{
+        const rect=element.getBoundingClientRect();
+        return document.elementFromPoint(rect.left+Math.min(5,rect.width/2),rect.top+rect.height/2)===element;
+      });
+      inputs.push({key,receivesPointer:hit,rangeReceivesLeftEdgePointer:rangeHit});
+      check(hit,c.name,'A camera number input cannot receive pointer focus beside the player rail',{viewport,key});
+      check(rangeHit,c.name,'The player rail intercepts the left edge of a camera slider',{viewport,key});
+    }
+    await page.evaluate(()=>document.activeElement?.blur());
+    await panel.evaluate(element=>{element.scrollTop=0;});
     await page.screenshot({path:path.join(out,`${c.name}-tuning-${viewport.width}x${viewport.height}.png`)});
     await details.locator('summary').click();
     check(await details.evaluate(element=>element.open),c.name,'Timing details disclosure did not open');
@@ -338,7 +385,7 @@ async function validateTuningUi(page,c) {
     check(await panel.evaluate(element=>element.scrollWidth<=element.clientWidth+1),c.name,'Expanded timing details have horizontal overflow',{viewport});
     await page.screenshot({path:path.join(out,`${c.name}-timing-details-${viewport.width}x${viewport.height}.png`)});
     await details.locator('summary').click();
-    layout.push({viewport,bounds,noHorizontalOverflow});
+    layout.push({viewport,bounds,noHorizontalOverflow,menu,inputs});
   }
   await page.setViewportSize(c.viewport);
   const lifecycle=await page.evaluate(async()=>{
@@ -351,7 +398,7 @@ async function validateTuningUi(page,c) {
       restored:document.querySelector('[data-camera-setting="stableCameraDepartureDelay"][data-camera-input="number"]').value};
   });
   check(lifecycle.remaining===0&&lifecycle.recreated===1&&lifecycle.valueAfterDetachedEvent==='100'&&lifecycle.restored==='100',c.name,'Live panel cleanup/recreation lost settings or retained old handlers',lifecycle);
-  return {layout,lifecycle,timing};
+  return {layout,lifecycle,timing,railFixture:{htmlHash:sha(railFixture.html),cssHash:sha(railFixture.css)}};
 }
 
 async function validateLiveConsistency(page,c) {

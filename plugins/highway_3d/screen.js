@@ -6819,7 +6819,8 @@
     function createStableCameraTuningOverlay(host, getCanvas, instanceId) {
         const root = document.createElement('div'), prefix = 'h3d-camera-' + instanceId;
         root.className = 'h3d-camera-tuning'; root.id = prefix;
-        root.style.cssText = 'position:absolute;left:12px;top:clamp(76px,14%,116px);z-index:3;width:320px;max-width:calc(100% - 24px);pointer-events:none;font:12px/1.4 system-ui,sans-serif;color:#e5edf7;';
+        // Leave the player rail's 96px hover catcher and a 12px gap clear.
+        root.style.cssText = 'position:absolute;left:108px;top:clamp(76px,14%,116px);z-index:3;width:320px;max-width:calc(100% - 120px);pointer-events:none;font:12px/1.4 system-ui,sans-serif;color:#e5edf7;';
         const cleanups = [], controls = [];
         let expanded = false, destroyed = false, timing = null, renderedTiming;
         const listen = (element, event, handler) => {
