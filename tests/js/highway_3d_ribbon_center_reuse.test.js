@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { solve, rendererState, rendererLookup } = require('./highway-bend-layout-fixture.js');
 
 const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 function fn(name) {
@@ -53,13 +54,14 @@ async function harness(original = false) {
         'vibratoSemisAtTime', 'techniqueYOffsetWorld', 'sustainMotionWidth',
         'tremoloVisualIntervals', 'tremoloOffsetWorldX', 'ensureSlideRibbonCapacity',
     ].map(fn).join('\n');
-    return new Function('T', 'scrapeGeometry', 'window', `
+    return new Function('T', 'scrapeGeometry', 'window', 'solveBendLayout', `
         const K=1, NW=5, S_GAP=6, nStr=6, NFRETS=24;
-        const BEND_HALFSTEP_WORLD_Y=S_GAP*.8, BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.3;
+        const BEND_HALFSTEP_WORLD_Y=S_GAP*.8, FINGER_BEND_WORLD_Y=S_GAP, BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.3;
         const TREMOLO_BUMP_S=.06, VIBRATO_HALF_WAVE_S=.08;
         const _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap();
         const _linkedVibratoRuns=new WeakMap(), tremoloIntervalCache=new WeakMap();
         const _slideRibbonTimesScratch=[], _linkedTrailPaths={byNote:new WeakMap()};
+        ${rendererState}
         ${source.match(/const RSPLUS_SUSTAIN_STROKE_SCALE = [^;]+;/)[0]}
         ${source.match(/const SLIDE_RIBBON_SAMPLES = [^;]+;/)[0]}
         ${source.match(/const TRAIL_YIELD_DEFAULTS = Object\.freeze\(\{[\s\S]*?\}\);/)[0]}
@@ -71,11 +73,13 @@ async function harness(original = false) {
         const pickScrapeAnchorX=()=>_leftyCached?-37:37;
         ${source.slice(source.indexOf('    function slideTrailEnd('), source.indexOf('    // Camera tgtDist building blocks'))}
         ${helpers}
+        ${rendererLookup}
         let centerCalls=0;
         ${fn('sustainTrailCenterXAt').replace('{', '{ centerCalls++;')}
         ${original ? referenceRibbon : ribbon}
         const outline=new T.Geometry(), body=new T.Geometry();
         return (n, options={}) => {
+            _bendLayout=solveBendLayout([n],[],nStr);
             rsPlusNotation=!!options.rs; _leftyCached=!!options.lefty;
             _invertedCached=!!options.inverted; logarithmic=!!options.logarithmic;
             const scale=rsPlusNotation?RSPLUS_SUSTAIN_STROKE_SCALE:1;
@@ -97,7 +101,7 @@ async function harness(original = false) {
             return {outline:snapshot(outline),body:snapshot(body),centerCalls};
         };
     `)({ Float32BufferAttribute: Attribute, Geometry }, scrapeGeometry,
-        { feedBackWhammy: whammyApi, feedBackHarmonicContacts: harmonicContactsApi });
+        { feedBackWhammy: whammyApi, feedBackHarmonicContacts: harmonicContactsApi }, solve);
 }
 
 function checkPair(reference, optimized, n, options) {

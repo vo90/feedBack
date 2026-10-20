@@ -4,6 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const {copyState}=require('./highway-bend-layout-fixture.js');
 const src = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 
 function fn(name) {
@@ -24,6 +25,7 @@ function between(start, end, from = 0) {
 }
 const dispatch = new Function('chordNotes', 'options', `
     'use strict';
+    ${copyState}
     ${src.slice(src.indexOf('    function slideTrailEnd('), src.indexOf('    // Camera tgtDist building blocks'))}
     ${fn('noteHasVibrato')}
     ${fn('noteHasVisibleMotionSustain')}

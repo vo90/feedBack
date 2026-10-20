@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { solve, rendererState, rendererLookup } = require('./highway-bend-layout-fixture.js');
 
 const src = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 function fn(name) {
@@ -21,24 +22,27 @@ function constant(name) {
     return Number(match[1]);
 }
 function harness(strings = 6, inverted = false, lefty = false) {
-    return new Function('nStr', '_invertedCached', '_leftyCached', `
+    return new Function('nStr', '_invertedCached', '_leftyCached', 'solveBendLayout', `
         const BEND_ENV_RISE_FRAC=${constant('BEND_ENV_RISE_FRAC')};
         const BEND_ENV_RELEASE_FRAC=${constant('BEND_ENV_RELEASE_FRAC')};
         const NEXT_ON_STRING_T_EPS=${constant('NEXT_ON_STRING_T_EPS')};
         const BEND_LINK_TIME_EPS=${constant('BEND_LINK_TIME_EPS')};
-        const BEND_HALFSTEP_WORLD_Y=3.2, VIBRATO_HALF_WAVE_S=.08;
+        const BEND_HALFSTEP_WORLD_Y=3.2, FINGER_BEND_WORLD_Y=4, VIBRATO_HALF_WAVE_S=.08;
         let _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap();
         const _linkedVibratoRuns=new WeakMap();
+        ${rendererState}
         ${['bnvSampleAt','bendCurveStartSemis','bendCurveSemisAt','bendSemisAtElapsed',
             'resolveLinkedBendEnds','resolveLinkedBendStarts','bendSemisAtTime','bendVisualDirY','noteHasVibrato',
             'vibratoSemisAtTime','prebendOffsetWorld','techniqueYOffsetWorld',
             'hwyLinkNextTargetNotes'].map(fn).join('\n')}
+        ${rendererLookup}
         return {
             link(notes,chords=[]) {
                 const links=new Map();
                 const targets=hwyLinkNextTargetNotes(notes,chords,1e-6,links);
                 _linkedBendEnds=resolveLinkedBendEnds(links);
                 _linkedBendStarts=resolveLinkedBendStarts(links,_linkedBendEnds);
+                _bendLayout=solveBendLayout(notes,chords,nStr,{links,starts:_linkedBendStarts,ends:_linkedBendEnds});
                 return {links,targets,starts:_linkedBendStarts,ends:_linkedBendEnds};
             },
             at:bendSemisAtTime, start:bendCurveStartSemis,
@@ -51,12 +55,15 @@ function harness(strings = 6, inverted = false, lefty = false) {
                 Object.assign(_scrChordNote,cn,{t:time});
                 ${src.match(/_linkedBendStarts\.set\(_scrChordNote,[\s\S]*?;/)[0]}
                 ${src.match(/_linkedBendEnds\.set\(_scrChordNote,[\s\S]*?;/)[0]}
+                _bendLayout.byNote.delete(_scrChordNote);
+                if(_bendLayout.byNote.has(cn)) _bendLayout.byNote.set(_scrChordNote,_bendLayout.byNote.get(cn));
                 return _scrChordNote;
             },
             mutedView(sourceNote) {
                 const n={...sourceNote,f:0};
                 ${src.match(/_linkedBendStarts\.set\(n, _linkedBendStarts\.get\(sourceNote\)[\s\S]*?;/)[0]}
                 ${src.match(/_linkedBendEnds\.set\(n, _linkedBendEnds\.get\(sourceNote\)[\s\S]*?;/)[0]}
+                if(_bendLayout.byNote.has(sourceNote)) _bendLayout.byNote.set(n,_bendLayout.byNote.get(sourceNote));
                 return n;
             },
             gemOffset(n,now) {
@@ -65,7 +72,7 @@ function harness(strings = 6, inverted = false, lefty = false) {
                 return techniqueYNow;
             },
         };
-    `)(strings, inverted, lefty);
+    `)(strings, inverted, lefty, solve);
 }
 function close(actual, expected, label = '') {
     assert.ok(Number.isFinite(actual) && Math.abs(actual - expected) < 1e-9,
@@ -119,7 +126,7 @@ test('explicit bt 1, 2 and 3 retain a delayed first value as their authored init
         const n=note({bt,bnv:[{t:.2,v:value},{t:.6,v:value},{t:1,v:0}]});
         close(h.start(n,.25),value);
         for(const elapsed of [0,.1,.2])close(h.elapsed(n,elapsed,.25),value);
-        close(h.approach(n),h.direction(n.s)*3.2*value);
+        close(h.approach(n),h.direction(n.s,n)*4*value);
         close(h.at(n,n.t+.8),value/2);
     }
 });
@@ -337,7 +344,7 @@ test('linked scalar ribbons meet their continuation in every supported string or
             const destination=note({s,bnv:[{t:0,v:1.5},{t:1,v:1.5}]});
             h.link([source,destination]);
             close(h.offset(source,1),h.offset(destination,1),'pitch continuity respects string direction');
-            close(h.offset(source,1),h.direction(s)*3.2*1.5);
+            close(h.offset(source,1),h.direction(s,source)*4*1.5);
         }
     }
 });
@@ -409,7 +416,7 @@ test('head and trail onset agree for normal and pre-bent curves on every support
             close(h.gemOffset(n,n.t-.1),h.offset(n,n.t),'approach meets ribbon');
             close(h.gemOffset(n,n.t),h.offset(n,n.t),'onset meets ribbon');
             close(h.gemOffset(n,n.t+1e-6),h.offset(n,n.t),'no onset pop');
-            close(h.approach(n),h.direction(string)*3.2*initial);
+            close(h.approach(n),h.direction(string,n)*4*initial);
         }
     }
 });

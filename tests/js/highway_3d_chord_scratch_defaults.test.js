@@ -3,12 +3,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const {copyState}=require('./highway-bend-layout-fixture.js');
 
 const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 const start = source.indexOf('Object.assign(_scrChordNote, cn);');
 const end = source.indexOf('drawNote(', start);
 assert.ok(start >= 0 && end > start, 'actual chord scratch preparation must be present');
 const prepare = new Function(`
+    ${copyState}
     const _linkedBendStarts = new WeakMap(), _linkedBendEnds = new WeakMap();
     const _linkedVibratoRuns = new WeakMap();
         const _linkedTrailPaths={byNote:new WeakMap()};

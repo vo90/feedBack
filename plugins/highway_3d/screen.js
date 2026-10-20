@@ -2734,6 +2734,9 @@
     // because their offset magnitude depends on the note's lane width.
     const SINGLE_SUS_OFFSETS = Object.freeze([0]);
     const BEND_HALFSTEP_WORLD_Y = S_GAP * 0.8;
+    // Finger bends use a declared display scale, independent of the legacy
+    // decorative vibrato and whammy travel above. This is not string physics.
+    const FINGER_BEND_WORLD_Y = S_GAP;
     const VIBRATO_HALF_WAVE_S = 0.08;
     // Bend ribbon envelope: fraction of the sustain spent ramping up to
     // the bent pitch, and releasing back down (rest is the held plateau).
@@ -2967,6 +2970,444 @@
     // stricter than attack suppression: overlapping or expired sustains must
     // not supply an unrelated starting pitch.
     const BEND_LINK_TIME_EPS = 0.001;
+
+    /**
+     * Chart-static, cooperative layout for lateral finger-bend drawings.
+     * Direction is in physical string order: -1 thicker, +1 thinner, 0 pitch-only.
+     * This models drawing space, not the mechanics or playability of a real neck.
+     * No authored objects are changed. Advance this generator outside rendering.
+     */
+    function* hwyBuildBendLayout(notes, chords, stringCount, options = {}) {
+        const count = Number.isInteger(stringCount) && stringCount > 0 ? stringCount : 6;
+        const edge = Number.isFinite(options.edgeMargin) ? Math.max(0, options.edgeMargin) : 0.35;
+        const clearance = Number.isFinite(options.clearance) ? Math.max(0, options.clearance) : 0.08;
+        const budget = Math.max(1, Math.min(1024, options.yieldEvery || 256));
+        const maxCurvePoints = Math.max(4, Math.min(256, options.maxCurvePoints || 128));
+        const maxStoredPoints = Math.max(4, Math.min(65536, options.maxStoredPoints || 65536));
+        const maxRecords = Math.max(1, Math.min(8192, options.maxRecords || 8192));
+        const maxComparisons = Math.max(1, options.maxComparisons || 200000);
+        const maxCurveWork = Math.max(1, options.maxCurveWork || 2000000);
+        const eps = 1e-8;
+        const stats = { records: 0, groups: 0, operations: 0, yields: 0,
+            comparisons: 0, curveWork: 0, curvePoints: 0, fallback: null };
+        const byNote = new WeakMap(), identities = new WeakMap(), linked = new WeakSet();
+        const records = [], parents = [], ranks = [];
+        let work = 0, globalFallback = null;
+
+        function forceNeutral(reason) {
+            stats.records = records.length;
+            stats.fallback = reason;
+            return { byNote: new WeakMap(), groups: [], stats, forceNeutral: true };
+        }
+        function checkpoint() {
+            stats.operations++;
+            if (++work >= budget) {
+                work = 0;
+                stats.yields++;
+                return true;
+            }
+            return false;
+        }
+        function find(i) {
+            while (parents[i] !== i) {
+                parents[i] = parents[parents[i]];
+                i = parents[i];
+            }
+            return i;
+        }
+        function union(a, b) {
+            a = find(a); b = find(b);
+            if (a === b) return;
+            if (ranks[a] < ranks[b]) { const swap = a; a = b; b = swap; }
+            parents[b] = a;
+            if (ranks[a] === ranks[b]) ranks[a]++;
+        }
+        // Native Array.sort can monopolize the main thread on large arrangements.
+        function* ordered(input) {
+            let source = input, target = new Array(input.length);
+            for (let width = 1; width < input.length; width *= 2) {
+                for (let base = 0; base < input.length; base += width * 2) {
+                    const middle = Math.min(base + width, input.length);
+                    const end = Math.min(base + width * 2, input.length);
+                    let a = base, b = middle;
+                    for (let out = base; out < end; out++) {
+                        target[out] = b >= end || (a < middle && source[a].start <= source[b].start)
+                            ? source[a++] : source[b++];
+                        if (checkpoint()) yield stats;
+                    }
+                }
+                const swap = source; source = target; target = swap;
+            }
+            return source;
+        }
+        function* curveFor(note) {
+            const sustain = Number.isFinite(note.sus) ? Math.max(0, note.sus) : 0;
+            const authored = Array.isArray(note.bnv) ? note.bnv : null;
+            const scalar = Math.max(0, Number(note.bn) || 0);
+            if (authored && authored.length > maxCurvePoints) {
+                return { points: [[0, 0], [sustain, 0]], peak: scalar,
+                    complex: true, bent: true };
+            }
+            if (authored && authored.length) {
+                let peak = 0, previous = -Infinity, invalid = false;
+                for (const point of authored) {
+                    if (!point || !Number.isFinite(point.t) || point.t < 0
+                        || !Number.isFinite(point.v) || point.t < previous) invalid = true;
+                    else { peak = Math.max(peak, point.v); previous = point.t; }
+                    if (checkpoint()) yield stats;
+                }
+                if (invalid) return { points: [[0, 0], [sustain, 0]],
+                    peak, complex: true, bent: true };
+                const first = authored[0];
+                const inherited = options.starts?.get(note);
+                const start = first.t <= 1e-6 || note.bt === 1 || note.bt === 2 || note.bt === 3
+                    ? Math.max(0, first.v) : Math.max(0, Number(inherited) || 0);
+                // Keep duplicate-time values: the right-hand limit is relevant to
+                // clearance even when the renderer picks the first exact sample.
+                const points = [[0, start]];
+                if (sustain > 0) {
+                    let previousT = 0, previousV = start;
+                    for (const point of authored) {
+                        const time = Math.min(point.t, sustain);
+                        const value = point.t > sustain
+                            ? previousV + (point.v - previousV) * ((sustain - previousT) / (point.t - previousT))
+                            : point.v;
+                        // The sampler clamps the interpolated value, not the
+                        // individual vertices. Retain the exact zero crossing.
+                        if (previousV * value < 0) {
+                            points.push([previousT + (time - previousT) * (-previousV / (value - previousV)), 0]);
+                        }
+                        points.push([time, Math.max(0, value)]);
+                        if (point.t > sustain) break;
+                        previousT = point.t; previousV = value;
+                        if (checkpoint()) yield stats;
+                    }
+                    if (points[points.length - 1][0] < sustain) {
+                        points.push([sustain, points[points.length - 1][1]]);
+                    }
+                } else {
+                    points[0][1] = 0;
+                }
+                let excursion = 0;
+                for (const point of points) {
+                    excursion = Math.max(excursion, point[1]);
+                    if (checkpoint()) yield stats;
+                }
+                return { points, peak: Math.max(peak, start), excursion,
+                    complex: false, bent: peak > 0 || start > 0 };
+            }
+            const endpoint = options.ends?.get(note);
+            const end = Number.isFinite(endpoint) && endpoint >= 0 && endpoint <= scalar ? endpoint : 0;
+            return { points: sustain > 0
+                ? [[0, 0], [sustain * 0.35, scalar], [sustain * 0.70, scalar], [sustain, end]]
+                : [[0, 0]], peak: scalar, excursion: sustain > 0 ? scalar : 0,
+            complex: false, bent: scalar > 0 };
+        }
+        function* add(note, time) {
+            if (!note || typeof note !== 'object' || identities.has(note)
+                || !Number.isFinite(time) || !Number.isInteger(note.s)
+                || note.s < 0 || note.s >= count || !Number.isFinite(note.f) || note.f < 0) return;
+            if (!(Number(note.bn) > 0) && !(Array.isArray(note.bnv) && note.bnv.length)
+                && !linked.has(note)) return;
+            if (records.length >= maxRecords) {
+                globalFallback = 'complexity-records';
+                return;
+            }
+            const curve = yield* curveFor(note);
+            if (!curve.bent && !linked.has(note)) return;
+            if (stats.curvePoints + curve.points.length > maxStoredPoints) {
+                globalFallback = 'complexity-points';
+                return;
+            }
+            stats.curvePoints += curve.points.length;
+            const slide = Number.isFinite(note.sl) && note.sl >= 0 ? note.sl
+                : Number.isFinite(note.slu) && note.slu >= 0 ? note.slu : note.f;
+            const padding = options.vibratoRange ? options.vibratoRange(note) : null;
+            const vMin = Number.isFinite(padding?.[0]) ? Math.min(0, padding[0]) : 0;
+            const vMax = Number.isFinite(padding?.[1]) ? Math.max(0, padding[1]) : 0;
+            const id = records.length;
+            const record = { id, note, start: time, onset: time,
+                end: time + (Number.isFinite(note.sus) ? Math.max(0, note.sus) : 0),
+                string: note.s, fretMin: Math.min(note.f, slide), fretMax: Math.max(note.f, slide),
+                curve, vMin, vMax, group: null };
+            records.push(record); parents.push(id); ranks.push(0); identities.set(note, id);
+        }
+
+        // Links are already validated by the renderer. Do not infer continuations
+        // merely because two sustains touch or a plain string holds through a bend.
+        if (options.links) {
+            if (options.links.size > maxRecords) return forceNeutral('complexity-links');
+            let linkCount = 0;
+            for (const [destination, link] of options.links) {
+                if (++linkCount > maxRecords) return forceNeutral('complexity-links');
+                if (link?.source && typeof destination === 'object' && destination) {
+                    linked.add(link.source); linked.add(destination);
+                }
+                if (checkpoint()) yield stats;
+            }
+        }
+        // Chord identity owns its onset even when a member carries a stale `t`.
+        if (Array.isArray(chords)) {
+            for (const chord of chords) {
+                if (Array.isArray(chord?.notes)) {
+                    for (const note of chord.notes) {
+                        yield* add(note, chord.t);
+                        if (globalFallback) return forceNeutral(globalFallback);
+                        if (checkpoint()) yield stats;
+                    }
+                }
+                if (checkpoint()) yield stats;
+            }
+        }
+        if (Array.isArray(notes)) {
+            for (const note of notes) {
+                yield* add(note, note?.t);
+                if (globalFallback) return forceNeutral(globalFallback);
+                if (checkpoint()) yield stats;
+            }
+        }
+        if (options.links) {
+            for (const [destination, link] of options.links) {
+                const a = identities.get(destination), b = identities.get(link?.source);
+                if (a !== undefined && b !== undefined && records[a].string === records[b].string) union(a, b);
+                if (checkpoint()) yield stats;
+            }
+        }
+        const bentRoots = new Set(), eligible = [];
+        for (const record of records) {
+            if (record.curve.bent) bentRoots.add(find(record.id));
+            if (checkpoint()) yield stats;
+        }
+        for (const record of records) {
+            if (bentRoots.has(find(record.id))) eligible.push(record);
+            if (checkpoint()) yield stats;
+        }
+        stats.records = eligible.length;
+        const sorted = yield* ordered(eligible);
+        const active = new Map(), pairs = [];
+        sweep: for (const record of sorted) {
+            for (const [string, lane] of active) {
+                if (string === record.string) continue;
+                let i = 0;
+                while (i < lane.length) {
+                    const previous = lane[i];
+                    if (checkpoint()) yield stats;
+                    // A shared endpoint alone does not make independent attacks a
+                    // simultaneous gesture. Coincident zero-duration notes do.
+                    const coincident = Math.abs(previous.start - record.start) <= eps;
+                    if (previous.end <= record.start + eps && !coincident) {
+                        lane[i] = lane[lane.length - 1]; lane.pop();
+                        continue;
+                    }
+                    i++;
+                    if (++stats.comparisons > maxComparisons) {
+                        globalFallback = 'complexity-grouping';
+                        break sweep;
+                    }
+                    if (Math.abs(string - record.string) === 1) union(previous.id, record.id);
+                    // Different frets do not collide just because their Y values
+                    // coincide. Slides conservatively reserve their fret range.
+                    if (previous.fretMax + eps >= record.fretMin
+                        && record.fretMax + eps >= previous.fretMin) pairs.push([previous, record]);
+                }
+            }
+            let lane = active.get(record.string);
+            if (!lane) { lane = []; active.set(record.string, lane); }
+            lane.push(record);
+            if (checkpoint()) yield stats;
+        }
+        const groups = [], rootGroups = new Map(), dependencyParents = [], dependencyRanks = [];
+        function dependencyRoot(index) {
+            while (dependencyParents[index] !== index) {
+                dependencyParents[index] = dependencyParents[dependencyParents[index]];
+                index = dependencyParents[index];
+            }
+            return index;
+        }
+        function connectDependencies(a, b) {
+            a = dependencyRoot(a); b = dependencyRoot(b);
+            if (a === b) return;
+            if (dependencyRanks[a] < dependencyRanks[b]) { const swap = a; a = b; b = swap; }
+            dependencyParents[b] = a;
+            if (dependencyRanks[a] === dependencyRanks[b]) dependencyRanks[a]++;
+        }
+        for (const record of sorted) {
+            const root = find(record.id);
+            let group = rootGroups.get(root);
+            if (!group) {
+                group = { id: groups.length, members: [], minString: count, maxString: -1,
+                    start: Infinity, end: -Infinity,
+                    lowerFits: true, higherFits: true, direction: 0, reason: null };
+                groups.push(group); rootGroups.set(root, group);
+                dependencyParents.push(group.id); dependencyRanks.push(0);
+            }
+            record.group = group;
+            group.members.push(record);
+            group.minString = Math.min(group.minString, record.string);
+            group.maxString = Math.max(group.maxString, record.string);
+            group.start = Math.min(group.start, record.start);
+            group.end = Math.max(group.end, record.end);
+            if (record.curve.complex) group.reason = 'complexity-curve';
+            if (checkpoint()) yield stats;
+        }
+        stats.groups = groups.length;
+        for (const group of groups) {
+            for (const record of group.members) {
+                const peak = record.curve.excursion || 0;
+                group.lowerFits &&= record.string - peak - record.vMax >= -edge - eps
+                    && record.string - record.vMin <= count - 1 + edge + eps;
+                group.higherFits &&= record.string + record.vMin >= -edge - eps
+                    && record.string + peak + record.vMax <= count - 1 + edge + eps;
+                if (checkpoint()) yield stats;
+            }
+        }
+        function valueAt(record, time, cursor) {
+            const points = record.curve.points;
+            const elapsed = time - record.start;
+            let i = cursor.index;
+            while (i + 1 < points.length && points[i + 1][0] < elapsed - eps) i++;
+            cursor.index = i;
+            const a = points[i], b = points[i + 1];
+            if (!b || elapsed <= a[0]) return a[1];
+            if (b[0] <= a[0]) return Math.max(a[1], b[1]);
+            return a[1] + (b[1] - a[1]) * Math.min(1, (elapsed - a[0]) / (b[0] - a[0]));
+        }
+        function padding(record, direction, high) {
+            if (!direction) return 0;
+            const a = direction * record.vMin, b = direction * record.vMax;
+            return high ? Math.max(a, b) : Math.min(a, b);
+        }
+        function* crosses(first, second, firstDirection, secondDirection) {
+            const a = first.string < second.string ? first : second;
+            const b = a === first ? second : first;
+            const da = a === first ? firstDirection : secondDirection;
+            const db = a === first ? secondDirection : firstDirection;
+            const from = Math.max(a.start, b.start), to = Math.min(a.end, b.end);
+            if (to < from - eps) return false;
+            const ac = { index: 0 }, bc = { index: 0 };
+            let ai = 0, bi = 0, time = from;
+            const ap = a.curve.points, bp = b.curve.points;
+            const pad = padding(b, db, false) - padding(a, da, true);
+            while (true) {
+                if (++stats.curveWork > maxCurveWork) {
+                    globalFallback = 'complexity-collision';
+                    return true;
+                }
+                const av = valueAt(a, time, ac), bv = valueAt(b, time, bc);
+                if (b.string - a.string + db * bv - da * av + pad <= clearance + eps) return true;
+                // Also inspect discontinuous duplicate-time right limits.
+                let aMax = da * av, bMin = db * bv;
+                while (ai < ap.length && a.start + ap[ai][0] <= time + eps) {
+                    if (Math.abs(a.start + ap[ai][0] - time) <= eps) {
+                        aMax = Math.max(aMax, da * ap[ai][1]);
+                    }
+                    ai++; if (checkpoint()) yield stats;
+                }
+                while (bi < bp.length && b.start + bp[bi][0] <= time + eps) {
+                    if (Math.abs(b.start + bp[bi][0] - time) <= eps) {
+                        bMin = Math.min(bMin, db * bp[bi][1]);
+                    }
+                    bi++; if (checkpoint()) yield stats;
+                }
+                if (b.string - a.string + bMin - aMax + pad <= clearance + eps) return true;
+                if (checkpoint()) yield stats;
+                if (time >= to - eps) return false;
+                time = Math.min(to, ai < ap.length ? a.start + ap[ai][0] : Infinity,
+                    bi < bp.length ? b.start + bp[bi][0] : Infinity);
+            }
+        }
+        if (!globalFallback) {
+            for (const [a, b] of pairs) {
+                if (a.group === b.group && !a.group.reason) {
+                    const group = a.group;
+                    if (group.lowerFits && (yield* crosses(a, b, -1, -1))) group.lowerFits = false;
+                    if (group.higherFits && (yield* crosses(a, b, 1, 1))) group.higherFits = false;
+                }
+                if (checkpoint()) yield stats;
+                if (globalFallback) break;
+            }
+        }
+        for (const group of groups) {
+            const preferred = group.minString === group.maxString
+                ? (group.minString <= (count - 1) / 2 ? 1 : -1)
+                : (group.minString >= count - 3 ? -1 : 1);
+            if (group.reason || globalFallback) group.direction = 0;
+            else if (preferred < 0 ? group.lowerFits : group.higherFits) group.direction = preferred;
+            else if (preferred < 0 ? group.higherFits : group.lowerFits) group.direction = -preferred;
+            group.reason ||= group.direction === 0 ? 'no-valid-direction'
+                : group.direction === preferred ? 'preferred' : 'alternate';
+            if (checkpoint()) yield stats;
+        }
+        // Disconnected groups may still meet after large excursions. Each pass
+        // only removes lateral motion; the work cap bounds pathological cascades.
+        let changed = true;
+        while (changed && !globalFallback) {
+            changed = false;
+            for (const [a, b] of pairs) {
+                if (a.group !== b.group && (a.group.direction || b.group.direction)) {
+                    if (yield* crosses(a, b, a.group.direction, b.group.direction)) {
+                        for (const group of [a.group, b.group]) {
+                            if (group.direction) {
+                                group.direction = 0; group.reason = 'inter-group-crossing'; changed = true;
+                            }
+                        }
+                    }
+                }
+                if (checkpoint()) yield stats;
+                if (globalFallback) break;
+            }
+        }
+        // Pinning an already observed group to neutral must not introduce a
+        // crossing with a future, otherwise independent group. Precompute the
+        // transitive dependencies of both possible mixed (neutral/moving)
+        // states. Neutral/neutral is always the original separated strings.
+        if (!globalFallback) {
+            for (const [a, b] of pairs) {
+                const ag = a.group, bg = b.group;
+                if (ag !== bg && ag.direction && bg.direction
+                    && dependencyRoot(ag.id) !== dependencyRoot(bg.id)) {
+                    if ((yield* crosses(a, b, 0, bg.direction))
+                        || (yield* crosses(a, b, ag.direction, 0))) {
+                        connectDependencies(ag.id, bg.id);
+                    }
+                }
+                if (checkpoint()) yield stats;
+                if (globalFallback) break;
+            }
+        }
+        if (globalFallback) {
+            stats.fallback = globalFallback;
+            for (const group of groups) {
+                group.direction = 0; group.reason = globalFallback;
+                if (checkpoint()) yield stats;
+            }
+        }
+        const components = new Map();
+        for (const group of groups) {
+            const key = dependencyRoot(group.id);
+            let component = components.get(key);
+            if (!component) {
+                component = { id: components.size, neutral: false };
+                components.set(key, component);
+            }
+            group.neutralComponent = component;
+            if (checkpoint()) yield stats;
+        }
+        stats.neutralComponents = components.size;
+        for (const group of groups) {
+            for (let i = 0; i < group.members.length; i++) {
+                const record = group.members[i];
+                byNote.set(record.note, { direction: group.direction, peak: record.curve.peak,
+                    group, reason: group.reason });
+                // Publication needs identities and gesture spans, not temporary
+                // breakpoint arrays or sweep records. Release those in this batch.
+                group.members[i] = { note: record.note, onset: record.onset, end: record.end,
+                    peak: record.curve.peak };
+                if (checkpoint()) yield stats;
+            }
+        }
+        return { byNote, groups, stats, forceNeutral: false };
+    }
 
     function hwyLinkNextTargetNotes(notes, chords, onsetTolerance = 1e-6, bendLinks = null) {
         const targets = new Set();
@@ -8533,6 +8974,17 @@
         let _linkedBendStarts = new WeakMap();
         let _linkedBendEnds = new WeakMap();
         let _linkedVibratoRuns = new WeakMap();
+        let _bendLayout = { byNote: new WeakMap(), groups: [], stats: null };
+        let _bendLayoutJob = null, _bendLayoutTimer = null;
+        let _bendLayoutNotesRef = null, _bendLayoutChordsRef = null, _bendLayoutStringCount = 0;
+        let _bendLayoutSources = new WeakMap(), _bendLayoutObserved = new Set();
+        let _bendLayoutForceNeutral = false;
+        let _bendNeutralMat = null;
+        const _bendPitchLabelCache = new Map();
+        const _bendLayoutStats = { builds: 0, batches: 0, maxBatchMs: 0, workMs: 0 };
+        const _bendNoVibratoRange = Object.freeze([0, 0]);
+        const _bendVibratoRange = Object.freeze([-0.8, 0.8]);
+        const _bendWideVibratoRange = Object.freeze([-1.2, 1.2]);
 
         // Per-fret onset index for localized sustain yielding. Rebuilt once per
         // arrangement; drawNote scans only conservative footprint buckets and
@@ -15308,6 +15760,7 @@
         // 7-string chart whose stringCount arrives in song_info) doesn't leave
         // string-6+ notes filtered out of cached chord shapes/signatures.
         function _resetStringDependentCaches() {
+            resetBendLayout();
             // Repeat-note dedup depends on chordShapeSignature(), which filters
             // members through validString()/nStr too.
             _coincidentRepeatNoteSet = null;
@@ -16176,6 +16629,7 @@
             } catch (e) { console.warn('[3D-Hwy] prewarm RS+ notation:', e); }
         }
         function _prewarmStatic() {
+            _bendNeutralMat = txtMat('BEND', '#ffffff', true, 'technique');
             // MAINTENANCE NOTE: this list must cover every deterministic
             // (chart-independent) material/texture the per-frame paths can
             // request lazily. Adding a new label style or sprite factory to
@@ -16916,6 +17370,7 @@
                 _linkedBendEnds = resolveLinkedBendEnds(bendLinks);
                 _linkedBendStarts = resolveLinkedBendStarts(bendLinks, _linkedBendEnds);
                 _linkedVibratoRuns = resolveLinkedVibratoRuns(bendLinks);
+                scheduleBendLayout(notes, bundle.chords, bendLinks);
                 const origins = hwyBuildIndependentTrailOrigins(
                     notes, chords, _chordGuideCache.model.byChord, nStr, _openSlideTailNotes,
                 );
@@ -18879,6 +19334,7 @@
                             // every reuse, including an ordinary zero start.
                             _linkedBendStarts.set(_scrChordNote, _linkedBendStarts.get(cn) || 0);
                             _linkedBendEnds.set(_scrChordNote, _linkedBendEnds.get(cn));
+                            copyBendLayout(_scrChordNote, cn);
                             _scrChordNote.slide_out = cn.slide_out;
                             _scrChordNote.slide_out_marks = cn.slide_out_marks;
                             _scrChordNote.slide_in_marks = cn.slide_in_marks;
@@ -19789,7 +20245,153 @@
             });
         }
 
-        function bendVisualDirY(stringIdx) {
+        function hwyBendLayoutDirection(group) {
+            return group?.neutralComponent?.neutral ? 0 : group?.direction || 0;
+        }
+
+        function resetBendLayout() {
+            if (_bendLayoutTimer !== null) clearTimeout(_bendLayoutTimer);
+            _bendLayoutTimer = null;
+            _bendLayoutJob = null;
+            _bendLayout = { byNote: new WeakMap(), groups: [], stats: null };
+            _bendLayoutSources = new WeakMap();
+            _bendLayoutObserved = new Set();
+            _bendLayoutForceNeutral = false;
+            _bendLayoutNotesRef = _bendLayoutChordsRef = null;
+            _bendLayoutStringCount = 0;
+        }
+
+        function copyBendLayout(target, source) {
+            const origin = _bendLayoutSources.get(source) || source;
+            _bendLayoutSources.set(target, origin);
+            const layout = _bendLayout.byNote.get(origin);
+            if (layout) _bendLayout.byNote.set(target, layout);
+            else _bendLayout.byNote.delete(target);
+        }
+
+        function bendLayoutVibratoRange(n) {
+            if (!noteHasVibrato(n)) return _bendNoVibratoRange;
+            // Timed marks can request wide vibrato. A conservative constant
+            // envelope avoids rescanning their intervals during preparation.
+            return n.vibrato_marks !== undefined ? _bendWideVibratoRange : _bendVibratoRange;
+        }
+
+        function* prepareBendLayout(notes, chords, count, options) {
+            const layout = yield* hwyBuildBendLayout(notes, chords, count, options);
+            let work = 0;
+            for (const source of _bendLayoutObserved) {
+                const entry = layout.byNote.get(source);
+                const previousDirection = _bendLayout.forceNeutral || _bendLayoutForceNeutral
+                    ? 0 : hwyBendLayoutDirection(_bendLayout.byNote.get(source)?.group);
+                if (entry?.group && hwyBendLayoutDirection(entry.group) !== previousDirection) {
+                    entry.group.direction = 0;
+                    entry.group.reason = 'active-during-preparation';
+                    if (entry.group.neutralComponent) entry.group.neutralComponent.neutral = true;
+                }
+            }
+            // Labels contain the static peak; opacity follows the existing
+            // pitch sampler. No per-frame text or texture is generated.
+            for (const group of layout.groups) {
+                if (hwyBendLayoutDirection(group) !== 0) {
+                    if (++work % 256 === 0) yield;
+                    continue;
+                }
+                for (const member of group.members) {
+                    const entry = layout.byNote.get(member.note);
+                    if (entry && Number.isFinite(entry.peak) && entry.peak > 0) {
+                        const label = `+${Number(entry.peak.toFixed(2))} st`;
+                        let mat = _bendPitchLabelCache.get(label);
+                        if (!mat && _bendPitchLabelCache.size < 32) {
+                            mat = txtMat(label, '#ffffff', true, 'technique');
+                            _bendPitchLabelCache.set(label, mat);
+                            ren?.initTexture?.(mat.map);
+                            yield;
+                        }
+                        entry.pitchMat = mat || _bendNeutralMat;
+                    }
+                    if (++work % 256 === 0) yield;
+                }
+            }
+            return layout;
+        }
+
+        function scheduleBendLayout(notes, chords, links) {
+            if (notes === _bendLayoutNotesRef && chords === _bendLayoutChordsRef
+                && nStr === _bendLayoutStringCount) return;
+            const previous = nStr === _bendLayoutStringCount ? _bendLayout : null;
+            if (previous && _bendLayoutForceNeutral) previous.forceNeutral = true;
+            resetBendLayout();
+            // Streaming/difficulty refreshes often retain the source objects.
+            // Keep their valid decisions while the replacement is prepared.
+            if (previous) _bendLayout = previous;
+            _bendLayoutNotesRef = notes;
+            _bendLayoutChordsRef = chords;
+            _bendLayoutStringCount = nStr;
+            const job = _bendLayoutJob = prepareBendLayout(notes, chords, nStr, {
+                starts: _linkedBendStarts, ends: _linkedBendEnds, links,
+                vibratoRange: bendLayoutVibratoRange,
+            });
+            _bendLayoutStats.builds++;
+            const step = () => {
+                if (_bendLayoutJob !== job || _destroyed) return;
+                _bendLayoutTimer = null;
+                const began = performance.now();
+                let result;
+                // Each generator advance has a bounded operation count. No
+                // whole-chart sorting, grouping or curve walks run in draw().
+                try {
+                    do {
+                        result = job.next();
+                    } while (!result.done && performance.now() - began < 1);
+                } catch (error) {
+                    _bendLayoutForceNeutral = true;
+                    _bendLayoutJob = null;
+                    _bendLayoutObserved.clear();
+                    console.warn('[3D-Hwy] Bend layout uses neutral cues:', error);
+                    return;
+                }
+                const elapsed = performance.now() - began;
+                _bendLayoutStats.batches++;
+                _bendLayoutStats.workMs += elapsed;
+                _bendLayoutStats.maxBatchMs = Math.max(_bendLayoutStats.maxBatchMs, elapsed);
+                if (result.done) {
+                    const layout = result.value;
+                    _bendLayoutForceNeutral ||= !!layout.forceNeutral;
+                    // At most 512 actually active notes are retained while
+                    // preparing. Pin their complete groups to the neutral cue
+                    // for this chart revision rather than flip mid-gesture.
+                    for (const source of _bendLayoutObserved) {
+                        const entry = layout.byNote.get(source);
+                        const previousDirection = _bendLayout.forceNeutral || _bendLayoutForceNeutral
+                            ? 0 : hwyBendLayoutDirection(_bendLayout.byNote.get(source)?.group);
+                        if (entry?.group && hwyBendLayoutDirection(entry.group) !== previousDirection) {
+                            entry.group.direction = 0;
+                            entry.group.reason = 'active-during-preparation';
+                            if (entry.group.neutralComponent) entry.group.neutralComponent.neutral = true;
+                        }
+                    }
+                    _bendLayoutObserved.clear();
+                    _bendLayout = layout;
+                    _bendLayoutJob = null;
+                } else {
+                    _bendLayoutTimer = setTimeout(step, 0);
+                }
+            };
+            _bendLayoutTimer = setTimeout(step, 0);
+        }
+
+        function bendVisualDirY(stringIdx, note = null) {
+            if (note) {
+                const layout = _bendLayout.byNote.get(note);
+                if (layout) {
+                    const direction = _bendLayoutForceNeutral || _bendLayout.forceNeutral
+                        ? 0 : hwyBendLayoutDirection(layout.group);
+                    return _invertedCached ? direction : -direction;
+                }
+                // Unprepared finger bends use a non-directional cue. Independent
+                // vibrato still uses the established single-string convention.
+                if (note.bn > 0 || note.bnv?.length || _linkedBendStarts.get(note) > 0) return 0;
+            }
             if (!Number.isFinite(stringIdx) || nStr <= 1) return 1;
             const visualIdx = _invertedCached ? stringIdx : (nStr - 1 - stringIdx);
             return visualIdx >= (nStr - 1) * 0.5 ? -1 : 1;
@@ -20061,15 +20663,14 @@
 
         function prebendOffsetWorld(n) {
             if (n?.whammy?.version === 1) return techniqueYOffsetWorld(n,n.t);
-            if (!(n?.sus > 0) || !Array.isArray(n.bnv)) return 0;
+            if (!(n?.sus > 0) || !Array.isArray(n.bnv) || !n.bnv.length) return 0;
             // Head, attached markers and ribbon sample the same resolved start.
-            return bendVisualDirY(n.s) * BEND_HALFSTEP_WORLD_Y * bendSemisAtTime(n, n.t);
+            const direction = bendVisualDirY(n.s, n);
+            return direction === 0 ? 0 : direction * FINGER_BEND_WORLD_Y * bendSemisAtTime(n, n.t);
         }
 
         function techniqueYOffsetWorld(n, chartTime) {
             if (!(n?.sus > 0)) return 0;
-            const bendSemi = bendSemisAtTime(n, chartTime);
-            const vibratoSemi = vibratoSemisAtTime(n, chartTime);
             const barSemi = n.whammy?.version === 1 ? (window.feedBackWhammy?.visual(n,chartTime-n.t) || 0) : 0;
             // The source performer writes bar and finger-bend pitch events
             // separately, not additively. Show the bar contour while it is
@@ -20077,8 +20678,20 @@
             if (n.whammy?.version === 1 && window.feedBackWhammy?.segment(n,chartTime-n.t)?.curve?.length) {
                 return BEND_HALFSTEP_WORLD_Y * barSemi;
             }
+            // Ordinary sustains avoid layout/cache lookups at every ribbon
+            // sample. Linked carriers with no bend still retain vibrato cues.
+            if (!(n.bn > 0) && !n.bnv?.length) {
+                const vibratoSemi = vibratoSemisAtTime(n, chartTime);
+                if (vibratoSemi === 0 && barSemi === 0) return 0;
+                return BEND_HALFSTEP_WORLD_Y * (bendVisualDirY(n.s, n) * vibratoSemi + barSemi);
+            }
+            const direction = bendVisualDirY(n.s, n);
+            if (direction === 0) return BEND_HALFSTEP_WORLD_Y * barSemi;
+            const bendSemi = bendSemisAtTime(n, chartTime);
+            const vibratoSemi = vibratoSemisAtTime(n, chartTime);
             if (bendSemi === 0 && vibratoSemi === 0 && barSemi === 0) return 0;
-            return BEND_HALFSTEP_WORLD_Y * (bendVisualDirY(n.s) * (bendSemi + vibratoSemi) + barSemi);
+            return direction * (FINGER_BEND_WORLD_Y * bendSemi + BEND_HALFSTEP_WORLD_Y * vibratoSemi)
+                + BEND_HALFSTEP_WORLD_Y * barSemi;
         }
 
         function sustainMotionWidth(trailW) {
@@ -21512,6 +22125,7 @@
             if (view !== n) {
                 _linkedBendStarts.set(view, _linkedBendStarts.get(n) || 0);
                 _linkedBendEnds.set(view, _linkedBendEnds.get(n));
+                copyBendLayout(view, n);
                 _linkedVibratoRuns.set(view, _linkedVibratoRuns.get(n));
                 const linkedTrail = _linkedTrailPaths.byNote.get(n);
                 if (linkedTrail) _linkedTrailPaths.byNote.set(view, linkedTrail);
@@ -21569,6 +22183,7 @@
                     Object.assign(view, n);
                     _linkedBendStarts.set(view, _linkedBendStarts.get(n) || 0);
                     _linkedBendEnds.set(view, _linkedBendEnds.get(n));
+                    copyBendLayout(view, n);
                     _linkedVibratoRuns.set(view, _linkedVibratoRuns.get(n));
                     const linked = _linkedTrailPaths.byNote.get(n);
                     if (linked) _linkedTrailPaths.byNote.set(view, linked);
@@ -21593,6 +22208,15 @@
             // but drawNote is also entered through { ...cn } chord-note
             // spreads, so re-check here before indexing material arrays.
             if (!validString(s) || !isRenderableNote(n)) return;
+            if (_bendLayoutJob && now >= n.t && now <= n.t + Math.max(0, n.sus || 0)
+                && (n.bn > 0 || n.bnv?.length || _linkedBendStarts.get(n) > 0)) {
+                const observedSource = _bendLayoutSources.get(n) || sourceIdentity;
+                if (_bendLayoutObserved.size < 512 || _bendLayoutObserved.has(observedSource)) {
+                    _bendLayoutObserved.add(observedSource);
+                } else {
+                    _bendLayoutForceNeutral = true;
+                }
+            }
             // Preserve source fret/identity for note-detect matching. Only this
             // local drawing view treats an unpitched muted strike as a slab.
             const sourceNote = n;
@@ -21602,6 +22226,7 @@
                 n = { ...n, f: 0, _unpitchedSlide: true };
                 _linkedBendStarts.set(n, _linkedBendStarts.get(sourceNote) || 0);
                 _linkedBendEnds.set(n, _linkedBendEnds.get(sourceNote));
+                copyBendLayout(n, sourceNote);
                 _linkedVibratoRuns.set(n, _linkedVibratoRuns.get(sourceNote));
                 const linkedTrail = _linkedTrailPaths.byNote.get(sourceNote);
                 if (linkedTrail) _linkedTrailPaths.byNote.set(n, linkedTrail);
@@ -22742,27 +23367,44 @@
                 // Derive the peak from bn OR the bnv curve: a note may carry an
                 // authoritative curve with bn left at 0 (bn SHOULD be the peak
                 // whenever bnv exists — this is the robustness fallback).
-                const _bnvPeak = (Array.isArray(n.bnv) && n.bnv.length)
-                    ? n.bnv.reduce((m, p) => Math.max(m, Number(p.v) || 0), 0) : 0;
+                const bendLayout = _bendLayout.byNote.get(n);
+                const _bnvPeak = bendLayout?.peak || 0;
                 const _bendPeak = Math.max(Number(n.bn) || 0, _bnvPeak);
-                if (_bendPeak > 0) {
+                if (_bendPeak > 0 || (n.bnv?.length
+                    && (_bendLayoutJob || _bendLayoutForceNeutral || _bendLayout.forceNeutral
+                        || (bendLayout && hwyBendLayoutDirection(bendLayout.group) === 0)))) {
                     // Bend chevron stack — PlaneGeometry mesh so it tilts with
                     // the gem (approachRot). Fixed world size so it perspective-
                     // shrinks naturally without distFactor compensation.
                     const steps = Math.max(1, Math.min(4, Math.round(_bendPeak)));
-                    const bendSm = rsPlusNotation ? rsPlusTechniqueMat('bend', activePalette[s] ?? 0xffffff, steps)
-                        : bendChevronMat(steps, activePalette[s] || 0xffffff);
+                    const bendDir = bendVisualDirY(s, n);
+                    const bendSm = bendDir === 0 ? (bendLayout?.pitchMat || _bendNeutralMat)
+                        : rsPlusNotation ? rsPlusTechniqueMat('bend', activePalette[s] ?? 0xffffff, steps)
+                            : bendChevronMat(steps, activePalette[s] || 0xffffff);
                     const l = pTechPlane.get();
                     l.material = _spriteMat2MeshMat(l, bendSm);
                     const cs = NH * (rsPlusNotation ? 1.5 : 2.4);
                     const stackHeight = rsPlusNotation ? cs * bendSm.map.image.height / bendSm.map.image.width : cs;
                     const extraHeight = stackHeight - cs;
                     l.scale.set(cs, stackHeight, 1);
-                    const bendDir = bendVisualDirY(s);
                     // Grow the stack away from the gem, preserving the gap
                     // to the nearest arrow in either string orientation.
                     l.position.set(x, y + techniqueYNow + bendDir * (NH * 1.1 + extraHeight * 0.5), noteZ + K);
                     l.rotation.z = approachRot + (bendDir < 0 ? Math.PI : 0);
+                    if (bendDir === 0) {
+                        // One existing pooled plane: static peak text and a
+                        // brightness envelope, with no lateral motion or
+                        // per-frame texture work. Other technique cells keep
+                        // their own positions on the note face.
+                        l.scale.set(NH * 4, NH, 1);
+                        l.position.set(x + NW * 1.7, y + techniqueYNow, noteZ + K);
+                        const pitch = _bendPeak > 0 && (!n.bnv || n.bnv.length <= 128)
+                            ? bendSemisAtTime(n, Math.max(n.t, now)) : 0;
+                        l.material.opacity = 0.55 + 0.45 * (_bendPeak > 0 && Number.isFinite(pitch)
+                            ? Math.max(0, Math.min(1, pitch / _bendPeak)) : 0);
+                    } else {
+                        l.material.opacity = 1;
+                    }
                     l.renderOrder = techniqueMarkerRenderOrder;
                     trailYieldRegisterAttachment(trailYieldGemRecord, l);
                     _registerIncomingLabelOccluder(l, noteZ);
@@ -25066,6 +25708,9 @@
             _linkNextTargetChordsRef = null;
             _linkedBendStarts = new WeakMap();
             _linkedBendEnds = new WeakMap();
+            resetBendLayout();
+            _bendNeutralMat = null;
+            _bendPitchLabelCache.clear();
             _linkedVibratoRuns = new WeakMap();
             trailVisibilityReleaseChartReferences();
         }

@@ -32,6 +32,39 @@ and clear both caches at teardown. Never mutate authored notes or allocate/rebui
 these relationships in the ribbon-sampling loop. Timing, ribbon samples and
 scoring remain unchanged; real unlinked gaps remain visible.
 
+**Grouped bend directions.** `hwyBuildBendLayout` prepares render-only choices
+from immutable notes and chord members. Overlapping gestures on adjacent
+physical strings and validated bend continuations share a direction, including
+different frets and amounts. Groups entirely within the three thinnest strings
+prefer the thicker side; other multi-string groups prefer the thinner side.
+Singles retain their midpoint preference. Test the preferred side, then the
+opposite, against complete pitch envelopes and same-fret trajectory clearance.
+Use actual string order/count, never palette colors, so 7/8-string layouts and
+inversion follow the same rule. Finger bends use `FINGER_BEND_WORLD_Y` (one gap
+per semitone), with 0.35 gap outside the outer string centers as the drawing
+boundary. This is a display convention, not a physical guitar simulation.
+
+If neither direction fits, keep the note/trail stationary and use a cached
+non-directional peak label (or generic BEND cue). Never clamp or rewrite the
+authored pitch curve. Vibrato/whammy retain `BEND_HALFSTEP_WORLD_Y`; neutral
+finger bends suppress lateral vibrato, while whammy precedence stays unchanged.
+Normal bend chevron shapes and fractional pitch sampling are unchanged.
+
+`scheduleBendLayout` keys work by note/chord array identity and string count.
+Run the yielding solver outside `draw()` in approximately 1 ms batches; bound
+record, curve, comparison and label counts, and use neutral cues when a limit is
+exceeded. Cancel stale jobs on chart changes/teardown. Rendering must only read
+cached decisions: no grouping, sorting, curve-peak scans or new text textures
+inside note/ribbon sampling. `copyBendLayout` carries original identities through
+chord scratch objects, queued copies, slide-in views and muted copies. Keep a
+previous same-count layout during replacement preparation, and pin observed
+active gestures conservatively before publishing a replacement. Any resulting
+neutralization must also preserve clearance from other groups: the solver
+precomputes shared neutral-dependency components, so pinning uses one flag
+without a runtime graph traversal. Read `hwyBendLayoutDirection(group)`, not raw
+`group.direction`, to honor that flag. A late pin can use the already warmed
+generic BEND cue instead of creating a new amount texture during publication.
+
 The file is laid out top-to-bottom as:
 
 1. **Constants block** — palette (`S_COL`), scale (`SCALE`, `K`), fret/string counts, geometry sizes, camera, fog

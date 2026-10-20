@@ -227,7 +227,8 @@ test('repeated chords retain authored incoming cues and chord scratch clears omi
     const end = source.indexOf('drawNote(', start);
     const scratch = {};
     const copy = new Function('_scrChordNote','cn','ch','_linkedBendStarts','_linkedBendEnds','_linkedVibratoRuns',
-        'const _linkedTrailPaths={byNote:new WeakMap()};'+source.slice(start,end));
+        'const _linkedTrailPaths={byNote:new WeakMap()}, _bendLayout={byNote:new WeakMap()}, _bendLayoutSources=new WeakMap();'
+            +fn('copyBendLayout')+source.slice(start,end));
     const maps = [new WeakMap(),new WeakMap(),new WeakMap()];
     copy(scratch,incoming(),{t:10},...maps);
     assert.equal(scratch.slide_in_marks.length,1);
@@ -241,7 +242,8 @@ test('horizon visits preserve note identity and isolate chord render views witho
     const drawCalls = [];
     const maps = [new WeakMap(), new WeakMap(), new WeakMap()];
     const visit = new Function('slideInVisualStart','drawNote','_linkedBendStarts','_linkedBendEnds','_linkedVibratoRuns',
-        `const AHEAD=3, _linkedTrailPaths={byNote:new WeakMap()}; ${fn('drawSlideInHorizonNote')} return drawSlideInHorizonNote;`)(
+        `const AHEAD=3, _linkedTrailPaths={byNote:new WeakMap()}, _bendLayout={byNote:new WeakMap()}, _bendLayoutSources=new WeakMap();
+        ${fn('copyBendLayout')} ${fn('drawSlideInHorizonNote')} return drawSlideInHorizonNote;`)(
         h.slideInVisualStart, (...args) => drawCalls.push(args), ...maps);
     const n = Object.freeze(incoming({t:13.1}));
     visit(n, n.t, 10);

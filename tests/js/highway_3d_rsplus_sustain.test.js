@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { solve, rendererState, rendererLookup } = require('./highway-bend-layout-fixture.js');
 
 const src = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 function fn(name) {
@@ -24,15 +25,16 @@ const sampleDeclaration = src.match(/const SLIDE_RIBBON_SAMPLES = [^;]+;/)[0];
 const yieldDefaultsDeclaration = src.match(/const TRAIL_YIELD_DEFAULTS = Object\.freeze\(\{[\s\S]*?\}\);/)[0];
 
 function harness() {
-    return new Function(`
+    return new Function('solveBendLayout', `
         const K=1, NW=5, NH=3, S_GAP=6, nStr=6;
         const CHORD_FRAME_RIM_MIN=.055, CHORD_FRAME_RIM_FRAC_H=.028;
-        const BEND_HALFSTEP_WORLD_Y=S_GAP*.8, BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.3;
+        const BEND_HALFSTEP_WORLD_Y=S_GAP*.8, FINGER_BEND_WORLD_Y=S_GAP, BEND_ENV_RISE_FRAC=.35, BEND_ENV_RELEASE_FRAC=.3;
         const TREMOLO_BUMP_S=.06, VIBRATO_HALF_WAVE_S=.08;
         const _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap();
         const _linkedVibratoRuns=new WeakMap();
         const _linkedTrailPaths={byNote:new WeakMap()};
         const _slideRibbonTimesScratch=[];
+        ${rendererState}
         ${scaleDeclaration}
         ${sampleDeclaration}
         ${yieldDefaultsDeclaration}
@@ -50,6 +52,7 @@ function harness() {
         let _trailCrossingTargetBaseCount=0;
         ${src.slice(src.indexOf('    function slideTrailEnd('), src.indexOf('    // Camera tgtDist building blocks'))}
         ${fn('bendVisualDirY')}
+        ${rendererLookup}
         ${fn('noteHasVibrato')}
         ${fn('bnvSampleAt')}
         ${fn('bendCurveStartSemis')}
@@ -88,6 +91,7 @@ function harness() {
                 return {count,width:_trailCrossingTargetWidths[0],bases:Array.from(_trailCrossingTargetBases)};
             },
             render(style,n,lefty=false,inverted=false,yieldTarget=null) {
+                _bendLayout=solveBendLayout([n],[],nStr);
                 rsPlusNotation=style; _leftyCached=lefty; _invertedCached=inverted;
                 const size=dimensions(n);
                 slideRibbonUpdatePair(outline,body,10,size.outlineW,size.outlineH,size.tw,size.th,
@@ -99,7 +103,7 @@ function harness() {
             },
             reach(style,width) { rsPlusNotation=style; return sustainMotionWidth(width)*.375; },
         };
-    `)();
+    `)(solve);
 }
 const center = (vertices, offset, axis) => (vertices[offset+axis]+vertices[offset+6+axis])/2;
 

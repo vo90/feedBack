@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { solve, rendererState, rendererLookup } = require('./highway-bend-layout-fixture.js');
 
 const src = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 function fn(name) {
@@ -21,20 +22,22 @@ function constant(name) {
     return Number(match[1]);
 }
 function harness(nStr = 6, inverted = false) {
-    return new Function('nStr', '_invertedCached', `
+    return new Function('nStr', '_invertedCached', 'solveBendLayout', `
         const BEND_ENV_RISE_FRAC=${constant('BEND_ENV_RISE_FRAC')};
         const BEND_ENV_RELEASE_FRAC=${constant('BEND_ENV_RELEASE_FRAC')};
-        const BEND_HALFSTEP_WORLD_Y=3.2;
+        const BEND_HALFSTEP_WORLD_Y=3.2, FINGER_BEND_WORLD_Y=4;
         const NEXT_ON_STRING_T_EPS=${constant('NEXT_ON_STRING_T_EPS')};
         const BEND_LINK_TIME_EPS=${constant('BEND_LINK_TIME_EPS')};
         const VIBRATO_HALF_WAVE_S=${constant('VIBRATO_HALF_WAVE_S')};
         let _linkedBendStarts=new WeakMap(), _linkedBendEnds=new WeakMap();
         let _linkedVibratoRuns=new WeakMap();
+        ${rendererState}
         ${['hwyLinkNextTargetNotes', 'noteHasVibrato', 'resolveLinkedVibratoRuns',
             'vibratoSemisAtTime', 'bnvSampleAt', 'bendCurveStartSemis',
             'bendCurveSemisAt', 'bendSemisAtElapsed', 'resolveLinkedBendEnds',
             'resolveLinkedBendStarts', 'bendSemisAtTime', 'bendVisualDirY',
             'prebendOffsetWorld', 'techniqueYOffsetWorld'].map(fn).join('\n')}
+        ${rendererLookup}
         return {
             link(notes,chords=[]) {
                 const links=new Map();
@@ -42,6 +45,7 @@ function harness(nStr = 6, inverted = false) {
                 _linkedBendEnds=resolveLinkedBendEnds(links);
                 _linkedBendStarts=resolveLinkedBendStarts(links,_linkedBendEnds);
                 _linkedVibratoRuns=resolveLinkedVibratoRuns(links);
+                _bendLayout=solveBendLayout(notes,chords,nStr,{links,starts:_linkedBendStarts,ends:_linkedBendEnds});
                 return {links,targets,runs:_linkedVibratoRuns};
             },
             at:vibratoSemisAtTime, y:techniqueYOffsetWorld, bend:bendSemisAtTime,
@@ -61,7 +65,7 @@ function harness(nStr = 6, inverted = false) {
                 return techniqueYNow;
             },
         };
-    `)(nStr,inverted);
+    `)(nStr,inverted,solve);
 }
 const note = (values = {}) => ({ t: 1, s: 5, f: 22, sus: .458, vb: true, ...values });
 const end = n => n.t + n.sus;
@@ -210,7 +214,7 @@ test('linked envelope does not alter authoritative bends or invert string direct
         for(const elapsed of [0,.03,.1,.137])close(h.bend(a,elapsed),2);
         close(h.y(a,end(a)),h.y(b,b.t),'authored bend handoff');
         const dir=inverted?-1:1;
-        close(h.y(a,.03),dir*3.2*(2+h.at(a,.03)));
+        close(h.y(a,.03),dir*(4*2+3.2*h.at(a,.03)));
     }
 });
 

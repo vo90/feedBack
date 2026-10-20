@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- 3D Highway chooses a shared direction for overlapping bends on adjacent
+  strings, using the actual string count, complete pitch curves and fretboard
+  limits. Conflicting bends use stationary pitch cues. Analysis runs in bounded
+  background batches; chart pitch, scoring, vibrato and whammy amounts are
+  preserved.
 - Seeking while paused now clears the preceding native playback timestamp, so
   the highway and experimental rest guide stay at the selected song position.
   Failed or superseded seeks retain the current playback owner's state.
