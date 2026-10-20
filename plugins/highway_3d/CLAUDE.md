@@ -112,6 +112,19 @@ Matching uses exact playback-wire values. Ordinary playback serialization keeps
 its existing millisecond precision, so sub-millisecond source differences are
 unavailable here; Library Doctor instead checks exact raw source values.
 
+## Arpeggio bracket guidance
+
+Explicit arpeggio brackets are owned by handshapes, independently of chord
+attacks and note-stream inference. `ensureArpeggioBracketGuides` caches valid
+template members, onset anchor bounds and sorted lifetime bounds.
+`drawHandShapeArpBrackets` emits each occurrence/string once for its entire
+preview and hold, even when a nearby real chord suppresses the synthetic
+chord or the next matching note lies beyond the preview window. Do not add
+bracket draws back to the note/chord loops. Unmarked inferred shapes retain
+ghost guidance without brackets. Resolve coordinates through `xNote`, `xFret`
+and `sY` at draw time; open widths use the absolute onset-bound span so lefty
+and inversion toggles preserve their geometry. Release the index on teardown.
+
 ## Incoming fret-label layout
 
 `_setIncomingFloorLabelMap` top-anchors the three gold incoming-label paths and

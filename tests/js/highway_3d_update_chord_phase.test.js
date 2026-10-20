@@ -24,7 +24,7 @@ const body = phase.slice(phase.indexOf('            if (strumFrames.displayChord
 const update = fn('update');
 const handoff = update.slice(update.indexOf('            _chordFrameResult.highwayIntensity ='),
     update.indexOf('            flushNoteDraws();'));
-const inputs = 'strumFrames, chordGuideEnds, ndVerdictT0, t1, now, bundle, activeFrets, anchors, notes, camT0, camT1, camTau, _ghostPrevBuf, lastFretForString, _noteStreamBracketStrings';
+const inputs = 'strumFrames, chordGuideEnds, ndVerdictT0, t1, now, bundle, activeFrets, anchors, notes, camT0, camT1, camTau, _ghostPrevBuf, lastFretForString';
 const totals = 'highwayIntensity, camWX, camWSum, camDistMin, camDistMax, camDistGot';
 
 // Run the exact production handoff and phase against its former inline form.
@@ -99,7 +99,6 @@ function frame(now, chords) {
         notes: [], anchors: [{ fret: 3 }], activeFrets: new Set(),
         camT0: now - .2, camT1: now + 1.25, camTau: .6,
         _ghostPrevBuf: new Map([[1000001, 8.75]]), lastFretForString: [],
-        _noteStreamBracketStrings: new Map(),
         initial: { highwayIntensity: .03, camWX: 2.5, camWSum: .25, camDistMin: 9, camDistMax: 2, camDistGot: false },
     };
 }

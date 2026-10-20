@@ -71,7 +71,7 @@ const dispatch = new Function('chordNotes', 'options', `
         if (!skipBody && !linked) drawn.push({ ...note });
     }
     ${between('const chDt = chDtEarly;', 'const suppressRepeatGems = repeatChordMaySuppressGems(')}
-    ${between('const suppressRepeatGems = repeatChordMaySuppressGems(', '// ── Arpeggio note brackets')}
+    ${between('const suppressRepeatGems = repeatChordMaySuppressGems(', '// Preserve the shape name')}
     return { retainsChordGems, drawn, isRepeat, drawCalls, chordFrameEligible, belongsToBoxedChord, suppressRepeatGems };
 `);
 const frameGeometry = new Function('isRepeat', 'retainsChordGems', 'inverted', `

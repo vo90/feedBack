@@ -8879,9 +8879,9 @@
         // once (see fillArpeggioGhostInferFlags) so the note loop skips O(hs×notes)
         // rescans — ref fillArpeggioGhostInferFlags in update().
         let _arpGhostHsInferScratch = [];
-        // Handshape start-times where ghost fret numbers show but [ ] brackets are suppressed
-        // (synth-chord onset-match cases — not genuine arpeggios).
-        let _arpSynthOnsetHsSet = new Set();
+        // Authored bracket guidance owns the complete shape independently of
+        // attack rendering and note-stream inference.
+        let _arpBracketGuideCache = null;
 
         // ── Cross-frame caches for chart-static derivations ──────────────
         // The merge + arp-flag fills below depend only on chart-static
@@ -9871,13 +9871,6 @@
         // frame (board ghost — up to 3 simultaneous previews per string).
         // Reset to 0 each frame alongside the other pool .reset() calls.
         const _scrGhostUpcomingCount = new Array(MAX_RENDER_STRINGS).fill(0);
-        // Hoisted scratch for the arp-bracket dedupe within a single draw().
-        // Keys are `${chordId}:${occurrenceStart}` strings (cheap to build, low
-        // cardinality per frame); values are Sets of string-indices that have
-        // already drawn brackets in the AHEAD note-stream pass. Cleared at the
-        // top of every chord pass so the Set objects (and the outer Map) are
-        // reused across frames instead of reallocated.
-        const _scrNoteStreamBracketStrings = new Map();
         // Scratch object reused for chord-note drawNote calls so `{ ...cn, t: ch.t }`
         // doesn't allocate a new object per chord note per frame.
         const _scrChordNote = {};
@@ -15445,6 +15438,71 @@
             return chordTemplateMarkedArpeggio(hsChordIdNorm(hs), chordTemplates);
         }
 
+        // A nearby real chord may suppress a synthetic chord with a different
+        // template. It must not suppress that handshape's fingering guidance.
+        // Build once per chart/input change; per-frame work visits only spans
+        // that can overlap the preview/hold window, including backward seeks.
+        function ensureArpeggioBracketGuides(handShapes, templates, anchors) {
+            const old = _arpBracketGuideCache;
+            const shapeCount = handShapes?.length || 0, anchorCount = anchors?.length || 0;
+            if (old && old.handShapes === handShapes && old.templates === templates
+                && old.anchors === anchors && old.stringCount === nStr
+                && old.shapeCount === shapeCount && old.anchorCount === anchorCount) return old;
+            const rows = [], occurrences = new Map();
+            for (const hs of handShapes || []) {
+                if (!handShapeMarkedArpeggio(hs, templates)) continue;
+                const start = hsStart(hs), end = hsEnd(hs), cid = hsChordIdNorm(hs);
+                if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || cid == null) continue;
+                const key = cid + ':' + start;
+                const existing = occurrences.get(key);
+                if (existing) {
+                    existing.end = Math.max(existing.end, end);
+                    continue;
+                }
+                const members = chordNotesFromTemplate(cid, templates);
+                if (!members.length) continue;
+                let minF = Infinity, maxF = -Infinity;
+                for (const n of members) {
+                    if (n.f > 0) { minF = Math.min(minF, n.f); maxF = Math.max(maxF, n.f); }
+                }
+                // Store fret bounds, not world positions: live lefty/inversion
+                // changes still use xFret/xNote/sY without rebuilding this index.
+                const openBounds = anchorLaneBoundsAt(anchors, start)
+                    || chordShapeLaneBounds(minF, maxF, null);
+                const row = { start, end, members, openBounds };
+                rows.push(row);
+                occurrences.set(key, row);
+            }
+            rows.sort((a, b) => a.start - b.start);
+            const prefixEnds = new Float64Array(rows.length);
+            let end = -Infinity;
+            for (let i = 0; i < rows.length; i++) {
+                end = Math.max(end, rows[i].end);
+                prefixEnds[i] = end;
+            }
+            _arpBracketGuideCache = {
+                handShapes, templates, anchors, stringCount: nStr, shapeCount, anchorCount, rows, prefixEnds,
+            };
+            return _arpBracketGuideCache;
+        }
+
+        function drawHandShapeArpBrackets(now, model) {
+            for (let i = firstVisibleChordGuide(model.prefixEnds, now); i < model.rows.length; i++) {
+                const row = model.rows[i];
+                if (row.start >= now + AHEAD) break;
+                if (row.end <= now) continue;
+                const xl = xFret(row.openBounds.dMin), xr = xFret(row.openBounds.dMax);
+                const openX = (xl + xr) * 0.5;
+                const openW = Math.abs(xr - xl) + OPEN_NOTE_PAD_X * 2;
+                const openHalfW = Math.max(0.22, openW * 0.96 / (40 * K)) * 20 * K;
+                for (const n of row.members) {
+                    const isOpen = usesUnfrettedPosition(n);
+                    drawArpBrackets(isOpen ? openX : xNote(n), sY(n.s),
+                        row.start - now, row.end, now, n.s, isOpen, isOpen ? openHalfW : null);
+                }
+            }
+        }
+
         /**
          * Matching hand-shape metadata for a chord onset. ``explicit`` follows
          * authored arpeggio markers only; note inference is handled separately
@@ -15767,6 +15825,7 @@
             _coincidentRepeatNotesRef = null;
             _coincidentRepeatChordsRef = null;
             _boxedChordMembership = null;
+            _arpBracketGuideCache = null;
             coincidentSustainView.clear();
             _filterValidNotesCache = new WeakMap();
             _chordSigCache = new WeakMap();
@@ -16080,7 +16139,7 @@
          * recomputed it for every visible note (O(notecount × hs × notescan)).
          * Fill ``outFlags[i]`` with the boolean once per ``handShapes[i]``.
          */
-        function fillArpeggioGhostInferFlags(handShapes, chordTemplates, notesArr, outFlags, outSynthOnsetSet = null) {
+        function fillArpeggioGhostInferFlags(handShapes, chordTemplates, notesArr, outFlags) {
             for (let i = 0; i < handShapes.length; i++) {
                 let infer = false;
                 const hs = handShapes[i];
@@ -16131,13 +16190,6 @@
                                     continue; // chord hold handled — skip onset-match and outFlags assignment
                                 }
                             }
-                            // Non-arp template inferred as arpeggio: suppress brackets.
-                            // Only explicit arp-marked templates (arp:true / displayName "-arp")
-                            // should show [ ] / < > bracket markers.
-                            if (infer && outSynthOnsetSet != null
-                                && !handShapeMarkedArpeggio(hs, chordTemplates)) {
-                                outSynthOnsetSet.add(hsLo);
-                            }
                             // Also treat as arp ghost when the hs generated a suppressed
                             // synth chord: any standalone note in the onset window matches
                             // any shape string. Handles patterns where inferArpeggioFromNotePattern
@@ -16154,15 +16206,6 @@
                                     if (_on.t < _oLo) continue;
                                     if (shape.get(_on.s) === _on.f) {
                                         infer = true;
-                                        // Only suppress brackets when the handshape is NOT an
-                                        // explicit arpeggio (arp:true template / displayName "-arp").
-                                        // Genuine arp handshapes reached via onset-match still need
-                                        // the [ ] bracket markers — only non-arp synth chords are
-                                        // "false positives" that should hide the brackets.
-                                        if (outSynthOnsetSet != null
-                                            && !handShapeMarkedArpeggio(hs, chordTemplates)) {
-                                            outSynthOnsetSet.add(hsLo);
-                                        }
                                         break;
                                     }
                                 }
@@ -17317,8 +17360,7 @@
                 if (_arpGhostInferRefHs !== hsForArpGhost
                     || _arpGhostInferRefNotes !== notes
                     || _arpGhostInferRefTpl !== bundle.chordTemplates) {
-                    _arpSynthOnsetHsSet.clear();
-                    fillArpeggioGhostInferFlags(hsForArpGhost, bundle.chordTemplates, notes, _arpGhostHsInferScratch, _arpSynthOnsetHsSet);
+                    fillArpeggioGhostInferFlags(hsForArpGhost, bundle.chordTemplates, notes, _arpGhostHsInferScratch);
                     _arpGhostInferRefHs = hsForArpGhost;
                     _arpGhostInferRefNotes = notes;
                     _arpGhostInferRefTpl = bundle.chordTemplates;
@@ -18021,16 +18063,6 @@
             // Reset the per-frame fret-label dedup set so stacked labels from
             // multiple strings at the same onset/fret (arpeggio, synth chord) don't repeat.
             _frameLabeledKeys.clear();
-            // Tracks which (chordId → Set<stringIndex>) pairs already had
-            // brackets drawn by the note-stream loop, so the chord loop can
-            // skip duplicate bracket draws for the same string.
-            // Hoisted Map — clear (rather than reallocate) so the per-frame
-            // chord-bracket dedupe doesn't churn GC in dense arpeggio passages.
-            // (The inner Sets stored as values lose their Map reference on
-            // .clear() and get GC'd along with the keys; only the outer Map
-            // is reused.)
-            _scrNoteStreamBracketStrings.clear();
-            const _noteStreamBracketStrings = _scrNoteStreamBracketStrings;
             _scrLastFretForString.fill(undefined, 0, nStr);
             const lastFretForString = _scrLastFretForString;
             if (notes) {
@@ -18107,43 +18139,6 @@
                         false, // standalone sustain ownership stays unchanged
                         !!strumFrame || boxedChordMembers.has(_noteFretKey(n.t, n.s, n.f)),
                     );
-                    if (arGhostCid != null) {
-                        const _arpBounds = _arpBoundsForNote;
-                        if (_arpBounds) {
-                            // Synth-onset-match handshapes show ghost fret numbers but not [ ] brackets.
-                            if (!_arpSynthOnsetHsSet.has(_arpBounds.start)) {
-                                // Open-string bracket X: always use the anchor at the
-                                // handshape START time (not n.t, not now) so the bracket
-                                // position stays fixed throughout the arpeggio even when
-                                // the chart anchor changes mid-pattern.
-                                const _arpBrktAncB = usesUnfrettedPosition(n)
-                                    ? anchorLaneBoundsAt(anchors, _arpBounds.start)
-                                    : null;
-                                const _bx = usesUnfrettedPosition(n)
-                                    ? (_arpBrktAncB
-                                        ? (xFret(_arpBrktAncB.dMin) + xFret(_arpBrktAncB.dMax)) / 2
-                                        : (singleOpenX !== undefined ? singleOpenX : curX))
-                                    : xNote(n);
-                                const _openHalfW = (() => {
-                                    if (!usesUnfrettedPosition(n)) return null;
-                                    if (_arpBrktAncB) {
-                                        const _xl = xFret(_arpBrktAncB.dMin), _xr = xFret(_arpBrktAncB.dMax);
-                                        if (_xr > _xl) return Math.max(0.22, (_xr - _xl + NW * 0.4 * 2) * 0.96 / (40 * K)) * 20 * K;
-                                    }
-                                    return singleOpenLaneW != null ? Math.max(0.22, singleOpenLaneW * 0.96 / (40 * K)) * 20 * K : null;
-                                })();
-                                drawArpBrackets(_bx, sY(n.s), _arpBounds.start - now, _arpBounds.end, now, n.s, usesUnfrettedPosition(n), _openHalfW);
-                                // Record that this (chordId:occurrenceStart, string) pair has brackets
-                                // so the chord loop doesn't draw a second set on the same string.
-                                // Key includes the arp occurrence start time so two separate arp
-                                // sequences sharing the same chord template ID don't suppress each other.
-                                const _nsbKey = arGhostCid + ':' + _arpBoundsForNote.start;
-                                let _nsbSet = _noteStreamBracketStrings.get(_nsbKey);
-                                if (!_nsbSet) { _nsbSet = new Set(); _noteStreamBracketStrings.set(_nsbKey, _nsbSet); }
-                                _nsbSet.add(n.s);
-                            }
-                        }
-                    }
                     lastFretForString[n.s] = n.f;
                     // Onset in window OR started before the window but
                     // still sustaining right now. Gate sustain carry-over
@@ -18194,11 +18189,13 @@
             updateChordPhase(
                 strumFrames, chordGuideEnds, ndVerdictT0, t1, now, bundle,
                 activeFrets, anchors, notes, camT0, camT1, camTau,
-                _ghostPrevBuf, lastFretForString, _noteStreamBracketStrings, _chordFrameResult,
+                _ghostPrevBuf, lastFretForString, _chordFrameResult,
             );
             ({ highwayIntensity, camWX, camWSum, camDistMin, camDistMax, camDistGot } = _chordFrameResult);
 
             flushNoteDraws();
+            drawHandShapeArpBrackets(now,
+                ensureArpeggioBracketGuides(bundle.handShapes, bundle.chordTemplates, anchors));
             drawChordHoldGuides(now, _chordGuideCache.model);
             drawHandPositionGuides(now, _chordGuideCache.model);
 
@@ -18855,7 +18852,7 @@
         function updateChordPhase(
             strumFrames, chordGuideEnds, ndVerdictT0, t1, now, bundle,
             activeFrets, anchors, notes, camT0, camT1, camTau,
-            _ghostPrevBuf, lastFretForString, _noteStreamBracketStrings, result,
+            _ghostPrevBuf, lastFretForString, result,
         ) {
             let { highwayIntensity, camWX, camWSum, camDistMin, camDistMax, camDistGot } = result;
             if (strumFrames.displayChords) {
@@ -19077,7 +19074,6 @@
                      * hsStart() (≤ 100 ms) identifies the initiating chord
                      * regardless of how wide the span is.
                      */
-                    const _hsStartT = hsHintFrame.hs ? hsStart(hsHintFrame.hs) : NaN;
                     const chordHighwayLavenderArpVisual = !ch.h3dStrum && chordUsesArpeggioFrame(ch, hsHintFrame);
                     const chordSusTrailMatchArpFrame = chordWireHighDensity(ch)
                         || chordHighwayLavenderArpVisual;
@@ -19391,61 +19387,6 @@
                                 if (cn.f > camDistMax) camDistMax = cn.f;
                                 camDistGot = true;
                             }
-                            }
-                        }
-                    }
-
-                    // ── Arpeggio note brackets [ ] ────────────────────────
-                    // Drawn only for explicitly authored arpeggio frames
-                    // (chordHighwayLavenderArpVisual = explicit handshape arp mark).
-                    // Covers both paths: gems shown directly from the chord
-                    // (!deferChordGems) and the deferred-fallback preview path
-                    // (_deferFallback). The inferred-arpeggio path (inferredArpPattern
-                    // only, no explicit mark) intentionally does NOT draw brackets —
-                    // the inference heuristic can false-positive on fast strummed
-                    // chords, and brackets on non-arp chords confuse players.
-                    // Note-stream arpeggios draw their own brackets in the notes[]
-                    // loop above (for notes already in AHEAD). The chord loop covers
-                    // any strings whose notes haven't entered AHEAD yet — _nsBrackets
-                    // prevents duplicates for strings already handled by notes[].
-                    if (chordHighwayLavenderArpVisual) {
-                        const _arpBracketDt = ch.t - now;
-                        if (_arpBracketDt < AHEAD) {
-                            const _arpEnd = (hsHintFrame.hs && !isNaN(hsEnd(hsHintFrame.hs)))
-                                ? hsEnd(hsHintFrame.hs)
-                                : ch.t + maxSus + CHORD_HWY_LINGER_S;
-                            // The notes[] loop already drew brackets for any note-stream
-                            // note that entered AHEAD, recording (chordId:occurrenceStart → strings)
-                            // in _noteStreamBracketStrings. Use the same composite key (template id +
-                            // handshape start time) so two arp occurrences sharing a chord template
-                            // ID are treated as distinct occurrences — not one suppressing the other.
-                            const _nsBracketsKey = ch.id + ':' + _hsStartT;
-                            const _nsBrackets = _noteStreamBracketStrings.get(_nsBracketsKey);
-                            // Open-string bracket X: anchor at handshape start so
-                            // position stays fixed even when chordCX drifts with now.
-                            const _arpChBrktAncB = !isNaN(_hsStartT)
-                                ? anchorLaneBoundsAt(anchors, _hsStartT)
-                                : null;
-                            const _arpChBrktOpenX = _arpChBrktAncB
-                                ? (xFret(_arpChBrktAncB.dMin) + xFret(_arpChBrktAncB.dMax)) / 2
-                                : (chordCX ?? curX);
-                            const _arpChBrktOpenW = (() => {
-                                if (_arpChBrktAncB) {
-                                    const _xl = xFret(_arpChBrktAncB.dMin), _xr = xFret(_arpChBrktAncB.dMax);
-                                    if (_xr > _xl) return _xr - _xl + NW * 0.4 * 2;
-                                }
-                                return laneWForOpenStrings;
-                            })();
-                            for (const cn of chordNotes) {
-                                if (!validString(cn.s) || !isRenderableNote(cn)) continue;
-                                if (_nsBrackets && _nsBrackets.has(cn.s)) continue;
-                                const _bx = usesUnfrettedPosition(cn)
-                                    ? _arpChBrktOpenX
-                                    : xNote(cn);
-                                const _openHalfW = (usesUnfrettedPosition(cn) && _arpChBrktOpenW != null)
-                                    ? Math.max(0.22, _arpChBrktOpenW * 0.96 / (40 * K)) * 20 * K
-                                    : null;
-                                drawArpBrackets(_bx, sY(cn.s), _arpBracketDt, _arpEnd, now, cn.s, usesUnfrettedPosition(cn), _openHalfW);
                             }
                         }
                     }
@@ -25686,6 +25627,7 @@
             _presentationClock.reset();
             _clkFramePerf = NaN; _clkRateAudioT = NaN; _clkRatePerf = NaN;
             coincidentSustainView.clear();
+            _arpBracketGuideCache = null;
             _coincidentRepeatNoteSet = null;
             _coincidentRepeatNotesRef = null;
             _coincidentRepeatChordsRef = null;
