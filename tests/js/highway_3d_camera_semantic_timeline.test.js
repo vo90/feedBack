@@ -154,12 +154,14 @@ test('Rats short off-route overshoot bypasses its stop while ordered steps remai
     assert.deepEqual(unproven.timeline.slice(1,3).map(s=>s.kind),['transit','transit']);
 });
 
-test('mixed off-route detours retain the ordered short path toward a new lasting destination', () => {
+test('mixed detours suppress proven spikes but retain a final ambiguous relocation', () => {
     const rows=[row(0,5),row(2,3),row(2.3,6),row(2.6,13),row(2.9,8),row(3.2,14),row(3.5,10)];
     const stops=build(rows);
-    assert.deepEqual(stops.map(s=>s.firstFret),[5,6,8,10]);
-    assert.deepEqual(stops.map(s=>s.lasting),[true,false,false,true]);
-    assert.deepEqual(stops.timeline.filter(s=>s.kind==='ignored-overshoot').map(s=>s.firstFret),[3,13,14]);
+    // Fixed structural evidence cannot use a threshold-dependent future
+    // "lasting" endpoint to discard 14 after the earlier ambiguous 13 detour.
+    assert.deepEqual(stops.map(s=>s.firstFret),[5,6,8,14,10]);
+    assert.deepEqual(stops.map(s=>s.lasting),[true,false,false,false,true]);
+    assert.deepEqual(stops.timeline.filter(s=>s.kind==='ignored-overshoot').map(s=>s.firstFret),[3,13]);
 });
 
 test('a progressive climb beyond its final lasting lane cannot disappear as one large off-route overshoot', () => {
@@ -177,8 +179,11 @@ test('a zigzag staircase travels beyond a nearby final lane without being mistak
     for (const descending of [false,true]) {
         const path=frets.map(f=>descending?25-f:f);
         const stops=build(path.map((f,i)=>row(i?2+(i-1)*.3:0,f)));
-        assert.deepEqual(stops.map(s=>s.firstFret),[2,4,6,5,7,6,8,7,9,3].map(f=>descending?25-f:f));
-        assert.equal(stops.timeline[2].kind,'ignored-excursion','the first genuine local reply may remain held');
+        // Advancing highs and lows establish travel for the whole staircase,
+        // including its opening 5 reply. Keep that opening rather than treating
+        // a moving pattern as a fixed home simply because it returns once.
+        assert.deepEqual(stops.map(s=>s.firstFret),path);
+        assert.equal(stops.timeline[2].explanation.decision,'follow');
         assert.ok(stops.timeline.every(s=>s.kind!=='ignored-overshoot'),
             'the multi-lane staircase must not collapse into a single overshoot');
     }

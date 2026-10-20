@@ -11,12 +11,14 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
 const root = path.resolve(__dirname, '../..');
 const source = fs.readFileSync(path.join(root, 'plugins/highway_3d/screen.js'), 'utf8');
-const modules = ['camera-semantics.mjs', 'camera-motion.mjs', 'camera-controller.mjs'];
+const modules = ['camera-semantics.mjs', 'camera-motion.mjs', 'camera-controller.mjs', 'camera-tapping.mjs'];
 const exportsByModule = {
-  'camera-semantics.mjs': ['hwyBuildCameraTimeline', 'hwyBuildCameraStops'],
+  'camera-semantics.mjs': ['hwyBuildCameraTimeline', 'hwyBuildCameraStops',
+    'hwyCompileCameraEvidence', 'hwyApplyCameraThreshold'],
   'camera-motion.mjs': ['hwyBuildCameraAttackIndex', 'hwyPrepareCameraStops', 'hwyBuildCameraMotion',
     'hwyCameraSegmentAt', 'hwyCameraPlanAt', 'hwyCameraJoinAt', 'hwyCameraResumeAt',
     'hwyCameraRejoin', 'hwyCameraZoom'],
+  'camera-tapping.mjs': ['hwyCompileTappingAreas', 'hwyApplyTappingAreas'],
 };
 
 function instrument(legacy) {
@@ -26,11 +28,11 @@ function instrument(legacy) {
   body = body.replace(anchor, `${anchor}
             __loadCameraModules: loadThree,
             __cameraModuleSnapshot() {
-                return [hwyBuildCameraTimeline(), hwyCameraPlanAt(), createCameraController()];
+                return [hwyCompileCameraEvidence(), hwyCameraPlanAt(), createCameraController(), hwyCompileTappingAreas()];
             },`);
   if (legacy) {
     const fixedImports = body.match(/import\(CAMERA_MODULE_BASE \+ 'camera-[^']+\.mjs'\)/g) || [];
-    assert.equal(fixedImports.length, 3, 'Negative control must replace all three imports');
+    assert.equal(fixedImports.length, modules.length, 'Negative control must replace all camera imports');
     body = body.replace(/import\(CAMERA_MODULE_BASE \+ '(camera-[^']+\.mjs)'\)/g,
       (_, name) => `import('/api/plugins/highway_3d/src/${name}')`);
   }
@@ -43,7 +45,8 @@ function mockModule(name, revision) {
   if (name === 'camera-controller.mjs') {
     return count + `export function createCameraController() { return ${marker}; }\n`;
   }
-  const factory = name === 'camera-semantics.mjs' ? 'createCameraSemantics' : 'createCameraMotion';
+  const factory = name === 'camera-semantics.mjs' ? 'createCameraSemantics'
+    : name === 'camera-tapping.mjs' ? 'createCameraTapping' : 'createCameraMotion';
   return count + `export function ${factory}() { return { ${
     exportsByModule[name].map(key => `${key}: () => ${marker}`).join(', ')
   } }; }\n`;
@@ -98,14 +101,14 @@ async function scenario(browser, legacy) {
     const initial = await create('firstRenderer');
     assert.deepEqual(initial.modules, expected('one'));
     assert.equal(initial.generation, 1);
-    assert.equal(initial.evaluations, 3);
+    assert.equal(initial.evaluations, modules.length);
     snapshots.push(initial);
 
     revision = 'two';
     await page.evaluate(() => window.firstRenderer.destroy());
     const recreated = await create('recreatedRenderer');
     assert.deepEqual(recreated, initial, 'Renderer recreation must reuse the current module graph');
-    assert.equal(requests.length, 3);
+    assert.equal(requests.length, modules.length);
     snapshots.push(recreated);
 
     await evaluateScreen('v=two');
@@ -113,7 +116,7 @@ async function scenario(browser, legacy) {
     assert.equal(upgraded.generation, 2);
     assert.deepEqual(upgraded.modules, expected(legacy ? 'one' : 'two'),
       'A new script evaluation must load current camera modules');
-    assert.equal(upgraded.evaluations, legacy ? 3 : 6);
+    assert.equal(upgraded.evaluations, modules.length * (legacy ? 1 : 2));
     assert.deepEqual(await page.evaluate(() => window.recreatedRenderer.__cameraModuleSnapshot()),
       expected('one'), 'The earlier renderer closure must keep its own initialized module functions');
     snapshots.push(upgraded);
@@ -123,7 +126,7 @@ async function scenario(browser, legacy) {
     const rollback = await create('rollbackRenderer');
     assert.equal(rollback.generation, 3);
     assert.deepEqual(rollback.modules, expected('one'));
-    assert.equal(rollback.evaluations, legacy ? 3 : 9,
+    assert.equal(rollback.evaluations, modules.length * (legacy ? 1 : 3),
       'A rollback must load a fresh graph even when its screen query was used before');
     snapshots.push(rollback);
 
@@ -131,10 +134,10 @@ async function scenario(browser, legacy) {
     if (!legacy) {
       for (let generation = 1; generation <= 3; generation++) {
         assert.equal(requests.filter(request =>
-          request.pathname.startsWith(`/api/plugins/highway_3d/g/camera-${generation}/src/`)).length, 3);
+          request.pathname.startsWith(`/api/plugins/highway_3d/g/camera-${generation}/src/`)).length, modules.length);
       }
     } else {
-      assert.equal(requests.length, 3, 'Negative control must demonstrate fixed-URL module reuse');
+      assert.equal(requests.length, modules.length, 'Negative control must demonstrate fixed-URL module reuse');
     }
     return { scenario: legacy ? 'fixed-url-negative-control' : 'production-generations', snapshots, requests };
   } finally {

@@ -3,9 +3,9 @@
  * Dependencies describe chart limits and note eligibility; this module neither
  * reads renderer state nor projects geometry.
  *
- * Precedence is intentional: coalesce lanes, prove longer note variations,
- * collect short-return evidence, select homes, then bypass isolated spikes.
- * Decisions and their explanations are built together, once per semantic plan.
+ * Musical evidence and ownership are compiled without the duration slider.
+ * Applying that slider only activates fixed suppression candidates. It cannot
+ * invent another home, change a pattern boundary, or restore a removed target.
  */
 export function createCameraSemantics({ NFRETS, isRenderableNote }) {
     function collectRiffVariationEvidence(spans, context = null) {
@@ -92,7 +92,7 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
             while (eventIndex < events.length && events[eventIndex].time < span.time) eventIndex++;
             const first = eventIndex;
             while (eventIndex < events.length && events[eventIndex].time < span.end) eventIndex++;
-            if (!span.lasting || eventIndex - first !== 1 || previous.base !== next.base
+            if (eventIndex - first !== 1 || previous.base !== next.base
                 || previous.base === span.base || !Number.isFinite(previous.firstFret)
                 || !Number.isFinite(previous.lastFret)) continue;
             const note = events[first].note, proof = proofs.get(note);
@@ -116,7 +116,7 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
         return Math.max(0, Math.min(3000, Number.isFinite(threshold) ? threshold : 500)) / 1000;
     }
 
-    function coalesceCameraSpans(regions, brief) {
+    function coalesceCameraSpans(regions) {
         const spans = [];
         for (let i = 0; i < (regions?.length || 0); i++) {
             const row = regions[i], preferred = Number.isFinite(row?.preferred) ? row.preferred : row?.x;
@@ -142,12 +142,7 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
             const span = spans[i];
             span.end = spans[i + 1]?.time ?? Infinity;
             span.duration = span.end - span.time;
-            // Compensate subtraction roundoff only at the chosen song-time threshold.
-            span.lasting = span.duration > 0 && span.duration >= brief - 1e-9;
-            span.kind = span.lasting ? 'lasting' : 'transit';
-            span.cameraX = span.x;
-            span.explanation = { decision: 'follow', reason: span.lasting ? 'lasting-lane' : 'short-waypoint',
-                home: null, interval: { start: span.time, end: span.end } };
+            span.sourceIndex = i;
         }
         return spans;
     }
@@ -156,209 +151,266 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
         return { base: home.base, firstFret: home.firstFret, x: home.x, time: home.time };
     }
 
-    function suppressSpan(span, kind, home, explanation) {
-        if (span.kind !== 'transit' && kind !== 'riff-variation') return;
-        span.kind = kind; span.lasting = false;
-        span.homeX = span.cameraX = home.x;
-        span.explanation = explanation;
+    function position(span) {
+        return Number.isFinite(span.firstFret) ? span.firstFret : span.x;
     }
 
-    function applyRiffVariationDecisions(spans, context) {
-        for (const [i, interval] of collectRiffVariationEvidence(spans, context)) {
-            const home = spans[i - 1];
-            suppressSpan(spans[i], 'riff-variation', home, { decision: 'hold',
-                reason: 'proven-note-variation', home: describeHome(home), interval });
-        }
+    function outside(value, a, b) {
+        return value < Math.min(a, b) - 1e-8 || value > Math.max(a, b) + 1e-8;
     }
 
-    function collectReturnEvidence(spans) {
-        // A short home dwell can still own a complete local return. Index the
-        // next matching lane and lasting barrier once, rather than searching
-        // ahead from every row or inheriting a remote lasting lane forever.
-        const nextSame = new Int32Array(spans.length), nextLasting = new Int32Array(spans.length);
-        const seen = new Map();
-        let lasting = spans.length;
-        for (let i = spans.length - 1; i >= 0; i--) {
-            nextSame[i] = seen.get(spans[i].base) ?? -1;
-            seen.set(spans[i].base, i);
-            nextLasting[i] = lasting;
-            if (spans[i].lasting) lasting = i;
+    function compileTravel(spans, route) {
+        const size = route.length, spike = new Uint8Array(size);
+        // A single peak interrupting an otherwise continuing local direction
+        // is not the end of that run. This decision uses original neighbours,
+        // never the current threshold's surviving destinations.
+        for (let i = 2; i + 2 < size; i++) {
+            const p = position(spans[route[i - 2]]), a = position(spans[route[i - 1]]);
+            const x = position(spans[route[i]]), b = position(spans[route[i + 1]]);
+            const q = position(spans[route[i + 2]]), direction = Math.sign(b - a);
+            if (direction && Math.sign(a - p) === direction && Math.sign(q - b) === direction
+                && outside(x, a, b)) spike[i] = 1;
         }
-        const shortReturn = i => {
-            const end = nextSame[i];
-            // The indexed barrier means EVERY intermediate lane is shorter
-            // than the threshold. Total time around the cycle is irrelevant.
-            return end > i + 1 && end <= nextLasting[i];
+        // Do not delete those peaks while recognizing other runs: doing so
+        // could invent a new progression across the end of a genuine riff.
+        const spine = Array.from({ length: size }, (_, i) => i);
+        const protectedRoute = new Uint8Array(size), marks = new Int32Array(size + 1);
+        const progressiveStart = new Int32Array(size).fill(-1);
+        const peaks = [], troughs = [];
+        let direction = 0, steps = 0, latest = -1, previousSpine = -1;
+        const mark = (start, end) => { marks[start]++; marks[end + 1]--; };
+        const turnDirection = turns => {
+            if (turns.length < 3) return 0;
+            const a = turns[turns.length - 3], b = turns[turns.length - 2], c = turns[turns.length - 1];
+            const left = Math.sign(b.value - a.value), right = Math.sign(c.value - b.value);
+            return left && left === right ? left : 0;
         };
-        // Direct runs and successively advancing peaks/troughs are travelling
-        // patterns, even when the larger phrase eventually repeats or returns.
-        // Keep the latest complete pattern's start, making interval queries
-        // constant time without rescanning a repeated cycle's interior.
-        const progressiveStart = new Int32Array(spans.length).fill(-1);
-        let direction = 0, directionalSteps = 0;
-        let latestPatternStart = -1;
-        const peaks = { firstIndex: -1, firstValue: NaN, secondIndex: -1, secondValue: NaN };
-        const troughs = { firstIndex: -1, firstValue: NaN, secondIndex: -1, secondValue: NaN };
-        for (let i = 1; i < spans.length; i++) {
-            const previous = spans[i - 1], current = spans[i];
-            const previousPosition = Number.isFinite(previous.firstFret) ? previous.firstFret : previous.x;
-            const currentPosition = Number.isFinite(current.firstFret) ? current.firstFret : current.x;
-            const nextDirection = Math.sign(currentPosition - previousPosition);
-            directionalSteps = nextDirection && nextDirection === direction ? directionalSteps + 1 : nextDirection ? 1 : 0;
-            if (directionalSteps >= 3) latestPatternStart = Math.max(latestPatternStart, i - 3);
+        for (let k = 1; k < spine.length; k++) {
+            const at = spine[k], before = spine[k - 1];
+            for (let i = previousSpine + 1; i < at; i++) progressiveStart[i] = latest;
+            const value = position(spans[route[at]]), previous = position(spans[route[before]]);
+            const nextDirection = Math.sign(value - previous);
+            steps = nextDirection && nextDirection === direction ? steps + 1 : nextDirection ? 1 : 0;
+            if (steps >= 3) {
+                const start = spine[k - 3];
+                mark(start, at); latest = Math.max(latest, start);
+            }
             if (nextDirection && direction && nextDirection !== direction) {
                 const turns = direction > 0 ? peaks : troughs;
-                if (turns.firstIndex >= 0 && ((turns.firstValue < turns.secondValue && turns.secondValue < previousPosition)
-                    || (turns.firstValue > turns.secondValue && turns.secondValue > previousPosition))) {
-                    latestPatternStart = Math.max(latestPatternStart, turns.firstIndex);
+                turns.push({ index: before, value: previous });
+                if (turns.length > 3) turns.shift();
+                if (turnDirection(turns)) latest = Math.max(latest, turns[0].index);
+                // A staircase advances both its highs and lows. Rising replies
+                // around one fixed home are not a travelling staircase.
+                const highDirection = turnDirection(peaks), lowDirection = turnDirection(troughs);
+                if (highDirection && highDirection === lowDirection) {
+                    mark(Math.min(peaks[0].index, troughs[0].index), before);
                 }
-                turns.firstIndex = turns.secondIndex; turns.firstValue = turns.secondValue;
-                turns.secondIndex = i - 1; turns.secondValue = previousPosition;
             }
-            direction = nextDirection;
-            progressiveStart[i] = latestPatternStart;
+            progressiveStart[at] = latest;
+            previousSpine = at; direction = nextDirection;
         }
-        const hasProgressiveRun = (start, end) => progressiveStart[end] >= start;
-        // A multi-lane return needs a repeated ordered cycle, rather than an
-        // arbitrary eventual return after a climb or a different local riff.
-        // Consecutive cycles for one fret are disjoint; exact comparisons are
-        // bounded by the physical fret vocabulary, without hashing or slices.
-        // Unknown geometry-only homes conservatively keep their waypoints.
-        const repeatedReturn = new Uint8Array(spans.length), repeatedIntervals = new Array(spans.length);
-        for (let i = 0; i < spans.length; i++) {
-            if (!Number.isInteger(spans[i].firstFret) || spans[i].firstFret < 0
-                || spans[i].firstFret > NFRETS || !shortReturn(i)) continue;
-            const middle = nextSame[i];
-            if (!shortReturn(middle)) continue;
-            const end = nextSame[middle], length = middle - i;
-            // Check the join as well: rotating the cycle's proposed home must
-            // not hide a travelling run that crosses its first return.
-            if (length !== end - middle || hasProgressiveRun(i, end)) continue;
-            let same = true;
-            for (let offset = 1; same && offset < length; offset++) {
-                same = spans[i + offset].base === spans[middle + offset].base;
-            }
-            if (same) {
-                repeatedReturn[i] = repeatedReturn[middle] = 1;
-                repeatedIntervals[i] = repeatedIntervals[middle] = { start: spans[i].time, end: spans[end].time };
-            }
+        for (let i = previousSpine + 1; i < size; i++) progressiveStart[i] = latest;
+        let active = 0;
+        for (let i = 0; i < size; i++) {
+            active += marks[i];
+            protectedRoute[i] = active > 0 && !spike[i] ? 1 : 0;
         }
-        const hasReturn = i => shortReturn(i) && (nextSame[i] === i + 2 || repeatedReturn[i]);
-        return { nextSame, nextLasting, repeatedReturn, repeatedIntervals, hasReturn };
+        return { spike, protectedRoute, progressiveStart };
     }
 
-    function collectSectionHomes(spans, context, { nextSame, hasReturn }) {
-        // Overlapping cycles may support several homes. An authored section
-        // can break that tie only when its incoming lane has a complete short
-        // return inside the section. A marker alone never invents a home.
-        const sections = [...new Set((context.sections || []).map(section => section?.time)
-            .filter(Number.isFinite))].sort((a, b) => a - b);
-        const sectionHomes = new Set();
-        let section = 0;
+    function hwyCompileCameraEvidence(regions, { context = null } = {}) {
+        context = context || {};
+        const spans = coalesceCameraSpans(regions), candidates = [], patterns = [];
+        const variations = collectRiffVariationEvidence(spans, context), route = [];
         for (let i = 0; i < spans.length; i++) {
-            while (section < sections.length && sections[section] < spans[i].time - 1e-6) section++;
-            if (Math.abs(sections[section] - spans[i].time) <= 1e-6 && hasReturn(i)
-                && spans[nextSame[i]].time < (sections[section + 1] ?? Infinity) - 1e-6) sectionHomes.add(i);
+            if (!variations.has(i)) route.push(i);
+            else candidates.push({ kind: 'riff-variation', reason: 'proven-note-variation',
+                indices: [i], homeIndex: i - 1, requiredDuration: -Infinity,
+                interval: variations.get(i), patternId: null });
         }
-        const nextSectionHome = new Int32Array(spans.length);
-        let sectionHome = spans.length;
-        for (let i = spans.length - 1; i >= 0; i--) {
+        const count = route.length, travel = compileTravel(spans, route);
+        const nextSame = new Int32Array(count).fill(-1), seen = new Map();
+        for (let i = count - 1; i >= 0; i--) {
+            const base = spans[route[i]].base;
+            nextSame[i] = seen.get(base) ?? -1; seen.set(base, i);
+        }
+        const cycleMax = new Float64Array(count), cycleBlocked = new Uint8Array(count);
+        // Consecutive first-return intervals of each physical fret are disjoint:
+        // these exact comparisons/interval scans cost O(rows * fret vocabulary).
+        for (let i = 0; i < count; i++) {
+            const end = nextSame[i], home = spans[route[i]];
+            if (end <= i + 1) continue;
+            if (end !== i + 2 && (!Number.isInteger(home.firstFret)
+                || home.firstFret < 0 || home.firstFret > NFRETS)) {
+                cycleBlocked[i] = 1; continue;
+            }
+            for (let j = i + 1; j < end; j++) {
+                cycleMax[i] = Math.max(cycleMax[i], spans[route[j]].duration);
+                if (travel.protectedRoute[j]) cycleBlocked[i] = 1;
+            }
+        }
+        const repeated = new Uint8Array(count), proofEnd = new Int32Array(count).fill(-1);
+        const localProofEnd = new Int32Array(count).fill(-1);
+        const required = new Float64Array(count); required.fill(Infinity);
+        const proofStart = new Int32Array(count).fill(-1);
+        for (let i = 0; i < count; i++) {
+            const middle = nextSame[i], end = middle >= 0 ? nextSame[middle] : -1;
+            if (middle <= i + 1 || end <= middle + 1 || middle - i !== end - middle
+                || cycleBlocked[i] || cycleBlocked[middle]
+                || travel.progressiveStart[end] >= i) continue;
+            let same = true;
+            for (let j = 1; same && j < middle - i; j++)
+                same = spans[route[i + j]].base === spans[route[middle + j]].base;
+            if (!same) continue;
+            localProofEnd[i] = end;
+            const duration = Math.max(cycleMax[i], cycleMax[middle]);
+            for (const start of [i, middle]) {
+                repeated[start] = 1;
+                if (duration < required[start]) {
+                    required[start] = duration; proofStart[start] = i; proofEnd[start] = end;
+                }
+            }
+        }
+        const hasReturn = i => i >= 0 && nextSame[i] > i + 1 && !cycleBlocked[i]
+            && (nextSame[i] === i + 2 || repeated[i]);
+        const sectionHomes = new Set();
+        const sections = [...new Set((context.sections || []).map(s => s?.time)
+            .filter(Number.isFinite))].sort((a, b) => a - b);
+        let section = 0;
+        for (let i = 0; i < count; i++) {
+            while (section < sections.length && sections[section] < spans[route[i]].time - 1e-6) section++;
+            if (Math.abs(sections[section] - spans[route[i]].time) <= 1e-6 && hasReturn(i)
+                && nextSame[i] > i + 2
+                && spans[route[nextSame[i]]].time < (sections[section + 1] ?? Infinity) - 1e-6) sectionHomes.add(i);
+        }
+        const nextSectionHome = new Int32Array(count);
+        let sectionHome = count;
+        for (let i = count - 1; i >= 0; i--) {
             nextSectionHome[i] = sectionHome;
             if (sectionHomes.has(i)) sectionHome = i;
         }
-        return { sectionHomes, nextSectionHome };
-    }
-
-    function applyReturnDecisions(spans, evidence, { sectionHomes, nextSectionHome }) {
-        const { nextSame, nextLasting, repeatedReturn, repeatedIntervals, hasReturn } = evidence;
-        const seen = new Map();
-        let protectedHome = -1;
-        const holdReturn = (start, end) => {
-            const home = spans[start];
-            home.localHome = spans[end].localHome = true;
-            const interval = end === start + 2 ? { start: home.time, end: spans[end].time }
-                : repeatedIntervals[start];
-            const explanation = { decision: 'hold', reason: end === start + 2 ? 'single-return' : 'repeated-cycle',
-                home: describeHome(home), interval };
-            // The home remains a followed destination. This evidence explains
-            // the hold around it without relabelling its arrival as suppressed.
-            home.explanation = spans[end].explanation = { ...explanation, decision: 'follow', reason: 'return-home' };
-            for (let i = start + 1; i < end; i++) {
-                suppressSpan(spans[i], 'ignored-excursion', home, explanation);
-                if (seen.get(spans[i].base) === i) seen.delete(spans[i].base);
-            }
-            protectedHome = end;
-        };
-        for (let i = 0; i < spans.length; i++) {
-            if (spans[i].kind === 'riff-variation') continue;
-            const previous = seen.get(spans[i].base);
-            // A completed singleton reply or proven repeated cycle can
-            // establish a local home. Never reach back across a lasting lane.
-            if (previous !== undefined && previous >= protectedHome && i > previous + 1
-                && i === nextSame[previous] && i <= nextLasting[previous]
-                && i <= nextSectionHome[previous]
-                && (i === previous + 2 || repeatedReturn[previous])) holdReturn(previous, i);
-            if (!i || spans[i].lasting || spans[i].localHome || sectionHomes.has(i)) {
-                protectedHome = i;
-                // An established incoming home wins nested short returns.
-                // Consumed intervals are disjoint, so this pass stays linear.
-                while (hasReturn(i) && nextSame[i] <= nextSectionHome[i]) {
-                    const end = nextSame[i];
-                    holdReturn(i, end);
-                    i = end;
-                }
-            }
-            seen.set(spans[i].base, i);
-        }
-    }
-
-    function applyIsolatedSpikeDecisions(spans) {
-        const destinations = [];
-        for (let i = 0; i < spans.length; i++) if (!i || spans[i].lasting) destinations.push(i);
-        for (let k = 0; k + 1 < destinations.length; k++) {
-            const a = destinations[k], b = destinations[k + 1], home = spans[a], target = spans[b];
-            let away = a + 1;
-            for (let i = away; i <= b; i++) {
-                if (spans[i].base !== home.base) continue;
-                away = i + 1;
-            }
-            if (away >= b || target.base === home.base) continue;
-            const low = Math.min(home.x, target.x), high = Math.max(home.x, target.x);
-            const outside = span => span.x < low - 1e-8 || span.x > high + 1e-8;
-            for (let i = away; i < b;) {
-                // Between ADJACENT lasting positions every intermediate lane
-                // is individually short. Only isolated off-route spikes are
-                // bypassed here; multi-lane holds require the cycle proof above.
-                if (!outside(spans[i])) { i++; continue; }
-                const start = i;
-                while (i < b && outside(spans[i])) i++;
-                // Alternating directions can still form a progressive climb.
-                // Do not infer a hold from an unproven multi-lane group.
-                if (i === start + 1 && !spans[start].localHome) {
-                    suppressSpan(spans[start], 'ignored-overshoot', home, { decision: 'hold',
-                        reason: 'isolated-off-route-spike', home: describeHome(home),
-                        interval: { start: home.time, end: target.time } });
+        const takeover = new Uint8Array(count);
+        for (let i = 0; i < count; i++) {
+            if (!hasReturn(i)) continue;
+            // A new local home must complete two matching cycles before the
+            // old home returns. A nested one-off reply cannot steal its riff.
+            for (let j = i + 1; j < nextSame[i]; j++) {
+                if (localProofEnd[j] >= 0 && localProofEnd[j] < nextSame[i]) {
+                    takeover[i] = 1; break;
                 }
             }
         }
+        const owned = new Uint8Array(count);
+        for (let i = 0; i < count;) {
+            if (!hasReturn(i) || takeover[i] || nextSame[i] > nextSectionHome[i]) { i++; continue; }
+            const first = i, length = nextSame[i] - i, single = length === 2;
+            const homeIndex = route[first], home = describeHome(spans[homeIndex]);
+            const pattern = { id: patterns.length, kind: single ? 'single-return' : 'repeated-cycle',
+                homeIndex, home, startIndex: homeIndex, endIndex: homeIndex,
+                start: spans[homeIndex].time, end: spans[homeIndex].time, cycles: [],
+                proofStart: spans[route[single ? first : proofStart[first]]].time,
+                proofEnd: spans[route[single ? nextSame[first] : proofEnd[first]]].time };
+            while (hasReturn(i) && !takeover[i] && nextSame[i] <= nextSectionHome[i]) {
+                const end = nextSame[i];
+                if (end - i !== length) break;
+                let same = true;
+                if (!single) for (let j = 1; same && j < length; j++)
+                    same = spans[route[first + j]].base === spans[route[i + j]].base;
+                if (!same) break;
+                const cycle = { startIndex: route[i], endIndex: route[end],
+                    start: spans[route[i]].time, end: spans[route[end]].time,
+                    maxAwayDuration: cycleMax[i], requiredDuration: single ? cycleMax[i] : required[i] };
+                pattern.cycles.push(cycle);
+                const indices = [];
+                for (let j = i; j <= end; j++) {
+                    owned[j] = 1;
+                    if (j > i && j < end) indices.push(route[j]);
+                }
+                candidates.push({ kind: 'ignored-excursion', reason: pattern.kind,
+                    indices, homeIndex, requiredDuration: cycle.requiredDuration,
+                    interval: { start: pattern.proofStart, end: pattern.proofEnd },
+                    patternId: pattern.id, cycleIndex: pattern.cycles.length - 1 });
+                i = end;
+                pattern.endIndex = route[end]; pattern.end = spans[route[end]].time;
+            }
+            patterns.push(pattern);
+            if (i === first) i++;
+        }
+        const uncertainReturn = new Int32Array(count + 1);
+        for (let i = 0; i < count; i++) {
+            if (nextSame[i] <= i + 2 || repeated[i]) continue;
+            uncertainReturn[i]++; uncertainReturn[nextSame[i] + 1]--;
+        }
+        // Generic spike candidates use a fixed local route. Claimed homes,
+        // genuine progression and its turning points cannot become spikes.
+        // Reserve both neighbours so adjacent extrema never erase each other.
+        const reserved = new Uint8Array(count);
+        let uncertainty = uncertainReturn[0];
+        for (let i = 1; i + 1 < count; i++) {
+            uncertainty += uncertainReturn[i];
+            if (owned[i] || reserved[i] || travel.protectedRoute[i] || uncertainty > 0) continue;
+            const a = spans[route[i - 1]], x = spans[route[i]], b = spans[route[i + 1]];
+            if (a.base === b.base || !outside(position(x), position(a), position(b))) continue;
+            // The next step already reaches past this turn: it can be the
+            // opening of an advancing zigzag, not an isolated excursion.
+            if (!travel.spike[i] && i + 2 < count) {
+                const turn = position(x) - position(b), following = position(spans[route[i + 2]]) - position(b);
+                if (turn * following > 0 && Math.abs(following) >= Math.abs(turn)) {
+                    reserved[i] = reserved[i + 1] = 1;
+                    continue;
+                }
+            }
+            // A neighbouring outlier would make the proposed home/target
+            // ambiguous. The continuing-trend prepass is positive evidence.
+            if (!travel.spike[i] && ((i > 1 && !owned[i - 1]
+                && outside(position(a), position(spans[route[i - 2]]), position(b)))
+                || (i + 2 < count && !owned[i + 1]
+                    && outside(position(b), position(a), position(spans[route[i + 2]]))))) continue;
+            candidates.push({ kind: 'ignored-overshoot', reason: 'isolated-off-route-spike',
+                indices: [route[i]], homeIndex: route[i - 1], requiredDuration: x.duration,
+                interval: { start: a.time, end: b.time }, patternId: null });
+            reserved[i - 1] = reserved[i + 1] = 1;
+        }
+        const protectedIndices = [];
+        for (let i = 0; i < count; i++) if (travel.protectedRoute[i]) protectedIndices.push(route[i]);
+        return { spans, patterns, candidates, protectedIndices };
     }
 
-    function hwyBuildCameraTimeline(regions, { context = null, excursionThreshold = 500 } = {}) {
-        context = context || {};
-        const spans = coalesceCameraSpans(regions, thresholdSeconds(excursionThreshold));
-        applyRiffVariationDecisions(spans, context);
-        // Long-note variation decisions remove their lasting barrier before
-        // short-return evidence is collected, preserving the established order.
-        const evidence = collectReturnEvidence(spans);
-        const sectionHomes = collectSectionHomes(spans, context, evidence);
-        applyReturnDecisions(spans, evidence, sectionHomes);
-        applyIsolatedSpikeDecisions(spans);
-        return spans;
-    }
-
-    function hwyBuildCameraStops(regions, { context = null, excursionThreshold = 500 } = {}) {
-        const timeline = hwyBuildCameraTimeline(regions, { context, excursionThreshold }), stops = [];
+    function hwyApplyCameraThreshold(evidence, { excursionThreshold = 500 } = {}) {
         const brief = thresholdSeconds(excursionThreshold);
+        const timeline = evidence.spans.map(span => {
+            // Equality remains lasting; the epsilon only compensates source
+            // timestamp subtraction roundoff, in original song seconds.
+            const lasting = span.duration > 0 && span.duration >= brief - 1e-9;
+            return { ...span, lasting, kind: lasting ? 'lasting' : 'transit', cameraX: span.x,
+                explanation: { decision: 'follow', reason: lasting ? 'lasting-lane' : 'short-waypoint',
+                    home: null, interval: { start: span.time, end: span.end } } };
+        });
+        const patterns = evidence.patterns.map(pattern => ({ ...pattern, activeCycles: [], held: false }));
+        for (const index of evidence.protectedIndices)
+            timeline[index].explanation.reason = 'progressive-run';
+        for (const candidate of evidence.candidates) {
+            if (!(candidate.requiredDuration < brief - 1e-9)) continue;
+            const home = timeline[candidate.homeIndex];
+            const explanation = { decision: 'hold', reason: candidate.reason,
+                home: describeHome(home), interval: candidate.interval };
+            for (const index of candidate.indices) {
+                const span = timeline[index];
+                span.kind = candidate.kind; span.lasting = false;
+                span.homeX = span.cameraX = home.x; span.explanation = explanation;
+            }
+            if (candidate.patternId !== null) {
+                const pattern = patterns[candidate.patternId], cycle = pattern.cycles[candidate.cycleIndex];
+                pattern.activeCycles.push(cycle);
+                for (const index of [cycle.startIndex, cycle.endIndex]) {
+                    timeline[index].localHome = true;
+                    timeline[index].explanation = { ...explanation, decision: 'follow', reason: 'return-home' };
+                }
+            }
+        }
+        for (const pattern of patterns) pattern.held = pattern.activeCycles.length === pattern.cycles.length;
+        const stops = [];
         for (const span of timeline) {
             if (span.kind.startsWith('ignored-') || span.kind === 'riff-variation') continue;
             const previous = stops[stops.length - 1];
@@ -376,8 +428,19 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
             stops.push({ ...span, reason: span.kind });
         }
         stops.timeline = timeline;
+        stops.evidence = evidence;
+        stops.patterns = patterns;
         return stops;
     }
 
-    return { hwyCameraRiffVariationCandidates, hwyBuildCameraTimeline, hwyBuildCameraStops };
+    function hwyBuildCameraTimeline(regions, options = {}) {
+        return hwyApplyCameraThreshold(hwyCompileCameraEvidence(regions, options), options).timeline;
+    }
+
+    function hwyBuildCameraStops(regions, options = {}) {
+        return hwyApplyCameraThreshold(hwyCompileCameraEvidence(regions, options), options);
+    }
+
+    return { hwyCameraRiffVariationCandidates, hwyCompileCameraEvidence, hwyApplyCameraThreshold,
+        hwyBuildCameraTimeline, hwyBuildCameraStops };
 }

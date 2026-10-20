@@ -4293,7 +4293,8 @@
 
     // Stable camera policy and movement are independent of Three.js.
     // Loaded once with renderer dependencies; only chart/cache changes build plans.
-    let hwyBuildCameraTimeline, hwyBuildCameraStops;
+    let hwyBuildCameraTimeline, hwyBuildCameraStops, hwyCompileCameraEvidence, hwyApplyCameraThreshold;
+    let hwyCompileTappingAreas, hwyApplyTappingAreas;
     let hwyBuildCameraAttackIndex, hwyPrepareCameraStops, hwyBuildCameraMotion;
     let hwyCameraSegmentAt, hwyCameraPlanAt, hwyCameraJoinAt, hwyCameraResumeAt;
     let hwyCameraRejoin, hwyCameraZoom, createCameraController;
@@ -5422,8 +5423,12 @@
                 import(THREE_URL).catch(() => import(THREE_CDN)),
                 import('/static/js/lyric-lines.js').then(m => { lyricLayout = m; }),
                 import(CAMERA_MODULE_BASE + 'camera-semantics.mjs').then(m => {
-                    ({ hwyBuildCameraTimeline, hwyBuildCameraStops } =
+                    ({ hwyBuildCameraTimeline, hwyBuildCameraStops, hwyCompileCameraEvidence, hwyApplyCameraThreshold } =
                         m.createCameraSemantics({ NFRETS, isRenderableNote }));
+                }),
+                import(CAMERA_MODULE_BASE + 'camera-tapping.mjs').then(m => {
+                    ({ hwyCompileTappingAreas, hwyApplyTappingAreas } =
+                        m.createCameraTapping({ NFRETS, isRenderableNote, isUnpitchedMute }));
                 }),
                 import(CAMERA_MODULE_BASE + 'camera-motion.mjs').then(m => {
                     ({ hwyBuildCameraAttackIndex, hwyPrepareCameraStops, hwyBuildCameraMotion,
@@ -6822,7 +6827,7 @@
         }
         fields.appendChild(durationReadout);
         fields.appendChild(timingBox);
-        fields.appendChild(element('p', 'The threshold applies to each lane in original song time. Short repeated riffs hold; progressive runs still travel. Riff protections stay on.', 'margin:8px 0;color:#adc0d7;'));
+        fields.appendChild(element('p', 'The threshold compares each lane in original song time. Raising it can hold more detours without restoring skipped lanes. Progressive runs still travel; held tapping patterns centre their playing area.', 'margin:8px 0;color:#adc0d7;'));
         panel.appendChild(fields); panel.appendChild(status);
         root.appendChild(toggle); root.appendChild(panel); host.appendChild(root);
         function renderTiming(force = false) {
@@ -6832,14 +6837,18 @@
                 'lasting-lane': 'lasting lane', 'short-waypoint': 'short lane retained in the journey',
                 'return-home': 'established home lane', 'single-return': 'brief out-and-back reply',
                 'repeated-cycle': 'matching repeated short cycles',
+                'progressive-run': 'protected progressive travel',
+                'tapping-area': 'centre of the held tapping pattern',
                 'isolated-off-route-spike': 'isolated short excursion outside the route',
                 'proven-note-variation': 'proven higher-note riff variation',
             };
             const home = decision?.home?.firstFret;
-            timingLines.decision.textContent = decision
-                ? (decision.decision === 'hold' ? 'Hold' + (Number.isFinite(home) ? ' lane ' + home : '')
-                    : 'Follow lane plan') + ': ' + (reasons[decision.reason] || decision.reason) + '.'
-                : 'No lane decision available.';
+            timingLines.decision.textContent = decision?.reason === 'tapping-area'
+                ? 'Hold tapping area: frets ' + decision.firstFret + '–' + decision.lastFret + ', centred across the pattern.'
+                : decision
+                    ? (decision.decision === 'hold' ? 'Hold' + (Number.isFinite(home) ? ' lane ' + home : '')
+                        : 'Follow lane plan') + ': ' + (reasons[decision.reason] || decision.reason) + '.'
+                    : 'No lane decision available.';
             const modes = { paused: 'Paused: camera held.', 'follow-off': 'Follow is off: camera held.',
                 'local-rejoin': 'Live change: smoothly rejoining the lane path.',
                 'direct-resume': 'Live change: smoothly finishing the current move.',
@@ -24751,22 +24760,27 @@
                 cache.attackNoteCount = bundle.notes?.length || 0;
                 cache.attackChordCount = bundle.chords?.length || 0; cache.attackStrings = nStr;
             }
-            const semanticsChanged = geometryChanged || cache.attacks !== cache.preparedAttacks
+            const evidenceChanged = geometryChanged || cache.attacks !== cache.evidenceAttacks
                 || cache.beats !== bundle.beats || cache.sections !== bundle.sections
                 || cache.beatCount !== (bundle.beats?.length || 0)
-                || cache.sectionCount !== (bundle.sections?.length || 0)
-                || cache.excursionThreshold !== stableCameraExcursionThreshold;
-            if (semanticsChanged) {
-                // Geometry is visibility only. Neither fit tolerance nor a
-                // duration-dominance pass can cancel an accepted lane change.
-                cache.semanticStops = hwyBuildCameraStops(cache.regions, {
-                    context: { notes: bundle.notes, chords: bundle.chords, beats: bundle.beats,
-                        sections: bundle.sections, stringCount: nStr },
-                    excursionThreshold: stableCameraExcursionThreshold,
-                });
-                cache.timeline = cache.semanticStops.timeline || [];
+                || cache.sectionCount !== (bundle.sections?.length || 0);
+            if (evidenceChanged) {
+                // Patterns and homes belong to the chart. Slider edits never
+                // reclassify them or rescan their note/technique evidence.
+                const context = { notes: bundle.notes, chords: bundle.chords, beats: bundle.beats,
+                    sections: bundle.sections, stringCount: nStr };
+                cache.cameraEvidence = hwyCompileCameraEvidence(cache.regions, { context });
+                cache.tappingAreas = hwyCompileTappingAreas(cache.cameraEvidence, context);
+                cache.evidenceAttacks = cache.attacks;
                 cache.beats = bundle.beats; cache.sections = bundle.sections;
                 cache.beatCount = bundle.beats?.length || 0; cache.sectionCount = bundle.sections?.length || 0;
+            }
+            const semanticsChanged = evidenceChanged || cache.excursionThreshold !== stableCameraExcursionThreshold;
+            if (semanticsChanged) {
+                cache.semanticStops = hwyApplyTappingAreas(hwyApplyCameraThreshold(cache.cameraEvidence, {
+                    excursionThreshold: stableCameraExcursionThreshold,
+                }), cache.tappingAreas, { xFret });
+                cache.timeline = cache.semanticStops.timeline || [];
                 cache.excursionThreshold = stableCameraExcursionThreshold;
             }
             const timingChanged = semanticsChanged || cache.rate !== rate || cache.smoothing !== cameraSmoothing;
