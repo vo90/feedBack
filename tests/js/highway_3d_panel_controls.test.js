@@ -13,6 +13,7 @@ const SCREEN_JS = path.join(__dirname, '..', '..', 'plugins', 'highway_3d', 'scr
 // 'palette' was removed — per-string colors are now set via the core
 // "Highway String Colors" UI, which drives both highways by named string.
 const REQUIRED_KEYS = ['cameraMode', 'stableCameraPreset', 'stableCameraFollow',
+    'stableCameraPreparationMode', 'stableCameraPreparationMs',
     'stableCameraDepartureDelay', 'stableCameraTravelExtra', 'stableCameraSettleLimit',
     'stableCameraExcursionThreshold',
     'notationStyle', 'noteStemsVisible', 'letRingTrailsVisible', 'openStringStemsVisible', 'chordBoxTop', 'repeatChordFullBorder', 'glow', 'bloom', 'cameraSmoothing', 'cameraLockLow', 'cameraLockZoom'];

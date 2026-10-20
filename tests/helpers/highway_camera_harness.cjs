@@ -19,6 +19,43 @@ function extractFunction(name, input = source) {
     return source.slice(start, end);
 }
 
+// The algorithm modules are imported intact. Only the renderer-owned geometry
+// adapter still needs its existing controlled fixture environment below.
+function cameraApi({onRenderableNote} = {}) {
+    const {createCameraSemantics} = require('../../plugins/highway_3d/src/camera-semantics.mjs');
+    const {createCameraMotion} = require('../../plugins/highway_3d/src/camera-motion.mjs');
+    const predicates = new Function(`const NFRETS=24;
+        ${['isPlayableFret','isPlainDeadNote','isUnpitchedMute','isRenderableNote'].map(name=>extractFunction(name)).join('\n')}
+        return {isRenderableNote,isUnpitchedMute};
+    `)();
+    if (onRenderableNote) {
+        const renderable = predicates.isRenderableNote;
+        predicates.isRenderableNote = (...args) => {
+            onRenderableNote();
+            return renderable(...args);
+        };
+    }
+    return {...createCameraSemantics({NFRETS:24,...predicates}),...createCameraMotion(predicates)};
+}
+
+// Preserve the old tests' positional calls while exercising production module
+// functions. Obsolete composition callbacks deliberately have no effect.
+function legacyCameraApi() {
+    const api = cameraApi();
+    return {...api,
+        hwyBuildCameraTimeline: (regions,context=null,excursionThreshold=500) =>
+            api.hwyBuildCameraTimeline(regions,{context,excursionThreshold}),
+        hwyBuildCameraStops: (regions,rate,canHold,sharedCentre,dominantInterval,attacks,context=null,excursionThreshold=500) =>
+            api.hwyBuildCameraStops(regions,{context,excursionThreshold}),
+        // Old fixtures still pass the retired minimum-fret gate in the slot
+        // now used by manual preparation. Keep their original Auto behavior.
+        hwyBuildCameraMotion: (stops,rate,smoothing,delay,extra,settling) =>
+            api.hwyBuildCameraMotion(stops,rate,smoothing,delay,extra,settling),
+        hwyCameraPlanAt: (stops,now,rate,smoothing,out,delay,extra,settling) =>
+            api.hwyCameraPlanAt(stops,now,rate,smoothing,out,delay,extra,settling),
+    };
+}
+
 function harness(subject = source, three = null) {
     const source = subject;
     const extract = name => extractFunction(name, subject);
@@ -27,7 +64,9 @@ function harness(subject = source, three = null) {
     const stateStart = source.indexOf('const _stableCam = {');
     const stateEnd = source.indexOf('function stableAddPoint(', stateStart);
     assert.ok(stateStart >= 0 && stateEnd > stateStart);
-    return new Function('Three', `
+    const api = cameraApi();
+    const {createCameraController} = require('../../plugins/highway_3d/src/camera-controller.mjs');
+    return new Function('Three', 'cameraApi', 'createCameraController', `
         const K = 1, TS = 230, AHEAD = 3, CAM_LOCK_CENTER_FRET = 6, NFRETS = 24;
         ${['isPlayableFret', 'isPlainDeadNote', 'isUnpitchedMute', 'isRenderableNote'].map(extract).join('\n')}
         const rawPoints = [];
@@ -35,6 +74,7 @@ function harness(subject = source, three = null) {
         ${source.slice(stateStart, stateEnd).replace('function stableSupportReset() {', 'function stableSupportReset() { rawPoints.length = 0;')}
         let _stableCameraResetSerial = 0, stableCameraPreset = 'straight', stableCameraFollow = true;
         let stableCameraDepartureDelay = 0, stableCameraTravelExtra = 0, stableCameraSettleLimit = 0;
+        let stableCameraPreparationMode = 'auto', stableCameraPreparationMs = 700;
         let stableCameraExcursionThreshold = 500, stableCameraLongSwitchFrets = 5;
         let _leftyCached = false, _songKey = 'song', nStr = 6, cameraSmoothing = .5, zoomSmoothing = .5;
         let wall = 0, fixturePoints = [], fixtureObjects = null, segmentCalls = 0, depthCalls = 0,
@@ -59,6 +99,7 @@ function harness(subject = source, three = null) {
         const xFretMid = fret => fret * 10 - 5, xFret = fret => fret * 10;
         const fretLabelScaleForFret = () => 1;
         const _stablePlan = {rows:null,key:'',stops:[],revision:0,result:{}};
+        let stableMotionController = null;
         let mockRegionKey='', mockRegionAnchors=[];
         const dZ = time => { depthCalls++; return -time * TS; };
         ${extract('stableAddPoint').replace('_stablePointSamples++;', 'rawPoints.push([x,y,z]); _stablePointSamples++;')}
@@ -67,7 +108,8 @@ function harness(subject = source, three = null) {
         ${extract('stableConstrain')}
         ${extract('stableIntervalAt')}
         ${extract('stableSolve')}
-        ${['hwyCameraRiffVariationCandidates','hwyBuildCameraTimeline','hwyBuildCameraStops','hwyBuildCameraAttackIndex','hwyPrepareCameraStops','hwyBuildCameraMotion','hwyCameraSegmentAt','hwyCameraPlanAt','hwyCameraJoinAt','hwyCameraResumeAt','hwyCameraRejoin','hwyCameraZoom','stableRegionFitDistance','stableRegionFootprint','stableRegionFraming','stableRegionViewDistance','stableCameraPlan','stableCamUpdate'].map(extract).join('\n')}
+        const {${Object.keys(api).join(',')}} = cameraApi;
+        ${['stableRegionFitDistance','stableRegionFootprint','stableRegionFraming','stableRegionViewDistance','stableCameraPlan','stableSampleCameraPlan','stableCamUpdate'].map(extract).join('\n')}
         ${extract('stableCollectGeometry').replace('function stableCollectGeometry(', 'function collectRealRegionGeometry(')}
         function stableCollectGeometry(region) {
             if (fixtureObjects) return collectRealRegionGeometry(region);
@@ -151,6 +193,8 @@ function harness(subject = source, three = null) {
                 if ('departureDelay' in values) stableCameraDepartureDelay = values.departureDelay;
                 if ('travelExtra' in values) stableCameraTravelExtra = values.travelExtra;
                 if ('settleLimit' in values) stableCameraSettleLimit = values.settleLimit;
+                if ('preparationMode' in values) stableCameraPreparationMode = values.preparationMode;
+                if ('preparationMs' in values) stableCameraPreparationMs = values.preparationMs;
                 if ('excursionThreshold' in values) stableCameraExcursionThreshold = values.excursionThreshold;
                 if ('longSwitchFrets' in values) stableCameraLongSwitchFrets = values.longSwitchFrets;
             },
@@ -241,7 +285,7 @@ function harness(subject = source, three = null) {
             reset() { ++_stableCameraResetSerial; },
             changeSong() { _songKey += '-next'; bundle.notes = []; bundle.chords = []; bundle.anchors = []; },
         };
-    `)(three);
+    `)(three, api, createCameraController);
 }
 
-module.exports = { source, extractFunction, harness };
+module.exports = { source, extractFunction, cameraApi, legacyCameraApi, harness };

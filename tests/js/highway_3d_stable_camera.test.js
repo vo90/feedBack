@@ -868,8 +868,11 @@ test('the stable camera entry point forwards the render clock and reports curren
             return bundle;
         };
         const _stablePlan = {result:{valid:false,timing:null}};
-        let call, nextPlan, reportedTiming;
-        const stableCameraTuningOverlay = {setTiming(timing) { reportedTiming = timing; }};
+        const _stableCam = {motionMode:'scheduled'};
+        let call, nextPlan, reportedTiming, reportedDecision, reportedMode;
+        const stableCameraTuningOverlay = {setTiming(timing,decision,mode) {
+            reportedTiming = timing; reportedDecision = decision; reportedMode = mode;
+        }};
         function stableCamUpdate(bundle, frameTime) {
             call = {bundle, frameTime};
             _stablePlan.result = nextPlan;
@@ -878,17 +881,21 @@ test('the stable camera entry point forwards the render clock and reports curren
         return (bundle, result) => {
             nextPlan = result;
             camUpdate(bundle);
-            return {...call, reportedTiming};
+            return {...call, reportedTiming, reportedDecision, reportedMode};
         };
     `)();
     const bundle = {currentTime:108.719,isPlaying:true};
     const timing = {requestedDelayMs:1000,appliedDelayMs:140,limitingReason:'settling-limit'};
-    const call = run(bundle, {valid:true,timing});
+    const decision = {decision:'follow',reason:'lasting-lane'};
+    const call = run(bundle, {valid:true,timing,decision});
     assert.equal(call.bundle, bundle);
     assert.equal(call.frameTime, 108.735);
     assert.equal(call.reportedTiming, timing, 'the overlay receives the plan updated during this frame');
-    const invalid = run(bundle, {valid:false,timing});
+    assert.equal(call.reportedDecision, decision, 'the overlay receives cached semantic evidence');
+    assert.equal(call.reportedMode, 'scheduled');
+    const invalid = run(bundle, {valid:false,timing,decision});
     assert.equal(invalid.reportedTiming, null, 'an invalid plan must not expose stale timing');
+    assert.equal(invalid.reportedDecision, null, 'an invalid plan must not expose stale semantic evidence');
     assert.equal(invalid.frameTime, 108.735);
 });
 

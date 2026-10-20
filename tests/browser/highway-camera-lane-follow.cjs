@@ -11,6 +11,7 @@
 // --range Name=start,end limits a focused song/performance passage.
 // --songs-only / --synthetic-only, --perf, --moving-perf, --lifecycle are optional.
 // --moving-at song-seconds selects the same movement for paired CPU comparisons.
+// --compare-traces prior-output-dir checks every movement/zoom/pose sample against a reference run.
 // --tuning-ui checks the live panel and captures wide/narrow screenshots on sustained cases.
 // --live-consistency exercises committed threshold edits during playback, pause,
 // Follow and rate changes, then loop wrap. Use --range to select a private passage.
@@ -31,17 +32,41 @@ const out = path.resolve(option('--out'));
 assert.ok(!out.startsWith(root + path.sep), 'Keep private acceptance evidence outside the source checkout');
 assert.ok(!fs.existsSync(out), 'Use a fresh output directory');
 const normalize = value => value.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
-const source = option('--source-ref') ? normalize(execFileSync('git', ['-C', root, 'show', `${option('--source-ref')}:plugins/highway_3d/screen.js`],
-  {encoding:'utf8', maxBuffer:8*1024*1024})) : normalize(fs.readFileSync(path.join(root, 'plugins/highway_3d/screen.js'), 'utf8'));
+const sourceRef = option('--source-ref') ? execFileSync('git',
+  ['-C', root, 'rev-parse', `${option('--source-ref')}^{commit}`], {encoding:'utf8'}).trim() : null;
+const assetCache = new Map(), assetHashes = {};
+function readAsset(relative) {
+  const file=path.resolve(root,relative);
+  if(!file.startsWith(root+path.sep))return null;
+  const key=path.relative(root,file).split(path.sep).join('/');
+  if(assetCache.has(key))return assetCache.get(key);
+  let bytes=null;
+  try {
+    bytes=sourceRef ? execFileSync('git',['-C',root,'show',`${sourceRef}:${key}`],
+      {maxBuffer:64*1024*1024,stdio:['ignore','pipe','pipe']}) : fs.readFileSync(file);
+  } catch(error) {
+    if(!sourceRef&&error.code!=='ENOENT'&&error.code!=='EISDIR')throw error;
+  }
+  assetCache.set(key,bytes);
+  if(bytes)assetHashes[key]=crypto.createHash('sha256').update(bytes).digest('hex');
+  return bytes;
+}
+const sourceBytes=readAsset('plugins/highway_3d/screen.js');
+assert.ok(sourceBytes,'Selected revision must contain the production renderer');
+const source = normalize(sourceBytes.toString('utf8'));
 const railFixture=args.includes('--tuning-ui')?{
-  html:fs.readFileSync(path.join(root,'static/v3/index.html'),'utf8'),
-  css:fs.readFileSync(path.join(root,'static/v3/v3.css'),'utf8'),
+  html:readAsset('static/v3/index.html').toString('utf8'),
+  css:readAsset('static/v3/v3.css').toString('utf8'),
 }:null;
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const rates = option('--rates', '.5,1,2').split(',').map(Number);
 const presets = option('--presets', 'straight,angled').split(',');
 const cameraSettings = Object.fromEntries(repeated('--setting').map(value => {
   const at=value.indexOf('='),key=value.slice(0,at),number=Number(value.slice(at+1));
+  if(key==='stableCameraPreparationMode') {
+    const mode=value.slice(at+1);assert.ok(['auto','manual'].includes(mode),'Preparation mode must be auto or manual');
+    return [key,mode];
+  }
   assert.ok(at>0&&/^stableCamera[A-Za-z]+$/.test(key)&&Number.isFinite(number),'--setting stableCameraName=number');
   return [key,number];
 }));
@@ -300,11 +325,24 @@ async function validateTuningUi(page,c) {
   const details=root.locator('[data-camera-timing-details]');
   const number=key=>root.locator(`[data-camera-setting="${key}"][data-camera-input="number"]`);
   const keys=['stableCameraDepartureDelay','stableCameraTravelExtra','stableCameraSettleLimit','stableCameraExcursionThreshold'];
+  const preparationMode=root.locator('[data-camera-setting="stableCameraPreparationMode"]');
+  const hasPreparation=await preparationMode.count()>0,preparationKey='stableCameraPreparationMs';
+  if(!args.includes('--reference'))check(hasPreparation,c.name,'Preparation mode control is missing');
   check(await root.count()===1&&await toggle.isVisible()&&await panel.isHidden(),c.name,'Live tuning control was missing, duplicated, or initially expanded');
   check(await number('stableCameraLongSwitchFrets').count()===0,c.name,'Removed long-switch eligibility control remains visible');
   check(await details.count()===1&&!(await details.evaluate(element=>element.open)),c.name,'Timing details should initially be collapsed');
   await page.evaluate(()=>{window.__tuningKeyCount=0;window.__tuningKeyListener=()=>window.__tuningKeyCount++;document.addEventListener('keydown',window.__tuningKeyListener);});
   await toggle.click();check(await panel.isVisible(),c.name,'Camera tuning did not open');
+  if(hasPreparation) {
+    await preparationMode.selectOption('auto');
+    check(await number(preparationKey).isDisabled(),c.name,'Auto left the manual preparation value enabled');
+    await preparationMode.selectOption('manual');
+    check(await number(preparationKey).isEnabled(),c.name,'Manual did not enable its preparation value');
+    await number(preparationKey).fill('1000');await number(preparationKey).press('Enter');
+    const stored=await page.evaluate(()=>[localStorage.getItem('h3d_bg_stableCameraPreparationMode'),
+      localStorage.getItem('h3d_bg_stableCameraPreparationMs')]);
+    check(stored[0]==='manual'&&stored[1]==='1000',c.name,'Manual preparation controls did not persist together',stored);
+  }
   for(const [i,key] of keys.entries()) {
     const value=[150,20,350,750][i];await number(key).fill(String(value));await number(key).press('Enter');
     const stored=await page.evaluate(key=>localStorage.getItem('h3d_bg_'+key),key);
@@ -324,13 +362,27 @@ async function validateTuningUi(page,c) {
   check(timing.lines.limit===(timing.timing?.limitingReason==='settling-limit'?'Limited by Maximum settling time.'
     :timing.timing?.limitingReason==='next-journey'?'Limited by the next journey.':'Full timing requests applied.'),
   c.name,'Timing report did not show the actual limiting reason',timing);
+  if(hasPreparation) {
+    check(timing.timing?.preparationReason==='manual'&&timing.timing?.preparedLeadMs===1000,
+      c.name,'Manual preparation did not reach the cached journey schedule',timing);
+    check(timing.lines.starts.includes(Math.round(Math.abs(timing.timing.appliedLeadMs))+' ms')
+      &&timing.lines.travel.includes(Math.round(timing.timing.appliedDurationMs)+' ms')
+      &&timing.lines.lateness.includes(Math.round(timing.timing.appliedLatenessMs)+' ms'),
+    c.name,'Actual lead, travel or arrival readout disagrees with the cached schedule',timing);
+    check(timing.lines.decision.length>0&&timing.lines.preparation.includes('manual preparation'),
+      c.name,'Decision or preparation explanation is missing',timing);
+  }
   for(const [preset,values] of [['previous',[0,0,0,500]],['gentler',[100,10,250,500]]]) {
     await root.locator(`[data-camera-tuning-preset="${preset}"]`).click();
     const actual=await Promise.all(keys.map(key=>number(key).inputValue()));
     check(actual.every((value,i)=>Number(value)===values[i]),c.name,'Live comparison button applied the wrong tuning',{preset,actual});
+    if(hasPreparation)check(await preparationMode.inputValue()==='auto'&&await number(preparationKey).isDisabled(),
+      c.name,'Comparison tuning did not restore Auto preparation',{preset});
   }
   const follow=root.locator('[data-camera-setting="stableCameraFollow"]');
   await follow.uncheck();check(await number(keys[0]).isDisabled(),c.name,'Follow off left motion fields enabled');await follow.check();
+  check(!(await root.textContent()).includes('Turn on Follow hand position to adjust movement.'),
+    c.name,'Follow-on retained the disabled-status message');
   const view=root.locator('[data-camera-setting="stableCameraPreset"]');
   await view.selectOption(c.preset==='straight'?'angled':'straight');await view.selectOption(c.preset);
   await number(keys[0]).press('Escape');
@@ -339,6 +391,7 @@ async function validateTuningUi(page,c) {
   check(await page.evaluate(()=>window.__tuningKeyCount)===0,c.name,'Live tuning keystrokes leaked to game keyboard listeners');
   await page.evaluate(()=>document.removeEventListener('keydown',window.__tuningKeyListener));
   await toggle.click();
+  if(hasPreparation)await preparationMode.selectOption('manual');
   const layout=[];
   for(const viewport of [c.viewport,{width:390,height:740},{width:800,height:450}]) {
     await page.evaluate(()=>document.activeElement?.blur());
@@ -361,7 +414,7 @@ async function validateTuningUi(page,c) {
     check(bounds.x>=menu.right&&menu.toggleLeft>=menu.right,c.name,'Camera tuning overlaps the real player rail or its pointer catcher',{viewport,bounds,menu});
     check(menu.toggleReceivesPointer&&menu.popoversHidden,c.name,'Player rail intercepted Camera tuning or a fixture popover was open',{viewport,menu});
     const inputs=[];
-    for(const key of keys) {
+    for(const key of hasPreparation?[...keys,preparationKey]:keys) {
       const input=number(key);await input.scrollIntoViewIfNeeded();await input.click();
       const hit=await input.evaluate(element=>{
         const rect=element.getBoundingClientRect();
@@ -506,6 +559,68 @@ async function validateLiveConsistency(page,c) {
   return runs;
 }
 
+function compareTrace(c,samples) {
+  const directory=option('--compare-traces');
+  if(!directory)return;
+  const file=path.resolve(directory,c.name+'.json');
+  assert.ok(fs.existsSync(file),`Missing matching reference trace: ${file}`);
+  const reference=JSON.parse(fs.readFileSync(file,'utf8'));
+  const tolerance=Number(option('--trace-tolerance','1e-9'));
+  assert.ok(Number.isFinite(tolerance)&&tolerance>=0,'--trace-tolerance must be nonnegative');
+  const configuration={sourceName:c.sourceName,preset:c.preset,rate:c.rate,fps:c.fps,
+    viewport:c.viewport,start:c.start,end:c.end,cameraSettings:c.cameraSettings};
+  for(const [key,value]of Object.entries(configuration))assert.deepEqual(reference[key],value,
+    `Reference trace configuration differs: ${key}`);
+  const fields=['time','x','velocity','distance','zoomVelocity','plannedX','targetDistance',
+    'safetyOffset','requiredRegionDistance','requiredVisibleDistance','fov'];
+  const maxima=Object.fromEntries(fields.map(key=>[key,0]));
+  Object.assign(maxima,{position:0,quaternion:0,bounds:0});
+  let firstMismatch=null;
+  const compare=(actual,expected,key,index)=>{
+    const delta=actual===expected?0:typeof actual==='number'&&typeof expected==='number'
+      ?Math.abs(actual-expected):Infinity;
+    maxima[key]=Math.max(maxima[key]||0,delta);
+    if(!(delta<=tolerance)&&!firstMismatch)firstMismatch={index,key,actual,expected,delta};
+  };
+  check(samples.length===reference.samples.length,c.name,'Reference trace sample count differs',
+    {actual:samples.length,expected:reference.samples.length});
+  for(let i=0;i<Math.min(samples.length,reference.samples.length);i++) {
+    const actual=samples[i],expected=reference.samples[i];
+    for(const key of fields)compare(actual[key],expected[key],key,i);
+    for(const key of ['position','quaternion']) {
+      for(let j=0;j<Math.max(actual[key]?.length||0,expected[key]?.length||0);j++)
+        compare(actual[key]?.[j],expected[key]?.[j],key,i);
+    }
+    for(const key of ['minX','maxX','minY','maxY','count'])
+      compare(actual.bounds?.[key],expected.bounds?.[key],'bounds',i);
+    compare(actual.correction,expected.correction,'correction',i);
+  }
+  check(!firstMismatch,c.name,'Camera movement/zoom/pose differs from the reference trace',firstMismatch);
+  return {reference:file,referenceSourceHash:reference.sourceHash,samples:samples.length,tolerance,maxima,firstMismatch};
+}
+
+function compareLifecycleTrace(c,traceComparison,records) {
+  if(!traceComparison)return;
+  const reference=JSON.parse(fs.readFileSync(traceComparison.reference,'utf8'));
+  // Match the evidence file's encoding of undefined and infinite sentinels.
+  const actual=JSON.parse(JSON.stringify(records));
+  let firstMismatch=null,numericSamples=0,maxDelta=0;
+  const visit=(value,expected,key)=>{
+    if(firstMismatch)return;
+    if(typeof expected==='number'&&typeof value==='number') {
+      const delta=Math.abs(value-expected);numericSamples++;maxDelta=Math.max(maxDelta,delta);
+      if(!(delta<=traceComparison.tolerance))firstMismatch={key,value,expected,delta};
+    } else if(expected&&typeof expected==='object') {
+      if(!value||typeof value!=='object'||Array.isArray(value)!==Array.isArray(expected)
+        ||Array.isArray(expected)&&value.length!==expected.length)firstMismatch={key,value,expected};
+      else for(const name of Object.keys(expected))visit(value[name],expected[name],`${key}.${name}`);
+    } else if(value!==expected)firstMismatch={key,value,expected};
+  };
+  for(const key of Object.keys(actual))visit(actual[key],reference[key],key);
+  check(!firstMismatch,c.name,'Lifecycle/live-edit trajectory differs from the reference trace',firstMismatch);
+  traceComparison.lifecycle={numericSamples,maxDelta,firstMismatch};
+}
+
 async function main() {
   fs.mkdirSync(out,{recursive:true});
   fs.writeFileSync(path.join(out,'source.sha256'),sha(source)+'\n');
@@ -521,8 +636,10 @@ async function main() {
       if(url.origin!=='http://lane-follow.test')return route.fulfill({status:403,body:'External network disabled'});
       if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:'<!doctype html><style>html,body{margin:0;background:#101820}#host{position:relative;width:100vw;height:100vh}canvas{width:100%;height:100%}</style><div id="host"><canvas id="highway"></canvas></div><script src="/screen.js"></script>'});
       if(url.pathname==='/screen.js')return route.fulfill({contentType:'text/javascript',body:instrument(source)});
-      const file=path.resolve(root,'.'+decodeURIComponent(url.pathname));
-      if(file.startsWith(root+path.sep)&&fs.existsSync(file)&&fs.statSync(file).isFile())return route.fulfill({body:fs.readFileSync(file),contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.png')?'image/png':'application/octet-stream'});
+      const relative=decodeURIComponent(url.pathname).replace(
+        /^\/api\/plugins\/highway_3d\/(?:g\/camera-\d+\/)?src\//,'/plugins/highway_3d/src/').replace(/^\//,'');
+      const body=readAsset(relative);
+      if(body)return route.fulfill({body,contentType:/\.m?js$/.test(relative)?'text/javascript':relative.endsWith('.png')?'image/png':'application/octet-stream'});
       return route.fulfill({status:404,body:'Missing fixture asset'});
     });
     await page.goto('http://lane-follow.test/');
@@ -530,7 +647,9 @@ async function main() {
       await page.setViewportSize(c.viewport);
       const initial=await page.evaluate(async c=>{
         window.r?.destroy();localStorage.clear();window.__h3dCamCtl=null;window.__wall=1000;
-        const settings={cameraMode:'stable',stableCameraPreset:c.preset,stableCameraFollow:true,cameraSmoothing:.5,zoomSmoothing:.5,tiltSmoothing:.5,cameraLockLow:false,
+        const settings={cameraMode:'stable',stableCameraPreset:c.preset,stableCameraFollow:true,
+          stableCameraPreparationMode:'auto',stableCameraPreparationMs:700,
+          cameraSmoothing:.5,zoomSmoothing:.5,tiltSmoothing:.5,cameraLockLow:false,
           notationStyle:'current',style:'off',glow:0,cinematic:false,sparks:false,bloom:false,verdictMarks:false,timingFx:false,streakFx:false,hitFx:0,chordDiagramVisible:false,
           ...c.cameraSettings};
         for(const[k,v]of Object.entries(settings)){localStorage.setItem('h3d_bg_'+k,String(v));window['h3dBgSet'+k[0].toUpperCase()+k.slice(1)]?.(v);}
@@ -554,6 +673,7 @@ async function main() {
         for(const image of chunk.images)fs.writeFileSync(path.join(out,`${c.name}-${image.time.toFixed(6)}.png`),Buffer.from(image.png.split(',')[1],'base64'));
       }
       const boundaries=validate(c,samples,initial.plan);
+      const traceComparison=compareTrace(c,samples);
       let performanceDiagnostics;
       if(args.includes('--perf')){const times=await page.evaluate(()=>r.__laneCpu(200));const sorted=times.slice().sort((a,b)=>a-b);
         performanceDiagnostics={method:'Warm camera CPU, stationary song position, GPU disabled; not a live FPS measurement',meanMs:times.reduce((a,b)=>a+b,0)/times.length,p95Ms:sorted[Math.floor(sorted.length*.95)],maxMs:sorted.at(-1)};}
@@ -615,8 +735,9 @@ async function main() {
       }
       const tuningUi=args.includes('--tuning-ui')&&c.kind==='arrival'?await validateTuningUi(page,c):undefined;
       const liveConsistency=args.includes('--live-consistency')?await validateLiveConsistency(page,c):undefined;
+      compareLifecycleTrace(c,traceComparison,{lifecycle,liveConsistency});
       const run={name:c.name,sourceName:c.sourceName,kind:c.kind,preset:c.preset,rate:c.rate,fps:c.fps,viewport:c.viewport,start:c.start,end:c.end,cameraSettings:c.cameraSettings,tuningUi,
-        chartHash:c.chartHash,sourceHash:sha(source),metrics:summary(samples),boundaries,performanceDiagnostics,lifecycle,liveConsistency,
+        chartHash:c.chartHash,sourceHash:sha(source),sourceRef,metrics:summary(samples),boundaries,traceComparison,performanceDiagnostics,lifecycle,liveConsistency,
         classification:initial.plan.timeline.map(s=>({time:s.time,end:s.end,duration:s.duration,firstFret:s.firstFret,kind:s.kind,lasting:s.lasting})),plan:initial.plan,samples};
       fs.writeFileSync(path.join(out,c.name+'.json'),JSON.stringify(run));
       results.push({...run,plan:undefined,samples:undefined,lifecycle:undefined,liveConsistency:undefined});
@@ -627,7 +748,7 @@ async function main() {
     const peer=results.find(other=>other.sourceName===run.sourceName);
     check(JSON.stringify(run.classification)===JSON.stringify(peer.classification),run.name,'Speed, preset, or viewport changed original-song lane classification');
   }
-  fs.writeFileSync(path.join(out,'results.json'),JSON.stringify({sourceHash:sha(source),reference:args.includes('--reference'),results,failures,errors},null,2));
+  fs.writeFileSync(path.join(out,'results.json'),JSON.stringify({sourceHash:sha(source),sourceRef,assetHashes,reference:args.includes('--reference'),results,failures,errors},null,2));
   console.log(JSON.stringify({cases:results.length,failures:failures.length,browserErrors:errors.length,out}));
   if(errors.length||failures.length&&!args.includes('--reference'))process.exitCode=1;
 }

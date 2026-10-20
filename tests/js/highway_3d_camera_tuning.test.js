@@ -1,15 +1,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { source, extractFunction, harness } = require('../helpers/highway_camera_harness.cjs');
-
-const cameraHelpers = [...source.matchAll(/function (hwy(?:BuildCamera|PrepareCamera|Camera)[A-Za-z0-9_]*)\(/g)]
-    .map(match => match[1]);
-const { motion, at, buildStops, timeline } = new Function(
-    'const NFRETS=24;\n' +
-    ['isPlayableFret','isPlainDeadNote','isUnpitchedMute','isRenderableNote',...cameraHelpers]
-        .map(name=>extractFunction(name)).join('\n') +
-    '\nreturn {motion:hwyBuildCameraMotion,at:hwyCameraPlanAt,buildStops:hwyBuildCameraStops,timeline:hwyBuildCameraTimeline};'
-)();
+const {legacyCameraApi,harness} = require('../helpers/highway_camera_harness.cjs');
+const {hwyBuildCameraMotion:motion,hwyCameraPlanAt:at,hwyBuildCameraStops:buildStops,
+    hwyBuildCameraTimeline:timeline} = legacyCameraApi();
 const row=(time,fret,lasting=true,width=4)=>({time,firstFret:fret,lastFret:fret+width-1,
     minX:(fret-1)*10,maxX:(fret+width-1)*10,normalWidth:40,x:(fret+1)*10,preferred:(fret+1)*10,lasting});
 const clone=rows=>rows.map(r=>({...r}));
@@ -447,11 +440,12 @@ function journeyController(preset='straight',rate=1) {
     h.frame(0,0);return h;
 }
 
-test('the three timing controls rebuild motion without reclassifying lanes or reprojecting geometry',()=>{
+test('timing and manual preparation rebuild motion without reclassifying lanes or reprojecting geometry',()=>{
     const h=controller(),cache=h.planCache();
     const semantic=cache.semanticStops,timeline=cache.timeline,regions=cache.regions,attacks=cache.attacks;
     const objects=regions.slice(),stops=cache.stops;
-    for(const settings of [{departureDelay:1000},{travelExtra:200},{settleLimit:3000}]) {
+    for(const settings of [{departureDelay:1000},{travelExtra:200},{settleLimit:3000},
+        {preparationMode:'manual'},{preparationMs:1500},{preparationMode:'auto'}]) {
         const oldMotion=cache.stops.motion,revision=cache.revision;
         h.settings(settings);h.frame(0,0);
         assert.equal(cache.semanticStops,semantic);assert.equal(cache.timeline,timeline);
@@ -461,6 +455,27 @@ test('the three timing controls rebuild motion without reclassifying lanes or re
         const motion=cache.stops.motion,stableRevision=cache.revision;
         for(let i=0;i<10;i++) h.frame(0,0);
         assert.equal(cache.stops.motion,motion);assert.equal(cache.revision,stableRevision);
+    }
+});
+
+test('live manual preparation edits preserve pose and velocity before settling to the scheduled destination',()=>{
+    for(const preset of ['straight','angled']) for(const rate of [.5,1,2]) {
+        const h=controller(preset);h.settings({rate});h.frame(0,0);
+        let before=advance(h,0,3.8,rate);
+        const cache=h.planCache(),semantic=cache.semanticStops,regions=cache.regions;
+        for(const settings of [{preparationMode:'manual',preparationMs:1000},
+            {preparationMs:25},{preparationMs:3000},{preparationMode:'auto'}]) {
+            h.settings(settings);
+            const after=h.frame(3.8,0);
+            near(after.x,before.x,'manual preparation edit preserves position');
+            near(after.planVelocity+after.rejoinVelocity,before.planVelocity+before.rejoinVelocity,
+                'manual preparation edit preserves velocity');
+            assert.equal(cache.semanticStops,semantic);assert.equal(cache.regions,regions);
+            before=after;
+        }
+        const arrival=cache.stops.motion.at(-1).end;
+        const state=advance(h,3.8,arrival+.1*rate,rate);
+        near(state.x,180);near(state.planVelocity+state.rejoinVelocity,0);
     }
 });
 
