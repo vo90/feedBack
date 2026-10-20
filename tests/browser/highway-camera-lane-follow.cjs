@@ -10,6 +10,7 @@
 // --fps 30 --song-fps 10 --case name-fragment --captures Name=15.359,16.586
 // --range Name=start,end limits a focused song/performance passage.
 // --songs-only / --synthetic-only, --perf, --moving-perf, --lifecycle are optional.
+// --moving-at song-seconds selects the same movement for paired CPU comparisons.
 // --tuning-ui checks the live panel and captures wide/narrow screenshots on sustained cases.
 // --live-consistency exercises committed threshold edits during playback, pause,
 // Follow and rate changes, then loop wrap. Use --range to select a private passage.
@@ -89,7 +90,8 @@ for(const [name,path]of [
     anchors.push({time,fret,width:4});notes.push(note({t:time,f:fret}));
     if(fret===peakFret)peakTimes.push(time);
   }
-  fixtures.push({name,kind:'progressive-return',start:4,end:18,peakTimes,peakFret,b:base({anchors,notes})});
+  // Leave room to observe the complete late tail even at 2x and the 3s settling limit.
+  fixtures.push({name,kind:'progressive-return',start:4,end:24,peakTimes,peakFret,b:base({anchors,notes})});
 }
 if(args.includes('--live-consistency')) {
   const anchors=[{time:0,fret:5,width:4}],notes=[];
@@ -218,7 +220,17 @@ function validate(c, samples, plan) {
       if(!Number.isFinite(s.nominalStart))continue;
       check(s.end>=s.start&&(!i||s.start>=plan.motion[i-1].end-1e-8),c.name,'Motion segments overlap or have negative duration',{index:i,segment:s});
       check(s.start>=s.nominalStart-1e-8&&s.end-s.start>=s.nominalEnd-s.nominalStart-1e-8,c.name,'Tuning departed earlier or shortened travel',{index:i,segment:s});
-      if(s.tuningEligible) {
+      if(s.timing) {
+        const arrival=plan.motion[s.arrivalIndex],following=plan.motion[s.arrivalIndex+1];
+        const limit=(c.cameraSettings.stableCameraSettleLimit??250)/1000*c.rate;
+        check(arrival.end<=arrival.nominalEnd+limit+1e-8&&(!following||arrival.end<=following.nominalStart+1e-8),
+          c.name,'Journey exceeded its settling or next-journey deadline',{index:i,segment:s,arrival});
+        const waypoint=samples.find(sample=>Math.abs(sample.time-s.end)<1e-6);
+        if(s.end>=c.start&&s.end<=c.end)check(waypoint&&Math.abs(waypoint.x-s.to)<width*.05&&Math.abs(waypoint.plannedX-s.to)<width*.05,
+          c.name,'The rendered camera missed a scheduled intermediate or final lane',{index:i,segment:s,waypoint});
+        if(next&&i<s.arrivalIndex)check(Math.abs(s.end-next.start)<1e-8&&s.to===next.from&&Math.abs(s.v1-next.v0)<1e-8,
+          c.name,'Retimed intermediate lanes lost position or velocity continuity',{index:i,segment:s,next});
+      } else if(s.tuningEligible) {
         const limit=(c.cameraSettings.stableCameraSettleLimit??250)/1000*c.rate;
         check(s.end<=s.nominalEnd+limit+1e-8&&(!next||s.end<=next.nominalStart+1e-8),c.name,'Long switch exceeded its settling or next-movement deadline',{index:i,segment:s});
       } else check(s.start===s.nominalStart&&s.end===s.nominalEnd,c.name,'Tuning changed an ineligible move or progressive chain',{index:i,segment:s});
@@ -237,9 +249,10 @@ function validate(c, samples, plan) {
     if(c.kind==='progressive-return') {
       const high=plan.regions.find(s=>s.firstFret===c.peakFret)?.preferred;
       for(const time of c.peakTimes) {
-        const sample=samples.find(s=>Math.abs(s.time-time)<1e-6);
+        const arrival=plan.motion.find(s=>Math.abs((s.nominalEnd??s.end)-time)<1e-6)?.end??time;
+        const sample=samples.find(s=>Math.abs(s.time-arrival)<1e-6);
         check(sample&&Math.abs(sample.x-high)<width*.05,c.name,
-          'An all-short repeated climb and descent was suppressed instead of following the high lane',{time,high,sample});
+          'An all-short repeated climb and descent missed its scheduled high lane',{time,arrival,high,sample});
       }
       check(Math.abs(samples.at(-1).x-plan.stops.at(-1).x)<width*.05,c.name,
         'The progressive return did not settle back at its final lane');
@@ -266,17 +279,34 @@ function summary(samples) {
 async function validateTuningUi(page,c) {
   const root=page.locator('.h3d-camera-tuning'),toggle=root.locator('[data-camera-tuning-toggle]');
   const panel=root.locator('[data-camera-tuning-panel]');
+  const details=root.locator('[data-camera-timing-details]');
   const number=key=>root.locator(`[data-camera-setting="${key}"][data-camera-input="number"]`);
-  const keys=['stableCameraDepartureDelay','stableCameraTravelExtra','stableCameraSettleLimit','stableCameraExcursionThreshold','stableCameraLongSwitchFrets'];
+  const keys=['stableCameraDepartureDelay','stableCameraTravelExtra','stableCameraSettleLimit','stableCameraExcursionThreshold'];
   check(await root.count()===1&&await toggle.isVisible()&&await panel.isHidden(),c.name,'Live tuning control was missing, duplicated, or initially expanded');
+  check(await number('stableCameraLongSwitchFrets').count()===0,c.name,'Removed long-switch eligibility control remains visible');
+  check(await details.count()===1&&!(await details.evaluate(element=>element.open)),c.name,'Timing details should initially be collapsed');
   await page.evaluate(()=>{window.__tuningKeyCount=0;window.__tuningKeyListener=()=>window.__tuningKeyCount++;document.addEventListener('keydown',window.__tuningKeyListener);});
   await toggle.click();check(await panel.isVisible(),c.name,'Camera tuning did not open');
   for(const [i,key] of keys.entries()) {
-    const value=[150,20,350,750,8][i];await number(key).fill(String(value));await number(key).press('Enter');
+    const value=[150,20,350,750][i];await number(key).fill(String(value));await number(key).press('Enter');
     const stored=await page.evaluate(key=>localStorage.getItem('h3d_bg_'+key),key);
     check(Number(stored)===value,c.name,'Live number control did not persist its committed value',{key,value,stored});
   }
-  for(const [preset,values] of [['previous',[0,0,0,500,5]],['gentler',[100,10,250,500,5]]]) {
+  const timing=await page.evaluate(()=>{
+    bundle.currentTime=7;r.draw(bundle);
+    const timing=r.__lanePlan().motion.find(segment=>segment.end>bundle.currentTime)?.timing;
+    const lines=Object.fromEntries([...document.querySelectorAll('[data-camera-timing-field]')].map(element=>[element.dataset.cameraTimingField,element.textContent]));
+    return {timing,lines};
+  });
+  check(timing.timing&&timing.lines.delay.includes(Math.round(timing.timing.requestedDelayMs)+' ms requested')
+    &&timing.lines.delay.includes(Math.round(timing.timing.appliedDelayMs)+' ms applied')
+    &&timing.lines.extra.includes(Math.round(timing.timing.requestedExtraMs)+' ms requested')
+    &&timing.lines.extra.includes(Math.round(timing.timing.appliedExtraMs)+' ms applied'),
+  c.name,'Timing report did not show the scheduled requested and applied values',timing);
+  check(timing.lines.limit===(timing.timing?.limitingReason==='settling-limit'?'Limited by Maximum settling time.'
+    :timing.timing?.limitingReason==='next-journey'?'Limited by the next journey.':'Full timing requests applied.'),
+  c.name,'Timing report did not show the actual limiting reason',timing);
+  for(const [preset,values] of [['previous',[0,0,0,500]],['gentler',[100,10,250,500]]]) {
     await root.locator(`[data-camera-tuning-preset="${preset}"]`).click();
     const actual=await Promise.all(keys.map(key=>number(key).inputValue()));
     check(actual.every((value,i)=>Number(value)===values[i]),c.name,'Live comparison button applied the wrong tuning',{preset,actual});
@@ -293,14 +323,21 @@ async function validateTuningUi(page,c) {
   await toggle.click();
   const layout=[];
   for(const viewport of [c.viewport,{width:390,height:740}]) {
+    await page.evaluate(()=>document.activeElement?.blur());
     await page.setViewportSize(viewport);
-    await panel.evaluate(element=>{element.scrollTop=0;});
     await page.evaluate(viewport=>{r.resize(viewport.width,viewport.height);r.draw(bundle);r.__laneCapture();},viewport);
+    await panel.evaluate(element=>{element.scrollTop=0;});
     const bounds=await panel.boundingBox();
     check(bounds&&bounds.x>=0&&bounds.y>=0&&bounds.x+bounds.width<=viewport.width+1&&bounds.y+bounds.height<=viewport.height+1,c.name,'Live tuning panel leaves the viewport',{viewport,bounds});
     const noHorizontalOverflow=await panel.evaluate(element=>element.scrollWidth<=element.clientWidth+1);
     check(noHorizontalOverflow,c.name,'Live tuning panel has horizontal overflow',{viewport});
     await page.screenshot({path:path.join(out,`${c.name}-tuning-${viewport.width}x${viewport.height}.png`)});
+    await details.locator('summary').click();
+    check(await details.evaluate(element=>element.open),c.name,'Timing details disclosure did not open');
+    await panel.evaluate(element=>{element.scrollTop=element.scrollHeight;});
+    check(await panel.evaluate(element=>element.scrollWidth<=element.clientWidth+1),c.name,'Expanded timing details have horizontal overflow',{viewport});
+    await page.screenshot({path:path.join(out,`${c.name}-timing-details-${viewport.width}x${viewport.height}.png`)});
+    await details.locator('summary').click();
     layout.push({viewport,bounds,noHorizontalOverflow});
   }
   await page.setViewportSize(c.viewport);
@@ -314,7 +351,7 @@ async function validateTuningUi(page,c) {
       restored:document.querySelector('[data-camera-setting="stableCameraDepartureDelay"][data-camera-input="number"]').value};
   });
   check(lifecycle.remaining===0&&lifecycle.recreated===1&&lifecycle.valueAfterDetachedEvent==='100'&&lifecycle.restored==='100',c.name,'Live panel cleanup/recreation lost settings or retained old handlers',lifecycle);
-  return {layout,lifecycle};
+  return {layout,lifecycle,timing};
 }
 
 async function validateLiveConsistency(page,c) {
@@ -475,7 +512,10 @@ async function main() {
         performanceDiagnostics={method:'Warm camera CPU, stationary song position, GPU disabled; not a live FPS measurement',meanMs:times.reduce((a,b)=>a+b,0)/times.length,p95Ms:sorted[Math.floor(sorted.length*.95)],maxMs:sorted.at(-1)};}
       if(args.includes('--moving-perf')){
         const inRange=s=>s.start>=c.start&&s.end<=c.end;
-        const movement=initial.plan.motion.find(s=>s.tuningEligible&&inRange(s))||initial.plan.motion.find(inRange);
+        const movingAt=Number(option('--moving-at',NaN));
+        const movement=Number.isFinite(movingAt)?initial.plan.motion.find(s=>s.start<=movingAt&&s.end>=movingAt&&inRange(s))
+          :initial.plan.motion.find(s=>s.tuningEligible&&inRange(s))||initial.plan.motion.find(inRange);
+        if(Number.isFinite(movingAt))check(movement,c.name,'Requested CPU comparison movement was not found',{movingAt});
         if(movement){
           const start=Math.max(c.start,movement.start),end=Math.min(c.end,movement.end);
           if(end>start){

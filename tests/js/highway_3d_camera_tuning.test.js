@@ -106,7 +106,7 @@ test('zero timing controls preserve the pre-tuning trajectory bit for bit',()=>{
     }
 });
 
-test('the default long switch departs 100ms later and takes 10 percent longer in real time',()=>{
+test('the default direct journey departs 100ms later and takes 10 percent longer in real time',()=>{
     for(const rate of [.5,1,2]) {
         const rows=[row(0,1),row(4,17)],old=motion(rows,rate,.5,0,0,0,5)[0];
         const tuned=motion(rows,rate,.5,100,10,250,5)[0];
@@ -139,8 +139,9 @@ test('expanded timing limits produce a one-second delay, triple travel duration 
         near((slower.end-old.end)/rate,2.2);
         const maximum=motion(rows,rate,.5,1000,200,3000,5)[0];
         near((maximum.end-old.end)/rate,3);
-        near((maximum.start-old.start)/rate,3/3.2,
-            'the settling cap scales both requests proportionally');
+        near((maximum.start-old.start)/rate,.8,
+            'the full 2.2 seconds of extra travel has priority over departure delay');
+        near((maximum.end-maximum.start)/(old.end-old.start),3);
         let previous=rows[0].x;
         for(let i=0;i<=200;i++) {
             const state=sample(rows,maximum.start+(maximum.end-maximum.start)*i/200,
@@ -191,28 +192,154 @@ test('a tight following move limits tuning rather than overlapping or rushing ei
     }
 });
 
-test('long switch eligibility uses the selected fret displacement and preserves small moves',()=>{
+test('every followed direct journey is tuned independently of the retired minimum fret-change gate',()=>{
     for(const threshold of [1,5,12,23,24]) for(const difference of [1,4,5,11,12,22,23]) {
         const rows=[row(0,1),row(4,1+difference)];
         const old=motion(rows,1,.5,0,0,0,threshold)[0];
         const tuned=motion(rows,1,.5,100,10,250,threshold)[0];
-        if(difference>=threshold) assert.ok(tuned.start>old.start&&tuned.end>old.end);
-        else {assert.equal(tuned.start,old.start);assert.equal(tuned.end,old.end);}
+        assert.ok(tuned.start>old.start&&tuned.end>old.end,
+            `a followed ${difference}-fret move must not be gated by the saved ${threshold}-fret value`);
+        assert.deepEqual(tuned,motion(rows,1,.5,100,10,250,1)[0]);
     }
     const extended=[row(0,1,true,12),row(4,6,true,12)];
-    assert.ok(motion(extended,1,.5,100,10,250,5)[0].end>4,
-        'a wider riff extent must not disguise a qualifying five-fret relocation');
+    assert.ok(motion(extended,1,.5,100,10,250,24)[0].end>4,
+        'a wider riff extent must not prevent timing a followed relocation');
 });
 
-test('progressive short runs retain their complete original path with every timing control enabled',()=>{
+test('progressive journeys retime their complete path with shared waypoint velocity and no intermediate holds',()=>{
     const rows=[row(0,1),row(4,9,false),row(4.2,13,false),row(4.4,21)];
-    for(const rate of [.5,1,2]) {
-        const nominal=clone(rows),tuned=clone(rows);
-        for(let i=0;i<=300;i++) {
-            const time=i/50,a=sample(nominal,time,{rate,delay:0,extra:0,cap:0});
-            const b=sample(tuned,time,{rate,delay:1000,extra:200,cap:3000,long:1});
-            assert.equal(b.x,a.x);assert.equal(b.velocity,a.velocity);
+    for(const rate of [.5,1,2]) for(const extra of [0,10,200]) {
+        const nominal=motion(rows,rate,.5,0,0,0,5);
+        const tuned=motion(rows,rate,.5,1000,extra,3000,24);
+        assert.equal(tuned.length,nominal.length);
+        assert.ok(tuned[0].start>=nominal[0].start);
+        const stretch=(tuned.at(-1).end-tuned[0].start)/(nominal.at(-1).end-nominal[0].start);
+        assert.ok(stretch>=1-1e-10&&stretch<=1+extra/100+1e-10);
+        if(extra<=10) {
+            assert.ok(tuned[0].start>nominal[0].start);
+            near(stretch,1+extra/100);
+        } else assert.ok(stretch>1,'a longer journey may exhaust the cap on extra travel alone');
+        for(let i=0;i<tuned.length;i++) {
+            const a=nominal[i],b=tuned[i],duration=a.end-a.start,tunedDuration=b.end-b.start;
+            assert.equal(b.nominalStart,a.start);assert.equal(b.nominalEnd,a.end);
+            near(tunedDuration/duration,stretch);
+            near(b.v0,a.v0/stretch);near(b.v1,a.v1/stretch);
+            if(i) {
+                assert.equal(b.start,tuned[i-1].end);
+                near(b.v0,tuned[i-1].v1);
+                assert.ok(b.v0>0,'a progressive waypoint must retain forward velocity');
+            }
+            let previous=b.from;
+            for(const u of [0,.1,.25,.5,.75,.9,1]) {
+                const before=sample(clone(rows),a.start+duration*u,{rate,delay:0,extra:0,cap:0});
+                const after=sample(clone(rows),b.start+tunedDuration*u,
+                    {rate,delay:1000,extra,cap:3000,long:24});
+                near(after.x,before.x);near(after.velocity,before.velocity/stretch);
+                assert.ok(after.x>=previous-1e-8&&after.x<=b.to+1e-8);
+                previous=after.x;
+            }
         }
+        assert.equal(sample(rows,tuned.at(-1).end,{rate,delay:1000,extra,cap:3000}).velocity,0);
+    }
+});
+
+test('the Absolution jump caps one-second departure at 140ms without reducing its requested extra travel',()=>{
+    // Preserve the measured jump and following-journey deadline from the
+    // inspected loop; the intermediate rows merely establish that deadline.
+    const rows=[row(0,1),row(50.723,10),row(51.707001,9,false),row(51.907001,8)];
+    const nominal=motion(rows,1,.5,0,0,0,5);
+    const immediate=motion(rows,1,.5,0,10,250,5);
+    const delayed=motion(rows,1,.5,1000,10,250,5);
+    near(nominal[0].start,49.623);near(nominal[1].start,51.007001);
+    near(immediate[0].start,49.623);near(immediate[0].end,50.833);
+    near(delayed[0].start,49.763);near(delayed[0].end,50.973);
+    near(delayed[0].end-delayed[0].start,1.210);
+    near(delayed[0].end-delayed[0].start,immediate[0].end-immediate[0].start);
+    assert.ok(delayed[0].end<=nominal[1].start);
+});
+
+test('increasing departure delay never steals reserved travel time on direct or multi-lane journeys',()=>{
+    const fixtures=[
+        [row(0,1),row(4,17)],
+        [row(0,10),row(4,9,false),row(4.2,8)],
+        [row(0,7),row(4,5,false),row(4.2,1),row(5.5,17)],
+        [row(0,1),row(4,9,false),row(4.2,13,false),row(4.4,21),row(5.6,17)],
+    ];
+    for(const rows of fixtures) for(const rate of [.5,1,2]) for(const cap of [0,25,250,3000]) {
+        const immediate=motion(rows,rate,.5,0,10,cap,5);
+        for(const delay of [100,500,1000]) {
+            const delayed=motion(rows,rate,.5,delay,10,cap,24);
+            for(let i=0;i<delayed.length;i++) {
+                const a=immediate[i],b=delayed[i];
+                near(b.end-b.start,a.end-a.start,'departure must not accelerate a pan');
+                near(b.v0,a.v0);near(b.v1,a.v1);
+                assert.ok(b.start>=a.start-1e-10&&b.end>=a.end-1e-10);
+            }
+        }
+    }
+});
+
+test('every waypoint respects its settling deadline without consuming the following journey departure time',()=>{
+    for(const rate of [.5,1,2]) for(const cap of [0,25,250,3000]) for(const nextTime of [4.5,5.15,6,8,12]) {
+        const rows=[row(0,1),row(4,9,false),row(4.2,13,false),row(4.4,21),
+            row(nextTime,17,false),row(nextTime+.2,12)];
+        const nominal=motion(rows,rate,.5,0,0,0,5);
+        const tuned=motion(rows,rate,.5,1000,200,cap,24);
+        assert.equal(tuned.length,5);
+        assert.ok(tuned[2].end<=nominal[3].start+1e-10,
+            'a journey cannot borrow time from the following journey');
+        for(let i=0;i<tuned.length;i++) {
+            const a=nominal[i],b=tuned[i];
+            assert.equal(b.nominalStart,a.start);assert.equal(b.nominalEnd,a.end);
+            assert.ok(b.start>=a.start-1e-10&&b.end>=a.end-1e-10);
+            assert.ok((b.end-a.end)/rate<=cap/1000+1e-10,
+                'intermediate waypoints have the same hard lateness bound as the destination');
+            assert.ok(b.end-b.start>=a.end-a.start-1e-10);
+            if(i) assert.ok(b.start>=tuned[i-1].end-1e-10);
+        }
+        if(nextTime===4.5) {
+            for(let i=0;i<3;i++) {
+                assert.equal(tuned[i].start,nominal[i].start);
+                assert.equal(tuned[i].end,nominal[i].end);
+            }
+        }
+    }
+});
+
+test('a tuned all-short climb and descent preserves every lane and reverses smoothly without waiting for a lasting lane',()=>{
+    const frets=[1,2,4,6,8,10,12,14,16,18,20,22,24,23,21,19,17,15,13,11,9,7,5,3,1];
+    const rows=frets.map((f,i)=>row(i?2+(i-1)*.2:0,f));
+    for(const rate of [.5,1,2]) {
+        const stops=buildStops(rows,rate,null,null,null,null,null,500);
+        assert.deepEqual(stops.map(stop=>stop.firstFret),frets);
+        assert.ok(stops.slice(1,-1).every(stop=>!stop.lasting));
+        const nominal=motion(stops,rate,.5,0,0,0,5);
+        const tuned=motion(stops,rate,.5,1000,10,250,24);
+        assert.equal(tuned.length,frets.length-1);
+        const stretch=(tuned.at(-1).end-tuned[0].start)/(nominal.at(-1).end-nominal[0].start);
+        assert.ok(stretch>1);
+        for(let i=0;i<tuned.length;i++) {
+            const segment=tuned[i],direction=Math.sign(segment.to-segment.from);
+            assert.equal(segment.from,stops[i].x);assert.equal(segment.to,stops[i+1].x);
+            near(segment.v0,nominal[i].v0/stretch);near(segment.v1,nominal[i].v1/stretch);
+            assert.ok((segment.end-nominal[i].end)/rate<=.25+1e-10);
+            if(i) {
+                assert.equal(segment.start,tuned[i-1].end);
+                near(segment.v0,tuned[i-1].v1);
+                const reverses=Math.sign(tuned[i-1].to-tuned[i-1].from)!==direction;
+                if(reverses) assert.equal(segment.v0,0);
+                else assert.ok(direction*segment.v0>0,'only an actual turn may stop lateral motion');
+            }
+            let previous=segment.from;
+            for(let step=0;step<=20;step++) {
+                const time=segment.start+(segment.end-segment.start)*step/20;
+                const state=sample(stops,time,{rate,delay:1000,extra:10,cap:250,long:24});
+                assert.ok(direction*(state.x-previous)>=-1e-8,'no reversal between waypoints');
+                assert.ok(direction*(segment.to-state.x)>=-1e-8,'no waypoint overshoot');
+                previous=state.x;
+            }
+        }
+        assert.equal(sample(stops,tuned.at(-1).end,{rate,delay:1000,extra:10,cap:250}).x,stops.at(-1).x);
     }
 });
 
@@ -238,6 +365,34 @@ test('late-tail evaluation reports its actual remaining destination',()=>{
     near(result.arrivalTime,4.21);assert.equal(result.arrivalX,180);
     const after=sample(rows,4.22);
     assert.ok(after.arrivalTime>8&&after.arrivalX===60);
+});
+
+test('the cached timing report exposes actual real-time delay, reserved travel and the limiting deadline',()=>{
+    for(const rate of [.5,1,2]) {
+        const rows=[row(0,1),row(4,17),row(20,5)];
+        const result=sample(rows,4,{rate,delay:1000,extra:10,cap:250});
+        const timing=result.timing;
+        near(timing.requestedDelayMs,1000);near(timing.appliedDelayMs,140);
+        near(timing.requestedExtraMs,110);near(timing.appliedExtraMs,110);
+        assert.equal(timing.limitingReason,'settling-limit');
+        assert.equal(timing.nominalEnd,4);near(timing.end,4+.25*rate);
+        near((timing.start-timing.nominalStart)/rate,.14);
+        assert.equal(result.arrivalLaneTime,4);near(result.arrivalTime,timing.end);
+        assert.equal(rows.motion[0].timing,timing);
+        assert.equal(sample(rows,0,{rate,delay:1000,extra:10,cap:250}).timing,timing,
+            'a held pose reports the next scheduled journey before departure');
+        const unbounded=sample(clone(rows),4,{rate,delay:100,extra:10,cap:250}).timing;
+        assert.equal(unbounded.limitingReason,'none');near(unbounded.appliedDelayMs,100);
+    }
+    const tight=[row(0,10),row(4,9,false),row(4.2,8),row(4.937999,7)];
+    const result=sample(tight,4,{delay:1000,extra:10,cap:250});
+    const timing=result.timing;
+    near(timing.appliedDelayMs,0);near(timing.appliedExtraMs,37.999);
+    assert.equal(timing.limitingReason,'next-journey');
+    assert.equal(tight.motion[1].timing,timing,
+        'one shared report describes the complete journey through both short lanes');
+    assert.equal(result.arrivalLaneTime,4.2);
+    assert.equal(sample(tight,100,{delay:1000,extra:10,cap:250}).timing,null);
 });
 
 test('the excursion control measures each original lane duration independently of speed and trip length',()=>{
@@ -286,12 +441,17 @@ function advance(h,from,to,rate=1) {
     for(let i=1;i<=steps;i++) {const time=from+(to-from)*i/steps;state=h.frame(time,(time-previous)/rate);previous=time;}
     return state;
 }
+function journeyController(preset='straight',rate=1) {
+    const h=harness();h.settings({...gentle,preset,rate});
+    h.setRegionTimeline([row(0,1),row(4,5),row(4.2,9),row(4.4,13),row(4.6,17)]);
+    h.frame(0,0);return h;
+}
 
-test('the four timing controls rebuild motion without reclassifying lanes or reprojecting geometry',()=>{
+test('the three timing controls rebuild motion without reclassifying lanes or reprojecting geometry',()=>{
     const h=controller(),cache=h.planCache();
     const semantic=cache.semanticStops,timeline=cache.timeline,regions=cache.regions,attacks=cache.attacks;
     const objects=regions.slice(),stops=cache.stops;
-    for(const settings of [{departureDelay:1000},{travelExtra:200},{settleLimit:3000},{longSwitchFrets:24}]) {
+    for(const settings of [{departureDelay:1000},{travelExtra:200},{settleLimit:3000}]) {
         const oldMotion=cache.stops.motion,revision=cache.revision;
         h.settings(settings);h.frame(0,0);
         assert.equal(cache.semanticStops,semantic);assert.equal(cache.timeline,timeline);
@@ -301,6 +461,16 @@ test('the four timing controls rebuild motion without reclassifying lanes or rep
         const motion=cache.stops.motion,stableRevision=cache.revision;
         for(let i=0;i<10;i++) h.frame(0,0);
         assert.equal(cache.stops.motion,motion);assert.equal(cache.revision,stableRevision);
+    }
+});
+
+test('retired minimum fret-change settings do not invalidate the live cached plan',()=>{
+    const h=controller(),cache=h.planCache();
+    const motion=cache.stops.motion,revision=cache.revision,semantic=cache.semanticStops;
+    for(const longSwitchFrets of [1,12,24,5]) {
+        h.settings({longSwitchFrets});h.frame(0,0);
+        assert.equal(cache.stops.motion,motion);assert.equal(cache.revision,revision);
+        assert.equal(cache.semanticStops,semantic);
     }
 });
 
@@ -321,6 +491,77 @@ test('both Stable presets honor the tuned late arrival during ordinary playback'
         assert.ok(atOnset.x<180,'enabled tuning must still be travelling at the original boundary');
         const state=advance(h,4,4.21);
         assert.equal(state.x,180);assert.equal(state.planVelocity+state.rejoinVelocity,0);
+    }
+});
+
+test('both Stable presets play every tuned progressive waypoint at multiple speeds',()=>{
+    for(const preset of ['straight','angled']) for(const rate of [.5,1,2]) {
+        const h=journeyController(preset,rate),cache=h.planCache(),segments=cache.stops.motion;
+        assert.equal(segments.length,4);
+        let time=0;
+        for(let i=0;i<segments.length;i++) {
+            const segment=segments[i],state=advance(h,time,segment.end,rate);
+            near(state.x,segment.to);
+            if(i+1<segments.length) assert.ok(state.planVelocity+state.rejoinVelocity>0,
+                'ordinary traversal must not pause at an intermediate lane');
+            else near(state.planVelocity+state.rejoinVelocity,0);
+            time=segment.end;
+        }
+        assert.deepEqual(cache.semanticStops.map(stop=>stop.firstFret),[1,5,9,13,17]);
+        assert.deepEqual(cache.semanticStops.map(stop=>stop.time),[0,4,4.2,4.4,4.6]);
+    }
+});
+
+test('live journey timing edits preserve the current pose and velocity before rejoining the complete path',()=>{
+    for(const preset of ['straight','angled']) {
+        const h=journeyController(preset);let time=3.85,state=advance(h,0,time);
+        const semantic=h.planCache().semanticStops;
+        for(const settings of [{departureDelay:1000},{departureDelay:0},
+            {travelExtra:30},{travelExtra:10,departureDelay:100}]) {
+            const before=state;h.settings(settings);state=h.frame(time,0);
+            near(state.x,before.x);near(state.planVelocity+state.rejoinVelocity,
+                before.planVelocity+before.rejoinVelocity);
+            assert.equal(h.planCache().semanticStops,semantic);
+            state=advance(h,time,time+.02);time+=.02;
+        }
+        const end=h.planCache().stops.motion.at(-1).end;
+        state=advance(h,time,end);
+        near(state.x,180);near(state.planVelocity+state.rejoinVelocity,0);
+        assert.deepEqual(semantic.map(stop=>stop.firstFret),[1,5,9,13,17]);
+    }
+});
+
+test('pause, follow and speed changes preserve a tuned progressive journey and settle at its actual arrival',()=>{
+    for(const preset of ['straight','angled']) for(const change of ['pause','follow-off','slower','faster']) {
+        const h=journeyController(preset),before=advance(h,0,4.03);let rate=1,time=4.03;
+        if(change==='pause'||change==='follow-off') {
+            if(change==='follow-off') {h.settings({follow:false});time+=.03;}
+            assert.equal(h.frame(time,.03,change!=='pause').x,before.x);
+            h.settings({follow:true});
+        } else {
+            rate=change==='slower'?.5:2;h.settings({rate});
+        }
+        let state=h.frame(time,0,true);
+        near(state.x,before.x);
+        if(change==='slower'||change==='faster') near(state.planVelocity+state.rejoinVelocity,
+            before.planVelocity+before.rejoinVelocity);
+        const end=h.planCache().stops.motion.at(-1).end;
+        state=advance(h,time,end,rate);
+        near(state.x,180);near(state.planVelocity+state.rejoinVelocity,0);
+        assert.deepEqual(h.planCache().semanticStops.map(stop=>stop.firstFret),[1,5,9,13,17]);
+    }
+});
+
+test('loop wraps and seeks discard a live timing correction and match a fresh tuned journey',()=>{
+    for(const preset of ['straight','angled']) for(const target of [1,4.4,7]) {
+        const h=journeyController(preset);advance(h,0,4.03);
+        h.settings({departureDelay:1000});h.frame(4.03,0);advance(h,4.03,4.05);
+        if(target>4.05) h.settings({epoch:2});
+        const sought=h.frame(target,.01),freshController=journeyController(preset);
+        freshController.settings({departureDelay:1000});
+        const fresh=freshController.frame(target,.01);
+        near(sought.x,fresh.x);near(sought.distance,fresh.distance);
+        assert.equal(sought.resumeUntil,-Infinity);assert.equal(sought.rejoinEnd,-Infinity);
     }
 });
 

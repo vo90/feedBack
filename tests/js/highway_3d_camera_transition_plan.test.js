@@ -254,9 +254,9 @@ test('lifecycle correction preserves initial position and velocity then ends at 
 
 test('empty and one-position charts have finite resting plans', () => {
     assert.deepEqual(sample([],20),{x:0,velocity:0,valid:false,arrivalTime:Infinity,arrivalX:0,
-        moving:false,transit:false,arrivalLaneTime:Infinity});
+        moving:false,transit:false,arrivalLaneTime:Infinity,timing:null});
     assert.deepEqual(sample(build([row(3,9)],1,fits),0),{x:9,velocity:0,valid:true,arrivalTime:Infinity,arrivalX:9,
-        moving:false,transit:false,arrivalLaneTime:Infinity});
+        moving:false,transit:false,arrivalLaneTime:Infinity,timing:null});
 });
 
 test('necessary zoom waits 500ms and returns fully over 800ms at every frame rate', () => {

@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 const keys = ['stableCameraDepartureDelay', 'stableCameraTravelExtra', 'stableCameraSettleLimit',
-    'stableCameraExcursionThreshold', 'stableCameraLongSwitchFrets'];
+    'stableCameraExcursionThreshold'];
 
 // The production helper builds ordinary elements. This DOM implements tree
 // traversal and bubbling so keyboard tests exercise the ancestor boundary,
@@ -17,9 +17,11 @@ function makeDocument() {
             this.tagName = tagName.toUpperCase();
             this.children = []; this.parentNode = null; this.listeners = new Map();
             this.attributes = new Map(); this.dataset = {}; this.style = {};
-            this.value = ''; this.textContent = ''; this.className = '';
+            this.value = ''; this.textWrites = 0; this.textContent = ''; this.className = '';
             this.hidden = false; this.disabled = false; this.checked = false;
         }
+        get textContent() { return this._textContent; }
+        set textContent(value) { this._textContent = value; this.textWrites++; }
         appendChild(child) { child.remove(); this.children.push(child); child.parentNode = this; return child; }
         append(...children) { for (const child of children) this.appendChild(child); }
         remove() {
@@ -117,7 +119,7 @@ test('live tuning opens from saved settings without writing and commits slider c
     const h = load({h3d_bg_cameraMode: 'stable', h3d_bg_stableCameraDepartureDelay: '150'});
     const o = h.create();
     assert.equal(o.panel.hidden, true);
-    assert.deepEqual(values(o), [150, 10, 250, 500, 5]);
+    assert.deepEqual(values(o), [150, 10, 250, 500]);
     assert.deepEqual(h.writes, []);
     o.toggle.click();
     assert.equal(o.panel.hidden, false);
@@ -136,22 +138,22 @@ test('live numeric controls coerce values through production storage and hydrate
     const h = load({h3d_bg_cameraMode: 'stable', h3d_bg_stableCameraDepartureDelay: '50'}), o = h.create();
     o.toggle.click();
     for (const [key, raw, expected] of [[keys[0], '112', 100], [keys[1], '999', 200],
-        [keys[2], '-25', 0], [keys[3], '743', 750], [keys[4], '0', 1]]) {
+        [keys[2], '-25', 0], [keys[3], '743', 750]]) {
         const input = o.input(key, 'number'); input.value = raw; input.emit('change');
         assert.equal(Number(o.input(key).value), expected);
         assert.equal(Number(input.value), expected);
         assert.equal(h.data.get(stored(key)), String(expected));
     }
     o.toggle.click(); o.toggle.click();
-    assert.deepEqual(values(o), [100, 200, 0, 750, 1]);
+    assert.deepEqual(values(o), [100, 200, 0, 750]);
     o.destroy();
     const reopened = h.create();
-    assert.deepEqual(values(reopened), [100, 200, 0, 750, 1]);
-    assert.equal(h.writes.length, 5);
+    assert.deepEqual(values(reopened), [100, 200, 0, 750]);
+    assert.equal(h.writes.length, 4);
 });
 
 test('all expanded live ranges accept and persist their upper limits without the previous clamps', () => {
-    const h = load({h3d_bg_cameraMode: 'stable'}), o = h.create(), maxima = [1000, 200, 3000, 3000, 24];
+    const h = load({h3d_bg_cameraMode: 'stable'}), o = h.create(), maxima = [1000, 200, 3000, 3000];
     o.toggle.click();
     for (const [index, key] of keys.entries()) {
         const range = o.input(key), number = o.input(key, 'number');
@@ -164,23 +166,26 @@ test('all expanded live ranges accept and persist their upper limits without the
         assert.equal(Number(number.value), maxima[index]);
     }
     assert.deepEqual(values(o), maxima);
-    assert.equal(h.writes.length, 5, 'clamping an oversized edit to the current value is a no-op');
+    assert.equal(h.writes.length, 4, 'clamping an oversized edit to the current value is a no-op');
     o.destroy();
     assert.deepEqual(values(h.create()), maxima);
 });
 
-test('comparison buttons persist all five settings and restore previous or gentler tuning', () => {
-    const initial = Object.fromEntries(keys.map((key, index) => [stored(key), String([150, 20, 300, 750, 8][index])]));
+test('comparison buttons persist four settings and retain the unused legacy fret preference', () => {
+    const initial = Object.fromEntries(keys.map((key, index) => [stored(key), String([150, 20, 300, 750][index])]));
+    initial.h3d_bg_stableCameraLongSwitchFrets = '8';
     const h = load({h3d_bg_cameraMode: 'stable', ...initial}), o = h.create();
     o.toggle.click();
     o.query('[data-camera-tuning-preset="previous"]').click();
-    assert.deepEqual(values(o), [0, 0, 0, 500, 5]);
-    assert.equal(h.writes.length, 5);
+    assert.deepEqual(values(o), [0, 0, 0, 500]);
+    assert.equal(h.writes.length, 4);
     o.query('[data-camera-tuning-preset="gentler"]').click();
-    assert.deepEqual(values(o), [100, 10, 250, 500, 5]);
-    assert.equal(h.writes.length, 8, 'unchanged values do not cause redundant settings events');
+    assert.deepEqual(values(o), [100, 10, 250, 500]);
+    assert.equal(h.writes.length, 7, 'unchanged values do not cause redundant settings events');
     o.query('[data-camera-tuning-preset="gentler"]').click();
-    assert.equal(h.writes.length, 8);
+    assert.equal(h.writes.length, 7);
+    assert.equal(o.input('stableCameraLongSwitchFrets'), null);
+    assert.equal(h.data.get('h3d_bg_stableCameraLongSwitchFrets'), '8');
 });
 
 test('live overlays synchronize on setting events and keep split-screen edits scoped', () => {
@@ -279,7 +284,7 @@ test('both Stable views share tuning and disabling Follow blocks movement edits 
     o.query('[data-camera-tuning-preset="previous"]').click();
     assert.equal(h.writes.length, before, 'disabled fieldset handlers cannot change tuning');
     follow.checked = true; follow.emit('change');
-    assert.deepEqual(values(o), [100, 10, 250, 500, 5]);
+    assert.deepEqual(values(o), [100, 10, 250, 500]);
     assert.equal(preset.value, 'angled');
     o.toggle.click();
     h.window.h3dBgSetCameraMode('steady');
@@ -289,7 +294,7 @@ test('both Stable views share tuning and disabling Follow blocks movement edits 
     assert.equal(o.root.hidden, false);
     assert.equal(o.panel.hidden, true);
     assert.equal(preset.value, 'angled');
-    assert.deepEqual(values(o), [100, 10, 250, 500, 5]);
+    assert.deepEqual(values(o), [100, 10, 250, 500]);
 });
 
 test('blocked storage retains live tuning in memory and preserves per-panel isolation', () => {
@@ -302,4 +307,69 @@ test('blocked storage retains live tuning in memory and preserves per-panel isol
     assert.equal(main.input(keys[0]).value, '100');
     assert.deepEqual(h.writes, []);
     assert.deepEqual(h.errors, []);
+});
+
+test('journey timing reports requested and applied values and both limiting reasons', () => {
+    const h = load({h3d_bg_cameraMode: 'stable'}), o = h.create();
+    const field = name => o.query(`[data-camera-timing-field="${name}"]`);
+    const timing = {requestedDelayMs: 1000, appliedDelayMs: 140, requestedExtraMs: 110, appliedExtraMs: 110,
+        limitingReason: 'settling-limit', nominalStart: 49.623, start: 49.763, nominalEnd: 50.723, end: 50.973};
+    o.setTiming(timing); o.toggle.click();
+    assert.equal(field('delay').textContent, 'Departure delay: 1000 ms requested; 140 ms applied.');
+    assert.equal(field('extra').textContent, 'Extra travel: 110 ms requested; 110 ms applied.');
+    assert.equal(field('departure').textContent, 'Song departure: 49.763 s (prepared 49.623 s).');
+    assert.equal(field('arrival').textContent, 'Song arrival: 50.973 s (final lane begins 50.723 s).');
+    assert.match(field('limit').textContent, /Maximum settling time/);
+    o.setTiming({...timing, appliedDelayMs: 0, appliedExtraMs: 50, limitingReason: 'next-journey'});
+    assert.equal(field('delay').textContent, 'Departure delay: 1000 ms requested; 0 ms applied.');
+    assert.equal(field('extra').textContent, 'Extra travel: 110 ms requested; 50 ms applied.');
+    assert.equal(field('limit').textContent, 'Limited by the next journey.');
+    o.setTiming({...timing, requestedDelayMs: 140, limitingReason: 'none'});
+    assert.equal(field('limit').textContent, 'Full timing requests applied.');
+    o.setTiming(null);
+    assert.equal(field('delay').textContent, 'No current or upcoming camera movement.');
+    for (const name of ['extra', 'departure', 'arrival', 'limit']) assert.equal(field(name).textContent, '');
+    assert.deepEqual(h.writes, [], 'reading a cached journey never writes settings');
+});
+
+test('timing details follow the controls and keep applied delay and limit outside the disclosure', () => {
+    const h = load({h3d_bg_cameraMode: 'stable'}), o = h.create();
+    const report = o.query('[data-camera-timing]'), details = o.query('[data-camera-timing-details]');
+    const field = name => o.query(`[data-camera-timing-field="${name}"]`);
+    const fieldset = report.parentNode, reportIndex = fieldset.children.indexOf(report);
+    for (const key of keys) {
+        let row = o.input(key);
+        while (row.parentNode !== fieldset) row = row.parentNode;
+        assert.ok(fieldset.children.indexOf(row) < reportIndex, key + ' must precede diagnostics');
+    }
+    assert.equal(details.tagName, 'DETAILS');
+    assert.equal(details.getAttribute('open'), null, 'extended timings start collapsed');
+    for (const name of ['delay', 'limit']) assert.equal(field(name).parentNode, report);
+    for (const name of ['extra', 'departure', 'arrival']) assert.equal(field(name).parentNode, details);
+});
+
+test('cached timing does no warm-frame or closed-panel DOM writes and reopening shows the latest journey', () => {
+    const h = load({h3d_bg_cameraMode: 'stable'}), o = h.create();
+    const lines = o.root.querySelectorAll('[data-camera-timing-field]');
+    const writes = () => lines.reduce((total, line) => total + line.textWrites, 0);
+    const timing = {requestedDelayMs: 100, appliedDelayMs: 100, requestedExtraMs: 70, appliedExtraMs: 70,
+        limitingReason: 'none', nominalStart: 5, start: 5.1, nominalEnd: 5.7, end: 5.87};
+    const closedWrites = writes();
+    o.setTiming(timing);
+    assert.equal(writes(), closedWrites, 'closed panels retain data without updating hidden text');
+    o.toggle.click();
+    const openWrites = writes();
+    assert.ok(openWrites > closedWrites);
+    for (let frame = 0; frame < 120; frame++) o.setTiming(timing);
+    assert.equal(writes(), openWrites, 'the same cached object never rewrites the readout');
+    o.toggle.click();
+    o.setTiming({...timing, requestedDelayMs: 1000, appliedDelayMs: 0, limitingReason: 'next-journey'});
+    assert.equal(writes(), openWrites);
+    o.toggle.click();
+    assert.match(lines[0].textContent, /1000 ms requested; 0 ms applied/);
+    assert.match(o.query('[data-camera-timing-field="limit"]').textContent, /next journey/);
+    const finalWrites = writes();
+    o.destroy(); o.setTiming(timing);
+    assert.equal(writes(), finalWrites, 'destroyed overlays ignore further renderer samples');
+    assert.deepEqual(h.writes, []);
 });
