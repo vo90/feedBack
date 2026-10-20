@@ -444,7 +444,8 @@ test('direct timing edits rebuild motion without reclassifying lanes or reprojec
     const h=controller(),cache=h.planCache();
     const semantic=cache.semanticStops,timeline=cache.timeline,regions=cache.regions,attacks=cache.attacks;
     const objects=regions.slice(),stops=cache.stops;
-    for(const settings of [{startBeforeMs:1000},{arriveAfterMs:0},
+    for(const settings of [{movementMode:'latest-destination'},{movementMode:'reach-centres'},
+        {startBeforeMs:1000},{arriveAfterMs:0},
         {startBeforeMs:25},{arriveAfterMs:3000},{startBeforeMs:1500},{arriveAfterMs:210}]) {
         const oldMotion=cache.stops.motion,revision=cache.revision;
         h.settings(settings);h.frame(0,0);
@@ -463,7 +464,8 @@ test('live direct timing edits preserve pose and velocity before reaching the sc
         const h=controller(preset);h.settings({rate});h.frame(0,0);
         let before=advance(h,0,3.8,rate);
         const cache=h.planCache(),semantic=cache.semanticStops,regions=cache.regions;
-        for(const settings of [{startBeforeMs:1000},{startBeforeMs:25},
+        for(const settings of [{movementMode:'latest-destination'},{movementMode:'reach-centres'},
+            {startBeforeMs:1000},{startBeforeMs:25},
             {startBeforeMs:3000},{arriveAfterMs:500},{startBeforeMs:700,arriveAfterMs:210}]) {
             h.settings(settings);
             const after=h.frame(3.8,0);
@@ -476,6 +478,30 @@ test('live direct timing edits preserve pose and velocity before reaching the sc
         const arrival=cache.stops.motion.at(-1).end;
         const state=advance(h,3.8,arrival+.1*rate,rate);
         near(state.x,180);near(state.planVelocity+state.rejoinVelocity,0);
+    }
+});
+
+test('live mode timing edits cannot retain an obsolete late arrival over a new moving path',()=>{
+    const rows=[{time:0,minX:0,maxX:40},{time:5,minX:80,maxX:120},
+        {time:5.8,minX:20,maxX:60},{time:6.2,minX:100,maxX:140}];
+    for(const preset of ['straight','angled']) for(const movementMode of ['reach-centres','latest-destination']) {
+        const h=harness();
+        h.settings({preset,movementMode,excursionThreshold:0,startBeforeMs:25,arriveAfterMs:500});
+        h.setRegionTimeline(rows);h.frame(0,0);
+        const before=advance(h,0,5.05);
+        assert.ok(before.planMoving,'fixture is travelling through the former arrival tail');
+        h.settings({startBeforeMs:700,arriveAfterMs:0});
+        const changed=h.frame(5.05,0);
+        near(changed.x,before.x,'live edit preserves position');
+        near(changed.planVelocity+changed.rejoinVelocity,before.planVelocity+before.rejoinVelocity,
+            'live edit preserves velocity');
+        const justBefore=advance(h,5.05,5.5-1e-7);
+        const atOldDeadline=h.frame(5.5,1e-7);
+        assert.ok(Math.abs(atOldDeadline.x-justBefore.x)<.001,
+            `${preset}/${movementMode}: obsolete arrival cannot create a position jump`);
+        const settled=advance(h,5.5,6.3);
+        near(settled.x,120,'controller rejoins the new final destination');
+        near(settled.planVelocity+settled.rejoinVelocity,0);
     }
 });
 
@@ -498,6 +524,28 @@ test('excursion changes intentionally rebuild semantics while retaining projecte
     h.settings({excursionThreshold:1000});h.frame(0,0);
     assert.notEqual(cache.semanticStops,oldSemantic);assert.equal(cache.semanticStops.length,1);
     assert.equal(cache.regions,regions);assert.equal(cache.attacks,attacks);
+});
+
+test('both movement modes preserve repeated-riff and same-base extension filtering at every speed',()=>{
+    const rows=[{time:0,minX:40,maxX:80},{time:2,minX:40,maxX:110}];
+    for(let i=0;i<24;i++) {
+        const fret=[8,7,4,5][i%4];
+        rows.push({time:4+i*.3,minX:(fret-1)*10,maxX:(fret+3)*10});
+    }
+    rows.push({time:12,minX:40,maxX:80});
+    for(const preset of ['straight','angled']) for(const movementMode of ['reach-centres','latest-destination']) {
+        for(const rate of [.5,1,2]) {
+            const h=harness();h.settings({preset,movementMode,rate,excursionThreshold:500});
+            h.setRegionTimeline(rows);
+            const initial=h.frame(0,0);
+            for(let i=1;i<=240;i++)near(h.frame(i/20,1/20/rate).x,initial.x,
+                `${preset}/${movementMode}/${rate}: held riff retains home`);
+            assert.ok(h.planCache().semanticStops.every(stop=>stop.x===initial.x));
+            h.settings({excursionThreshold:250});h.frame(12,0);
+            assert.ok(h.planCache().semanticStops.some(stop=>stop.x!==initial.x),
+                'the movement policy cannot suppress lanes that meet the original-song threshold');
+        }
+    }
 });
 
 test('both Stable presets honor direct start and arrival in real playback time',()=>{

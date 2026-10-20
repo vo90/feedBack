@@ -935,6 +935,107 @@ test('a visible outlier receives necessary zoom while preserving the lane centre
     assertFits(h, [[-10, 13, 0], [130, 13, 0]], state, 0, .82);
 });
 
+test('automatic zoom off freezes distance while both movement modes continue following lanes', () => {
+    const instrumented=source.replace(/(function stableSolve\([^\n]*\) \{)/,
+        '$1\n            _stableCam.fitCalls=(_stableCam.fitCalls||0)+1;');
+    assert.notEqual(instrumented,source);
+    for (const preset of ['straight','angled']) for (const movementMode of ['reach-centres','latest-destination']) {
+        const h=harness(instrumented);h.settings({preset,movementMode});
+        h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:2,minX:100,maxX:140}]);
+        h.setPoints([[20,13,0],[60,13,0]]);
+        const initial=h.frame(0,0);
+        h.settings({autoZoom:false});
+        h.setPoints([[-600,13,0],[600,13,0]]);
+        let state=initial;
+        for(let i=1;i<=180;i++) {
+            state=h.frame(i/60,1/60);
+            assert.equal(state.distance,initial.distance,`${preset}/${movementMode}/${i}: fixed zoom`);
+            assert.equal(state.zoomVelocity,0);
+            assert.equal(state.correction,false,'visibility guard cannot widen when zoom is disabled');
+            assert.equal(state.fitCalls,initial.fitCalls,'fixed zoom skips warm-frame visibility fitting');
+            assert.equal(state.pointCount,0,'fixed zoom skips warm-frame visibility collection');
+        }
+        assert.equal(state.x,120,'fixed zoom does not turn off hand following');
+        assert.equal(state.planVelocity+state.rejoinVelocity,0);
+        h.settings({autoZoom:true});
+        const widened=h.frame(3+1/60,1/60);
+        assert.ok(widened.distance>initial.distance,'reenabling zoom restores necessary widening');
+    }
+});
+
+test('automatic zoom off also stops inward recovery and remains fixed through camera lifecycle changes', () => {
+    for(const preset of ['straight','angled']) {
+        const h=harness();h.settings({preset});
+        h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:3,minX:100,maxX:140},{time:5,minX:160,maxX:200}]);
+        h.setPoints([[-400,13,0],[400,13,0]]);
+        const wide=h.frame(0,0);
+        assert.ok(wide.distance>100,'fixture begins with a widened view');
+        h.settings({autoZoom:false});h.setPoints([[40,13,0]]);
+        let time=0,state=wide;
+        const step=(settings,nextTime,playing=true)=>{
+            h.settings(settings);
+            state=h.frame(nextTime,Math.max(0,(nextTime-time)/(settings.rate||1)),playing);
+            time=nextTime;
+            assert.equal(state.distance,wide.distance,`${preset}/${JSON.stringify(settings)}: held zoom`);
+            assert.equal(state.zoomVelocity,0);
+        };
+        step({},.1);
+        step({startBeforeMs:1000,arriveAfterMs:250},.2);
+        step({movementMode:'latest-destination'},.3);
+        step({rate:.5},.4);
+        step({rate:2},.5);
+        step({follow:false},.6);
+        step({},.6,false);
+        step({follow:true},.6);
+        step({},2.7);
+        step({},.2); // loop wrap clears pan state, not the frozen distance
+        step({epoch:1},.3);
+        step({epoch:2},4); // explicit transport seek
+        step({aspect:.5},4.1);
+        step({movementMode:'reach-centres',rate:1},4.2);
+        for(let i=1;i<=120;i++)step({},4.2+i/60);
+        h.setPoints([[180,13,0]]); // a close current-lane note permits recovery after the resize
+        h.settings({autoZoom:true});
+        const beforeRecovery=h.frame(6.3,.1);
+        let recovered=beforeRecovery;
+        for(let i=1;i<=300;i++)recovered=h.frame(6.3+i/60,1/60);
+        assert.ok(recovered.distance<wide.distance,'reenabling zoom allows gentle recovery');
+    }
+});
+
+test('a new song or explicit preset reset can establish framing with automatic zoom off', () => {
+    for(const preset of ['straight','angled']) for(const reframe of ['song','reset']) {
+        const h=harness();h.settings({preset,autoZoom:false});
+        h.setRegion(20,60);h.setPoints([[20,13,0],[60,13,0]]);
+        const close=h.frame(0,0);
+        h.setPoints([[-500,13,0],[500,13,0]]);
+        assert.equal(h.frame(.1,.1).distance,close.distance);
+        if(reframe==='song')h.changeSong();else h.reset();
+        const framed=h.frame(.1,0);
+        assert.ok(framed.distance>close.distance,`${preset}/${reframe}: explicit framing takes effect`);
+        h.setPoints([[40,13,0]]);
+        for(let i=1;i<=120;i++)assert.equal(h.frame(.1+i/60,1/60).distance,framed.distance);
+    }
+});
+
+test('same-song chart refreshes cannot reframe a frozen zoom distance', () => {
+    for(const preset of ['straight','angled']) for(const change of ['replace-anchors','append-anchor','notes','chords']) {
+        const h=harness();h.settings({preset,autoZoom:false});
+        h.setRegion(20,60);h.setPoints([[20,13,0],[60,13,0]]);
+        const initial=h.frame(0,0);
+        h.setPoints([[-500,13,0],[500,13,0]]);
+        if(change==='replace-anchors')h.replaceAnchors([{time:0,fret:3,width:4}]);
+        else if(change==='append-anchor')h.appendAnchor({time:0,fret:3,width:4});
+        else h.replaceChartData({[change]:[]});
+        for(let i=1;i<=10;i++) {
+            const state=h.frame(i/60,1/60);
+            assert.equal(state.distance,initial.distance,`${preset}/${change}: metadata refresh holds zoom`);
+            assert.equal(state.zoomVelocity,0);
+            assert.equal(state.correction,false);
+        }
+    }
+});
+
 test('calibrated framing reserves incoming fret digits before the first attack', () => {
     for (const preset of ['straight', 'angled']) {
         const h = harness(); h.settings({preset, aspect:3440/1323});

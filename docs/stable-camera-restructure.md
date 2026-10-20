@@ -1,271 +1,163 @@
-# Stable camera restructuring
+# Stable camera movement
 
-The current gameplay policy is
-[Stable camera lane following](highway-camera-lane-follow.md).
-This document describes the module boundaries and current direct-timing baseline.
 Both Stable Straight and RS+-inspired use the same lane decisions and timing.
-Separated lane changes have exact start-before and arrive-after controls.
-Crowded sequences retain their established schedule pending a separate design
-for overlapping transitions; the live panel identifies this explicitly.
+Start-before and arrive-after schedule every retained target. Overlapping moves
+use the selected policy; they never restore hidden legacy timing.
 
-The older playing-area, transitions and passage-plan documents record earlier
-designs and investigations. Their lateral comfort zones, tolerance holds and
-reactive recentering are historical, not alternative rules for current Stable.
+## Ownership
 
-## Modules and ownership
+| Module | Responsibility |
+| --- | --- |
+| `src/camera-semantics.mjs` | Coalesce lanes, classify riffs/excursions/progressive runs, retain stops and cached explanations. |
+| `src/camera-motion.mjs` | Build cached motion segments, sample them, and provide join/resume/zoom mathematics. |
+| `src/camera-controller.mjs` | Preserve lateral pose and velocity while live changes rejoin the current schedule. |
+| `screen.js` | Geometry, caches, projection, transport lifecycle, settings, zoom and the tuning panel. |
 
-The renderer loads these modules once with its dependencies through the
-generation-prefixed route `/api/plugins/highway_3d/g/camera-N/src/`. The generation
-advances when the classic plugin script is evaluated again, so a version change
-or rehydration cannot retain an older module graph. Recreating a renderer within
-the same script evaluation reuses that graph. The server also supports the plain
-`/api/plugins/highway_3d/src/` route. These modules do not import Three.js or read
-browser settings. Tests can import the same files directly.
+The three modules live under `plugins/highway_3d/`. Factories keep each
+renderer's state separate. They do not import Three.js or read browser settings.
+Generation-prefixed module URLs avoid stale graphs after a plugin upgrade.
+Renderer recreation within one script evaluation reuses its module graph.
 
-| Module | Factory dependencies | Responsibility |
-| --- | --- | --- |
-| `plugins/highway_3d/src/camera-semantics.mjs` | `createCameraSemantics({ NFRETS, isRenderableNote })` | Coalesce lane spans, collect evidence, resolve classification precedence and return camera stops with cached explanations. |
-| `plugins/highway_3d/src/camera-motion.mjs` | `createCameraMotion({ isRenderableNote, isUnpitchedMute })` | Build the attack index, prepare stops, schedule complete journeys, sample motion and provide join/resume/zoom mathematics. |
-| `plugins/highway_3d/src/camera-controller.mjs` | `createCameraController({ samplePlan, hwyCameraJoinAt, hwyCameraResumeAt })` | Preserve lateral pose and velocity while live changes rejoin the current schedule; expose the current motion mode. |
-
-`screen.js` remains responsible for effective chart lanes, projection and
-geometry, cache invalidation, transport/reset/pause/Follow decisions, fixed
-viewpoint fitting, settings persistence and the live panel. Each renderer owns
-its own controller and state; factories do not share mutable playback state.
-
-The semantics API returns the existing function names:
-
-```js
-const semantics = createCameraSemantics({ NFRETS, isRenderableNote });
-const options = { context, excursionThreshold: 500 };
-const timeline = semantics.hwyBuildCameraTimeline(regions, options);
-const stops = semantics.hwyBuildCameraStops(regions, options);
-```
-
-`context` contains notes, chords, beats, sections and string count when available.
-`hwyCameraRiffVariationCandidates(spans, context)` remains available for direct
-evidence checks. Classification does not accept playback speed or geometry-fit
-callbacks. Each span's additive `explanation` contains `decision`, `reason`,
-`home` and `interval`; held spans can share a cached evidence record.
-
-Classification precedence is explicit:
-
-1. Coalesce same-base regions and classify each original-song duration.
-2. Prove and apply the narrowly defined longer single-note variation.
-3. Collect short-return, repeated-cycle and progressive-run evidence.
-4. Resolve section-supported and established homes.
-5. Bypass isolated short off-route spikes, then build retained stops.
-
-The long-note exception must precede return evidence because it removes that
-span's lasting barrier. Reordering these stages can change gameplay even if
-each individual rule appears unchanged.
-
-Motion keeps its stop/segment interface. `hwyBuildCameraMotion` accepts
-`(stops, rate, smoothing, departureDelay, travelExtra, settleLimit, preparationMs, directTiming)`;
+The motion interface accepts
+`hwyBuildCameraMotion(stops, rate, smoothing, departureDelay, travelExtra, settleLimit, preparationMs, directTiming)`.
 `hwyCameraPlanAt` accepts the same controls after `(stops, now, rate, smoothing, out)`.
-The renderer passes `directTiming: { startBeforeMs, arriveAfterMs }` as the last
-argument. Omitting it retains the former schedule for compatibility tests.
-Legacy parameters remain available only to preserve crowded-sequence behaviour;
-they no longer appear as timing controls. The returned segment array has cached `journeys` records;
-segments in a journey share its timing record. Sampling returns the current
-or upcoming `journey` and `timing` without reconstructing them.
+The renderer passes
+`directTiming: { startBeforeMs, arriveAfterMs, movementMode }`.
+Omitting this object retains the former schedule for compatibility tests. With
+it present, legacy preparation, departure delay, extra travel and settling
+controls do not govern lateral movement.
 
-The controller exposes `update(state, plan, frameTime, rate, fallbackX)` and
-`setMode(state, mode)`. Its `samplePlan` dependency samples into a reusable output
-object. Direct resumption, local rejoining, arrival holds, pause and Follow
-holds are distinct diagnostics; their display is not another movement rule.
+Segments have cached journey and timing records. Each timing record identifies
+its target, requested times, actual interval and whether another target replaces
+it. The controller reports temporary live corrections separately from this
+nominal schedule.
 
-## Control contract
+## Controls
 
 | Control | Default / range | Contract |
 | --- | --- | --- |
-| Start before next lane | Saved manual preparation, otherwise 700 ms / 25–3000 ms | Exact departure before a separated followed lane begins. |
-| Arrive after next lane | 0 ms / 0–3000 ms | Exact arrival after that lane begins, not an allowance. Zero means on time. |
-| Short-lane threshold | 500 ms / 0–3000 ms | Classifies each coalesced lane in original song time, with existing riff and progressive-run protections. |
+| Movement | Reach every centre | Choose how overlapping moves connect. |
+| Start before next lane | Saved preparation, otherwise 700 ms / 25–3000 ms | Departure from a hold in Reach every centre; each destination trigger in Follow latest destination. |
+| Arrive after next lane | 0 ms / 0–3000 ms | Each centre's exact arrival in Reach every centre; target deadline in Follow latest destination, unless superseded. |
+| Short-lane threshold | 500 ms / 0–3000 ms | Each coalesced lane's original-song duration; exactly the threshold is lasting. Existing riff and progressive-run protections remain. |
+| Automatic zoom | On | Off freezes current distance, disabling safety fitting and zoom recovery. |
 
-Start and arrival use real playback milliseconds. For a lane at song time T,
-playback rate R, start-before B and arrive-after A (milliseconds):
+Timing uses real playback milliseconds. For lane onset T, playback rate R,
+start-before B and arrive-after A:
 
-- Departure = T − B × R / 1000.
-- Arrival = T + A × R / 1000.
-- Real transition duration = B + A.
+- Requested departure / trigger = T − B × R / 1000.
+- Requested arrival = T + A × R / 1000.
+- An uninterrupted transition has B + A milliseconds available.
 
-For example B=600, A=100 yields a 700 ms transition. Small and large moves use
-that same duration and the existing smooth quintic easing. Distance determines
-speed; there is no independently editable transition-duration control.
+Distance determines speed. At 400 ms before and 50 ms after, targets less than
+450 ms apart in playback time have overlapping windows. No separate transition
+duration is needed.
 
-The exact baseline applies to a single lasting-to-lasting movement when its
-requested departure is no earlier than its source lane, and the complete
-interval fits between neighbouring existing movements. Adjacent exact requests
-must also not overlap. Neither conflicting request is given hidden priority.
-This is conservative: it preserves neighbouring schedules instead of rescheduling
-a crowded passage. Multi-waypoint journeys and conflicts keep their entire
-previous trajectory, including the saved legacy timing preferences. The panel
-says **Existing sequence timing retained**, names the reason, and explicitly
-states that the exact controls do not apply there yet. Handling those overlaps
-with the same two controls is deferred gameplay work, not an implicit clamp.
+### Reach every centre
 
-The panel shows requested times, actual departure lead, actual duration, first
-lane arrival offset, final journey arrival timestamp, and live continuity mode.
-It distinguishes paused/Follow-off holds and live-edit corrections from the
-cached schedule. Held riffs remain held regardless of these timing values.
+`movementMode: 'reach-centres'`
 
-Settings, the in-song panel and split-screen controls expose
-`stableCameraStartBeforeMs`, `stableCameraArriveAfterMs` and the unchanged
-`stableCameraExcursionThreshold`. When the new start key is absent, it reads the
-saved `stableCameraPreparationMs` through the same scope precedence. No keys
-are written during hydration. Old timing values remain stored for rollback and
-crowded-sequence continuity; maximum settling is deliberately not migrated to
-exact arrive-after, because those meanings differ. Camera X-pan smoothing is
-disabled in Stable settings; direct times govern ordinary lateral transitions.
-Zoom fitting and recovery retain their own controls and behaviour.
+Overlapping windows form a continuous sequence. The camera leaves its held
+centre at the first requested departure, then reaches every retained centre at
+its requested arrival. Intermediate same-direction moves share a bounded
+velocity; reversals pass smoothly through zero velocity.
 
-## Tuning a passage
+Start-before does not schedule another departure while already moving through
+that sequence. The panel identifies continuation from the previous centre and
+shows its actual start. Close, widely separated targets can require fast travel.
+Large arrive-after values can leave the camera moving toward an older lane
+after a newer lane begins. This is the selected policy, not an early fallback.
 
-Start with 600 ms before and 100 ms after for a 700 ms separated transition.
-Replay from before departure and look for **Exact start and arrival applied**.
-Increasing before starts earlier; increasing after finishes later. Both increase
-the derived duration. Zero after reaches the lane at its onset.
+### Follow latest destination
 
-An edit during movement preserves the actual camera position and velocity,
-then rejoins the new schedule. For timing comparisons, replay the passage.
-Use the lane decision and sequence status to distinguish a deliberate riff
-hold or retained crowded sequence from an exact separated movement.
+`movementMode: 'latest-destination'`
 
-## Cache and performance contract
+Every requested trigger makes the next lane the destination. An interrupted
+movement is sampled at that trigger, and its successor preserves position,
+velocity and acceleration. The new target's arrival remains at the requested
+time unless a later trigger supersedes it.
 
-Lane evidence and explanations are built on semantic-plan changes. Projected
-shapes and attack evidence have separate caches. Preparation and timing
-controls rebuild scheduling, without reclassifying the chart. Ordinary frames
-sample cached paths and select cached explanations by binary search. No panel
-polling, per-frame chart analysis or fresh journey allocation is required.
+A reversal can briefly continue in the old direction while braking. Earlier
+centres may not be reached. The panel reports the redirect time and superseded
+arrival instead of falsely reporting completion.
 
-Preserve both numerical output and cache lifetime when restructuring. Repeated
-equivalent rebuilds must not restart an active local correction. A shorter
-implementation that scans all chart rows during playback would violate this
-contract.
+Both policies bound the very first departure by the initial source lane's
+availability. This exception is reported and preserves arrival. Seeking and
+loop wrap sample the path at the new position; wrapping before arrival prevents
+that traversal from finishing. Live edits preserve the actual pose and velocity
+while rejoining the new schedule. Replay the passage to compare nominal timing.
 
-## Direct-timing baseline validation (2026-10-20)
+### Fixed distance
 
-- 326 focused camera tests pass, including exact timings across distances and
-  playback speeds, legacy trajectory equality for deferred crowded sequences,
-  lifecycle continuity, riff policy, cache lifetime and settings preservation.
-- Full JavaScript suite: 2850/2855 pass. Baseline `49d90d6` passes 2842/2847;
-  the same five unrelated provider-verdict, ghost-geometry and audio-barrier
-  failures remain.
-- Isolated browser: both Stable presets apply 500 ms before + 200 ms after as
-  departure 7.500 s, arrival 8.200 s, duration 700 ms for a lane at 8.000 s.
-  All three controls remain usable clear of the left menu at 1920×1032,
-  390×740 and 800×450. No browser errors or motion-assertion failures.
-- One paired RTX 4080/D3D11 comparison of Absolution at 100% playback stayed
-  near 60 FPS in both builds; frame p95 was 16.7–16.8 ms, max 16.8 ms.
-  Moving draw CPU means: Straight 0.464→0.486 ms, Angled 0.696→0.810 ms;
-  p95 remained 0.6/1.0 ms. These are isolated renderer measurements, not a
-  native Electron gameplay comparison with audio.
+Turning Automatic zoom off retains the displayed distance; lateral following
+continues. Lane changes, pauses, Follow toggles, loop wrap, seeking, speed,
+timing edits and resizing do not widen or recover the view.
 
-## Acceptance procedure
+Notes and labels may leave the view. A new song or arrangement, explicit camera reset or
+explicit viewpoint change (preset, handedness or string layout) establishes
+fresh framing. Same-song chart refreshes keep the frozen distance.
+Turning zoom back on resumes normal fitting and recovery.
+External manual Camera Director adjustments remain explicit view changes.
 
-This is a verification procedure, not a claim that a particular build passed.
-Record results once with the tested revision, source/module hashes and
-machine/runtime identity.
+## Settings and lane policy
 
-1. **Protect the active session.** Resolve this PC's runtime and library through
-   the workspace configuration. Record the song, arrangement, loop, transport
-   state, position, speed, preset and effective global/per-pane settings before
-   testing. Use private charts read-only. Validate a selected runtime before
-   launch, and restore the recorded session after any native experiment.
-2. **Compare pure modules.** Run the direct module tests and existing camera
-   suites. The frozen pre-extraction oracle covers Automatic classification and
-   motion; generated sequences supplement named regressions. A baseline mismatch
-   must be explained rather than accepted as an incidental refactor difference.
-3. **Compare production-renderer traces.** Use
-   `tests/browser/highway-camera-lane-follow.cjs` with a fresh external `--out`
-   directory, both presets, 0.5/1/2 playback speeds and wide/narrow views.
-   Reference and candidate runs must use matching fixtures, ranges and settings.
-   `--source-ref` selects the complete revision's assets; `--compare-traces`
-   compares a saved reference. `--songs Name=path` supplies local private charts.
-4. **Check named behaviors.** Alison Hell Lead, 194.419134–212.784101 s:
-   hold the repeated home at 350/500/900 ms and follow at 250 ms.
-   Absolution Lead: follow the ~1.227 s fret-7 lane beginning at 15.359 s.
-   In its 46.923210–58.746508 s loop, compare requested and applied departure
-   around the direct jump and the short-intermediate journeys. Include Rats,
-   singleton replies, same-base extensions, advancing zigzags and a climb/descent
-   with no lasting intermediate lane.
-5. **Check Manual independently.** With delay and extra travel zero, use 25,
-   700 and 3000 ms where preparation fits and where the preceding stop clips it.
-   Check the first-lane reference at every speed, including a multi-leg chain.
-   Then add travel/delay and verify the same hard deadlines, travel-first budget,
-   preserved waypoint order and shared velocities. Check that Automatic still
-   restores its prior schedule.
-6. **Exercise lifecycle and UI.** Edit mode/lead while moving and paused; toggle
-   Follow, change speed, wrap a loop and seek. Check pose/velocity continuity,
-   finite convergence, visibility, preset parity, keyboard isolation, disabled
-   controls, persistence, split-screen scope and destroy/recreate cleanup.
-   `--tuning-ui` and `--live-consistency` supplement direct settings tests.
-   `node tests/browser/highway-camera-module-reload.cjs` separately checks
-   module reuse across renderer recreation and fresh imports after same-page
-   plugin upgrades and rollbacks, with mocked dependencies in real Chromium.
-7. **Measure this PC.** Compare warm frame work and plan-rebuild work, then
-   measure native gameplay through representative movements and live edits.
-   `--perf`/`--moving-perf` isolate CPU work with GPU rendering disabled; they
-   do not establish native FPS. Review visual smoothness as well as frame counts.
+The in-song panel, settings page and split-screen controls expose both new
+controls alongside start-before, arrive-after and threshold. Hydration does not
+write defaults or overwrite existing values. A missing start-before key still
+reads saved preparation through existing scope precedence. Legacy timing values
+remain stored for rollback but have no lateral effect in either new mode.
 
-Run the direct-import checks from the repository root:
+Lane classification is unchanged. Same-base extensions retain four-fret focus.
+Recognized riffs and brief excursions can hold home; progressive travel retains
+meaningful targets. Lowering the threshold can produce more movement without
+changing movement policy. Camera X-pan smoothing remains disabled in Stable;
+zoom smoothing is disabled while automatic zoom is off.
 
-```text
-node --test tests/js/highway_3d_camera_semantics_module.test.js tests/js/highway_3d_camera_motion_module.test.js tests/js/highway_3d_camera_controller_module.test.js
-```
+A useful comparison is 400 ms before, 50 ms after and a 400–500 ms threshold.
+Test 200 ms separately to expose more short targets. These are suggestions,
+not values written over the user's saved settings.
 
-The broader renderer and lifecycle suites remain necessary. Neither frozen
-parity nor generated fixtures prove that every unfamiliar musical passage
-receives the user's preferred classification. New ambiguous gameplay decisions
-still require the user's judgment.
+## Performance and validation
 
-## Branch verification — 20 October 2026
+Classification and explanations run when the semantic cache rebuilds.
+Projected shapes and attack evidence have separate caches. Timing/movement
+changes rebuild motion without scanning chart evidence again. Warm frames
+sample the cached path and explanations by binary search. The tuning panel
+updates only when its cached record, decision or lifecycle state changes.
+Fixed-distance frames skip live visibility collection and distance solvers.
 
-Baseline: `dd9ed24118ac19773d03d2f5584efcc148d4e590` on
-`integration/songsterr-test`. Candidate: `refactor/stable-camera-system`.
-The current integration runtime was left untouched; comparison used isolated
-renderers and this PC's own chart copies. Song, arrangement, position, loop,
-playback state/rate, browser storage and API settings matched before and after.
+Validate both modes and presets at multiple speeds, including:
 
-- Automatic: 102 paired renderer cases, 37,186 movement/zoom/pose/visibility
-  frames and 1,394,152 lifecycle values matched exactly. This includes Alison
-  Hell, both Absolution passages above, Rats, both presets and 0.5/1/2 playback
-  speeds. A further 606-frame smoke comparison after the module-loading change
-  also matched exactly.
-- Manual: 18 progressive renderer cases passed; direct tests cover 25–3000 ms
-  preparation, 0.1–4 playback speeds, preceding-lane caps and timing priorities.
-  The final focused timing/settings/UI run passed 63 tests. Browser UI checks
-  covered both presets and three viewport sizes, including the left menu,
-  applied timing readouts and Follow state.
-- Full JavaScript suite: 2,842 passed out of 2,847; five failures were identical
-  to the baseline. They concern audio-barrier ordering, two ghost-geometry
-  checks and two provider-verdict source checks. No new failures.
-- The module reload browser check passed upgrade and rollback with fresh module
-  evaluations, while renderer recreation reused its current modules. Its
-  fixed-URL negative control reproduced the stale-module problem. All six
-  plain/generation module routes served the expected JavaScript bytes locally.
-- The synthetic browser checker retained 64 identical baseline assertions
-  concerning its strict live-rejoin bound; sampled trajectories still matched
-  exactly. The 24 private-song cases had zero assertion failures. These existing
-  assertions were not weakened to make the comparison pass.
+- Isolated moves, overlapping windows, progressive climbs/descents and reversals.
+- Exact retained arrivals versus continuous retarget boundaries and final arrival.
+- The 25 ms before / 1000 ms after Absolution case, with no legacy fallback.
+- Alison Hell's repeating home lane, Absolution's lasting fret-7 lane and Rats.
+- Live mode/timing/zoom edits, pause, Follow, speed changes, seek and loop wrap.
+- Fixed distance across automatic paths, deliberate reframing and zoom resumption.
+- Scoped settings, keyboard isolation, left-menu clearance and module reload.
+- Cache lifetimes, complete rebuild cost, warm frame CPU and hardware cadence.
 
-Three paired runs per revision and preset on a Ryzen 9 5900X / RTX 4080 used
-Absolution Lead, 46.923210–58.746508 s, Automatic, 1000 ms departure delay,
-10% extra travel, 250 ms settling, 500 ms threshold and 100% playback:
+Compare against the same local baseline and settings. An isolated renderer
+benchmark does not establish native Electron performance with audio. Keep
+machine-specific evidence outside the source checkout, preserve the user's live
+session, and restore it after the guarded runtime update.
 
-| Measurement | Straight baseline → candidate | Angled baseline → candidate |
-| --- | --- | --- |
-| Warm moving draw CPU, GPU disabled | 0.469 → 0.466 ms | 0.500 → 0.499 ms |
-| Complete cached-plan rebuild | 1.609 → 1.617 ms | 1.613 → 1.539 ms |
-| Hardware renderer cadence | 60.00 → 60.00 frames/s | 60.00 → 60.00 frames/s |
+### Validation on 20 October 2026
 
-Hardware runs used isolated Chromium/D3D11 at 1920×984 CSS pixels, DPR 2;
-the maximum measured animation-frame interval was 16.8 ms. The camera modules
-were identical across runs; intervening renderer edits only cleared a stale UI
-message and adjusted comments/indentation. Isolated semantic rebuilding rose
-from about 0.14 to 0.59 ms with explanations, while the complete rebuild stayed
-comparable. This work remains cached. These measurements do not establish
-native Electron gameplay performance with audio; that comparison remains a
-separate pre-merge check.
+Against integration baseline `0848af1`, the focused camera suite passed 340/340.
+Full JavaScript passed 2875/2878 versus baseline 2861/2864; the same three
+unrelated provider-verdict/audio-barrier failures remained.
+
+The production browser matrix passed 48 candidate cases and 12 baseline cases,
+covering both presets, 0.5/1/2 playback speeds, dense transitions with 1000 ms
+arrival, held excursions, both movement modes and zoom on/off. UI checks passed
+at wide, narrow and split-pane sizes. Module recreation, upgrade and rollback
+checks passed. Warm-frame assertions confirmed cache reuse without chart analysis.
+
+Eight isolated RTX 4080 hardware samples remained at 60 FPS with 16.7–16.8 ms
+p95 frame intervals. Warm moving draw means were 0.289/0.453 ms for baseline
+Straight/Angled, 0.298/0.468 ms for Reach, 0.299/0.481 ms for Latest, and
+0.234/0.331 ms for Latest with zoom off. Each plan's moving interval was sampled;
+these bounded comparisons are not identical-frame or long-duration guarantees.
+Machine-local evidence and native-session restoration results are retained
+outside the repository.

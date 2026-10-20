@@ -13,6 +13,7 @@ const SCREEN_JS = path.join(__dirname, '..', '..', 'plugins', 'highway_3d', 'scr
 // 'palette' was removed — per-string colors are now set via the core
 // "Highway String Colors" UI, which drives both highways by named string.
 const REQUIRED_KEYS = ['cameraMode', 'stableCameraPreset', 'stableCameraFollow',
+    'stableCameraMovementMode', 'stableCameraAutoZoom',
     'stableCameraStartBeforeMs', 'stableCameraArriveAfterMs',
     'stableCameraExcursionThreshold',
     'notationStyle', 'noteStemsVisible', 'letRingTrailsVisible', 'openStringStemsVisible', 'chordBoxTop', 'repeatChordFullBorder', 'glow', 'bloom', 'cameraSmoothing', 'cameraLockLow', 'cameraLockZoom'];
@@ -165,6 +166,13 @@ test('3D Highway exposes static panelControls descriptors for per-panel hosts', 
     }
 
     const notationStyle = controlsByKey.get('notationStyle');
+    const movement = controlsByKey.get('stableCameraMovementMode');
+    assert.equal(movement.type,'select');
+    assert.equal(movement.default,'reach-centres');
+    assert.deepEqual(movement.options.map(optionValue),['reach-centres','latest-destination']);
+    assert.deepEqual(movement.options.map(option=>option.label),['Reach every centre','Follow latest destination']);
+    assert.equal(controlsByKey.get('stableCameraAutoZoom').type,'toggle');
+    assert.equal(controlsByKey.get('stableCameraAutoZoom').default,true);
     assert.equal(notationStyle.type, 'select');
     assert.equal(notationStyle.default, 'current', 'existing users retain Current until they opt in');
     assert.deepEqual(notationStyle.options.map(optionValue), ['current', 'rsplus']);

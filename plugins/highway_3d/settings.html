@@ -445,6 +445,14 @@
         <p id="h3d-stable-camera-follow-description" class="text-xs text-gray-400 mt-1">
             Turn off to hold the current view instead of following notes.
         </p>
+        <label class="flex items-start gap-2 text-sm text-gray-300 cursor-pointer mt-3">
+            <input type="checkbox" id="h3d-stable-camera-auto-zoom" checked class="mt-1 accent-accent"
+                aria-describedby="h3d-stable-camera-auto-zoom-description">
+            <span>Automatic zoom</span>
+        </label>
+        <p id="h3d-stable-camera-auto-zoom-description" class="text-xs text-gray-400 mt-1">
+            Turn off to keep the current zoom distance, including during lane changes. The camera will not widen to fit distant notes or recover inward until you turn it on again. Reset to preset establishes a new distance.
+        </p>
         <button type="button" id="h3d-stable-camera-reset"
             aria-describedby="h3d-stable-camera-reset-description"
             class="mt-3 text-xs px-3 py-2 rounded-lg bg-dark-700 border border-gray-700 text-gray-300 hover:text-gray-200">Reset to preset</button>
@@ -455,7 +463,14 @@
         <details id="h3d-stable-camera-tuning" class="mt-4 rounded-lg border border-gray-700 bg-dark-700/40" open>
             <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-gray-300">Camera movement tuning</summary>
             <fieldset id="h3d-stable-camera-tuning-fields" class="px-3 pb-3">
-                <p class="text-xs text-gray-400 mb-3">Choose when an ordinary move starts and arrives relative to the next lane. Travel duration follows from these two times. Both Stable viewpoints share these settings. Dense lane sequences retain their existing handling; the in-song Camera tuning panel shows the actual timing and any fallback.</p>
+                <p class="text-xs text-gray-400 mb-3">Choose the movement policy, then when a move starts and arrives relative to the next lane. These two times set the duration of an uninterrupted move. Both Stable viewpoints share these settings. The in-song Camera tuning panel shows the actual timing.</p>
+                <label for="h3d-stable-camera-movement-mode" class="text-xs font-medium text-gray-300 mb-1 block">Movement mode</label>
+                <select id="h3d-stable-camera-movement-mode" aria-describedby="h3d-stable-camera-movement-mode-description"
+                    class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
+                    <option value="reach-centres">Reach every centre</option>
+                    <option value="latest-destination">Follow latest destination</option>
+                </select>
+                <p id="h3d-stable-camera-movement-mode-description" class="text-xs text-gray-400 mt-1">Reach every centre joins overlapping moves into a continuous path through every followed lane centre at its arrival time; start-before controls departure from a hold. Follow latest destination redirects at each start-before time, so unfinished centres may be skipped. Held riffs and short excursions keep their existing filtering in both modes.</p>
                 <div class="mt-3">
                     <label for="h3d-stable-start-before" class="text-xs font-medium text-gray-300">Start before next lane (ms)</label>
                     <div class="flex items-center gap-3 mt-1">
@@ -463,7 +478,7 @@
                         <input type="number" id="h3d-stable-start-before-value" min="25" max="3000" step="25" value="700" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Start before next lane in milliseconds">
                         <span class="text-xs text-gray-400">ms</span>
                     </div>
-                    <p id="h3d-stable-start-before-description" class="text-xs text-gray-400 mt-1">How early an ordinary camera move starts, in real playback time. A smaller value starts later and makes the move quicker when the arrival time stays the same.</p>
+                    <p id="h3d-stable-start-before-description" class="text-xs text-gray-400 mt-1">How early a move is requested, in real playback time. A smaller value starts later and makes an uninterrupted move quicker when the arrival time stays the same. Reach every centre can already be moving through an overlapping sequence.</p>
                 </div>
                 <div class="mt-3">
                     <label for="h3d-stable-arrive-after" class="text-xs font-medium text-gray-300">Arrive after next lane (ms)</label>
@@ -472,7 +487,7 @@
                         <input type="number" id="h3d-stable-arrive-after-value" min="0" max="3000" step="25" value="0" class="w-20 bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200" aria-label="Arrive after next lane in milliseconds">
                         <span class="text-xs text-gray-400">ms</span>
                     </div>
-                    <p id="h3d-stable-arrive-after-description" class="text-xs text-gray-400 mt-1">How long after the next lane begins the camera arrives. Zero arrives when that lane starts. For example, starting 700 ms before and arriving 200 ms after gives an ordinary move 900 ms of travel.</p>
+                    <p id="h3d-stable-arrive-after-description" class="text-xs text-gray-400 mt-1">How long after the next lane begins its centre should be reached. Zero targets the lane start. Starting 700 ms before and arriving 200 ms after gives an uninterrupted move 900 ms of travel. Follow latest destination may redirect before reaching that centre.</p>
                 </div>
                 <div class="mt-4 pt-3 border-t border-gray-700">
                     <label for="h3d-stable-excursion-threshold" class="text-xs font-medium text-gray-300">Short-lane threshold (ms)</label>
@@ -483,7 +498,7 @@
                     </div>
                     <p id="h3d-stable-excursion-threshold-description" class="text-xs text-gray-400 mt-1">Compare each lane with this duration in original song time. Individually short lanes in a repeating riff hold the home lane; progressive journeys still travel. A single short out-and-back can also hold. Zero disables short-lane suppression. Riff-extension protections still apply.</p>
                 </div>
-                <p class="text-xs text-gray-400 mt-3">Start and arrival times use playback time at every speed. Changes apply when you release a slider. Notes remain in view while the camera moves.</p>
+                <p class="text-xs text-gray-400 mt-3">Start and arrival times use playback time at every speed. Changes apply when you release a slider. Automatic zoom makes room for visible notes while the camera moves.</p>
                 <p id="h3d-stable-tuning-status" class="text-xs text-gray-400 mt-2" role="status" aria-live="polite"></p>
             </fieldset>
             <p id="h3d-stable-tuning-disabled" class="px-3 pb-3 text-xs text-gray-400" hidden>Turn on Follow hand position to adjust camera movement.</p>
@@ -1382,7 +1397,7 @@
          no-selection / NaN state. -->
     <script>
         (function () {
-            const DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, stableCameraStartBeforeMs: 700, stableCameraArriveAfterMs: 0, stableCameraPreparationMode: 'auto', stableCameraPreparationMs: 700, stableCameraDepartureDelay: 100, stableCameraTravelExtra: 10, stableCameraSettleLimit: 250, stableCameraExcursionThreshold: 500, stableCameraLongSwitchFrets: 5, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, letRingTrailsVisible: false, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, trailYieldEnabled: true, trailYieldGemInFront: false, trailYieldIncludeTrails: false, trailYieldMinScale: 0.30, trailYieldLeadTime: 0.50, trailYieldTaperDuration: 0.05, trailYieldHoldAfter: 0.05, trailYieldRecoverDuration: 0.05, trailYieldEndLeadTime: 0.50, trailYieldEndTaperDuration: 0.05, trailYieldSameStringEnabled: true, trailYieldSameStringMaxGap: 0.05, trailYieldSameStringLeadTime: 0.10 };
+            const DEFAULTS = { style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, stableCameraMovementMode: 'reach-centres', stableCameraAutoZoom: true, stableCameraStartBeforeMs: 700, stableCameraArriveAfterMs: 0, stableCameraPreparationMode: 'auto', stableCameraPreparationMs: 700, stableCameraDepartureDelay: 100, stableCameraTravelExtra: 10, stableCameraSettleLimit: 250, stableCameraExcursionThreshold: 500, stableCameraLongSwitchFrets: 5, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, letRingTrailsVisible: false, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, trailYieldEnabled: true, trailYieldGemInFront: false, trailYieldIncludeTrails: false, trailYieldMinScale: 0.30, trailYieldLeadTime: 0.50, trailYieldTaperDuration: 0.05, trailYieldHoldAfter: 0.05, trailYieldRecoverDuration: 0.05, trailYieldEndLeadTime: 0.50, trailYieldEndTaperDuration: 0.05, trailYieldSameStringEnabled: true, trailYieldSameStringMaxGap: 0.05, trailYieldSameStringLeadTime: 0.10 };
             const VALID_STYLES = new Set(['off', 'particles', 'silhouettes', 'lights', 'geometric', 'butterchurn', 'image', 'video']);
             // Scene color themes — the single id+label source for BOTH the
             // Background and Highway dropdowns AND the validator below. The
@@ -1566,6 +1581,8 @@
                 const group = document.getElementById('h3d-stable-camera-controls');
                 const preset = document.getElementById('h3d-stable-camera-preset');
                 const follow = document.getElementById('h3d-stable-camera-follow');
+                const movementMode = document.getElementById('h3d-stable-camera-movement-mode');
+                const autoZoom = document.getElementById('h3d-stable-camera-auto-zoom');
                 const reset = document.getElementById('h3d-stable-camera-reset');
                 const status = document.getElementById('h3d-stable-camera-reset-status');
                 const legacy = document.getElementById('h3d-legacy-camera-controls');
@@ -1585,6 +1602,9 @@
                 }
                 if (preset) preset.value = coerceStableCameraPreset(read('stableCameraPreset'));
                 if (follow) follow.checked = coerceBool(read('stableCameraFollow'), DEFAULTS.stableCameraFollow);
+                const coerceMovementMode = value => value === 'latest-destination' ? value : 'reach-centres';
+                if (movementMode) movementMode.value = coerceMovementMode(read('stableCameraMovementMode'));
+                if (autoZoom) autoZoom.checked = coerceBool(read('stableCameraAutoZoom'), DEFAULTS.stableCameraAutoZoom);
                 const syncTuning = initStableCameraTuning(mode, follow);
                 function sync() {
                     const stable = !!(mode && mode.value === 'stable');
@@ -1592,11 +1612,13 @@
                     if (group) group.hidden = !stable;
                     if (preset) preset.disabled = !stable;
                     if (follow) follow.disabled = !stable;
+                    if (movementMode) movementMode.disabled = !stable || !!fixed;
+                    if (autoZoom) autoZoom.disabled = !stable;
                     if (reset) reset.disabled = !stable;
                     if (legacy) legacy.disabled = stable;
                     if (legacyNote) legacyNote.hidden = !stable;
                     if (panSmoothing) panSmoothing.disabled = stable;
-                    if (zoomSmoothing) zoomSmoothing.disabled = !!fixed;
+                    if (zoomSmoothing) zoomSmoothing.disabled = !!fixed || !!(stable && autoZoom && !autoZoom.checked);
                     syncTuning();
                     for (const item of descriptions) {
                         if (!item.element) continue;
@@ -1604,6 +1626,8 @@
                         else if (stable) item.element.textContent = item.stable;
                         else item.element.innerHTML = item.original;
                     }
+                    if (stable && !fixed && autoZoom && !autoZoom.checked && descriptions[1].element)
+                        descriptions[1].element.textContent = 'Turn on Automatic zoom to adjust zoom recovery. The current zoom distance is held.';
                     if (status) status.textContent = '';
                 }
                 if (mode) mode.addEventListener('change', () => {
@@ -1620,6 +1644,16 @@
                     write('stableCameraFollow', 'h3dBgSetStableCameraFollow', follow.checked);
                     sync();
                 });
+                if (movementMode) movementMode.addEventListener('change', () => {
+                    if (!mode || mode.value !== 'stable' || !follow || !follow.checked) return;
+                    movementMode.value = coerceMovementMode(movementMode.value);
+                    write('stableCameraMovementMode', 'h3dBgSetStableCameraMovementMode', movementMode.value);
+                });
+                if (autoZoom) autoZoom.addEventListener('change', () => {
+                    if (!mode || mode.value !== 'stable') return;
+                    write('stableCameraAutoZoom', 'h3dBgSetStableCameraAutoZoom', autoZoom.checked);
+                    sync();
+                });
                 if (reset) reset.addEventListener('click', () => {
                     if (!mode || mode.value !== 'stable') return;
                     if (typeof window.h3dStableCameraReset === 'function') {
@@ -1634,6 +1668,8 @@
                     if (key === 'cameraMode' && mode) mode.value = coerceCameraMode(value);
                     if (key === 'stableCameraPreset' && preset) preset.value = coerceStableCameraPreset(value);
                     if (key === 'stableCameraFollow' && follow) follow.checked = coerceBool(String(value), DEFAULTS.stableCameraFollow);
+                    if (key === 'stableCameraMovementMode' && movementMode) movementMode.value = coerceMovementMode(value);
+                    if (key === 'stableCameraAutoZoom' && autoZoom) autoZoom.checked = coerceBool(String(value), DEFAULTS.stableCameraAutoZoom);
                     syncTuning(key, value);
                     sync();
                 });

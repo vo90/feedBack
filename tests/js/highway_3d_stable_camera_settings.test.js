@@ -24,6 +24,7 @@ function load(initial = {}, { window = {}, unavailable = false } = {}) {
     const elements = new Map();
     for (const id of ['camera-mode', 'camera-smoothing', 'zoom-smoothing',
         'stable-camera-controls', 'stable-camera-preset', 'stable-camera-follow',
+        'stable-camera-movement-mode', 'stable-camera-auto-zoom',
         'stable-camera-reset', 'stable-camera-reset-status', 'legacy-camera-controls',
         'stable-camera-tuning-fields', 'stable-tuning-disabled', 'stable-tuning-status',
         ...['start-before', 'arrive-after', 'excursion-threshold']
@@ -76,11 +77,20 @@ test('live highway edits refresh the mounted settings page without rewriting pre
     assert.equal(h.el('stable-excursion-threshold-value').value, '750');
     assert.equal(h.el('camera-smoothing').disabled, true);
     assert.equal(h.el('zoom-smoothing').disabled, false);
+    update('stableCameraMovementMode', 'latest-destination');
+    assert.equal(h.el('stable-camera-movement-mode').value, 'latest-destination');
+    update('stableCameraAutoZoom', false);
+    assert.equal(h.el('stable-camera-auto-zoom').checked, false);
+    assert.equal(h.el('zoom-smoothing').disabled, true);
+    update('stableCameraAutoZoom', true);
+    assert.equal(h.el('zoom-smoothing').disabled, false);
     update('stableCameraPreset', 'angled');
     assert.equal(h.el('stable-camera-preset').value, 'angled');
     update('stableCameraFollow', false);
     assert.equal(h.el('stable-camera-follow').checked, false);
     assert.equal(h.el('stable-camera-tuning-fields').disabled, true);
+    assert.equal(h.el('stable-camera-movement-mode').disabled, true);
+    assert.equal(h.el('stable-camera-auto-zoom').disabled, false);
     update('stableCameraFollow', true);
     assert.equal(h.el('stable-camera-tuning-fields').disabled, false);
     update('cameraMode', 'steady');
@@ -209,6 +219,70 @@ test('every settings script remains valid JavaScript', () => {
     for (const script of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
         assert.doesNotThrow(() => new vm.Script(script[1]));
     }
+});
+
+test('movement and zoom hydrate without writes and reject invalid saved choices', () => {
+    for (const preset of ['straight', 'angled']) {
+        const initial = {h3d_bg_cameraMode:'stable',h3d_bg_stableCameraPreset:preset,
+            h3d_bg_stableCameraMovementMode:'latest-destination',h3d_bg_stableCameraAutoZoom:'false'};
+        const h=load(initial);
+        assert.equal(h.el('stable-camera-movement-mode').value,'latest-destination');
+        assert.equal(h.el('stable-camera-auto-zoom').checked,false);
+        assert.equal(h.el('zoom-smoothing').disabled,true);
+        assert.match(h.el('zoom-smoothing-description').textContent,/Turn on Automatic zoom/);
+        assert.deepEqual(h.writes,[]);
+        assert.deepEqual(Object.fromEntries(h.data),initial);
+    }
+    for (const initial of [{},{h3d_bg_stableCameraMovementMode:'unknown',h3d_bg_stableCameraAutoZoom:'maybe'}]) {
+        const h=load(initial);
+        assert.equal(h.el('stable-camera-movement-mode').value,'reach-centres');
+        assert.equal(h.el('stable-camera-auto-zoom').checked,true);
+        assert.deepEqual(h.writes,[]);
+    }
+    assert.match(html, /value="reach-centres">Reach every centre/);
+    assert.match(html, /value="latest-destination">Follow latest destination/);
+});
+
+test('movement and zoom call bridges once, and zoom remains adjustable with Follow off', () => {
+    const calls=[],h=load({h3d_bg_cameraMode:'stable'}, {window:{
+        h3dBgSetStableCameraMovementMode:value=>calls.push(['mode',value]),
+        h3dBgSetStableCameraAutoZoom:value=>calls.push(['zoom',value]),
+        h3dBgSetStableCameraFollow:value=>calls.push(['follow',value]),
+    }});
+    const mode=h.el('stable-camera-movement-mode'),zoom=h.el('stable-camera-auto-zoom');
+    mode.value='latest-destination';mode.emit('change');
+    zoom.checked=false;zoom.emit('change');
+    h.el('stable-camera-follow').checked=false;h.el('stable-camera-follow').emit('change');
+    assert.equal(mode.disabled,true);
+    assert.equal(zoom.disabled,false);
+    mode.value='reach-centres';mode.emit('change');
+    zoom.checked=true;zoom.emit('change');
+    assert.deepEqual(calls,[['mode','latest-destination'],['zoom',false],['follow',false],['zoom',true]]);
+    assert.equal(h.el('zoom-smoothing').disabled,true,'Follow-off still freezes the view');
+    assert.deepEqual(h.writes,[]);
+});
+
+test('movement and zoom persist locally without overwriting timing or old preferences', () => {
+    const initial={h3d_bg_cameraMode:'stable',h3d_bg_stableCameraStartBeforeMs:'1050',
+        h3d_bg_stableCameraArriveAfterMs:'200',h3d_bg_stableCameraDepartureDelay:'350'};
+    const h=load(initial);
+    h.el('stable-camera-movement-mode').value='latest-destination';h.el('stable-camera-movement-mode').emit('change');
+    h.el('stable-camera-auto-zoom').checked=false;h.el('stable-camera-auto-zoom').emit('change');
+    assert.deepEqual(h.writes,[['h3d_bg_stableCameraMovementMode','latest-destination'],['h3d_bg_stableCameraAutoZoom','false']]);
+    for(const [key,value] of Object.entries(initial))assert.equal(h.data.get(key),value);
+    const reopened=load(Object.fromEntries(h.data));
+    assert.equal(reopened.el('stable-camera-movement-mode').value,'latest-destination');
+    assert.equal(reopened.el('stable-camera-auto-zoom').checked,false);
+    assert.equal(reopened.el('stable-start-before-value').value,'1050');
+    assert.equal(reopened.el('stable-arrive-after-value').value,'200');
+    assert.deepEqual(reopened.writes,[]);
+    h.el('camera-mode').value='steady';h.el('camera-mode').emit('change');
+    assert.equal(h.el('stable-camera-auto-zoom').disabled,true);
+    assert.equal(h.el('zoom-smoothing').disabled,false);
+    const count=h.writes.length;
+    h.el('stable-camera-auto-zoom').emit('change');
+    h.el('stable-camera-movement-mode').emit('change');
+    assert.equal(h.writes.length,count);
 });
 
 test('direct timing opens with 700/0 and original-song threshold without writes', () => {

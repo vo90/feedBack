@@ -5701,7 +5701,7 @@
         return _bgBandsCache;
     }
 
-    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, stableCameraPreparationMode: 'auto', stableCameraPreparationMs: 700, stableCameraStartBeforeMs: 700, stableCameraArriveAfterMs: 0, stableCameraDepartureDelay: 100, stableCameraTravelExtra: 10, stableCameraSettleLimit: 250, stableCameraExcursionThreshold: 500, stableCameraLongSwitchFrets: 5, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, wahGuidanceVisible: true, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, letRingTrailsVisible: false, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration, trailYieldSameStringEnabled: TRAIL_YIELD_DEFAULTS.sameStringEnabled, trailYieldSameStringMaxGap: TRAIL_YIELD_DEFAULTS.sameStringMaxGap, trailYieldSameStringLeadTime: TRAIL_YIELD_DEFAULTS.sameStringLeadTime };
+    const BG_DEFAULTS = { notationStyle: 'current', chordBoxTop: 'short-caps', repeatChordFullBorder: false, style: 'particles', intensity: 0.5, reactive: true, palette: 'default', bgTheme: 'default', hwTheme: 'default', showFretOnNote: true, fretNumberGhostScope: 'chords', cameraSmoothing: 0.5, zoomSmoothing: 0.5, tiltSmoothing: 0.5, cameraLockLow: false, cameraLockZoom: 0.5, cameraMode: 'lookahead', stableCameraPreset: 'straight', stableCameraFollow: true, stableCameraAutoZoom: true, stableCameraMovementMode: 'reach-centres', stableCameraPreparationMode: 'auto', stableCameraPreparationMs: 700, stableCameraStartBeforeMs: 700, stableCameraArriveAfterMs: 0, stableCameraDepartureDelay: 100, stableCameraTravelExtra: 10, stableCameraSettleLimit: 250, stableCameraExcursionThreshold: 500, stableCameraLongSwitchFrets: 5, nutHeadstockVisible: true, tuningLabelsVisible: true, nutColor: '#f5f3f0', headstockColor: '#d4b48a', textSize: 0.5, vibrancy: 0.85, glow: 0.25, customImageDataUrl: '', customImageName: '', customVideoName: '', chordDiagramVisible: true, chordDiagramSize: 0.5, chordDiagramPosition: 'tl', fretColumnMarkerCadence: 1, projectionVisible: true, inlayLabelsVisible: false, wahGuidanceVisible: true, sectionLabelsOnHighway: false, sectionHudVisible: false, sectionHudPosition: 'tr', sectionHudSize: 0.5, toneHudVisible: false, toneHudPosition: 'tl', toneHudSize: 0.5, fpsVisible: false, fretDividersVisible: true, noteStemsVisible: true, letRingTrailsVisible: false, openStringStemsVisible: true, slideArrowApproachVisible: true, slideArrowNeckVisible: true, slideArrowChainPreviewVisible: true, hitFx: 0.7, sparks: true, cinematic: true, verdictMarks: true, timingFx: true, streakFx: true, bloom: true, trailYieldEnabled: TRAIL_YIELD_DEFAULTS.enabled, trailYieldGemInFront: TRAIL_YIELD_DEFAULTS.gemInFront, trailYieldIncludeTrails: TRAIL_YIELD_DEFAULTS.includeTrails, trailYieldMinScale: TRAIL_YIELD_DEFAULTS.minScale, trailYieldLeadTime: TRAIL_YIELD_DEFAULTS.leadTime, trailYieldTaperDuration: TRAIL_YIELD_DEFAULTS.taperDuration, trailYieldHoldAfter: TRAIL_YIELD_DEFAULTS.holdAfter, trailYieldRecoverDuration: TRAIL_YIELD_DEFAULTS.recoverDuration, trailYieldEndLeadTime: TRAIL_YIELD_DEFAULTS.endLeadTime, trailYieldEndTaperDuration: TRAIL_YIELD_DEFAULTS.endTaperDuration, trailYieldSameStringEnabled: TRAIL_YIELD_DEFAULTS.sameStringEnabled, trailYieldSameStringMaxGap: TRAIL_YIELD_DEFAULTS.sameStringMaxGap, trailYieldSameStringLeadTime: TRAIL_YIELD_DEFAULTS.sameStringLeadTime };
     // User-selectable, persistable bg styles — must mirror settings.html's
     // VALID_STYLES. 'venue' is deliberately NOT here: it is an internal effective
     // style reached only via _venueSceneOverride (the viz-picker Venue flow), so
@@ -6119,7 +6119,7 @@
     // means (fall back to default rather than silently flipping to
     // false). Add new boolean keys to BG_DEFAULTS and they pick this
     // up via the dispatch below.
-    const _BG_BOOL_KEYS = new Set(['wahGuidanceVisible', 'repeatChordFullBorder', 'reactive', 'showFretOnNote', 'cameraLockLow', 'stableCameraFollow', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'noteStemsVisible', 'letRingTrailsVisible', 'openStringStemsVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront', 'trailYieldIncludeTrails', 'trailYieldSameStringEnabled']);
+    const _BG_BOOL_KEYS = new Set(['wahGuidanceVisible', 'repeatChordFullBorder', 'reactive', 'showFretOnNote', 'cameraLockLow', 'stableCameraFollow', 'stableCameraAutoZoom', 'inlayLabelsVisible', 'sectionLabelsOnHighway', 'sectionHudVisible', 'nutHeadstockVisible', 'tuningLabelsVisible', 'projectionVisible', 'chordDiagramVisible', 'fpsVisible', 'toneHudVisible', 'fretDividersVisible', 'noteStemsVisible', 'letRingTrailsVisible', 'openStringStemsVisible', 'slideArrowApproachVisible', 'slideArrowNeckVisible', 'slideArrowChainPreviewVisible', 'sparks', 'cinematic', 'verdictMarks', 'timingFx', 'streakFx', 'bloom', 'trailYieldEnabled', 'trailYieldGemInFront', 'trailYieldIncludeTrails', 'trailYieldSameStringEnabled']);
     function _bgCoerceBool(val, fallback) {
         if (val === 'true' || val === '1') return true;
         if (val === 'false' || val === '0') return false;
@@ -6176,6 +6176,7 @@
             return ['tl', 'tr', 'bl', 'br'].includes(val) ? val : BG_DEFAULTS.sectionHudPosition;
         if (key === 'toneHudPosition')
             return ['tl', 'tr', 'bl', 'br'].includes(val) ? val : BG_DEFAULTS.toneHudPosition;
+        if (key === 'stableCameraMovementMode') return ['reach-centres', 'latest-destination'].includes(val) ? val : BG_DEFAULTS.stableCameraMovementMode;
         if (key === 'stableCameraPreparationMode') return ['auto', 'manual'].includes(val) ? val : BG_DEFAULTS.stableCameraPreparationMode;
         if (key === 'stableCameraPreset') return STABLE_CAMERA_PRESETS.includes(val) ? val : BG_DEFAULTS.stableCameraPreset;
         if (key === 'cameraMode') {
@@ -6294,15 +6295,28 @@
         const followLabel = element('label', '', 'display:flex;align-items:center;gap:8px;margin-bottom:8px;');
         const follow = element('input'); follow.type = 'checkbox'; follow.dataset.cameraSetting = 'stableCameraFollow';
         followLabel.appendChild(follow); followLabel.appendChild(element('span', 'Follow hand position')); panel.appendChild(followLabel);
+        const zoomLabel = element('label', '', 'display:flex;align-items:center;gap:8px;margin-bottom:8px;');
+        const autoZoom = element('input'); autoZoom.type = 'checkbox'; autoZoom.dataset.cameraSetting = 'stableCameraAutoZoom';
+        zoomLabel.appendChild(autoZoom); zoomLabel.appendChild(element('span', 'Automatic zoom')); panel.appendChild(zoomLabel);
+        const zoomHelp = element('p', '', 'margin:0 0 8px;color:#adc0d7;');
+        zoomHelp.dataset.cameraZoomHelp = ''; panel.appendChild(zoomHelp);
         const fields = element('fieldset', '', 'min-width:0;border:0;padding:0;margin:0;');
-        fields.appendChild(element('p', 'Separated lane changes use these exact playback times. Travel duration is start-before + arrive-after. Release a slider to apply.', 'margin:0 0 8px;color:#adc0d7;'));
-        fields.appendChild(element('p', 'Crowded sequences retain their existing continuous movement for now. The readout identifies when exact timing cannot apply.', 'margin:4px 0;color:#adc0d7;'));
+        const movementLabel = element('label', 'Movement ', 'display:flex;align-items:center;gap:8px;margin-bottom:8px;');
+        const movement = element('select', '', inputStyle + 'flex:1;');
+        movement.dataset.cameraSetting = 'stableCameraMovementMode';
+        for (const [value, label] of [['reach-centres', 'Reach every centre'], ['latest-destination', 'Follow latest destination']]) {
+            const option = element('option', label); option.value = value; movement.appendChild(option);
+        }
+        movementLabel.appendChild(movement); fields.appendChild(movementLabel);
+        const movementHelp = element('p', '', 'margin:0 0 8px;color:#adc0d7;');
+        movementHelp.dataset.cameraMovementHelp = ''; fields.appendChild(movementHelp);
+        fields.appendChild(element('p', 'Timing uses real playback milliseconds. Release a slider to apply.', 'margin:0 0 8px;color:#adc0d7;'));
         const durationReadout = element('p', '', 'margin:8px 0;color:#e5edf7;');
         durationReadout.dataset.cameraDuration = '';
         const timingBox = element('div', '', 'margin:8px 0;padding:8px;border:1px solid #50637b;border-radius:5px;color:#adc0d7;');
         timingBox.dataset.cameraTiming = '';
         timingBox.className = 'fb-selectable';
-        timingBox.appendChild(element('strong', 'Current or next planned journey'));
+        timingBox.appendChild(element('strong', 'Current or next camera target'));
         const timingDetails = element('details', '', 'margin-top:6px;');
         timingDetails.dataset.cameraTimingDetails = '';
         timingDetails.appendChild(element('summary', 'Timing details', 'cursor:pointer;'));
@@ -6401,26 +6415,32 @@
             const ms = value => Math.round(value) + ' ms';
             const seconds = value => value.toFixed(3) + ' s';
             timingLines.starts.textContent = Number.isFinite(timing.appliedLeadMs)
-                ? 'Starts ' + ms(Math.abs(timing.appliedLeadMs)) + (timing.appliedLeadMs >= 0 ? ' before' : ' after') + ' the first lane.'
+                ? (timing.departureReason === 'continuing-path' ? 'Continues from the previous centre ' : 'Starts ')
+                    + ms(Math.abs(timing.appliedLeadMs)) + (timing.appliedLeadMs >= 0 ? ' before' : ' after') + ' this lane.'
                 : '';
             timingLines.travel.textContent = Number.isFinite(timing.appliedDurationMs)
-                ? 'Travel: ' + ms(timing.appliedDurationMs) + ' through ' + timing.waypointCount
-                    + (timing.waypointCount === 1 ? ' lane.' : ' lanes.') : '';
-            timingLines.lateness.textContent = Number.isFinite(timing.actualArriveAfterMs)
-                ? 'Next lane reached ' + ms(timing.actualArriveAfterMs) + ' after it begins.' : '';
+                ? (timing.retargeted ? 'Moves toward this target for ' : 'Travel to this centre: ')
+                    + ms(timing.appliedDurationMs) + (timing.retargeted ? ', then redirects.' : '.') : '';
+            timingLines.lateness.textContent = timing.retargeted
+                ? 'Scheduled arrival superseded: the next destination takes over.'
+                : Number.isFinite(timing.actualArriveAfterMs)
+                    ? 'Centre reached ' + ms(timing.actualArriveAfterMs) + ' after its lane begins.' : '';
             timingLines.requested.textContent = Number.isFinite(timing.requestedStartBeforeMs)
                 ? 'Requested: start ' + ms(timing.requestedStartBeforeMs) + ' before; arrive '
                     + ms(timing.requestedArriveAfterMs) + ' after.' : '';
-            timingLines.departure.textContent = 'Song departure: ' + seconds(timing.start) + '.';
-            timingLines.arrival.textContent = 'Song arrival: ' + seconds(timing.end) + ' (final lane begins ' + seconds(timing.nominalEnd) + ').';
-            const fallback = {
-                'progressive-journey': 'Several short lanes form one continuous journey.',
-                'previous-lane': 'The requested departure falls before the preceding lane.',
-                'adjacent-journey-overlap': 'The requested movement overlaps a neighbouring movement.',
-            };
-            timingLines.limit.textContent = timing.mode === 'direct' ? 'Exact start and arrival applied.'
-                : 'Existing sequence timing retained. ' + (fallback[timing.fallbackReason] || 'This passage needs continuous movement.')
-                    + ' The two exact timing controls do not apply here yet.';
+            timingLines.departure.textContent = 'Song movement start: ' + seconds(timing.start)
+                + ' (requested trigger ' + seconds(timing.requestedStart) + ').';
+            timingLines.arrival.textContent = timing.retargeted
+                ? 'Redirected at ' + seconds(timing.retargetTime) + '; superseded arrival was ' + seconds(timing.requestedEnd) + '.'
+                : 'Song arrival: ' + seconds(timing.end) + ' (lane begins ' + seconds(timing.nominalEnd) + ').';
+            timingLines.limit.textContent = timing.departureReason === 'initial-availability'
+                ? 'Start limited by the beginning of the initial lane; '
+                    + (timing.retargeted ? 'the next trigger supersedes this arrival.' : 'arrival stays at the requested time.')
+                : timing.mode === 'latest-destination'
+                    ? 'Follow latest destination: each trigger redirects smoothly; interrupted centres may be skipped.'
+                    : timing.departureReason === 'continuing-path'
+                        ? 'Reach every centre: already moving through this sequence. Arrival is exact; start-before governs departure from a hold.'
+                        : 'Reach every centre: requested departure and arrival applied.';
         }
         function setTiming(value, nextDecision = null, nextMode = '') {
             if (destroyed || (timing === value && decision === nextDecision && motionMode === nextMode)) return;
@@ -6438,6 +6458,13 @@
             const stable = read('cameraMode') === 'stable'; root.hidden = !stable;
             if (!stable) setExpanded(false);
             preset.value = read('stableCameraPreset'); follow.checked = read('stableCameraFollow');
+            autoZoom.checked = read('stableCameraAutoZoom');
+            zoomHelp.textContent = autoZoom.checked ? 'Fits visible notes and gently recovers after widening.'
+                : 'Distance frozen. Notes may leave the view. A new song or explicit view reset establishes new framing.';
+            movement.value = read('stableCameraMovementMode'); movement.disabled = !follow.checked;
+            movementHelp.textContent = movement.value === 'latest-destination'
+                ? 'Each start-before time redirects toward the next lane. Earlier centres may be skipped; reversals brake smoothly.'
+                : 'Overlapping moves form one continuous path through every retained centre at its arrival time. Start-before controls departure from a hold.';
             fields.disabled = !follow.checked;
             for (const control of controls) {
                 if (control.dirty && key !== control.key) continue;
@@ -6445,7 +6472,7 @@
                 control.range.value = control.number.value = String(read(control.key));
                 control.range.disabled = control.number.disabled = !follow.checked;
             }
-            durationReadout.textContent = 'Separated transition duration: '
+            durationReadout.textContent = 'Uninterrupted transition duration: '
                 + (read('stableCameraStartBeforeMs') + read('stableCameraArriveAfterMs')) + ' ms.';
             if (!follow.checked) status.textContent = 'Turn on Follow hand position to adjust movement.';
             else if (status.textContent === 'Turn on Follow hand position to adjust movement.') status.textContent = '';
@@ -6454,6 +6481,8 @@
         listen(close, 'click', () => setExpanded(false, true));
         listen(preset, 'change', () => write('stableCameraPreset', _bgCoerce('stableCameraPreset', preset.value)));
         listen(follow, 'change', () => write('stableCameraFollow', follow.checked));
+        listen(autoZoom, 'change', () => write('stableCameraAutoZoom', autoZoom.checked));
+        listen(movement, 'change', () => write('stableCameraMovementMode', _bgCoerce('stableCameraMovementMode', movement.value)));
         listen(root, 'keydown', event => {
             event.stopPropagation();
             if (event.key === 'Escape') { event.preventDefault(); setExpanded(false, true); }
@@ -6535,6 +6564,8 @@
     window.h3dBgSetStableCameraPreset = (v) => _bgWriteGlobal('stableCameraPreset', _bgCoerce('stableCameraPreset', v));
     window.h3dBgSetStableCameraFollow = (v) => _bgWriteGlobal('stableCameraFollow', !!v);
     window.h3dBgSetStableCameraPreparationMode = (v) => _bgWriteGlobal('stableCameraPreparationMode', _bgCoerce('stableCameraPreparationMode', v));
+    window.h3dBgSetStableCameraMovementMode = (v) => _bgWriteGlobal('stableCameraMovementMode', _bgCoerce('stableCameraMovementMode', v));
+    window.h3dBgSetStableCameraAutoZoom = (v) => _bgWriteGlobal('stableCameraAutoZoom', _bgCoerce('stableCameraAutoZoom', String(v)));
     window.h3dBgSetStableCameraStartBeforeMs = (v) => _bgWriteGlobal('stableCameraStartBeforeMs', _bgCoerce('stableCameraStartBeforeMs', v));
     window.h3dBgSetStableCameraArriveAfterMs = (v) => _bgWriteGlobal('stableCameraArriveAfterMs', _bgCoerce('stableCameraArriveAfterMs', v));
     window.h3dBgSetStableCameraPreparationMs = (v) => _bgWriteGlobal('stableCameraPreparationMs', _bgCoerce('stableCameraPreparationMs', v));
@@ -8803,9 +8834,10 @@
         let cameraMode = BG_DEFAULTS.cameraMode;
         let stableCameraPreset = BG_DEFAULTS.stableCameraPreset;
         let stableCameraFollow = BG_DEFAULTS.stableCameraFollow;
+        let stableCameraAutoZoom = BG_DEFAULTS.stableCameraAutoZoom;
         let stableCameraPreparationMode = BG_DEFAULTS.stableCameraPreparationMode;
         let stableCameraPreparationMs = BG_DEFAULTS.stableCameraPreparationMs;
-        let stableCameraDirectTiming = { startBeforeMs: BG_DEFAULTS.stableCameraStartBeforeMs, arriveAfterMs: BG_DEFAULTS.stableCameraArriveAfterMs };
+        let stableCameraDirectTiming = { startBeforeMs: BG_DEFAULTS.stableCameraStartBeforeMs, arriveAfterMs: BG_DEFAULTS.stableCameraArriveAfterMs, movementMode: BG_DEFAULTS.stableCameraMovementMode };
         let stableCameraDepartureDelay = BG_DEFAULTS.stableCameraDepartureDelay;
         let stableCameraTravelExtra = BG_DEFAULTS.stableCameraTravelExtra;
         let stableCameraSettleLimit = BG_DEFAULTS.stableCameraSettleLimit;
@@ -13160,6 +13192,7 @@
                     changedKey === 'tiltSmoothing' || changedKey === 'cameraLockLow' ||
                     changedKey === 'cameraLockZoom' || changedKey === 'cameraMode' ||
                     changedKey === 'stableCameraPreset' || changedKey === 'stableCameraFollow' ||
+                    changedKey === 'stableCameraAutoZoom' || changedKey === 'stableCameraMovementMode' ||
                     changedKey === 'stableCameraPreparationMode' || changedKey === 'stableCameraPreparationMs' ||
                     changedKey === 'stableCameraStartBeforeMs' || changedKey === 'stableCameraArriveAfterMs' ||
                     changedKey === 'stableCameraDepartureDelay' || changedKey === 'stableCameraTravelExtra' ||
@@ -13495,10 +13528,12 @@
             cameraMode = _bgReadSetting(panelKey, 'cameraMode');
             stableCameraPreset = _bgReadSetting(panelKey, 'stableCameraPreset');
             stableCameraFollow = _bgReadSetting(panelKey, 'stableCameraFollow');
+            stableCameraAutoZoom = _bgReadSetting(panelKey, 'stableCameraAutoZoom');
             stableCameraPreparationMode = _bgReadSetting(panelKey, 'stableCameraPreparationMode');
             stableCameraPreparationMs = _bgReadSetting(panelKey, 'stableCameraPreparationMs');
             stableCameraDirectTiming = { startBeforeMs: _bgReadSetting(panelKey, 'stableCameraStartBeforeMs'),
-                arriveAfterMs: _bgReadSetting(panelKey, 'stableCameraArriveAfterMs') };
+                arriveAfterMs: _bgReadSetting(panelKey, 'stableCameraArriveAfterMs'),
+                movementMode: _bgReadSetting(panelKey, 'stableCameraMovementMode') };
             stableCameraDepartureDelay = _bgReadSetting(panelKey, 'stableCameraDepartureDelay');
             stableCameraTravelExtra = _bgReadSetting(panelKey, 'stableCameraTravelExtra');
             stableCameraSettleLimit = _bgReadSetting(panelKey, 'stableCameraSettleLimit');
@@ -24189,7 +24224,8 @@
             const key = [geometryKey, rate, cameraSmoothing, stableCameraDepartureDelay,
                 stableCameraTravelExtra, stableCameraSettleLimit, stableCameraExcursionThreshold,
                 stableCameraPreparationMode, stableCameraPreparationMs,
-                stableCameraDirectTiming.startBeforeMs, stableCameraDirectTiming.arriveAfterMs].join('/');
+                stableCameraDirectTiming.startBeforeMs, stableCameraDirectTiming.arriveAfterMs,
+                stableCameraDirectTiming.movementMode].join('/');
             if (timingChanged || cache.key !== key) { cache.key = key; cache.revision++; }
             hwyCameraPlanAt(cache.stops, now, rate, cameraSmoothing, cache.result,
                 stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit,
@@ -24203,7 +24239,8 @@
                 for (let i = 0; same && i < current.length; i++) {
                     const a = previous[i], b = current[i];
                     same = a.start === b.start && a.end === b.end && a.from === b.from && a.to === b.to
-                        && a.v0 === b.v0 && a.v1 === b.v1 && a.arrivalIndex === b.arrivalIndex
+                        && a.v0 === b.v0 && a.v1 === b.v1 && a.a0 === b.a0 && a.a1 === b.a1
+                        && a.arrivalIndex === b.arrivalIndex
                         && a.nominalEnd === b.nominalEnd && a.transit === b.transit;
                 }
                 if (!same) cache.motionRevision = (cache.motionRevision || 0) + 1;
@@ -24298,9 +24335,10 @@
             }
             const declaredRate = bundle.playbackRate ?? bundle.speed;
             if (Number.isFinite(declaredRate) && declaredRate >= 0.1 && declaredRate <= 4) s.rate = declaredRate;
-            const reset = !s.active || s.reset !== _stableCameraResetSerial
+            const reframe = !s.active || s.reset !== _stableCameraResetSerial
                 || s.preset !== stableCameraPreset || s.lefty !== _leftyCached || s.strings !== nStr
-                || s.song !== _songKey || s.notes !== bundle.notes || s.chords !== bundle.chords
+                || s.song !== _songKey;
+            const reset = reframe || s.notes !== bundle.notes || s.chords !== bundle.chords
                 || s.anchors !== bundle.anchors || s.anchorCount !== (bundle.anchors?.length || 0);
             const resize = s.aspect !== cam.aspect;
             s.active = true; s.lastWall = wall; s.lastTime = now;
@@ -24332,7 +24370,11 @@
             const baseDistance = Math.max(100 * K, (Math.abs(sY(0) - sY(nStr - 1)) + 14 * K) * 2.3);
             const plan = stableCameraPlan(bundle, frameTime, baseDistance);
             s.collectCentre = plan.valid ? plan.x : s.x;
-            stableCollectGeometry(focus);
+            // Disabled zoom skips live visibility collection and all automatic
+            // distance corrections. Explicit framing changes get one initial fit.
+            const frameDistance = stableCameraAutoZoom || reframe || !s.initialized;
+            if (frameDistance) stableCollectGeometry(focus);
+            else s.pointCount = s.viewPointCount = 0;
             s.focusValid = focus.valid;
             s.focusX = focus.x; s.focusMinX = focus.minX; s.focusMaxX = focus.maxX;
             s.regionTime = focus.time; s.regionSource = focus.source;
@@ -24350,11 +24392,13 @@
             if (snap) {
                 const centre = plan.valid ? plan.x : focus.valid ? focus.x
                     : s.initialized ? s.x : curX;
-                const distance = Math.max(closeDistance, plan.distance);
-                const fits = stableIntervalAt(distance, prediction, 0.96, centre).valid;
-                const fit = stableSolve(centre, distance, prediction, fits ? 0.96 : 0.82, true);
-                s.x = fit.x; s.distance = fit.distance;
-                s.distance = Math.max(s.distance, plan.distance);
+                s.x = centre;
+                if (frameDistance) {
+                    const distance = Math.max(closeDistance, plan.distance);
+                    const fits = stableIntervalAt(distance, prediction, 0.96, centre).valid;
+                    const fit = stableSolve(centre, distance, prediction, fits ? 0.96 : 0.82, true);
+                    s.x = fit.x; s.distance = Math.max(fit.distance, plan.distance);
+                }
                 s.targetX = s.x; s.targetDistance = s.distance;
                 s.centreCandidateX = focus.valid ? s.x : NaN;
                 s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
@@ -24366,10 +24410,9 @@
                 s.rejoinOffset = s.rejoinVelocity = 0; s.rejoinEnd = s.resumeUntil = -Infinity;
                 s.safetyOffset = s.safetyVelocity = 0;
             } else if (resize) {
-                // A resize can change distance, but never the held centre or
-                // viewing angle, even with following switched off.
-                const fit = stableSolve(s.x, baseDistance, 0, 0.90, true);
-                s.distance = fit.distance; s.quietZoomTime = 0;
+                // A fixed-distance view stays fixed on resize as well.
+                if (stableCameraAutoZoom) s.distance = stableSolve(s.x, baseDistance, 0, 0.90, true).distance;
+                s.quietZoomTime = 0;
                 s.zoomVelocity = 0;
                 s.quietPanTime = 0; s.panPending = false;
             } else if (stableCameraFollow && bundle.isPlaying !== false && focus.valid && !seek) {
@@ -24378,51 +24421,53 @@
                 // Visibility may widen the view, but cannot select a second
                 // lateral path or override a deliberately held excursion.
                 s.safetyOffset = s.safetyVelocity = 0;
-                const plannedDistance = Math.max(closeDistance, plan.distance);
-                const comfortable = stableIntervalAt(plannedDistance, prediction, 0.96, s.x).valid;
-                const fit = stableSolve(s.x, closeDistance, prediction, comfortable ? 0.96 : 0.82, true);
-                // Feed the actual preset's visibility requirement into the
-                // zoom controller, including the short anticipation window.
-                // A fit applied only after smoothing bypasses the controller
-                // and leaves its return state unaware of the widened view.
-                const viewDistance = stableSolve(s.x, fit.distance, prediction, 0.96, true,
-                    _stableViewPoints, s.viewPointCount, v).distance;
-                // Give the zoom controller enough lead along the scheduled
-                // pan, but never reserve this region after its boundary. Live
-                // geometry and the final guard still protect surviving tails.
-                const nextRegion = _stablePlan.regions[plan.regionIndex + 1];
-                const futureTime = Math.min(frameTime + .4 * s.rate,
-                    nextRegion ? Math.max(frameTime, nextRegion.time) : Infinity);
-                const future = hwyCameraPlanAt(_stablePlan.stops, futureTime,
-                    _stablePlan.rate, cameraSmoothing, _stableViewFuturePlan,
-                    stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit,
-                    stableCameraPreparationMode === 'manual' ? stableCameraPreparationMs : null, stableCameraDirectTiming);
-                let futureX = frameTime < s.resumeUntil
-                    ? futureTime < s.resumeUntil ? hwyCameraResumeAt(s, futureTime, future).x : future.x
-                    : future.valid ? s.x + future.x - plan.x : s.x;
-                if (!(frameTime < s.resumeUntil) && frameTime < s.rejoinEnd && future.valid) {
-                    const futurePlanX = future.x;
-                    futureX = futurePlanX + hwyCameraJoinAt(s.rejoinStartOffset || 0, s.rejoinStartVelocity || 0,
-                        s.rejoinStart || 0, s.rejoinEnd, futureTime, _stablePlan.rate, future).x;
-                }
-                const panDistance = stableSolve(futureX, viewDistance, prediction, .96, true,
-                    _stableViewPoints, s.viewPointCount, v).distance;
-                // While panning, the current area's reserved arrival envelope
-                // must fit from the moving centre as well as at its own stop.
-                const region = _stablePlan.regions[plan.regionIndex];
-                const regionDistance = region ? stableRegionViewDistance(region, closeDistance, s.x) : closeDistance;
-                const neutralDistance = Math.max(panDistance, regionDistance, plan.distance,
-                    Math.min(s.distance, plan.returnFloor));
                 s.centreCandidateX = plannedX;
                 s.regionMinX = focus.minX; s.regionMaxX = focus.maxX;
-                s.targetDistance = neutralDistance;
-                hwyCameraZoom(s, neutralDistance, dt, zoomSmoothing);
+                if (stableCameraAutoZoom) {
+                    const plannedDistance = Math.max(closeDistance, plan.distance);
+                    const comfortable = stableIntervalAt(plannedDistance, prediction, 0.96, s.x).valid;
+                    const fit = stableSolve(s.x, closeDistance, prediction, comfortable ? 0.96 : 0.82, true);
+                    // Feed the actual preset's visibility requirement into the
+                    // zoom controller, including the short anticipation window.
+                    // A fit applied only after smoothing bypasses the controller
+                    // and leaves its return state unaware of the widened view.
+                    const viewDistance = stableSolve(s.x, fit.distance, prediction, 0.96, true,
+                        _stableViewPoints, s.viewPointCount, v).distance;
+                    // Give the zoom controller enough lead along the scheduled
+                    // pan, but never reserve this region after its boundary. Live
+                    // geometry and the final guard still protect surviving tails.
+                    const nextRegion = _stablePlan.regions[plan.regionIndex + 1];
+                    const futureTime = Math.min(frameTime + .4 * s.rate,
+                        nextRegion ? Math.max(frameTime, nextRegion.time) : Infinity);
+                    const future = hwyCameraPlanAt(_stablePlan.stops, futureTime,
+                        _stablePlan.rate, cameraSmoothing, _stableViewFuturePlan,
+                        stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit,
+                        stableCameraPreparationMode === 'manual' ? stableCameraPreparationMs : null, stableCameraDirectTiming);
+                    let futureX = frameTime < s.resumeUntil
+                        ? futureTime < s.resumeUntil ? hwyCameraResumeAt(s, futureTime, future).x : future.x
+                        : future.valid ? s.x + future.x - plan.x : s.x;
+                    if (!(frameTime < s.resumeUntil) && frameTime < s.rejoinEnd && future.valid) {
+                        const futurePlanX = future.x;
+                        futureX = futurePlanX + hwyCameraJoinAt(s.rejoinStartOffset || 0, s.rejoinStartVelocity || 0,
+                            s.rejoinStart || 0, s.rejoinEnd, futureTime, _stablePlan.rate, future).x;
+                    }
+                    const panDistance = stableSolve(futureX, viewDistance, prediction, .96, true,
+                        _stableViewPoints, s.viewPointCount, v).distance;
+                    // While panning, the current area's reserved arrival envelope
+                    // must fit from the moving centre as well as at its own stop.
+                    const region = _stablePlan.regions[plan.regionIndex];
+                    const regionDistance = region ? stableRegionViewDistance(region, closeDistance, s.x) : closeDistance;
+                    const neutralDistance = Math.max(panDistance, regionDistance, plan.distance,
+                        Math.min(s.distance, plan.returnFloor));
+                    s.targetDistance = neutralDistance;
+                    hwyCameraZoom(s, neutralDistance, dt, zoomSmoothing);
+                }
             } else if (!focus.valid || !stableCameraFollow) {
                 // No usable position and Follow off hold the pose. Silence
                 // with a chart-defined area still follows the ordinary path.
                 s.centreCandidateX = NaN; s.quietPanTime = 0; s.quietZoomTime = 0;
                 s.panPending = false;
-                if (stableCameraFollow && bundle.isPlaying !== false && s.pointCount > 0) {
+                if (stableCameraAutoZoom && stableCameraFollow && bundle.isPlaying !== false && s.pointCount > 0) {
                     // During a rest hold the playing position, but make room
                     // for a distant entry if needed. Primary silence must not
                     // disable secondary visibility protection.
@@ -24440,7 +24485,7 @@
             s.planTransit = plan.transit;
             s.planMoving = plan.moving;
             s.following = stableCameraFollow && bundle.isPlaying !== false && (snap || !resize);
-            if ((snap || resize || (stableCameraFollow && bundle.isPlaying !== false)) && s.pointCount > 0) {
+            if (frameDistance && (snap || resize || (stableCameraFollow && bundle.isPlaying !== false)) && s.pointCount > 0) {
                 // Protect the actual built-in viewpoint, including its closer
                 // zoom and pan. Widen only as needed; keep the planned centre.
                 // Explicit Camera Director offsets remain outside auto fitting.
@@ -24462,7 +24507,10 @@
             else if (!stableCameraFollow) stableMotionController.setMode(s, 'follow-off');
             else if (bundle.isPlaying === false) stableMotionController.setMode(s, 'paused');
             else if (!focus.valid) stableMotionController.setMode(s, 'no-lane');
-            if (!stableCameraFollow || bundle.isPlaying === false) s.zoomVelocity = 0;
+            if (!stableCameraAutoZoom) {
+                s.targetDistance = s.zoomReturnFrom = s.zoomRequired = s.distance;
+                s.quietZoomTime = 0; s.zoomVelocity = 0;
+            } else if (!stableCameraFollow || bundle.isPlaying === false) s.zoomVelocity = 0;
             stableApplyPose();
         }
 
@@ -25579,6 +25627,11 @@
             default: BG_DEFAULTS.stableCameraPreset },
         { key: 'stableCameraFollow', label: 'Follow hand position (Stable)', type: 'toggle',
             default: BG_DEFAULTS.stableCameraFollow },
+        { key: 'stableCameraMovementMode', label: 'Stable movement', type: 'select',
+            options: [{ id: 'reach-centres', label: 'Reach every centre' }, { id: 'latest-destination', label: 'Follow latest destination' }],
+            default: BG_DEFAULTS.stableCameraMovementMode },
+        { key: 'stableCameraAutoZoom', label: 'Automatic zoom (Stable)', type: 'toggle',
+            default: BG_DEFAULTS.stableCameraAutoZoom },
         { key: 'stableCameraStartBeforeMs', label: 'Start before next lane (ms)', type: 'range',
             min: 25, max: 3000, step: 25, default: BG_DEFAULTS.stableCameraStartBeforeMs },
         { key: 'stableCameraArriveAfterMs', label: 'Arrive after next lane (ms)', type: 'range',
