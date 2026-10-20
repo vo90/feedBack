@@ -13,6 +13,7 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
         value != null && Number.isFinite(Number(value)) ? Number(value) : 700));
     const directArriveAfter = value => Math.max(0, Math.min(3000,
         value != null && Number.isFinite(Number(value)) ? Number(value) : 0));
+    const directMovementMode = value => value === 'latest-destination' ? value : 'reach-centres';
     // Attack/technique timing depends on the chart, not camera rate or framing.
     // Keep this index reusable when only the composition plan changes.
     function hwyBuildCameraAttackIndex(notes, chords, stringCount = 6) {
@@ -98,6 +99,11 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
     // Lasting lanes are arrival constraints; short waypoints are traversed
     // without stopping. Bounded tangents prevent overshoot between waypoints.
     function hwyBuildCameraMotion(stops, rate, smoothing, departureDelay = 0, travelExtra = 0, settleLimit = 250, preparationMs = null, directTiming = null) {
+        if (directTiming && typeof directTiming === 'object') {
+            return buildDirectCameraMotion(stops, Math.max(0.1, Math.min(4, Number(rate) || 1)),
+                directStartBefore(directTiming.startBeforeMs), directArriveAfter(directTiming.arriveAfterMs),
+                directMovementMode(directTiming.movementMode));
+        }
         const segments = [], journeys = [];
         const manualPreparationMs = normalizePreparation(preparationMs);
         const base = 0.6 + Math.max(0, Math.min(1, smoothing)) * 0.2;
@@ -202,103 +208,130 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
         // Keep the legacy segment-array interface and enumeration intact.
         // Journey records are created only when this cached schedule rebuilds.
         Object.defineProperty(segments, 'journeys', { value: journeys });
-        if (directTiming && typeof directTiming === 'object') {
-            applyDirectCameraTiming(stops, segments, rate,
-                directStartBefore(directTiming.startBeforeMs), directArriveAfter(directTiming.arriveAfterMs));
-        }
         return segments;
     }
 
-    /**
-     * Exact endpoints are an opt-in overlay on the unchanged cached schedule.
-     * A direct move must fit between its neighbours' LEGACY intervals, so
-     * replacing or reverting any neighbour cannot create a new conflict.
-     * Progressive and conflicting moves retain that legacy schedule exactly;
-     * their diagnostics state that the direct controls were not applied.
-     */
-    function applyDirectCameraTiming(stops, segments, rate, startBeforeMs, arriveAfterMs) {
-        const journeys = segments.journeys;
-        // Collect all candidates before changing any segment or timing object.
-        // This prevents traversal order from deciding which move wins a gap.
-        for (let index = 0; index < journeys.length; index++) {
-            const journey = journeys[index];
-            const first = segments[journey.first], last = segments[journey.last];
-            const requestedStart = journey.firstLaneTime - startBeforeMs / 1000 * rate;
-            const requestedEnd = journey.firstLaneTime + arriveAfterMs / 1000 * rate;
-            let fallbackReason = 'none';
-            if (journey.first !== journey.last || first.transit) {
-                fallbackReason = 'progressive-journey';
-            } else if (requestedStart < stops[journey.fromStop].time) {
-                fallbackReason = 'previous-lane';
-            } else if (index > 0 && requestedStart < segments[journeys[index - 1].last].end
-                || index + 1 < journeys.length && requestedEnd > segments[journeys[index + 1].first].start) {
-                fallbackReason = 'adjacent-journey-overlap';
+    /** Build either movement policy directly from the retained semantic stops.
+     * Connected requested windows are one journey. This is chart-static work:
+     * sampling only searches the resulting non-overlapping polynomial pieces.
+     * Legacy preparation, smoothing, delay and stretch never enter these paths. */
+    function buildDirectCameraMotion(stops, rate, beforeMs, afterMs, movementMode) {
+        const segments = [], journeys = [];
+        const before = beforeMs / 1000 * rate, after = afterMs / 1000 * rate;
+        const latest = movementMode === 'latest-destination';
+        const scratch = {};
+        let first = 1;
+        while (first < stops.length) {
+            let last = first;
+            while (last + 1 < stops.length
+                && stops[last + 1].time - before < stops[last].time + after) last++;
+            const source = stops[first - 1];
+            const initialStart = Math.max(source.time, stops[first].time - before);
+            const journey = { first: segments.length, last: 0, fromStop: first - 1, toStop: last,
+                firstLaneTime: stops[first].time, waypointCount: last - first + 1,
+                movementMode, start: initialStart, end: stops[last].time + after };
+            const points = [{ time: initialStart, x: source.x, velocity: 0 }];
+            if (!latest) {
+                for (let i = first; i <= last; i++) points.push({
+                    time: stops[i].time + after, x: stops[i].x, velocity: 0 });
+                // With zero endpoint acceleration these conservative shared
+                // tangents keep every segment inside its two centre positions.
+                // Reversals reach zero velocity without a discontinuity.
+                for (let i = 1; i + 1 < points.length; i++) {
+                    const a = points[i - 1], b = points[i], c = points[i + 1];
+                    const left = (b.x - a.x) / (b.time - a.time);
+                    const right = (c.x - b.x) / (c.time - b.time);
+                    if (left * right > 0) b.velocity = Math.sign(left) * Math.min(Math.abs(left), Math.abs(right));
+                }
             }
-            journey.directCandidate = {
-                requestedStart, requestedEnd, fallbackReason,
-                fitsLegacyGap: fallbackReason === 'none',
-                legacyStart: first.start, legacyEnd: last.end,
-            };
-        }
-        // Even when both candidates fit the original free gap, their exact
-        // requests can overlap each other. Neither receives hidden priority.
-        for (let index = 0; index + 1 < journeys.length; index++) {
-            const left = journeys[index].directCandidate, right = journeys[index + 1].directCandidate;
-            if (left.fitsLegacyGap && right.fitsLegacyGap
-                && left.requestedEnd > right.requestedStart) {
-                left.fallbackReason = right.fallbackReason = 'adjacent-journey-overlap';
+            for (let index = first; index <= last; index++) {
+                const target = stops[index];
+                const requestedStart = target.time - before, requestedEnd = target.time + after;
+                let start, from, v0, a0;
+                if (latest) {
+                    start = Math.max(initialStart, requestedStart);
+                    const previous = index > first ? segments[segments.length - 1] : null;
+                    if (previous) {
+                        // Sample before truncating: retarget from the scheduled
+                        // position, velocity AND acceleration, never its centre.
+                        hwyCameraSegmentAt(previous.from, previous.to, previous.v0, previous.v1,
+                            previous.end - previous.start,
+                            (start - previous.start) / (previous.end - previous.start), scratch,
+                            previous.a0, previous.a1);
+                        from = scratch.x; v0 = scratch.velocity; a0 = scratch.acceleration;
+                        previous.end = start; previous.to = from; previous.v1 = v0; previous.a1 = a0;
+                        previous.retargeted = true;
+                    } else { from = source.x; v0 = a0 = 0; }
+                } else {
+                    const point = points[index - first];
+                    start = point.time; from = point.x; v0 = point.velocity; a0 = 0;
+                }
+                segments.push({ start, end: requestedEnd, from, to: target.x, v0,
+                    v1: latest ? 0 : points[index - first + 1].velocity, a0, a1: 0,
+                    nominalStart: requestedStart, nominalEnd: target.time,
+                    transit: first !== last, lasting: index === last,
+                    targetIndex: index, targetX: target.x, requestedStart, requestedEnd, retargeted: false,
+                    journey });
             }
-        }
-        for (const journey of journeys) {
-            const candidate = journey.directCandidate, legacyTiming = journey.timing;
-            const direct = candidate.fallbackReason === 'none';
-            const first = segments[journey.first], last = segments[journey.last];
-            if (direct) {
-                // This is one lasting-to-lasting segment, with zero endpoint
-                // velocity/acceleration. Its implicit duration is before+after.
-                first.start = candidate.requestedStart;
-                first.end = candidate.requestedEnd;
-                first.nominalStart = first.start;
+            journey.last = segments.length - 1;
+            for (let index = journey.first; index <= journey.last; index++) {
+                const segment = segments[index], target = stops[segment.targetIndex];
+                const reached = !segment.retargeted;
+                const initialLimited = segment.start > segment.requestedStart
+                    && (latest || index === journey.first);
+                const departureReason = initialLimited ? 'initial-availability'
+                    : !latest && index > journey.first ? 'continuing-path' : 'requested';
+                segment.arrivalIndex = journey.last;
+                segment.timing = {
+                    mode: movementMode, movementMode, fallbackReason: 'none',
+                    requestedStartBeforeMs: beforeMs, requestedArriveAfterMs: afterMs,
+                    requestedStart: segment.requestedStart, requestedEnd: segment.requestedEnd,
+                    nominalStart: segment.requestedStart, nominalEnd: target.time,
+                    firstLaneTime: target.time, finalLaneTime: target.time, targetX: target.x,
+                    start: segment.start, end: segment.end,
+                    actualFirstLaneArrivalTime: reached ? segment.end : null,
+                    actualArriveAfterMs: reached ? afterMs : null,
+                    preparedLeadMs: beforeMs, appliedLeadMs: (target.time - segment.start) / rate * 1000,
+                    nominalDurationMs: beforeMs + afterMs,
+                    appliedDurationMs: (segment.end - segment.start) / rate * 1000,
+                    appliedLatenessMs: reached ? afterMs : null,
+                    preparationReason: movementMode, preparationLimitReason: initialLimited ? 'initial-availability' : 'none',
+                    preparationRequestedMs: beforeMs, preparationAppliedMs: (target.time - segment.start) / rate * 1000,
+                    requestedDelayMs: 0, appliedDelayMs: 0, requestedExtraMs: 0, appliedExtraMs: 0,
+                    limitingReason: 'none', extraLimitingReason: 'none', delayLimitingReason: 'none',
+                    reachedCentre: reached, retargeted: segment.retargeted,
+                    retargetTime: segment.retargeted ? segment.end : null, departureReason,
+                    waypointIndex: index - journey.first + 1, waypointCount: journey.waypointCount,
+                    journeyStart: journey.start, journeyEnd: journey.end,
+                    journeyFirstLaneTime: stops[first].time, journeyFinalLaneTime: stops[last].time,
+                };
             }
-            const timing = {
-                ...legacyTiming,
-                mode: direct ? 'direct' : 'chart-paced-fallback',
-                fallbackReason: candidate.fallbackReason,
-                requestedStartBeforeMs: startBeforeMs, requestedArriveAfterMs: arriveAfterMs,
-                requestedStart: candidate.requestedStart, requestedEnd: candidate.requestedEnd,
-                actualFirstLaneArrivalTime: first.end,
-                actualArriveAfterMs: (first.end - journey.firstLaneTime) / rate * 1000,
-                finalLaneTime: stops[journey.toStop].time,
-            };
-            if (direct) Object.assign(timing, {
-                legacyTiming,
-                nominalStart: first.start, start: first.start,
-                nominalEnd: journey.firstLaneTime, end: first.end,
-                preparedLeadMs: startBeforeMs, appliedLeadMs: startBeforeMs,
-                nominalDurationMs: startBeforeMs, appliedDurationMs: startBeforeMs + arriveAfterMs,
-                appliedLatenessMs: arriveAfterMs,
-                preparationReason: 'direct', preparationLimitReason: 'none',
-                preparationRequestedMs: startBeforeMs, preparationAppliedMs: startBeforeMs,
-                // Legacy modifiers do not contribute to an exact direct move.
-                requestedDelayMs: 0, appliedDelayMs: 0, requestedExtraMs: 0, appliedExtraMs: 0,
-                limitingReason: 'none', extraLimitingReason: 'none', delayLimitingReason: 'none',
-            });
-            journey.timing = timing;
-            for (let index = journey.first; index <= journey.last; index++) segments[index].timing = timing;
+            journey.timing = segments[journey.first].timing;
+            journeys.push(journey);
+            first = last + 1;
         }
+        Object.defineProperty(segments, 'journeys', { value: journeys });
+        return segments;
     }
 
-    // Quintic Hermite with zero endpoint acceleration. Velocities use the
-    // same units as duration (song time for paths, real time for corrections).
-    function hwyCameraSegmentAt(from, to, v0, v1, duration, u, out) {
+    // Quintic Hermite, with optional endpoint accelerations for retargeting.
+    // Derivatives use the same units as duration: song time for cached paths,
+    // real time for live corrections. The legacy default acceleration is zero.
+    function hwyCameraSegmentAt(from, to, v0, v1, duration, u, out, a0 = 0, a1 = 0) {
         u = Math.max(0, Math.min(1, u));
         const delta = to - from, a = v0 * duration, b = v1 * duration;
-        const c3 = 10 * delta - 6 * a - 4 * b;
-        const c4 = -15 * delta + 8 * a + 7 * b;
-        const c5 = 6 * delta - 3 * a - 3 * b;
+        const startAcceleration = a0 * duration * duration, endAcceleration = a1 * duration * duration;
+        const c2 = startAcceleration / 2;
+        const c3 = 10 * delta - 6 * a - 4 * b - 1.5 * startAcceleration + 0.5 * endAcceleration;
+        const c4 = -15 * delta + 8 * a + 7 * b + 1.5 * startAcceleration - endAcceleration;
+        const c5 = 6 * delta - 3 * a - 3 * b - 0.5 * startAcceleration + 0.5 * endAcceleration;
+        // Keep the legacy zero-acceleration operation order bit-identical.
         out.x = from + u * (a + u * u * (c3 + u * (c4 + u * c5)));
         out.velocity = (a + u * u * (3 * c3 + u * (4 * c4 + u * 5 * c5))) / duration;
-        if (u === 1) { out.x = to; out.velocity = v1; }
+        if (c2) { out.x += u * u * c2; out.velocity += 2 * u * c2 / duration; }
+        out.acceleration = (2 * c2 + u * (6 * c3 + u * (12 * c4 + u * 20 * c5))) / (duration * duration);
+        if (u === 0 && (a0 || a1)) { out.x = from; out.velocity = v0; out.acceleration = a0; }
+        if (u === 1) { out.x = to; out.velocity = v1; out.acceleration = a1; }
         return out;
     }
 
@@ -311,10 +344,13 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
         const direct = directTiming && typeof directTiming === 'object';
         const startBeforeMs = direct ? directStartBefore(directTiming.startBeforeMs) : null;
         const arriveAfterMs = direct ? directArriveAfter(directTiming.arriveAfterMs) : null;
-        if (!stops.motion || stops.motionRate !== rate || stops.motionSmoothing !== smoothing
-            || stops.motionDepartureDelay !== departureDelay || stops.motionTravelExtra !== travelExtra
-            || stops.motionSettleLimit !== settleLimit || stops.motionPreparationMs !== preparationMs
-            || stops.motionDirectStartBeforeMs !== startBeforeMs || stops.motionDirectArriveAfterMs !== arriveAfterMs) {
+        const movementMode = direct ? directMovementMode(directTiming.movementMode) : null;
+        if (!stops.motion || stops.motionRate !== rate
+            || !direct && (stops.motionSmoothing !== smoothing
+                || stops.motionDepartureDelay !== departureDelay || stops.motionTravelExtra !== travelExtra
+                || stops.motionSettleLimit !== settleLimit || stops.motionPreparationMs !== preparationMs)
+            || stops.motionDirectStartBeforeMs !== startBeforeMs || stops.motionDirectArriveAfterMs !== arriveAfterMs
+            || stops.motionMovementMode !== movementMode) {
             stops.motion = hwyBuildCameraMotion(stops, rate, smoothing, departureDelay, travelExtra, settleLimit, preparationMs, directTiming);
             stops.motionRate = rate; stops.motionSmoothing = smoothing;
             stops.motionDepartureDelay = departureDelay; stops.motionTravelExtra = travelExtra;
@@ -322,6 +358,7 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
             stops.motionPreparationMs = preparationMs;
             stops.motionDirectStartBeforeMs = startBeforeMs;
             stops.motionDirectArriveAfterMs = arriveAfterMs;
+            stops.motionMovementMode = movementMode;
         }
         const motion = stops.motion;
         let lo = 0, hi = motion.length;
@@ -337,11 +374,12 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
         if (out.moving) {
             const duration = segment.end - segment.start;
             hwyCameraSegmentAt(segment.from, segment.to, segment.v0, segment.v1,
-                duration, (now - segment.start) / duration, out);
+                duration, (now - segment.start) / duration, out, segment.a0, segment.a1);
             out.velocity *= rate;
+            out.acceleration *= rate * rate;
         } else {
             out.x = motion[lo - 1]?.to ?? stops[0]?.x ?? 0;
-            out.velocity = 0;
+            out.velocity = out.acceleration = 0;
         }
         const arrival = segment ? motion[segment.arrivalIndex] : null;
         out.arrivalTime = arrival?.end ?? Infinity;

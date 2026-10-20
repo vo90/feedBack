@@ -115,12 +115,14 @@ function load(initial = {}, {blocked = false} = {}) {
 function stored(key) { return 'h3d_bg_' + key; }
 function values(overlay) { return keys.map(key => Number(overlay.input(key).value)); }
 
-test('only exact start, exact arrival and threshold are exposed without rewriting saved preferences', () => {
+test('movement policy, automatic zoom and three timing fields open without rewriting saved preferences', () => {
     const initial = {h3d_bg_cameraMode:'stable', h3d_bg_stableCameraPreparationMs:'850',
         h3d_bg_stableCameraDepartureDelay:'500', h3d_bg_stableCameraTravelExtra:'40',
         h3d_bg_stableCameraSettleLimit:'250', h3d_bg_stableCameraPreparationMode:'auto'};
     const h=load(initial), o=h.create();
     assert.deepEqual(values(o),[850,0,500]);
+    assert.equal(o.query('[data-camera-setting="stableCameraMovementMode"]').value,'reach-centres');
+    assert.equal(o.query('[data-camera-setting="stableCameraAutoZoom"]').checked,true);
     for(const key of ['stableCameraPreparationMode','stableCameraPreparationMs','stableCameraDepartureDelay',
         'stableCameraTravelExtra','stableCameraSettleLimit','stableCameraLongSwitchFrets'])
         assert.equal(o.query(`[data-camera-setting="${key}"]`),null,key);
@@ -179,6 +181,32 @@ test('global and scoped edits synchronize while preserving main and split overri
     assert.equal(h.data.get('h3d_bg_panel1_'+keys[1]),'75');
 });
 
+test('movement and zoom preserve per-pane overrides while global bridges update inheriting panes', () => {
+    const h=load({h3d_bg_cameraMode:'stable'}),main=h.create(),split=h.create(1);
+    const input=(o,key)=>o.query(`[data-camera-setting="${key}"]`);
+    const mode=input(split,'stableCameraMovementMode'),zoom=input(split,'stableCameraAutoZoom');
+    mode.value='latest-destination';mode.emit('change');
+    zoom.checked=false;zoom.emit('change');
+    assert.deepEqual(h.writes,[['h3d_bg_panel1_stableCameraMovementMode','latest-destination'],
+        ['h3d_bg_panel1_stableCameraAutoZoom','false']]);
+    h.window.h3dBgSetStableCameraMovementMode('latest-destination');
+    h.window.h3dBgSetStableCameraAutoZoom(false);
+    assert.equal(input(main,'stableCameraMovementMode').value,'latest-destination');
+    assert.equal(input(main,'stableCameraAutoZoom').checked,false);
+    h.window.h3dBgSetStableCameraMovementMode('invalid');
+    h.window.h3dBgSetStableCameraAutoZoom(true);
+    assert.equal(input(main,'stableCameraMovementMode').value,'reach-centres');
+    assert.equal(input(main,'stableCameraAutoZoom').checked,true);
+    assert.equal(mode.value,'latest-destination');
+    assert.equal(zoom.checked,false);
+    const before=values(split);
+    split.destroy();
+    const reopened=h.create(1);
+    assert.equal(input(reopened,'stableCameraMovementMode').value,'latest-destination');
+    assert.equal(input(reopened,'stableCameraAutoZoom').checked,false);
+    assert.deepEqual(values(reopened),before);
+});
+
 test('numeric Enter and blur commit once without losing unfinished edits to unrelated changes', () => {
     const h=load({h3d_bg_cameraMode:'stable'}),o=h.create(),number=o.input(keys[0],'number');
     number.value='600';number.emit('input');h.window.h3dBgSetStableCameraArriveAfterMs(100);
@@ -193,7 +221,8 @@ test('overlay controls protect transport shortcuts and Escape restores focus', (
     const h=load({h3d_bg_cameraMode:'stable'}),o=h.create(),events=[];
     h.document.addEventListener('keydown',e=>events.push(e.key));h.document.addEventListener('keyup',e=>events.push(e.key));
     o.toggle.click();
-    for(const el of [o.input(keys[0]),o.input(keys[1],'number'),o.query('[data-camera-setting="stableCameraPreset"]')]) {
+    for(const el of [o.input(keys[0]),o.input(keys[1],'number'),o.query('[data-camera-setting="stableCameraPreset"]'),
+        o.query('[data-camera-setting="stableCameraMovementMode"]'),o.query('[data-camera-setting="stableCameraAutoZoom"]')]) {
         for(const key of ['ArrowLeft','ArrowRight',' ','Enter','Tab']){el.emit('keydown',{key});el.emit('keyup',{key});}
     }
     assert.deepEqual(events,[]);
@@ -207,8 +236,16 @@ test('both Stable views share controls and Follow-off prevents edits', () => {
     const preset=o.query('[data-camera-setting="stableCameraPreset"]'),follow=o.query('[data-camera-setting="stableCameraFollow"]');
     preset.value='angled';preset.emit('change');follow.checked=false;follow.emit('change');
     const count=h.writes.length;
+    const movement=o.query('[data-camera-setting="stableCameraMovementMode"]');
+    const zoom=o.query('[data-camera-setting="stableCameraAutoZoom"]');
+    assert.equal(movement.disabled,true);
+    assert.equal(zoom.disabled,false,'automatic zoom can be changed while Follow is off');
     for(const key of keys){const input=o.input(key,'number');assert.equal(input.disabled,true);input.value='1000';input.emit('change');}
-    assert.equal(h.writes.length,count);follow.checked=true;follow.emit('change');
+    assert.equal(h.writes.length,count);
+    zoom.checked=false;zoom.emit('change');
+    assert.equal(h.data.get('h3d_bg_stableCameraAutoZoom'),'false');
+    follow.checked=true;follow.emit('change');
+    assert.equal(movement.disabled,false);
     assert.deepEqual(values(o),[700,0,500]);assert.equal(preset.value,'angled');
     o.toggle.click();h.window.h3dBgSetCameraMode('steady');assert.equal(o.root.hidden,true);assert.equal(o.panel.hidden,true);
     h.window.h3dBgSetCameraMode('stable');assert.equal(o.root.hidden,false);assert.deepEqual(values(o),[700,0,500]);
@@ -224,26 +261,37 @@ test('blocked storage keeps scoped live settings and teardown removes subscripti
     assert.deepEqual(h.errors,[]);
 });
 
-const exactTiming={mode:'direct',fallbackReason:null,requestedStartBeforeMs:600,requestedArriveAfterMs:100,
+const exactTiming={mode:'reach-centres',movementMode:'reach-centres',departureReason:'requested',
+    reachedCentre:true,retargeted:false,requestedStartBeforeMs:600,requestedArriveAfterMs:100,
     nominalStart:9.3,nominalEnd:10,start:9.4,end:10.1,appliedLeadMs:600,appliedDurationMs:700,
-    appliedLatenessMs:100,actualArriveAfterMs:100,waypointCount:1};
+    requestedStart:9.4,requestedEnd:10.1,actualFirstLaneArrivalTime:10.1,
+    appliedLatenessMs:100,actualArriveAfterMs:100,waypointCount:1,waypointIndex:0};
 
-test('readout distinguishes exact timing from retained crowded-sequence handling', () => {
+test('readout explains exact arrivals, continuing paths and superseded destinations honestly', () => {
     const h=load({h3d_bg_cameraMode:'stable'}),o=h.create(),field=name=>o.query(`[data-camera-timing-field="${name}"]`);
     o.setTiming(exactTiming,{decision:'follow',reason:'lasting-lane'},'scheduled');o.toggle.click();
-    assert.equal(field('starts').textContent,'Starts 600 ms before the first lane.');
-    assert.equal(field('travel').textContent,'Travel: 700 ms through 1 lane.');
-    assert.equal(field('lateness').textContent,'Next lane reached 100 ms after it begins.');
-    assert.equal(field('limit').textContent,'Exact start and arrival applied.');
-    assert.equal(field('departure').textContent,'Song departure: 9.400 s.');
+    assert.equal(field('starts').textContent,'Starts 600 ms before this lane.');
+    assert.equal(field('travel').textContent,'Travel to this centre: 700 ms.');
+    assert.equal(field('lateness').textContent,'Centre reached 100 ms after its lane begins.');
+    assert.equal(field('limit').textContent,'Reach every centre: requested departure and arrival applied.');
+    assert.equal(field('departure').textContent,'Song movement start: 9.400 s (requested trigger 9.400 s).');
     assert.match(field('arrival').textContent,/10.100 s/);
-    for(const [reason,word] of [['progressive-journey','short lanes'],['previous-lane','preceding lane'],['adjacent-journey-overlap','overlaps']]) {
-        o.setTiming({...exactTiming,mode:'chart-paced-fallback',fallbackReason:reason},
-            {decision:'hold',reason:'repeated-cycle',home:{firstFret:5}},'local-rejoin');
-        assert.match(field('limit').textContent,new RegExp(word));assert.match(field('limit').textContent,/do not apply here yet/);
-        assert.match(field('decision').textContent,/Hold lane 5: matching repeated short cycles/);
-        assert.match(field('mode').textContent,/smoothly rejoining/);
-    }
+    o.setTiming({...exactTiming,departureReason:'continuing-path'},
+        {decision:'hold',reason:'repeated-cycle',home:{firstFret:5}},'local-rejoin');
+    assert.match(field('starts').textContent,/Continues from the previous centre/);
+    assert.match(field('limit').textContent,/Arrival is exact; start-before governs departure from a hold/);
+    assert.match(field('decision').textContent,/Hold lane 5: matching repeated short cycles/);
+    assert.match(field('mode').textContent,/smoothly rejoining/);
+    o.setTiming({...exactTiming,mode:'latest-destination',movementMode:'latest-destination',
+        retargeted:true,reachedCentre:false,retargetTime:9.7,end:9.7,actualFirstLaneArrivalTime:null,
+        actualArriveAfterMs:null,appliedLatenessMs:null,appliedDurationMs:300});
+    assert.equal(field('travel').textContent,'Moves toward this target for 300 ms, then redirects.');
+    assert.equal(field('lateness').textContent,'Scheduled arrival superseded: the next destination takes over.');
+    assert.equal(field('arrival').textContent,'Redirected at 9.700 s; superseded arrival was 10.100 s.');
+    assert.match(field('limit').textContent,/interrupted centres may be skipped/);
+    assert.doesNotMatch(field('lateness').textContent,/null|NaN|0 ms/);
+    o.setTiming({...exactTiming,departureReason:'initial-availability'});
+    assert.match(field('limit').textContent,/beginning of the initial lane; arrival stays at the requested time/);
     o.setTiming(null);assert.match(field('starts').textContent,/No current or upcoming/);
     for(const name of ['requested','travel','lateness','limit','departure','arrival'])assert.equal(field(name).textContent,'');
     assert.deepEqual(h.writes,[]);
@@ -264,8 +312,8 @@ test('warm frames and closed panels do not rewrite diagnostics', () => {
     const closed=writes();o.setTiming(exactTiming,decision,'scheduled');assert.equal(writes(),closed);
     o.toggle.click();const open=writes();assert.ok(open>closed);
     for(let i=0;i<120;i++)o.setTiming(exactTiming,decision,'scheduled');assert.equal(writes(),open);
-    o.toggle.click();o.setTiming({...exactTiming,mode:'chart-paced-fallback',fallbackReason:'adjacent-journey-overlap'},decision,'paused');
-    assert.equal(writes(),open);o.toggle.click();assert.match(o.query('[data-camera-timing-field="limit"]').textContent,/overlaps/);
+    o.toggle.click();o.setTiming({...exactTiming,departureReason:'continuing-path'},decision,'paused');
+    assert.equal(writes(),open);o.toggle.click();assert.match(o.query('[data-camera-timing-field="limit"]').textContent,/already moving/);
     assert.match(o.query('[data-camera-timing-field="mode"]').textContent,/Paused/);
     const final=writes();o.destroy();o.setTiming(exactTiming);assert.equal(writes(),final);assert.deepEqual(h.writes,[]);
 });

@@ -75,7 +75,8 @@ function harness(subject = source, three = null) {
         let _stableCameraResetSerial = 0, stableCameraPreset = 'straight', stableCameraFollow = true;
         let stableCameraDepartureDelay = 0, stableCameraTravelExtra = 0, stableCameraSettleLimit = 0;
         let stableCameraPreparationMode = 'auto', stableCameraPreparationMs = 700;
-        const stableCameraDirectTiming = {startBeforeMs:700,arriveAfterMs:0};
+        const stableCameraDirectTiming = {startBeforeMs:700,arriveAfterMs:0,movementMode:'reach-centres'};
+        let stableCameraAutoZoom = true;
         let stableCameraExcursionThreshold = 500, stableCameraLongSwitchFrets = 5;
         let _leftyCached = false, _songKey = 'song', nStr = 6, cameraSmoothing = .5, zoomSmoothing = .5;
         let wall = 0, fixturePoints = [], fixtureObjects = null, segmentCalls = 0, depthCalls = 0,
@@ -182,6 +183,9 @@ function harness(subject = source, three = null) {
             noRegion() { regionFixture = {valid:false,x:0,minX:Infinity,maxX:-Infinity,time:0,row:null}; },
             replaceAnchors(rows = []) { bundle.anchors = rows; },
             appendAnchor(row) { bundle.anchors.push(row); },
+            replaceChartData(values) {
+                for (const key of ['notes','chords']) if (key in values) bundle[key] = values[key];
+            },
             settings(values) {
                 if ('follow' in values) stableCameraFollow = values.follow;
                 if ('preset' in values) stableCameraPreset = values.preset;
@@ -198,6 +202,8 @@ function harness(subject = source, three = null) {
                 if ('preparationMs' in values) stableCameraPreparationMs = values.preparationMs;
                 if ('startBeforeMs' in values) stableCameraDirectTiming.startBeforeMs = values.startBeforeMs;
                 if ('arriveAfterMs' in values) stableCameraDirectTiming.arriveAfterMs = values.arriveAfterMs;
+                if ('movementMode' in values) stableCameraDirectTiming.movementMode = values.movementMode;
+                if ('autoZoom' in values) stableCameraAutoZoom = values.autoZoom;
                 if ('excursionThreshold' in values) stableCameraExcursionThreshold = values.excursionThreshold;
                 if ('longSwitchFrets' in values) stableCameraLongSwitchFrets = values.longSwitchFrets;
             },

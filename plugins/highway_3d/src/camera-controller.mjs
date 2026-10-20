@@ -65,7 +65,11 @@ export function createCameraController({ samplePlan, hwyCameraJoinAt, hwyCameraR
             // holding. Its distant next arrival is not a pending pan.
             let resumeDirect = !plan.transit && (continuingResume || !s.planTransit)
                 && (plan.moving || (sameDirectDestination && (continuingResume || s.planMoving)));
-            if (s.following && (continuingResume || (!s.planTransit && s.planMoving))
+            // Legacy tuning could remove a settling tail while the next move
+            // still waited. New modes can already start/retarget before that
+            // old arrival: extending its resume would then jump onto the new
+            // path at the old deadline. Rejoin the new schedule instead.
+            if (!plan.timing?.movementMode && s.following && (continuingResume || (!s.planTransit && s.planMoving))
                 && previousArrivalTime > frameTime && previousArrivalTime < arrivalTime
                 && Math.abs(previousArrivalX - plannedX) <= 1e-8) {
                 arrivalTime = previousArrivalTime; arrivalX = previousArrivalX;
