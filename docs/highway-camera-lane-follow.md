@@ -62,7 +62,7 @@ longer lane. This deliberately conservative detector does not guess a root.
 
 Non-overlapping quintic Hermite segments reach each lasting lane with zero
 velocity and acceleration. The untuned plan arrives at its onset; the optional
-long-switch tuning below permits bounded settling after onset. Short progressive waypoints share a
+journey timing below permits bounded settling after onset. Short progressive waypoints share a
 bounded velocity, so the camera continues through them without overshooting.
 Default ordinary preparation is 700 ms at the default smoothing setting;
 large moves can prepare up to 400 ms earlier, and quiet holds can prepare up
@@ -74,39 +74,60 @@ travel time to make room for a later departure.
 ### Testing controls
 
 The Stable camera settings, in-song **Camera tuning** panel and per-panel
-controls expose five persisted values:
+controls expose four persisted values:
 
 | Control | Trial value | Range | Meaning |
 | --- | --- | --- | --- |
-| Departure delay | 100 ms | 0–1000 ms | Start a long direct switch later. |
-| Extra travel time | 10% | 0–200% | Lengthen that switch's travel time. |
+| Departure delay | 100 ms | 0–1000 ms | Request a later start relative to a journey's prepared departure. |
+| Extra travel time | 10% | 0–200% | Lengthen the whole journey's travel time. |
 | Maximum settling time | 250 ms | 0–3000 ms | Bound completion after the lane begins. |
 | Short-lane threshold (ms) | 500 ms | 0–3000 ms | Compare each lane's original song duration; hold qualifying short repeated riffs. |
-| Long switch: minimum fret change | 5 frets | 1–24 frets | Minimum absolute change in the lane's first fret for timing adjustments. |
 
 Delay and settling limits use real playback time. Timing tuning applies to
-direct moves between lasting lanes, not progressive chains. Delay and added
-duration are reduced proportionally to fit both the settling limit and the
-start of the next nominal movement. A zero settling limit preserves exact
-arrival. Geometry fitting continues to keep playable notes visible during
-the late tail, without moving the chosen horizontal centre.
+every followed journey, including smaller moves and progressive chains through
+short lanes. A journey runs from its prepared departure through each retained
+waypoint to the next lasting stop. The semantic lane and riff decisions stay
+unchanged. The former minimum fret-change control is no longer shown or used;
+its stored value and setter remain for compatibility.
 
-The **Gentler trial** button restores all five trial values. **Previous tuning**
-selects 0 ms delay, 0% extra travel, 0 ms settling, 500 ms per lane, and a
-5-fret threshold, reproducing the preceding camera timing. Sliders apply on
+The settling limit and the next journey's nominal prepared start remain hard
+limits. Available time is reserved for extra travel first, then the requested
+departure delay receives the remaining room. Increasing delay therefore never
+shortens an already slowed journey. Neither control speeds up the untuned
+journey, overlaps the next journey or pushes later journeys back. A zero
+settling limit preserves exact arrival.
+
+The complete journey receives one common time shift and stretch. Every
+intermediate lane remains in order, and shared waypoint velocities scale with
+the stretch so movement stays continuous. Intermediate arrivals may be later
+than their lane onsets, within the same settling allowance. Geometry fitting
+keeps playable notes visible during the late tail without moving the chosen
+horizontal centre.
+
+The live panel shows requested and applied departure delay and extra travel
+for the current or next journey, plus the prepared/actual departure and
+nominal/actual final arrival in song seconds. It names the settling limit or
+next journey when either caps the request. Delay is measured from the prepared
+departure, not from lane onset, and can be zero when no time remains.
+
+The **Gentler trial** button restores all four trial values. **Previous tuning**
+selects 0 ms delay, 0% extra travel, 0 ms settling and 500 ms per lane,
+reproducing the untuned camera timing. Sliders apply on
 release; numeric inputs allow precise values. The settings persist on this
 device and work for both Stable viewpoints. Follow off disables the controls.
 These are testing defaults, pending the user's tuning feedback. The widened
 ranges allow deliberately exaggerated comparisons without changing these
 defaults. At +200%, a movement can take three times its original duration.
 Raise Maximum settling time when testing large delays or added travel; the
-next scheduled movement still limits both proportionally.
+next journey's prepared start still limits the available time.
 
 The in-song panel opens without pausing playback. Collapse it with its button
 or Escape while focused inside it. Its controls consume keyboard shortcuts
 while being edited, so adjusting a value cannot seek or pause the song. The
-panel updates on settings events, with no per-frame DOM updates or polling;
-closing it keeps the saved values. Renderer teardown removes its listeners.
+panel updates on settings events and cached journey changes, with no repeated
+DOM updates for warm frames or polling. Closed panels retain the latest cached
+timing and render it on opening. Closing keeps the saved values; renderer
+teardown removes its listeners and releases the cached timing reference.
 
 Rate changes during travel resume from the actual pose and velocity toward the
 lasting destination for direct moves. Transit chains and held positions instead

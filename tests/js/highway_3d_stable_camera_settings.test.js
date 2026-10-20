@@ -27,7 +27,7 @@ function load(initial = {}, { window = {}, unavailable = false } = {}) {
         'stable-camera-reset', 'stable-camera-reset-status', 'legacy-camera-controls',
         'stable-camera-tuning-fields', 'stable-tuning-disabled', 'stable-tuning-status',
         'stable-tuning-trial', 'stable-tuning-previous',
-        ...['departure-delay', 'travel-extra', 'settle-limit', 'excursion-threshold', 'long-switch-frets']
+        ...['departure-delay', 'travel-extra', 'settle-limit', 'excursion-threshold']
             .flatMap(id => ['stable-' + id, 'stable-' + id + '-value']),
         'stable-camera-legacy-note', 'camera-smoothing-description', 'zoom-smoothing-description']) {
         const element = { value: '', checked: false, disabled: false, hidden: false,
@@ -211,7 +211,7 @@ test('every settings script remains valid JavaScript', () => {
 test('tuning opens with trial values without writing or changing camera behavior', () => {
     const h = load({ h3d_bg_cameraMode: 'stable' });
     for (const [id, value] of [['departure-delay', '100'], ['travel-extra', '10'],
-        ['settle-limit', '250'], ['excursion-threshold', '500'], ['long-switch-frets', '5']]) {
+        ['settle-limit', '250'], ['excursion-threshold', '500']]) {
         assert.equal(h.el('stable-' + id).value, value);
         assert.equal(h.el('stable-' + id + '-value').value, value);
     }
@@ -239,7 +239,8 @@ test('advanced numeric controls persist, clamp invalid input, and hydrate on reo
         h3d_bg_stableCameraSettleLimit: '9999', h3d_bg_stableCameraLongSwitchFrets: '0' });
     assert.equal(h.el('stable-travel-extra').value, '10');
     assert.equal(h.el('stable-settle-limit').value, '3000');
-    assert.equal(h.el('stable-long-switch-frets').value, '1');
+    assert.equal(h.el('stable-long-switch-frets'), undefined);
+    assert.equal(h.data.get('h3d_bg_stableCameraLongSwitchFrets'), '0', 'obsolete storage is preserved');
     h.el('stable-excursion-threshold-value').value = '750';
     h.el('stable-excursion-threshold-value').emit('change');
     assert.equal(h.el('stable-excursion-threshold').value, '750');
@@ -261,7 +262,6 @@ test('settings accept the expanded experiment ranges and retain them on reopen',
         ['travel-extra', 'stableCameraTravelExtra', 200],
         ['settle-limit', 'stableCameraSettleLimit', 3000],
         ['excursion-threshold', 'stableCameraExcursionThreshold', 3000],
-        ['long-switch-frets', 'stableCameraLongSwitchFrets', 24],
     ];
     const h = load({ h3d_bg_cameraMode: 'stable' });
     for (const [id, key, max] of ranges) {
@@ -284,27 +284,29 @@ test('settings accept the expanded experiment ranges and retain them on reopen',
     }
 });
 
-test('comparison buttons set all five values and remain inactive outside Stable Follow', () => {
-    const h = load({ h3d_bg_cameraMode: 'stable' });
+test('comparison buttons set four values, preserve legacy storage and remain inactive outside Stable Follow', () => {
+    const h = load({ h3d_bg_cameraMode: 'stable', h3d_bg_stableCameraLongSwitchFrets: '24' });
     h.el('stable-tuning-previous').emit('click');
     assert.equal(h.el('stable-departure-delay').value, '0');
     assert.equal(h.el('stable-travel-extra').value, '0');
     assert.equal(h.el('stable-settle-limit').value, '0');
     assert.equal(h.el('stable-excursion-threshold').value, '500');
     assert.match(h.el('stable-tuning-status').textContent, /Previous tuning/);
-    assert.equal(h.writes.length, 5);
+    assert.equal(h.writes.length, 4);
     h.el('stable-tuning-trial').emit('click');
     assert.equal(h.el('stable-departure-delay').value, '100');
     assert.equal(h.el('stable-travel-extra').value, '10');
     assert.equal(h.el('stable-settle-limit').value, '250');
-    assert.equal(h.writes.length, 10);
+    assert.equal(h.writes.length, 8);
+    assert.equal(h.data.get('h3d_bg_stableCameraLongSwitchFrets'), '24');
+    assert.doesNotMatch(html, /id="h3d-stable-long-switch-frets/);
     h.el('stable-camera-follow').checked = false;
     h.el('stable-camera-follow').emit('change');
     assert.equal(h.el('stable-camera-tuning-fields').disabled, true);
     assert.equal(h.el('stable-tuning-disabled').hidden, false);
     h.el('stable-tuning-previous').emit('click');
-    assert.equal(h.writes.length, 11, 'only Follow was changed');
+    assert.equal(h.writes.length, 9, 'only Follow was changed');
     h.el('camera-mode').value = 'steady'; h.el('camera-mode').emit('change');
     h.el('stable-tuning-trial').emit('click');
-    assert.equal(h.writes.length, 12, 'hidden tuning controls do not affect legacy views');
+    assert.equal(h.writes.length, 10, 'hidden tuning controls do not affect legacy views');
 });

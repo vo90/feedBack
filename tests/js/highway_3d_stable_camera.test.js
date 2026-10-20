@@ -860,22 +860,36 @@ test('a raw audio seek still snaps even if the supplied render clock changes onl
     assert.equal(sought.rateTime, 10);
 });
 
-test('the stable camera update entry point forwards the shared floor render clock', () => {
+test('the stable camera entry point forwards the render clock and reports current cached timing', () => {
     const run = new Function(`
         const cameraMode = 'stable', _frameNow = 108.735, letRingTrailsVisible = false;
         const letRingView = (bundle, enabled) => {
             if (enabled !== letRingTrailsVisible) throw new Error('Camera ignored let-ring visibility');
             return bundle;
         };
-        let call;
-        function stableCamUpdate(bundle, frameTime) { call = {bundle, frameTime}; }
+        const _stablePlan = {result:{valid:false,timing:null}};
+        let call, nextPlan, reportedTiming;
+        const stableCameraTuningOverlay = {setTiming(timing) { reportedTiming = timing; }};
+        function stableCamUpdate(bundle, frameTime) {
+            call = {bundle, frameTime};
+            _stablePlan.result = nextPlan;
+        }
         ${extractFunction('camUpdate')}
-        return bundle => { camUpdate(bundle); return call; };
+        return (bundle, result) => {
+            nextPlan = result;
+            camUpdate(bundle);
+            return {...call, reportedTiming};
+        };
     `)();
     const bundle = {currentTime:108.719,isPlaying:true};
-    const call = run(bundle);
+    const timing = {requestedDelayMs:1000,appliedDelayMs:140,limitingReason:'settling-limit'};
+    const call = run(bundle, {valid:true,timing});
     assert.equal(call.bundle, bundle);
     assert.equal(call.frameTime, 108.735);
+    assert.equal(call.reportedTiming, timing, 'the overlay receives the plan updated during this frame');
+    const invalid = run(bundle, {valid:false,timing});
+    assert.equal(invalid.reportedTiming, null, 'an invalid plan must not expose stale timing');
+    assert.equal(invalid.frameTime, 108.735);
 });
 
 test('five and seven fret passages preserve the centre and smoothly return to calibrated close framing', () => {

@@ -4244,10 +4244,9 @@
     // Timed Hermite segments share position, velocity and zero acceleration.
     // Lasting lanes are arrival constraints; short waypoints are traversed
     // without stopping. Bounded tangents prevent overshoot between waypoints.
-    function hwyBuildCameraMotion(stops, rate, smoothing, departureDelay = 0, travelExtra = 0, settleLimit = 250, longSwitchFrets = 5) {
-        const segments = [];
+    function hwyBuildCameraMotion(stops, rate, smoothing, departureDelay = 0, travelExtra = 0, settleLimit = 250) {
+        const segments = [], journeys = [];
         const base = 0.6 + Math.max(0, Math.min(1, smoothing)) * 0.2;
-        const fretThreshold = Math.max(1, Math.min(24, Math.round(Number(longSwitchFrets) || 5)));
         let first = 0;
         while (first + 1 < stops.length) {
             let last = first + 1;
@@ -4266,35 +4265,51 @@
             }
             const groupStart = segments.length;
             const transit = last !== first + 1 || from.lasting === false || entry.lasting === false;
-            const tuningEligible = last === first + 1 && from.lasting !== false && entry.lasting !== false
-                && Number.isFinite(from.firstFret) && Number.isFinite(entry.firstFret)
-                && Math.abs(entry.firstFret - from.firstFret) >= fretThreshold;
             for (let i = 1; i < points.length; i++) {
                 const a = points[i - 1], b = points[i];
                 if (b.time > a.time) segments.push({ start: a.time, end: b.time,
-                    nominalStart: a.time, nominalEnd: b.time, tuningEligible, transit,
+                    nominalStart: a.time, nominalEnd: b.time, transit,
                     from: a.x, to: b.x, v0: a.velocity, v1: b.velocity, lasting: i === points.length - 1 });
             }
             for (let i = groupStart; i < segments.length; i++) segments[i].arrivalIndex = segments.length - 1;
+            if (segments.length > groupStart) journeys.push({ first: groupStart, last: segments.length - 1 });
             first = last;
         }
         const delay = Math.max(0, Math.min(1000, Number(departureDelay) || 0)) / 1000 * rate;
         const extraFraction = Math.max(0, Math.min(200, Number(travelExtra) || 0)) / 100;
         const lateLimit = Math.max(0, Math.min(3000, Number(settleLimit) || 0)) / 1000 * rate;
-        // Tune only complete direct moves after the nominal path is known.
-        // Scale both requests together when a later move leaves less room:
-        // never shorten a pan or push it into a following transit chain.
-        for (let i = 0; i < segments.length; i++) {
-            const segment = segments[i];
-            if (!segment.tuningEligible) continue;
-            const addedDuration = (segment.nominalEnd - segment.nominalStart) * extraFraction;
-            const requested = delay + addedDuration;
-            if (!(requested > 0) || !(lateLimit > 0)) continue;
-            const room = Math.max(0, Math.min(lateLimit,
-                (segments[i + 1]?.nominalStart ?? Infinity) - segment.nominalEnd));
-            const scale = Math.min(1, room / requested);
-            segment.start += delay * scale;
-            segment.end += requested * scale;
+        // Retime complete journeys, including every short progressive waypoint.
+        // Reserve extra travel before departure delay: increasing delay must
+        // never take away an already granted slower pan. Both requests remain
+        // bounded by settling and the next journey's original departure.
+        for (const journey of journeys) {
+            const firstSegment = segments[journey.first], lastSegment = segments[journey.last];
+            const start = firstSegment.nominalStart, end = lastSegment.nominalEnd;
+            const duration = end - start, requestedExtra = duration * extraFraction;
+            const nextRoom = Math.max(0, (segments[journey.last + 1]?.nominalStart ?? Infinity) - end);
+            const room = Math.min(lateLimit, nextRoom);
+            const appliedExtra = Math.min(requestedExtra, room);
+            const appliedDelay = Math.min(delay, Math.max(0, room - appliedExtra));
+            const stretch = 1 + appliedExtra / duration;
+            const limited = appliedDelay + appliedExtra < delay + requestedExtra - 1e-9;
+            const timing = {
+                requestedDelayMs: delay / rate * 1000, appliedDelayMs: appliedDelay / rate * 1000,
+                requestedExtraMs: requestedExtra / rate * 1000, appliedExtraMs: appliedExtra / rate * 1000,
+                limitingReason: limited ? (nextRoom < lateLimit ? 'next-journey' : 'settling-limit') : 'none',
+                nominalStart: start, start: start + appliedDelay,
+                nominalEnd: end, end: end + appliedDelay + appliedExtra,
+            };
+            for (let i = journey.first; i <= journey.last; i++) {
+                const segment = segments[i];
+                segment.timing = timing;
+                // Keep the untuned path bit-identical. The uniform time map
+                // and inverse tangent scaling preserve shape and continuity.
+                if (appliedDelay > 0 || appliedExtra > 0) {
+                    segment.start = start + appliedDelay + (segment.nominalStart - start) * stretch;
+                    segment.end = start + appliedDelay + (segment.nominalEnd - start) * stretch;
+                    segment.v0 /= stretch; segment.v1 /= stretch;
+                }
+            }
         }
         return segments;
     }
@@ -4315,16 +4330,16 @@
 
     // Evaluate a cached, non-overlapping trajectory. Lasting stops use their
     // scheduled arrival, independent of frame rate or seek history.
-    function hwyCameraPlanAt(stops, now, rate, smoothing, out, departureDelay = 0, travelExtra = 0, settleLimit = 250, longSwitchFrets = 5) {
+    function hwyCameraPlanAt(stops, now, rate, smoothing, out, departureDelay = 0, travelExtra = 0, settleLimit = 250) {
         out = out || {};
         rate = Math.max(0.1, Math.min(4, Number(rate) || 1));
         if (!stops.motion || stops.motionRate !== rate || stops.motionSmoothing !== smoothing
             || stops.motionDepartureDelay !== departureDelay || stops.motionTravelExtra !== travelExtra
-            || stops.motionSettleLimit !== settleLimit || stops.motionLongSwitchFrets !== longSwitchFrets) {
-            stops.motion = hwyBuildCameraMotion(stops, rate, smoothing, departureDelay, travelExtra, settleLimit, longSwitchFrets);
+            || stops.motionSettleLimit !== settleLimit) {
+            stops.motion = hwyBuildCameraMotion(stops, rate, smoothing, departureDelay, travelExtra, settleLimit);
             stops.motionRate = rate; stops.motionSmoothing = smoothing;
             stops.motionDepartureDelay = departureDelay; stops.motionTravelExtra = travelExtra;
-            stops.motionSettleLimit = settleLimit; stops.motionLongSwitchFrets = longSwitchFrets;
+            stops.motionSettleLimit = settleLimit;
         }
         const motion = stops.motion;
         let lo = 0, hi = motion.length;
@@ -4334,6 +4349,7 @@
             else hi = mid;
         }
         const segment = motion[lo];
+        out.timing = segment?.timing ?? null;
         out.moving = !!segment && now >= segment.start;
         if (out.moving) {
             const duration = segment.end - segment.start;
@@ -6799,13 +6815,14 @@
         _bgEmitChange(key);
     }
 
-    // Event-driven gameplay controls: no DOM work belongs in the render loop.
+    // Settings and cached journey changes drive DOM updates; warm frames do none.
     function createStableCameraTuningOverlay(host, getCanvas, instanceId) {
         const root = document.createElement('div'), prefix = 'h3d-camera-' + instanceId;
         root.className = 'h3d-camera-tuning'; root.id = prefix;
-        root.style.cssText = 'position:absolute;left:12px;top:clamp(76px,14%,116px);z-index:3;width:320px;max-width:calc(100% - 24px);pointer-events:none;font:12px/1.4 system-ui,sans-serif;color:#e5edf7;';
+        // Leave the player rail's 96px hover catcher and a 12px gap clear.
+        root.style.cssText = 'position:absolute;left:108px;top:clamp(76px,14%,116px);z-index:3;width:320px;max-width:calc(100% - 120px);pointer-events:none;font:12px/1.4 system-ui,sans-serif;color:#e5edf7;';
         const cleanups = [], controls = [];
-        let expanded = false, destroyed = false;
+        let expanded = false, destroyed = false, timing = null, renderedTiming;
         const listen = (element, event, handler) => {
             element.addEventListener(event, handler);
             cleanups.push(() => element.removeEventListener(event, handler));
@@ -6821,7 +6838,7 @@
         const toggle = element('button', 'Camera tuning', buttonStyle);
         toggle.type = 'button'; toggle.dataset.cameraTuningToggle = '';
         toggle.setAttribute('aria-controls', prefix + '-panel');
-        const panel = element('section', '', 'box-sizing:border-box;margin-top:6px;padding:12px;border:1px solid #50637b;border-radius:9px;background:rgba(13,23,36,.97);box-shadow:0 8px 24px #0006;max-height:min(46vh,410px);overflow:auto;overscroll-behavior:contain;pointer-events:auto;');
+        const panel = element('section', '', 'box-sizing:border-box;margin-top:6px;padding:12px;border:1px solid #50637b;border-radius:9px;background:rgba(13,23,36,.97);box-shadow:0 8px 24px #0006;max-height:min(60vh,520px);overflow:auto;overscroll-behavior:contain;pointer-events:auto;');
         panel.id = prefix + '-panel'; panel.dataset.cameraTuningPanel = '';
         panel.setAttribute('aria-label', 'Stable camera tuning');
         const heading = element('div', '', 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;');
@@ -6841,15 +6858,28 @@
         followLabel.appendChild(follow); followLabel.appendChild(element('span', 'Follow hand position')); panel.appendChild(followLabel);
         const fields = element('fieldset', '', 'min-width:0;border:0;padding:0;margin:0;');
         const actions = element('div', '', 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;');
-        fields.appendChild(actions);
-        fields.appendChild(element('p', 'Release a slider to apply. Timing controls affect long direct switches.', 'margin:0 0 8px;color:#adc0d7;'));
-        fields.appendChild(element('p', 'The settling limit or next move may reduce the timing effect.', 'margin:0 0 8px;color:#adc0d7;'));
+        fields.appendChild(element('p', 'Applies to all followed journeys. Extra travel gets time before delay; release a slider to apply.', 'margin:0 0 8px;color:#adc0d7;'));
+        const timingBox = element('div', '', 'margin:8px 0;padding:8px;border:1px solid #50637b;border-radius:5px;color:#adc0d7;');
+        timingBox.dataset.cameraTiming = '';
+        timingBox.className = 'fb-selectable';
+        timingBox.appendChild(element('strong', 'Current or next planned journey'));
+        const timingDetails = element('details', '', 'margin-top:6px;');
+        timingDetails.dataset.cameraTimingDetails = '';
+        timingDetails.appendChild(element('summary', 'Timing details', 'cursor:pointer;'));
+        timingDetails.appendChild(element('p', 'Delay uses playback milliseconds from the prepared departure. Increasing delay never shortens planned travel.', 'margin:4px 0 0;'));
+        const timingLines = {};
+        for (const name of ['delay', 'limit', 'extra', 'departure', 'arrival']) {
+            const line = element('p', '', 'margin:4px 0 0;');
+            line.dataset.cameraTimingField = name;
+            (name === 'delay' || name === 'limit' ? timingBox : timingDetails).appendChild(line);
+            timingLines[name] = line;
+        }
+        timingBox.appendChild(timingDetails);
         const rows = [
             ['stableCameraDepartureDelay', 'Departure delay (ms)', 0, 1000, 25],
             ['stableCameraTravelExtra', 'Extra travel time (%)', 0, 200, 5],
             ['stableCameraSettleLimit', 'Maximum settling time (ms)', 0, 3000, 25],
             ['stableCameraExcursionThreshold', 'Short-lane threshold (ms)', 0, 3000, 50],
-            ['stableCameraLongSwitchFrets', 'Long switch: minimum fret change', 1, 24, 1],
         ];
         const read = key => _bgReadSetting(_bgPanelKey(getCanvas()), key);
         const write = (key, value) => _bgWriteScoped(_bgPanelKey(getCanvas()), key, value);
@@ -6893,11 +6923,12 @@
                 });
             }
         }
+        fields.appendChild(timingBox);
+        fields.appendChild(actions);
         fields.appendChild(element('p', 'The threshold applies to each lane in original song time. Short repeated riffs hold; progressive runs still travel. Riff protections stay on.', 'margin:8px 0;color:#adc0d7;'));
-        fields.appendChild(element('p', 'Lower the minimum fret change to include smaller direct switches in timing adjustments.', 'margin:8px 0;color:#adc0d7;'));
         for (const [name, label, values] of [
-            ['gentler', 'Gentler trial', [100, 10, 250, 500, 5]],
-            ['previous', 'Previous tuning', [0, 0, 0, 500, 5]],
+            ['gentler', 'Gentler trial', [100, 10, 250, 500]],
+            ['previous', 'Previous tuning', [0, 0, 0, 500]],
         ]) {
             const button = element('button', label, buttonStyle); button.type = 'button';
             button.dataset.cameraTuningPreset = name; actions.appendChild(button);
@@ -6910,9 +6941,32 @@
         }
         panel.appendChild(fields); panel.appendChild(status);
         root.appendChild(toggle); root.appendChild(panel); host.appendChild(root);
+        function renderTiming(force = false) {
+            if (destroyed || !expanded || (!force && renderedTiming === timing)) return;
+            renderedTiming = timing;
+            if (!timing) {
+                timingLines.delay.textContent = 'No current or upcoming camera movement.';
+                for (const name of ['extra', 'departure', 'arrival', 'limit']) timingLines[name].textContent = '';
+                return;
+            }
+            const ms = value => Math.round(value) + ' ms';
+            const seconds = value => value.toFixed(3) + ' s';
+            timingLines.delay.textContent = 'Departure delay: ' + ms(timing.requestedDelayMs) + ' requested; ' + ms(timing.appliedDelayMs) + ' applied.';
+            timingLines.extra.textContent = 'Extra travel: ' + ms(timing.requestedExtraMs) + ' requested; ' + ms(timing.appliedExtraMs) + ' applied.';
+            timingLines.departure.textContent = 'Song departure: ' + seconds(timing.start) + ' (prepared ' + seconds(timing.nominalStart) + ').';
+            timingLines.arrival.textContent = 'Song arrival: ' + seconds(timing.end) + ' (final lane begins ' + seconds(timing.nominalEnd) + ').';
+            timingLines.limit.textContent = timing.limitingReason === 'settling-limit' ? 'Limited by Maximum settling time.'
+                : timing.limitingReason === 'next-journey' ? 'Limited by the next journey.' : 'Full timing requests applied.';
+        }
+        function setTiming(value) {
+            if (destroyed || timing === value) return;
+            timing = value;
+            renderTiming();
+        }
         function setExpanded(value, restoreFocus = false) {
             expanded = value; panel.hidden = !value;
             toggle.setAttribute('aria-expanded', String(value));
+            if (value) renderTiming(true);
             if (restoreFocus) toggle.focus();
         }
         function sync(key) {
@@ -6940,9 +6994,10 @@
             listen(root, name, event => event.stopPropagation());
         }
         _bgSubscribe(sync); setExpanded(false); sync();
-        return { root, sync, destroy() {
+        return { root, sync, setTiming, destroy() {
             if (destroyed) return;
             destroyed = true; _bgUnsubscribe(sync);
+            timing = renderedTiming = null;
             for (const cleanup of cleanups) cleanup();
             root.remove();
         } };
@@ -9280,7 +9335,6 @@
         let stableCameraTravelExtra = BG_DEFAULTS.stableCameraTravelExtra;
         let stableCameraSettleLimit = BG_DEFAULTS.stableCameraSettleLimit;
         let stableCameraExcursionThreshold = BG_DEFAULTS.stableCameraExcursionThreshold;
-        let stableCameraLongSwitchFrets = BG_DEFAULTS.stableCameraLongSwitchFrets;
         let _stableNoteRelevant = true;
         // Global text-size multiplier for in-scene text sprites (chord
         // names, fret labels, section banners, technique markers, etc.).
@@ -13619,7 +13673,6 @@
                     changedKey === 'stableCameraPreset' || changedKey === 'stableCameraFollow' ||
                     changedKey === 'stableCameraDepartureDelay' || changedKey === 'stableCameraTravelExtra' ||
                     changedKey === 'stableCameraSettleLimit' || changedKey === 'stableCameraExcursionThreshold' ||
-                    changedKey === 'stableCameraLongSwitchFrets' ||
                     changedKey === 'textSize' ||
                     changedKey === 'chordDiagramSize' || changedKey === 'chordDiagramPosition' ||
                     changedKey === 'fretColumnMarkerCadence' ||
@@ -13955,7 +14008,6 @@
             stableCameraTravelExtra = _bgReadSetting(panelKey, 'stableCameraTravelExtra');
             stableCameraSettleLimit = _bgReadSetting(panelKey, 'stableCameraSettleLimit');
             stableCameraExcursionThreshold = _bgReadSetting(panelKey, 'stableCameraExcursionThreshold');
-            stableCameraLongSwitchFrets = _bgReadSetting(panelKey, 'stableCameraLongSwitchFrets');
             textSize             = _bgReadSetting(panelKey, 'textSize');
             vibrancy             = _bgReadSetting(panelKey, 'vibrancy');
             glowMul              = _bgReadSetting(panelKey, 'glow');
@@ -24620,11 +24672,10 @@
             // Motion controls change only the cached time curve, never chart
             // analysis or projected shapes. Rejoin continuously next frame.
             const key = [geometryKey, rate, cameraSmoothing, stableCameraDepartureDelay,
-                stableCameraTravelExtra, stableCameraSettleLimit, stableCameraExcursionThreshold,
-                stableCameraLongSwitchFrets].join('/');
+                stableCameraTravelExtra, stableCameraSettleLimit, stableCameraExcursionThreshold].join('/');
             if (timingChanged || cache.key !== key) { cache.key = key; cache.revision++; }
             hwyCameraPlanAt(cache.stops, now, rate, cameraSmoothing, cache.result,
-                stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit, stableCameraLongSwitchFrets);
+                stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit);
             if (cache.motion !== cache.stops.motion || cache.motionRate !== rate) {
                 // Equivalent metadata rebuilds must not repeatedly restart a
                 // live handoff. Compare only when the cached curve is rebuilt,
@@ -24792,7 +24843,7 @@
                 if (changed && s.following && Number.isFinite(s.planTime)) {
                     const previousPlan = hwyCameraPlanAt(_stablePlan.stops, s.planTime,
                         _stablePlan.rate, cameraSmoothing, _stableViewFuturePlan,
-                        stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit, stableCameraLongSwitchFrets);
+                        stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit);
                     changed = Math.abs(previousPlan.x - s.planX) > 1e-8
                         || Math.abs(previousPlan.velocity - s.planVelocity) > 1e-8;
                 }
@@ -24884,7 +24935,7 @@
                     nextRegion ? Math.max(frameTime, nextRegion.time) : Infinity);
                 const future = hwyCameraPlanAt(_stablePlan.stops, futureTime,
                     _stablePlan.rate, cameraSmoothing, _stableViewFuturePlan,
-                    stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit, stableCameraLongSwitchFrets);
+                    stableCameraDepartureDelay, stableCameraTravelExtra, stableCameraSettleLimit);
                 let futureX = frameTime < s.resumeUntil
                     ? futureTime < s.resumeUntil ? hwyCameraResumeAt(s, futureTime, future).x : future.x
                     : future.valid ? s.x + future.x - plan.x : s.x;
@@ -24952,7 +25003,11 @@
         /* ── Camera smooth lerp ──────────────────────────────────────────── */
         function camUpdate(bundle) {
             bundle = letRingView(bundle, letRingTrailsVisible);
-            if (cameraMode === 'stable') { stableCamUpdate(bundle, _frameNow); return; }
+            if (cameraMode === 'stable') {
+                stableCamUpdate(bundle, _frameNow);
+                stableCameraTuningOverlay?.setTiming(_stablePlan.result.valid ? _stablePlan.result.timing : null);
+                return;
+            }
             if (_stableCam.active) {
                 _stableCam.active = false;
                 cam.updateProjectionMatrix(); // clear the experimental lens shift
@@ -26065,8 +26120,6 @@
             min: 0, max: 3000, step: 25, default: BG_DEFAULTS.stableCameraSettleLimit },
         { key: 'stableCameraExcursionThreshold', label: 'Stable short-lane threshold (ms)', type: 'range',
             min: 0, max: 3000, step: 50, default: BG_DEFAULTS.stableCameraExcursionThreshold },
-        { key: 'stableCameraLongSwitchFrets', label: 'Long switch: minimum fret change (Stable)', type: 'range',
-            min: 1, max: 24, step: 1, default: BG_DEFAULTS.stableCameraLongSwitchFrets },
         {
             key: 'notationStyle', label: 'Notation style', type: 'select',
             options: [{ id: 'current', label: 'Current' }, { id: 'rsplus', label: 'RS+ inspired' }],
