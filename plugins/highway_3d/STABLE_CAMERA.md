@@ -51,6 +51,10 @@ speed: 400 ms before and 50 ms after become 800 ms before and 100 ms after in
 real time at 50%. The path stays aligned to the same highway positions.
 The tuning panel shows the current-speed equivalent and actual schedule.
 
+In split-screen **3D settings**, camera sliders preview while dragging and apply
+when released, matching **Camera tuning**. X-pan smoothing is disabled in Stable
+with an explanation; its saved value is kept for legacy camera views.
+
 **Reach every centre** joins overlapping moves through every retained centre
 at its arrival time. Start-before controls departure from a hold. **Follow
 latest destination** redirects at each start-before trigger, so an unfinished
