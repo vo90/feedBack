@@ -6909,6 +6909,10 @@
                     : timing.departureReason === 'continuing-path'
                         ? 'Reach every centre: already moving through this sequence. Arrival is exact; start-before governs departure from a hold.'
                         : 'Reach every centre: requested departure and arrival applied.';
+            if (timing.earlyBraking) {
+                timingLines.limit.textContent += ' Early braking: speed is adjusted before the redirect at '
+                    + seconds(timing.brakingTriggerTime) + ' to prevent overshoot. Destination triggers and arrival deadlines stay unchanged.';
+            }
         }
         function renderDuration() {
             const duration = read('stableCameraStartBeforeMs') + read('stableCameraArriveAfterMs');

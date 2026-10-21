@@ -274,6 +274,7 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
                     journey });
             }
             journey.last = segments.length - 1;
+            if (latest) prepareLatestCameraBraking(segments, journey, stops);
             for (let index = journey.first; index <= journey.last; index++) {
                 const segment = segments[index], target = stops[segment.targetIndex];
                 const reached = !segment.retargeted;
@@ -301,6 +302,8 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
                     limitingReason: 'none', extraLimitingReason: 'none', delayLimitingReason: 'none',
                     reachedCentre: reached, retargeted: segment.retargeted,
                     retargetTime: segment.retargeted ? segment.end : null, departureReason,
+                    earlyBraking: !!journey.earlyBraking,
+                    brakingTriggerTime: journey.brakingTriggerTime ?? null,
                     waypointIndex: index - journey.first + 1, waypointCount: journey.waypointCount,
                     journeyStart: journey.start, journeyEnd: journey.end,
                     journeyFirstLaneTime: stops[first].time, journeyFinalLaneTime: stops[last].time,
@@ -312,6 +315,69 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
         }
         Object.defineProperty(segments, 'journeys', { value: journeys });
         return segments;
+    }
+
+    // A short continuation can inherit too much speed from a large move.
+    // Detect that only while compiling the plan. The original latest-target
+    // quintic ends at rest: its velocity factors into (1-u)^2 times this
+    // quadratic, whose minimum is exact on the actually used interval.
+    function prepareLatestCameraBraking(segments, journey, stops) {
+        let needsBraking = false;
+        for (let i = journey.first + 1; i <= journey.last; i++) {
+            const segment = segments[i], index = segment.targetIndex;
+            const direction = Math.sign(stops[index].x - stops[index - 1].x);
+            if (!direction || direction !== Math.sign(stops[index - 1].x - stops[index - 2].x)) continue;
+            const duration = segment.requestedEnd - segment.start;
+            if (duration <= 0 || segment.end <= segment.start) continue;
+            const delta = segment.targetX - segment.from;
+            const velocity = segment.v0 * duration, acceleration = segment.a0 * duration * duration;
+            const a = direction * velocity, b = direction * (2 * velocity + acceleration);
+            const c = direction * (30 * delta - 15 * velocity - 2.5 * acceleration);
+            const end = Math.min(1, (segment.end - segment.start) / duration);
+            const at = u => a + u * (b + u * c);
+            let minimum = Math.min(a, at(end));
+            if (c > 0) {
+                const vertex = -b / (2 * c);
+                if (vertex > 0 && vertex < end) minimum = Math.min(minimum, at(vertex));
+            }
+            const epsilon = 1e-9 * Math.max(1, Math.abs(delta), Math.abs(velocity), Math.abs(acceleration));
+            if (minimum < -epsilon || direction * delta < -epsilon
+                || direction * (segment.targetX - segment.to) < -epsilon) {
+                needsBraking = true;
+                journey.brakingTriggerTime = segment.start;
+                break;
+            }
+        }
+        if (!needsBraking) return;
+        journey.earlyBraking = true;
+        // A connected journey starts and ends at rest. Replan its trigger
+        // positions together so braking can begin before the problematic
+        // redirect without a velocity/acceleration jump at an earlier join.
+        // These are positions along interrupted moves, NOT lane-centre stops.
+        const points = [{time: journey.start, x: segments[journey.first].from, velocity: 0}];
+        for (let i = journey.first; i <= journey.last; i++) {
+            const segment = segments[i], previous = points[points.length - 1];
+            const x = i === journey.last ? segment.targetX
+                : segment.end <= previous.time ? previous.x
+                    : Math.max(Math.min(previous.x, segment.targetX),
+                        Math.min(Math.max(previous.x, segment.targetX), segment.to));
+            points.push({time: segment.end, x, velocity: 0});
+        }
+        for (let i = 1; i + 1 < points.length; i++) {
+            const a = points[i - 1], b = points[i], c = points[i + 1];
+            if (b.time <= a.time || c.time <= b.time) continue;
+            const left = (b.x - a.x) / (b.time - a.time), right = (c.x - b.x) / (c.time - b.time);
+            if (left * right > 0) b.velocity = Math.sign(left) * Math.min(Math.abs(left), Math.abs(right));
+        }
+        // Zero shared acceleration and these bounded tangents give ordered
+        // quintic Bezier controls: each piece stays between its trigger knots.
+        // Genuine direction changes ease through zero speed at their knot.
+        for (let i = journey.first; i <= journey.last; i++) {
+            const segment = segments[i], a = points[i - journey.first], b = points[i - journey.first + 1];
+            segment.from = a.x; segment.to = b.x;
+            segment.v0 = a.velocity; segment.v1 = b.velocity;
+            segment.a0 = segment.a1 = 0;
+        }
     }
 
     // Quintic Hermite, with optional endpoint accelerations for retargeting.
