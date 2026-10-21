@@ -76,6 +76,17 @@ remain in that path. A chart-defined lane can change during silence; silence
 alone does not disable a valid lane plan. Resizing preserves the centre and
 angle while fitting the changed viewport.
 
+Re-enabling Follow normally catches up over 700 ms of real time, blending into
+the current lane path. A nearby arrival deadline cannot compress that recovery
+into a snap. The tuning panel labels this temporary timing exception "Follow
+resumed"; ordinary start-before and arrive-after timing applies once recovery
+finishes. Live edits during recovery preserve pose and velocity and restart its
+window. This uses cached path samples without new chart analysis.
+
+An interrupted direct recovery can retain its valid destination, extending its
+deadline if needed for smooth travel, when no following move would be skipped.
+This avoids backing toward a delayed nominal departure.
+
 ## Camera Director and legacy views
 
 The existing per-panel/global Camera Director bridge remains available, without

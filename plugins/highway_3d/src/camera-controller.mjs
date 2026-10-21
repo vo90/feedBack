@@ -28,6 +28,27 @@ export function createCameraController({ samplePlan, hwyCameraJoinAt, hwyCameraR
         return s;
     }
 
+    // Return a correction to the current cached path, also used by the
+    // renderer's visibility preview. Follow recovery blends from the held
+    // pose into that path instead of cancelling its initial velocity with
+    // a fixed offset: the latter can backtrack when the plan stops first.
+    function sampleJoin(s, plan, frameTime, motionRate, out, plannedX = plan.x) {
+        const recovering = s.followRecovery;
+        const plannedVelocity = plan.velocity || 0;
+        hwyCameraJoinAt(recovering ? s.followStartX - plannedX : s.rejoinStartOffset || 0,
+            recovering ? s.followStartVelocity : s.rejoinStartVelocity || 0,
+            s.rejoinStart || 0, s.rejoinEnd ?? -Infinity, frameTime, motionRate, out);
+        if (recovering && frameTime < s.rejoinEnd) {
+            const u = Math.max(0, Math.min(1, (frameTime - s.rejoinStart) / (s.rejoinEnd - s.rejoinStart)));
+            const blend = u * u * u * (10 + u * (-15 + 6 * u));
+            // The offset's origin includes today's plan position. Account
+            // for its derivative so the actual camera starts at rest and
+            // rejoins the plan's velocity, including after live edits.
+            out.velocity -= (1 - blend) * plannedVelocity;
+        }
+        return out;
+    }
+
     function update(s, plan, frameTime, motionRate, fallbackX) {
         const plannedX = plan.valid ? plan.x : fallbackX;
         const revised = s.planMotionRevision !== plan.motionRevision;
@@ -42,18 +63,26 @@ export function createCameraController({ samplePlan, hwyCameraJoinAt, hwyCameraR
         // pose whenever a revision arrives during a correction.
         if (revised && (frameTime < s.resumeUntil || frameTime < s.rejoinEnd)) changed = true;
         if ((frameTime < s.resumeUntil || frameTime < s.rejoinEnd) && s.joinRate !== motionRate) changed = true;
-        if (changed || !s.following) {
+        if (changed || !s.following || s.followResumePending) {
+            const followRecovery = s.followResumePending
+                || (s.followRecovery && (frameTime < s.rejoinEnd || frameTime < s.resumeUntil));
             const continuingResume = frameTime < s.resumeUntil;
             const previousArrivalTime = continuingResume ? s.resumeUntil : s.planArrivalTime;
             const previousArrivalX = continuingResume ? s.resumeTarget : s.planArrivalX;
             const previousArrivalLaneTime = continuingResume ? s.resumeLaneTime : s.planArrivalLaneTime;
-            const actualVelocity = s.following ? s.planVelocity + s.rejoinVelocity : 0;
+            const actualVelocity = s.following && !s.followResumePending ? s.planVelocity + s.rejoinVelocity : 0;
             s.rejoinStartOffset = s.x - plannedX;
             s.rejoinStartVelocity = actualVelocity - (plan.velocity || 0);
             s.rejoinStart = frameTime;
             s.joinRate = motionRate;
             s.rejoinEnd = frameTime + 0.7 * motionRate;
             s.resumeUntil = -Infinity;
+            s.followResumePending = false;
+            s.followRecovery = !!followRecovery;
+            if (followRecovery) {
+                s.followStartX = s.x;
+                s.followStartVelocity = actualVelocity;
+            }
             // The scheduled arrival includes a tuned settling tail.
             // Removing tuning during that tail still finishes the
             // current destination continuously before rejoining.
@@ -76,7 +105,24 @@ export function createCameraController({ samplePlan, hwyCameraJoinAt, hwyCameraR
                 arrivalLaneTime = previousArrivalLaneTime;
                 resumeDirect = true;
             }
-            if (Number.isFinite(arrivalTime) && arrivalTime > frameTime) {
+            // A pending direct recovery can be ahead of its newly delayed
+            // nominal path. Keep its valid destination without backing up,
+            // provided no later move starts inside the recovery window.
+            let preservePendingDestination = followRecovery && continuingResume
+                && sameDirectDestination && !plan.transit;
+            if (preservePendingDestination && arrivalTime < s.rejoinEnd) {
+                // One cached sample at the arrival selects the next segment;
+                // looking only at the window's end could miss an out-and-back.
+                const next = samplePlan(arrivalTime, previousSample);
+                preservePendingDestination = next.valid && !next.moving
+                    && Math.abs(next.x - arrivalX) <= 1e-8
+                    && (next.timing ? next.timing.start >= s.rejoinEnd : next.arrivalTime === Infinity);
+                if (preservePendingDestination) arrivalTime = s.rejoinEnd;
+            }
+            // An imminent arrival cannot compress Follow recovery. Ordinary
+            // live-edit deadlines stay unchanged.
+            if ((!followRecovery || preservePendingDestination)
+                && Number.isFinite(arrivalTime) && arrivalTime > frameTime) {
                 s.rejoinEnd = Math.min(s.rejoinEnd, arrivalTime);
                 // A chain's final arrival can be many seconds away.
                 // Keep its intermediate waypoints by fading the local
@@ -104,13 +150,13 @@ export function createCameraController({ samplePlan, hwyCameraJoinAt, hwyCameraR
             s.rejoinOffset = sample.x - plannedX; s.rejoinVelocity = sample.velocity - (plan.velocity || 0);
             s.x = sample.x; s.targetX = s.resumeTarget;
         } else {
-            hwyCameraJoinAt(s.rejoinStartOffset || 0, s.rejoinStartVelocity || 0,
-                s.rejoinStart || 0, s.rejoinEnd ?? -Infinity, frameTime, motionRate, sample);
+            sampleJoin(s, plan, frameTime, motionRate, sample, plannedX);
             s.rejoinOffset = sample.x; s.rejoinVelocity = sample.velocity;
             s.x = plannedX + sample.x; s.targetX = plannedX;
         }
+        if (frameTime >= s.rejoinEnd && frameTime >= s.resumeUntil) s.followRecovery = false;
         const report = diagnostics(s);
-        const mode = frameTime < s.resumeUntil
+        const mode = s.followRecovery ? 'follow-rejoin' : frameTime < s.resumeUntil
             ? frameTime < s.resumeEnd ? 'direct-resume' : 'arrival-hold'
             : frameTime < s.rejoinEnd ? 'local-rejoin'
                 : plan.moving ? 'following' : 'holding';
@@ -126,5 +172,5 @@ export function createCameraController({ samplePlan, hwyCameraJoinAt, hwyCameraR
         return s;
     }
 
-    return { update, setMode };
+    return { update, setMode, sampleJoin };
 }
