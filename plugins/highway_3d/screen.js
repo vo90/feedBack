@@ -4308,7 +4308,7 @@
 
     // Stable camera policy and movement are independent of Three.js.
     // Loaded once with renderer dependencies; only chart/cache changes build plans.
-    let hwyBuildCameraTimeline, hwyBuildCameraStops, hwyCompileCameraEvidence, hwyApplyCameraThreshold;
+    let hwyBuildCameraTimeline, hwyBuildCameraStops, hwyCompileCameraEvidence, hwyProjectCameraEvidence, hwyApplyCameraThreshold;
     let hwyCompileTappingAreas, hwyApplyTappingAreas;
     let hwyBuildCameraAttackIndex, hwyPrepareCameraStops, hwyBuildCameraMotion;
     let hwyCameraSegmentAt, hwyCameraPlanAt, hwyCameraJoinAt, hwyCameraResumeAt;
@@ -5438,7 +5438,7 @@
                 import(THREE_URL).catch(() => import(THREE_CDN)),
                 import('/static/js/lyric-lines.js').then(m => { lyricLayout = m; }),
                 import(CAMERA_MODULE_BASE + 'camera-semantics.mjs').then(m => {
-                    ({ hwyBuildCameraTimeline, hwyBuildCameraStops, hwyCompileCameraEvidence, hwyApplyCameraThreshold } =
+                    ({ hwyBuildCameraTimeline, hwyBuildCameraStops, hwyCompileCameraEvidence, hwyProjectCameraEvidence, hwyApplyCameraThreshold } =
                         m.createCameraSemantics({ NFRETS, isRenderableNote }));
                 }),
                 import(CAMERA_MODULE_BASE + 'camera-tapping.mjs').then(m => {
@@ -24626,6 +24626,7 @@
             _stableRegionResult.row = null;
             _stablePlan.rows = null; _stablePlan.stops = []; _stablePlan.regions = []; _stablePlan.zoomRegions = []; _stablePlan.key = '';
             _stablePlan.semanticStops = null; _stablePlan.timeline = [];
+            _stablePlan.musicalEvidence = _stablePlan.cameraEvidence = _stablePlan.tappingAreas = null;
             _stablePlan.beats = _stablePlan.sections = null;
             _stablePlan.attackNotes = _stablePlan.attackChords = _stablePlan.attacks = _stablePlan.preparedAttacks = null;
             _stablePlan.geometryKey = '';
@@ -24752,7 +24753,8 @@
                 ? Math.max(0.1, Math.round(_stableCam.rate * 10) / 10) : cache.rate;
             const geometryKey = [cam.aspect, stableCameraPreset, _leftyCached, nStr,
                 _textSizeMul, baseDistance].join('/');
-            const geometryChanged = cache.rows !== rows || cache.geometryKey !== geometryKey;
+            const rowsChanged = cache.rows !== rows;
+            const geometryChanged = rowsChanged || cache.geometryKey !== geometryKey;
             if (geometryChanged) {
                 // A chart can contain tens of thousands of rows but only a
                 // small set of distinct fret spans. Fit each shape once.
@@ -24793,7 +24795,7 @@
                 cache.attackNoteCount = bundle.notes?.length || 0;
                 cache.attackChordCount = bundle.chords?.length || 0; cache.attackStrings = nStr;
             }
-            const evidenceChanged = geometryChanged || cache.attacks !== cache.evidenceAttacks
+            const evidenceChanged = rowsChanged || cache.attacks !== cache.evidenceAttacks
                 || cache.beats !== bundle.beats || cache.sections !== bundle.sections
                 || cache.beatCount !== (bundle.beats?.length || 0)
                 || cache.sectionCount !== (bundle.sections?.length || 0);
@@ -24802,13 +24804,21 @@
                 // reclassify them or rescan their note/technique evidence.
                 const context = { notes: bundle.notes, chords: bundle.chords, beats: bundle.beats,
                     sections: bundle.sections, stringCount: nStr };
-                cache.cameraEvidence = hwyCompileCameraEvidence(cache.regions, { context });
-                cache.tappingAreas = hwyCompileTappingAreas(cache.cameraEvidence, context);
+                cache.musicalEvidence = hwyCompileCameraEvidence(cache.regions, { context });
+                cache.tappingAreas = hwyCompileTappingAreas(cache.musicalEvidence, context);
                 cache.evidenceAttacks = cache.attacks;
                 cache.beats = bundle.beats; cache.sections = bundle.sections;
                 cache.beatCount = bundle.beats?.length || 0; cache.sectionCount = bundle.sections?.length || 0;
             }
-            const semanticsChanged = evidenceChanged || cache.excursionThreshold !== stableCameraExcursionThreshold;
+            // Geometry changes refresh coordinates and framing, while keeping
+            // chart-only riff/run ownership and tapping proofs. Never reuse old
+            // projected spans after a resize, preset or handedness change.
+            if (evidenceChanged || geometryChanged) {
+                cache.cameraEvidence = evidenceChanged ? cache.musicalEvidence
+                    : hwyProjectCameraEvidence(cache.musicalEvidence, cache.regions);
+            }
+            const semanticsChanged = evidenceChanged || geometryChanged
+                || cache.excursionThreshold !== stableCameraExcursionThreshold;
             if (semanticsChanged) {
                 cache.semanticStops = hwyApplyTappingAreas(hwyApplyCameraThreshold(cache.cameraEvidence, {
                     excursionThreshold: stableCameraExcursionThreshold,

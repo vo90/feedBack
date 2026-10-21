@@ -377,6 +377,17 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
         return { spans, patterns, candidates, protectedIndices };
     }
 
+    // Reattach a compiled chart's decisions to a new view of the same ordered
+    // musical rows. Coalescing refreshes bounds and the initial preferred centre
+    // through same-base extensions; it does not inspect notes or classify routes.
+    // Callers must compile again when the musical rows or note evidence change.
+    function hwyProjectCameraEvidence(evidence, regions) {
+        const spans = coalesceCameraSpans(regions);
+        return { ...evidence, spans, patterns: evidence.patterns.map(pattern => ({
+            ...pattern, home: describeHome(spans[pattern.homeIndex]),
+        })) };
+    }
+
     function hwyApplyCameraThreshold(evidence, { excursionThreshold = 500 } = {}) {
         const brief = thresholdSeconds(excursionThreshold);
         const timeline = evidence.spans.map(span => {
@@ -441,6 +452,6 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
         return hwyApplyCameraThreshold(hwyCompileCameraEvidence(regions, options), options);
     }
 
-    return { hwyCameraRiffVariationCandidates, hwyCompileCameraEvidence, hwyApplyCameraThreshold,
+    return { hwyCameraRiffVariationCandidates, hwyCompileCameraEvidence, hwyProjectCameraEvidence, hwyApplyCameraThreshold,
         hwyBuildCameraTimeline, hwyBuildCameraStops };
 }

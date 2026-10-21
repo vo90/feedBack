@@ -263,11 +263,21 @@ not values written over the user's saved settings.
 
 ## Performance and validation
 
-Pattern ownership, note evidence and tapping bounds compile when chart or
-geometry evidence changes. Threshold edits only filter that cached evidence;
-they do not scan notes or discover patterns again. Projected shapes and attacks
-have separate caches. Timing/movement changes rebuild motion without scanning
-chart evidence again. Warm frames sample the cached path and explanations by binary search. The tuning panel
+Pattern ownership, note evidence and tapping bounds compile when musical inputs
+change: lane rows, notes, chords, beats, sections or the active string layout.
+Window aspect, viewpoint, handedness, text size and base-distance changes retain
+those musical decisions. They refresh projected shapes and coalesced span
+coordinates, including pattern homes and same-base extensions, then reapply the
+saved threshold and prepare the path. This visits cached lane rows without
+rescanning notes or rediscovering riffs, runs or tapping patterns. A real chart
+change still rebuilds evidence, and reset releases both evidence and projection.
+Only the source evidence and current projection are retained, with no resize
+history accumulating.
+
+Threshold edits only filter that cached evidence; they do not scan notes or
+discover patterns again. Projected shapes and attacks have separate caches.
+Timing/movement changes rebuild motion without scanning chart evidence again.
+Warm frames sample the cached path and explanations by binary search. The tuning panel
 updates only when its cached record, decision, lifecycle state or playback rate
 changes. Rate edits reuse both prepared stops and direct motion segments;
 only sampled real derivatives and the live controller handoff change. The
@@ -370,3 +380,24 @@ Lightning also pass 48 production-renderer cases with automatic zoom enabled,
 both viewpoints and movement modes, and 50/100/200% speeds. The Ride tapping
 area retains its frets 5–12 target. The tuning panel passes 50% conversion and
 wide/narrow/split-pane placement checks without writing saved values.
+
+### Projection cache validation on 21 October 2026
+
+Against integration baseline `876129a`, all 584 focused tests pass. Coverage
+compares reprojection with fresh compilation across threshold edits, both
+movement modes, mirrored views, same-base extensions, riffs, tapping and
+progressive runs. Note/chord/beat/section replacement, appended data and string
+eligibility changes still invalidate musical evidence.
+
+Across 1,440 resize/preset changes, prepared stops and zoom regions match the
+baseline with no repeated musical, tapping or attack analysis. Planner resize
+medians on Alison Hell, Absolution, Rats and Ride the Lightning fall from
+1.12–4.40 ms to 0.29–1.23 ms. A 10,000-lane synthetic chart falls from 54.59 to
+26.13 ms. These CPU comparisons use production planning with deterministic
+projection stand-ins; they do not measure the complete window-resize cost.
+
+Separately, 153,680 production-renderer pose comparisons match exactly while
+changing aspect, preset and handedness. Warm-frame checks retain the caches.
+Fresh isolated RTX 4080 Chromium samples remain around 60 FPS in both Stable
+views, with 16.7–16.8 ms p95 frame intervals. These are isolated rendering
+measurements, not native gameplay with audio.
