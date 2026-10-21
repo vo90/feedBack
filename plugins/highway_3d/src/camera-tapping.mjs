@@ -23,6 +23,9 @@ export function createCameraTapping({ NFRETS, isRenderableNote, isUnpitchedMute 
         if (!patterns.length) return [];
         const count = Number.isInteger(stringCount) && stringCount > 0 ? stringCount : 6;
         const events = [];
+        // Only attacks with a meaningful fret position participate in tapping
+        // evidence. Open/unpitched-only attacks cannot prove or widen an area
+        // or interrupt its matching final return; pitched palm mutes still count.
         const valid = note => note && Number.isInteger(note.s) && note.s >= 0 && note.s < count
             && Number.isFinite(note.f) && note.f > 0 && note.f <= NFRETS
             && isRenderableNote(note) && !isUnpitchedMute(note);

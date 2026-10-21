@@ -125,3 +125,93 @@ test('normal notes resume the usual four-fret centre even without a lane anchor 
             .every(s=>!s.focusArea&&s.cameraX===60));
     }
 });
+
+test('open strings and unpitched muted notes keep the proven tapping area through its final dwell',()=>{
+    for(const note of [
+        {f:0}, {f:127,mt:true}, {f:24,mt:true}, {f:24,mt:true,pick_scrape_marks:[{}]},
+    ]) {
+        const f=fixture();
+        f.notes.push({t:2.1,s:0,...note},{t:2.4,s:1,...note});
+        const {evidence,areas}=compile(f),{focused}=apply(evidence,areas);
+        assert.equal(areas[0].end,3,JSON.stringify(note));
+        assert.deepEqual(focused.map(s=>[s.time,s.x]),[[0,80],[3,170]],
+            'an unfretted attack must not insert a return to the four-fret home');
+        assert.deepEqual([areas[0].firstFret,areas[0].lastFret],[5,12],
+            'a dead note placeholder must not widen the tapping area');
+    }
+});
+
+test('chords made entirely of open and unpitched muted members keep tapping centering',()=>{
+    const f=fixture();
+    f.chords.push({t:2.1,notes:[{s:0,f:0},{s:1,f:127,mt:true},{s:2,f:24,mt:true}]});
+    const {evidence,areas}=compile(f),{focused}=apply(evidence,areas);
+    assert.equal(areas[0].end,3);
+    assert.deepEqual(focused.map(s=>[s.time,s.x]),[[0,80],[3,170]]);
+});
+
+test('a mixed chord with an ordinary fretted member ends tapping centering at its attack',()=>{
+    const f=fixture();
+    f.chords.push({t:2.1,notes:[{s:0,f:0},{s:1,f:127,mt:true},{s:2,f:7}]});
+    const {evidence,areas}=compile(f),{focused}=apply(evidence,areas);
+    assert.equal(areas[0].end,2.1);
+    assert.deepEqual(focused.map(s=>[s.time,s.x]),[[0,80],[2.1,60],[3,170]]);
+    assert.equal(focused[1].focusArea,undefined);
+});
+
+test('pitched fretted notes including palm mutes still end tapping centering normally',()=>{
+    for(const note of [{f:7},{f:7,pm:true},{f:7,mt:true,sl:9}]) {
+        const f=fixture();
+        // A mute with an explicit slide remains a pitched movement instruction;
+        // it is not the unpitched placeholder used by the hold policy.
+        f.notes.push({t:2.1,s:0,...note});
+        const {evidence,areas}=compile(f),{focused}=apply(evidence,areas);
+        assert.equal(areas[0].end,2.1,JSON.stringify(note));
+        assert.deepEqual(focused.map(s=>[s.time,s.x]),[[0,80],[2.1,60],[3,170]]);
+    }
+});
+
+test('tap flags on open or unpitched muted attacks cannot prove a tapping area',()=>{
+    for(const note of [{f:0},{f:127,mt:true},{f:24,mt:true}]) {
+        const f=fixture();
+        f.notes.forEach(note=>{delete note.tp;});
+        for(const start of [0,.9]) {
+            f.notes.push({t:start+.1,s:1,...note,tp:true});
+            f.chords.push({t:start+.2,notes:[{s:2,...note,tap:true}]});
+        }
+        const {evidence,areas}=compile(f),{stops,focused}=apply(evidence,areas);
+        assert.equal(areas.length,0,JSON.stringify(note));
+        assert.equal(focused,stops);
+    }
+});
+
+test('tap flags on unfretted attacks do not change a proven signature or widen its area',()=>{
+    const expected=compile(fixture()).areas, f=fixture();
+    for(const start of [0,.9,1.8]) {
+        f.notes.push({t:start+.1,s:1,f:0,tp:true},{t:start+.2,s:2,f:24,mt:true,tap:true});
+        f.chords.push({t:start+.25,notes:[{s:3,f:0,tap:true},{s:4,f:127,mt:true,tp:true}]});
+    }
+    const {evidence,areas}=compile(f),{focused}=apply(evidence,areas);
+    assert.deepEqual(areas,expected,'only usable fretted evidence may define or extend the proof');
+    assert.deepEqual(focused.map(s=>[s.time,s.x]),[[0,80],[3,170]]);
+});
+
+test('holding through unfretted attacks keeps normal movement timing to the next lane in both modes',()=>{
+    const f=fixture();
+    f.notes.push({t:2.1,s:0,f:0},{t:2.4,s:1,f:127,mt:true},{t:3,s:0,f:16});
+    const {evidence,areas}=compile(f);
+    for(const movementMode of ['reach-centres','latest-destination']) {
+        const {focused}=apply(evidence,areas);
+        const timing={startBeforeMs:400,arriveAfterMs:50,movementMode};
+        const sample=time=>api.hwyCameraPlanAt(focused,time,1,.5,{},0,0,250,null,timing);
+        const before=sample(2.599), moving=sample(2.8), after=sample(3.05);
+        assert.equal(before.x,80,'hold the tapping centre until the requested departure');
+        assert.equal(before.moving,false);
+        assert.ok(moving.x>80&&moving.x<170);
+        assert.equal(after.x,170,'reach the next lane at its requested arrival');
+        assert.equal(after.moving,false);
+        assert.equal(focused.motion.length,1,'no extra stop at an unfretted attack');
+        assert.deepEqual([focused.motion[0].start,focused.motion[0].end],[2.6,3.05]);
+        assert.equal(focused.motion[0].timing.movementMode,movementMode);
+        assert.equal(focused.motion[0].timing.fallbackReason,'none');
+    }
+});
