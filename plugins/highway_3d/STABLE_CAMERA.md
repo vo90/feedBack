@@ -40,6 +40,11 @@ progressive runs use the explicit rules in the behavior contract. Notes,
 labels and other visible geometry determine the distance needed to fit;
 they do not select a competing horizontal target.
 
+During a tapping area's matching final return, open strings and unpitched dead
+notes keep its centred focus. The next different fretted attack (including a
+pitched palm mute), or the next lane boundary, ends that hold. Entering and
+leaving the area still use your saved timing and movement mode.
+
 **Start before next lane** and **Arrive after next lane** use original song
 milliseconds, labelled **ms at 100%**. Keep the same saved numbers at every
 speed: 400 ms before and 50 ms after become 800 ms before and 100 ms after in

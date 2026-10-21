@@ -222,7 +222,11 @@ A proven lane pattern can become a tapping area when at least two adjacent
 cycles have the same ordered note/string/tap/hammer/pull sequence, contain a
 marked tap, and cover more than one fret. All participating fretted notes and
 real chord members determine the bounds, including hammer-ons and pull-offs.
-Open strings, unpitched mutes and synthetic chord overlays do not widen it.
+Open strings and unpitched mutes are excluded from the ordered evidence: they
+neither establish a tapping pattern, widen its bounds nor break a matching
+sequence. Synthetic chord overlays are also excluded. A mixed chord still
+contributes its valid fretted members. Pitched palm-muted notes count as normal
+fretted attacks; a dead strike's placeholder fret does not.
 This is ordered-note evidence, not a claim of identical rhythm or sustain.
 Cycle and final-return boundaries use the chart's existing 0.501 ms coincidence
 tolerance in original song time. An attack within that tolerance before a
@@ -237,9 +241,12 @@ right edge. Repeated high or low notes cannot bias it. A frets 5–12 tapping
 pattern with uniform fret spacing therefore centres between columns 8 and 9,
 rather than at the usual 5–8 lane centre. It is one fixed target for the passage,
 not a sliding average.
-A matching final return prefix stays centred until the next event or home end;
-ordinary notes on the same lane end that extension. Notes sustained into the
-area from before its start and slide endpoints are not part of these bounds.
+A matching final return prefix stays centred until the next different fretted
+attack or home end. Open/unpitched-only notes and chords do not interrupt that
+extension; an ordinary fretted attack on the same lane does. The next lane
+boundary still caps the area, even if only open or dead notes follow the return.
+Notes sustained into the area from before its start and slide endpoints are not
+part of these bounds.
 
 The usual motion planner handles entering and leaving the area with the saved
 start-before, arrive-after and movement mode. Automatic zoom keeps its existing
