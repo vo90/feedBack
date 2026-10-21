@@ -319,6 +319,7 @@
         let time = NaN, lastPerf = NaN, epoch = null;
         let lastFrame = NaN, lastRate = NaN, lastGeneration;
         let frameMotionDt = NaN;
+        let zoomSongDt = NaN;
         let correctionVelocity = NaN;
         let gapRecovery = false;
         let trace = null, traceCount = 0;
@@ -329,11 +330,13 @@
             reset() {
                 time = lastPerf = lastFrame = lastRate = NaN;
                 frameMotionDt = NaN;
+                zoomSongDt = NaN;
                 correctionVelocity = NaN;
                 epoch = null; lastGeneration = undefined; gapRecovery = false; traceCount = 0;
             },
             trace(enabled) { trace = enabled ? new Float64Array(4096 * fields.length) : null; traceCount = 0; },
             frameMotionDelta() { return frameMotionDt; },
+            zoomSongDelta() { return zoomSongDt; },
             diagnostics() {
                 if (!trace) return null;
                 const count = Math.min(traceCount, 4096), rows = [];
@@ -345,6 +348,7 @@
             },
             sample(raw, now, transport, frameTimestampMs) {
                 frameMotionDt = NaN;
+                zoomSongDt = NaN;
                 const t = transport;
                 const rate = Number.isFinite(t.rate) && t.rate > 0 ? t.rate : 1;
                 const position = Number.isFinite(t.position) ? t.position : raw;
@@ -381,7 +385,10 @@
                         // never spend many seconds repaying accumulated lag.
                         if (!gapRecovery) gapRecovery = 7;
                     }
-                    else if (gapRecovery) { time = Math.max(time, target); reason = gapRecovery; gapRecovery = false; }
+                    else if (gapRecovery) {
+                        time = Math.max(time, target); reason = gapRecovery; gapRecovery = false;
+                        zoomSongDt = 0; // A source catch-up may also reach the song end below.
+                    }
                     else {
                         // Use only animation-clock DELTAS: its absolute origin
                         // can differ from performance.now(). Audio alignment,
@@ -423,6 +430,14 @@
                     if (time >= end) { time = end; reason = 6; }
                 }
                 if (reason !== 0) { frameMotionDt = NaN; correctionVelocity = NaN; }
+                // Zoom must not spend wall time while the highway is held.
+                // Keep the final usable song-time slice at stale/end boundaries,
+                // but do not spend a reposition or source-recovery jump on zoom.
+                // NaN retains ordinary frame/wall fallback when timing is valid.
+                if (reason === 3 || reason === 6) {
+                    if (!Number.isFinite(zoomSongDt))
+                        zoomSongDt = Number.isFinite(previous) ? Math.max(0, time - previous) : 0;
+                } else if (reason !== 0) zoomSongDt = 0;
                 // Paused/stale/absent samples cannot bridge animation deltas
                 // into a later active frame. Invalid pairs use the wall path.
                 lastFrame = playing && age <= 250 && Number.isFinite(frameTimestampMs) ? frameTimestampMs : NaN;
@@ -24950,7 +24965,8 @@
             if (Number.isFinite(declaredRate) && declaredRate >= 0.1 && declaredRate <= 4) s.rate = declaredRate;
             // Zoom phase and velocity use song seconds. Speed edits preserve
             // its position and scale its motion with the highway immediately.
-            const songDt = dt * s.rate;
+            const clockZoomDt = bundle.transport ? _presentationClock.zoomSongDelta() : NaN;
+            const songDt = Number.isFinite(clockZoomDt) ? clockZoomDt : dt * s.rate;
             const reframe = !s.active || s.reset !== _stableCameraResetSerial
                 || s.preset !== stableCameraPreset || s.lefty !== _leftyCached || s.strings !== nStr
                 || s.song !== _songKey;

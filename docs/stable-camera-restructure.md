@@ -138,6 +138,14 @@ can introduce small differences between rates; zoom remains a visibility
 controller rather than a precomputed exact distance curve. Transport freshness,
 seek detection and the presentation clock retain their real-time safeguards.
 
+If the presentation clock holds because audio-position samples went stale or
+the song ended, automatic zoom also holds its recovery phase. A frame crossing
+the boundary can use only the remaining valid song-time advance. Fresh timing
+resumes from that phase without spending the lost interval or a clock catch-up
+jump on zoom. Outward visibility protection remains active. Missing animation
+timestamps during otherwise normal playback still use the ordinary wall-clock
+fallback; they do not imply a song-clock hold.
+
 Inward recovery captures its destination when the quiet hold ends, then keeps
 that destination and its easing curve until the segment finishes. A closer
 requirement during travel is handled by a following gentle segment toward the

@@ -82,6 +82,11 @@ remain in that path. A chart-defined lane can change during silence; silence
 alone does not disable a valid lane plan. Resizing preserves the centre and
 angle while fitting the changed viewport.
 
+If playback-position updates go stale or the song clock reaches its end, zoom
+recovery waits with the highway. It resumes from the held phase when timing
+returns, without catching up abruptly. Visibility protection can still widen
+the view if necessary.
+
 Re-enabling Follow normally catches up over 700 ms of real time, blending into
 the current lane path. A nearby arrival deadline cannot compress that recovery
 into a snap. The tuning panel labels this temporary timing exception "Follow
