@@ -58,8 +58,7 @@ shows both the saved basis and the current-speed equivalent.
 Distance determines speed. At 400 ms before and 50 ms after, targets less than
 450 ms apart in song time have overlapping windows at every playback speed.
 Both movement modes keep the same path, grouping and redirects at the same
-song/highway positions. No separate transition duration is needed. At 100%,
-this preserves the preceding implementation's timing and path exactly.
+song/highway positions. No separate transition duration is needed.
 
 ### Reach every centre
 
@@ -88,6 +87,22 @@ time unless a later trigger supersedes it.
 A reversal can briefly continue in the old direction while braking. Earlier
 centres may not be reached. The panel reports the redirect time and superseded
 arrival instead of falsely reporting completion.
+
+When successive targets continue in the same direction, a large move followed
+by a small move can otherwise carry too much speed past its destination. The
+cached plan detects that overshoot and plans braking earlier within the connected
+journey. Destination triggers and final arrival times stay unchanged, but the
+upcoming move can affect speed before its trigger. The tuning panel explicitly
+labels this **Early braking** rule.
+
+Only journeys needing that protection are rebuilt. They keep positions along
+their interrupted moves at trigger times, bounded between the previous trigger
+position and the active target. Shared bounded velocities and zero acceleration
+at the joins keep the path smooth and inside those positions. These are trigger
+positions, not a requirement to reach every lane centre. Direction changes inside
+such a journey brake to zero at their turning point. Ordinary safe journeys,
+including reversal-only journeys, keep their existing curves. Analysis happens
+when the cached plan is built, never during frame sampling.
 
 Both policies bound the very first departure by the initial source lane's
 availability. This exception is reported and preserves arrival. Seeking and

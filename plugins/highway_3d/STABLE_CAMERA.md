@@ -53,6 +53,12 @@ centre can be skipped. Both retain the predictable threshold, riff and tapping
 rules in the current contract. Legacy preparation/delay/stretch controls do
 not govern either path.
 
+In **Follow latest destination**, a large move followed by a smaller move in
+the same direction can require **Early braking**. The cached plan adjusts speed
+before the next trigger to avoid passing the destination and reversing. The
+panel labels this behavior; destination switches and arrival deadlines retain
+their requested times. Safe journeys keep their existing motion.
+
 The controller uses the meshes already emitted by this frame's renderer:
 playable gems, open-string bars, chord frames, arpeggio brackets, visible sustain
 ribbons, chord-hold rails, technique glyphs and incoming fret labels. A small

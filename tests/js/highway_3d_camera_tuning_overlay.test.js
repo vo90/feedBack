@@ -297,6 +297,23 @@ test('readout explains exact arrivals, continuing paths and superseded destinati
     assert.deepEqual(h.writes,[]);
 });
 
+test('early braking is explicit without changing requested timing or saved settings', () => {
+    const h=load({h3d_bg_cameraMode:'stable'}),o=h.create();
+    const field=name=>o.query(`[data-camera-timing-field="${name}"]`);
+    const timing={...exactTiming,mode:'latest-destination',earlyBraking:true,brakingTriggerTime:9.7};
+    o.setTiming(timing);o.toggle.click();
+    assert.match(field('limit').textContent,/Early braking: speed is adjusted before the redirect at 9.700 s/);
+    assert.match(field('limit').textContent,/Destination triggers and arrival deadlines stay unchanged/);
+    assert.equal(field('departure').textContent,'Song movement start: 9.400 s (requested trigger 9.400 s).');
+    assert.equal(field('arrival').textContent,'Song arrival: 10.100 s (lane begins 10.000 s).');
+    const writes=field('limit').textWrites;
+    for(let frame=0;frame<120;frame++)o.setTiming(timing);
+    assert.equal(field('limit').textWrites,writes,'cached braking diagnostics are not rewritten each frame');
+    o.setTiming({...timing,earlyBraking:false,brakingTriggerTime:null});
+    assert.doesNotMatch(field('limit').textContent,/Early braking/);
+    assert.deepEqual(h.writes,[]);
+});
+
 test('controls precede diagnostics and exact duration is a readout, not another input', () => {
     const h=load({h3d_bg_cameraMode:'stable'}),o=h.create(),report=o.query('[data-camera-timing]'),details=o.query('[data-camera-timing-details]');
     const fieldset=report.parentNode,index=fieldset.children.indexOf(report);
