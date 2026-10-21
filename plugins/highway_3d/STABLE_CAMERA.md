@@ -45,6 +45,15 @@ history. The next passage chooses its own home, so an old climb cannot force
 later short replies to move the camera. Ordinary section changes and long held
 lanes retain their existing behavior; the threshold does not move these boundaries.
 
+A repeated riff can establish a clearer local home when that lane receives more
+visits than any other and occupies more than half of each of two complete
+repetitions. Every return around the new home must remain a proven excursion;
+ambiguous riffs keep their existing handling. This choice is made when the cached
+song plan is built, independently of the short-lane threshold. For a main lane 7
+with 558 ms visits to lane 8 and 139 ms visits to lane 6, a 500 ms threshold holds
+the lane-6 reply while following lane 8; a 1000 ms threshold holds both at lane 7.
+The preceding genuine climb retains its destinations.
+
 Repeated marked tapping inside one wide lane centres the full played area,
 even without lane changes, including figures where every note is tapped.
 The ordered figure must repeat twice; a travelling run does not become a hold

@@ -214,9 +214,20 @@ lane destinations; removing a waypoint can still change the interpolated path.
 - Multi-lane riffs require two adjacent cycles with the same ordered lane bases.
   Each away lane in the supporting pair must be individually shorter than the
   threshold; elapsed time for the whole trip is never used.
-- A surrounding riff owns nested replies. A new local home wins only if two
+- A surrounding riff owns nested replies. A new local home can win when two
   matching cycles finish before the surrounding home returns. Authored section
   boundaries can support ownership, but do not prove a riff by themselves.
+- A repeated surrounding riff can also yield to a clearly recurring local home.
+  The same lane must have uniquely more visits than every other lane and occupy
+  more than half the time in each of two complete matching cycles. Every complete
+  return around that proposed home must already have valid return evidence;
+  otherwise the original riff keeps ownership. The selected home is installed
+  explicitly, without removing protected progressive destinations or rewriting an
+  earlier unsupported cycle. Ties and ambiguous multi-lane returns retain their
+  existing handling. Votes use finite, half-open cycles in original song time;
+  same-base extensions and proven note variations do not create extra visits.
+  This decision is independent of both the current threshold and its slider
+  range. The threshold subsequently applies to each supported away lane as usual.
 - Three consecutive moves in one direction protect the route, including its
   start and turn. Advancing zigzags protect travel when both highs and lows move
   in the same direction. Replies around a fixed home do not meet that test.
