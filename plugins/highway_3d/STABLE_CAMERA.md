@@ -136,6 +136,11 @@ transport state and the user interface. Modules are loaded with the renderer
 dependencies through `/api/plugins/highway_3d/g/camera-N/src/`, using a fresh
 generation per plugin-script evaluation and reusing it across renderer instances.
 
+Resizing or switching viewpoints reuses the song's riff, run and tapping
+decisions. It refreshes their screen coordinates and framing without analysing
+the notes again. Chart changes still rebuild the musical evidence; the timing
+controls and resulting camera behaviour are unchanged.
+
 The rendered geometry is accumulated into 32 reusable depth bins. Static mesh bounds are
 cached; dynamic ribbons read only their populated vertices. A fixed-orientation
 perspective fit intersects linear constraints on the camera centre and uses
