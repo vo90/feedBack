@@ -4,10 +4,11 @@ Select **Stable comparison** in 3D Highway settings to use **Straight** or
 **RS+-inspired** with **Follow hand position**. Existing installations retain
 their saved camera mode.
 
-The current behavior contract is
-[Stable camera lane following](../../docs/highway-camera-lane-follow.md).
-The module boundaries, control definitions and acceptance procedure are in
+The current behavior contract, module boundaries, control definitions and
+acceptance procedure are in
 [Stable camera restructuring](../../docs/stable-camera-restructure.md).
+[Stable camera lane following](../../docs/highway-camera-lane-follow.md)
+describes the earlier lane/timing system.
 Earlier descriptions of a lateral comfort zone, pan dwell or tolerance-based
 recentering are historical; they do not describe the current Stable camera.
 
@@ -39,14 +40,18 @@ progressive runs use the explicit rules in the behavior contract. Notes,
 labels and other visible geometry determine the distance needed to fit;
 they do not select a competing horizontal target.
 
-**Automatic preparation** retains the existing ordinary, large-move and
-quiet-passage scheduling. **Manual lead time** replaces those preparation
-rules with 25–3000 ms before the first retained lane of a journey. It uses real
-playback time and can be shortened by the preceding lane. A shorter lead can
-make the first move quicker. It does not set one speed for an entire chain.
-Departure delay subsequently requests a later start; extra travel receives
-available settling time first. The panel reports the applied start, travel,
-arrival and limiting reason rather than assuming every request can fit.
+**Start before next lane** and **Arrive after next lane** use original song
+milliseconds, labelled **ms at 100%**. Keep the same saved numbers at every
+speed: 400 ms before and 50 ms after become 800 ms before and 100 ms after in
+real time at 50%. The path stays aligned to the same highway positions.
+The tuning panel shows the current-speed equivalent and actual schedule.
+
+**Reach every centre** joins overlapping moves through every retained centre
+at its arrival time. Start-before controls departure from a hold. **Follow
+latest destination** redirects at each start-before trigger, so an unfinished
+centre can be skipped. Both retain the predictable threshold, riff and tapping
+rules in the current contract. Legacy preparation/delay/stretch controls do
+not govern either path.
 
 The controller uses the meshes already emitted by this frame's renderer:
 playable gems, open-string bars, chord frames, arpeggio brackets, visible sustain
@@ -58,12 +63,15 @@ guidance that determines an actual chord frame also determines that frame's
 camera bounds; distant unused anchor ranges cannot force a zoom change.
 
 Distance anticipates visible requirements and returns gently after them;
-closely repeated excursions can retain their wider view. Visibility fitting
-keeps the chosen horizontal centre and can widen promptly when required.
+closely repeated excursions can retain their wider view. These intervals also
+use song time. Visibility fitting keeps the chosen horizontal centre and can
+widen promptly when required. **Automatic zoom** off freezes distance until
+an explicit reframe; playback speed changes do not override that setting.
 
 Pause and Follow off hold the pose. Following seeks and loop wraps reframe
-directly. Playback-rate and live setting changes preserve the current pose
-and velocity while rejoining the scheduled path. Short intermediate lanes
+directly. Playback-rate and live setting changes preserve the current lateral
+pose and velocity while rejoining the scheduled path. Zoom retains its phase
+and position on speed edits, and scales its real speed with the highway. Short intermediate lanes
 remain in that path. A chart-defined lane can change during silence; silence
 alone does not disable a valid lane plan. Resizing preserves the centre and
 angle while fitting the changed viewport.

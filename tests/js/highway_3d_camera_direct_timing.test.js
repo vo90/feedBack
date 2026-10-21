@@ -29,7 +29,7 @@ test('both movement modes apply exact isolated endpoints at every speed and dist
             const options={movementMode,startBeforeMs,arriveAfterMs};
             const rows=[stop(0,0),stop(10,x)];
             const segments=build(rows,rate,options),segment=segments[0],timing=segment.timing;
-            close(segment.start,10-startBeforeMs/1000*rate); close(segment.end,10+arriveAfterMs/1000*rate);
+            close(segment.start,10-startBeforeMs/1000); close(segment.end,10+arriveAfterMs/1000);
             close(timing.appliedLeadMs,startBeforeMs);close(timing.appliedDurationMs,startBeforeMs+arriveAfterMs);
             close(timing.actualArriveAfterMs,arriveAfterMs);assert.equal(timing.mode,movementMode);
             assert.equal(timing.reachedCentre,true);assert.equal(timing.retargeted,false);
@@ -60,7 +60,7 @@ test('reach-centres joins overlapping windows and visits every retained progress
         continuous(segments);
         for(let i=0;i<segments.length;i++) {
             const segment=segments[i],target=rows[i+1];
-            close(segment.end,target.time+rate);close(segment.to,target.x);
+            close(segment.end,target.time+1);close(segment.to,target.x);
             close(sample(rows,segment.end,rate,options).x,target.x);
             assert.equal(segment.timing.reachedCentre,true);
             for(let u=0;u<=1;u+=.02) {
@@ -93,7 +93,7 @@ test('latest-destination interrupts from the exact x/v/a of its previous intende
             const segment=segments[i],next=segments[i+1];
             const uncut=motion.hwyCameraSegmentAt(segment.from,rows[i+1].x,segment.v0,0,
                 segment.requestedEnd-segment.start,(segment.end-segment.start)/(segment.requestedEnd-segment.start),{},segment.a0,0);
-            close(segment.end,rows[i+2].time-.5*rate);close(segment.to,uncut.x);close(segment.v1,uncut.velocity);close(segment.a1,uncut.acceleration);
+            close(segment.end,rows[i+2].time-.5);close(segment.to,uncut.x);close(segment.v1,uncut.velocity);close(segment.a1,uncut.acceleration);
             assert.equal(segment.timing.retargeted,true);assert.equal(segment.timing.reachedCentre,false);
             assert.equal(segment.timing.actualFirstLaneArrivalTime,null);assert.equal(segment.timing.actualArriveAfterMs,null);
             close(segment.timing.retargetTime,next.start);assert.notEqual(segment.to,rows[i+1].x);
@@ -105,7 +105,7 @@ test('latest-destination interrupts from the exact x/v/a of its previous intende
                 close(actual.x,expected.x,1e-8);close(actual.velocity,expected.velocity,1e-7);close(actual.acceleration,expected.acceleration,1e-6);
             }
         }
-        const final=segments[2];close(final.end,5.4+rate);close(final.to,6);close(final.v1,0);close(final.a1,0);
+        const final=segments[2];close(final.end,6.4);close(final.to,6);close(final.v1,0);close(final.a1,0);
         assert.equal(final.timing.reachedCentre,true);close(sample(rows,final.end,rate,options).x,6);
         assert.ok(segments[1].v0>0,'a reversal keeps existing momentum instead of jumping velocity');
     }
@@ -132,10 +132,10 @@ test('initial availability is the only departure bound and is explicitly reporte
     for(const movementMode of modes) for(const rate of [.5,1,1.5]) {
         const rows=[stop(1,0),stop(1.2,3)],options={movementMode,startBeforeMs:700,arriveAfterMs:200};
         const [segment]=build(rows,rate,options);
-        close(segment.start,1);close(segment.end,1.2+.2*rate);
+        close(segment.start,1);close(segment.end,1.4);
         assert.equal(segment.timing.departureReason,'initial-availability');
         assert.equal(segment.timing.preparationLimitReason,'initial-availability');
-        close(segment.timing.appliedLeadMs,.2/rate*1000);
+        close(segment.timing.appliedLeadMs,200);
     }
 });
 

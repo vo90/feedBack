@@ -1,6 +1,6 @@
 /** Cached stable-camera scheduling and numerical motion helpers.
- * Chart predicates are the only outside dependencies. All timing inputs keep
- * their legacy units: stop times are song seconds; controls use real ms.
+ * Chart predicates are the only outside dependencies. Stop times use song
+ * seconds; direct controls use song ms and legacy controls retain real ms.
  * Camera paths are rebuilt on input changes, then sampled without chart scans.
  */
 export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
@@ -100,7 +100,7 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
     // without stopping. Bounded tangents prevent overshoot between waypoints.
     function hwyBuildCameraMotion(stops, rate, smoothing, departureDelay = 0, travelExtra = 0, settleLimit = 250, preparationMs = null, directTiming = null) {
         if (directTiming && typeof directTiming === 'object') {
-            return buildDirectCameraMotion(stops, Math.max(0.1, Math.min(4, Number(rate) || 1)),
+            return buildDirectCameraMotion(stops,
                 directStartBefore(directTiming.startBeforeMs), directArriveAfter(directTiming.arriveAfterMs),
                 directMovementMode(directTiming.movementMode));
         }
@@ -215,9 +215,9 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
      * Connected requested windows are one journey. This is chart-static work:
      * sampling only searches the resulting non-overlapping polynomial pieces.
      * Legacy preparation, smoothing, delay and stretch never enter these paths. */
-    function buildDirectCameraMotion(stops, rate, beforeMs, afterMs, movementMode) {
+    function buildDirectCameraMotion(stops, beforeMs, afterMs, movementMode) {
         const segments = [], journeys = [];
-        const before = beforeMs / 1000 * rate, after = afterMs / 1000 * rate;
+        const before = beforeMs / 1000, after = afterMs / 1000;
         const latest = movementMode === 'latest-destination';
         const scratch = {};
         let first = 1;
@@ -283,7 +283,7 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
                     : !latest && index > journey.first ? 'continuing-path' : 'requested';
                 segment.arrivalIndex = journey.last;
                 segment.timing = {
-                    mode: movementMode, movementMode, fallbackReason: 'none',
+                    mode: movementMode, movementMode, fallbackReason: 'none', timeBasis: 'song',
                     requestedStartBeforeMs: beforeMs, requestedArriveAfterMs: afterMs,
                     requestedStart: segment.requestedStart, requestedEnd: segment.requestedEnd,
                     nominalStart: segment.requestedStart, nominalEnd: target.time,
@@ -291,12 +291,12 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
                     start: segment.start, end: segment.end,
                     actualFirstLaneArrivalTime: reached ? segment.end : null,
                     actualArriveAfterMs: reached ? afterMs : null,
-                    preparedLeadMs: beforeMs, appliedLeadMs: (target.time - segment.start) / rate * 1000,
+                    preparedLeadMs: beforeMs, appliedLeadMs: (target.time - segment.start) * 1000,
                     nominalDurationMs: beforeMs + afterMs,
-                    appliedDurationMs: (segment.end - segment.start) / rate * 1000,
+                    appliedDurationMs: (segment.end - segment.start) * 1000,
                     appliedLatenessMs: reached ? afterMs : null,
                     preparationReason: movementMode, preparationLimitReason: initialLimited ? 'initial-availability' : 'none',
-                    preparationRequestedMs: beforeMs, preparationAppliedMs: (target.time - segment.start) / rate * 1000,
+                    preparationRequestedMs: beforeMs, preparationAppliedMs: (target.time - segment.start) * 1000,
                     requestedDelayMs: 0, appliedDelayMs: 0, requestedExtraMs: 0, appliedExtraMs: 0,
                     limitingReason: 'none', extraLimitingReason: 'none', delayLimitingReason: 'none',
                     reachedCentre: reached, retargeted: segment.retargeted,
@@ -345,14 +345,14 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
         const startBeforeMs = direct ? directStartBefore(directTiming.startBeforeMs) : null;
         const arriveAfterMs = direct ? directArriveAfter(directTiming.arriveAfterMs) : null;
         const movementMode = direct ? directMovementMode(directTiming.movementMode) : null;
-        if (!stops.motion || stops.motionRate !== rate
-            || !direct && (stops.motionSmoothing !== smoothing
+        if (!stops.motion
+            || !direct && (stops.motionRate !== rate || stops.motionSmoothing !== smoothing
                 || stops.motionDepartureDelay !== departureDelay || stops.motionTravelExtra !== travelExtra
                 || stops.motionSettleLimit !== settleLimit || stops.motionPreparationMs !== preparationMs)
             || stops.motionDirectStartBeforeMs !== startBeforeMs || stops.motionDirectArriveAfterMs !== arriveAfterMs
             || stops.motionMovementMode !== movementMode) {
             stops.motion = hwyBuildCameraMotion(stops, rate, smoothing, departureDelay, travelExtra, settleLimit, preparationMs, directTiming);
-            stops.motionRate = rate; stops.motionSmoothing = smoothing;
+            stops.motionSmoothing = smoothing;
             stops.motionDepartureDelay = departureDelay; stops.motionTravelExtra = travelExtra;
             stops.motionSettleLimit = settleLimit;
             stops.motionPreparationMs = preparationMs;
@@ -360,6 +360,9 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
             stops.motionDirectArriveAfterMs = arriveAfterMs;
             stops.motionMovementMode = movementMode;
         }
+        // Direct paths depend only on song time. Rate changes reuse the curve
+        // and scale its derivatives below; legacy paths still rebuild above.
+        stops.motionRate = rate;
         const motion = stops.motion;
         let lo = 0, hi = motion.length;
         while (lo < hi) {

@@ -43,16 +43,23 @@ nominal schedule.
 | Short-lane threshold | 500 ms / 0–3000 ms | Each coalesced lane's original-song duration; exactly the threshold is lasting. Existing riff and progressive-run protections remain. |
 | Automatic zoom | On | Off freezes current distance, disabling safety fitting and zoom recovery. |
 
-Timing uses real playback milliseconds. For lane onset T, playback rate R,
-start-before B and arrive-after A:
+Timing uses original song milliseconds, labelled **ms at 100%**. For lane
+onset T, playback rate R, start-before B and arrive-after A:
 
-- Requested departure / trigger = T − B × R / 1000.
-- Requested arrival = T + A × R / 1000.
-- An uninterrupted transition has B + A milliseconds available.
+- Requested departure / trigger = T − B / 1000.
+- Requested arrival = T + A / 1000.
+- An uninterrupted transition has B + A song milliseconds available, taking
+  (B + A) / R milliseconds of real time.
+
+Saved numbers do not change when playback speed changes. At 50%, 400 ms before
+means 800 ms of real time, and 50 ms after means 100 ms of real time. The panel
+shows both the saved basis and the current-speed equivalent.
 
 Distance determines speed. At 400 ms before and 50 ms after, targets less than
-450 ms apart in playback time have overlapping windows. No separate transition
-duration is needed.
+450 ms apart in song time have overlapping windows at every playback speed.
+Both movement modes keep the same path, grouping and redirects at the same
+song/highway positions. No separate transition duration is needed. At 100%,
+this preserves the preceding implementation's timing and path exactly.
 
 ### Reach every centre
 
@@ -86,7 +93,9 @@ Both policies bound the very first departure by the initial source lane's
 availability. This exception is reported and preserves arrival. Seeking and
 loop wrap sample the path at the new position; wrapping before arrival prevents
 that traversal from finishing. Live edits preserve the actual pose and velocity
-while rejoining the new schedule. Replay the passage to compare nominal timing.
+while rejoining the new schedule. A live speed edit likewise preserves the
+current lateral pose and real velocity, so its brief handoff can depart from
+the nominal path. Replay the passage to compare nominal timing.
 
 ### Fixed distance
 
@@ -99,6 +108,15 @@ explicit viewpoint change (preset, handedness or string layout) establishes
 fresh framing. Same-song chart refreshes keep the frozen distance.
 Turning zoom back on resumes normal fitting and recovery.
 External manual Camera Director adjustments remain explicit view changes.
+
+With automatic zoom on, visibility horizons, anticipation, repeated-excursion
+holds and recovery use song time as well. Zoom state advances by the frame's
+real duration multiplied by playback rate; its velocity is stored per song
+second. A live speed edit leaves zoom position and recovery phase intact and
+scales its real speed with the highway immediately. Ordinary frame sampling
+can introduce small differences between rates; zoom remains a visibility
+controller rather than a precomputed exact distance curve. Transport freshness,
+seek detection and the presentation clock retain their real-time safeguards.
 
 ## Settings and lane policy
 
@@ -171,7 +189,10 @@ geometry evidence changes. Threshold edits only filter that cached evidence;
 they do not scan notes or discover patterns again. Projected shapes and attacks
 have separate caches. Timing/movement changes rebuild motion without scanning
 chart evidence again. Warm frames sample the cached path and explanations by binary search. The tuning panel
-updates only when its cached record, decision or lifecycle state changes.
+updates only when its cached record, decision, lifecycle state or playback rate
+changes. Rate edits reuse both prepared stops and direct motion segments;
+only sampled real derivatives and the live controller handoff change. The
+legacy motion entry point without directTiming retains its former time basis.
 Fixed-distance frames skip live visibility collection and distance solvers.
 
 Validate both modes and presets at multiple speeds, including:
@@ -238,3 +259,35 @@ also passed at a 150 ms threshold with zoom disabled, and two captured views
 confirmed its composition. All warm-frame checks reported zero evidence,
 threshold, tapping, attack or motion rebuilds; zoom-off cases also performed no
 live zoom-geometry collection. There were no browser errors.
+
+
+### Song-time timing validation on 21 October 2026
+
+Against integration baseline `7d9eabe`, all 337 focused camera tests pass.
+The full JavaScript suite passes 2983/2986 versus 2972/2975 on the baseline;
+the same three audio-barrier/provider-verdict failures remain. Direct-motion
+checks cover 10%–400%, overlap grouping, redirects, initial availability,
+rate-scaled derivatives, cache reuse and exact 100% trajectory parity.
+Live-edit checks cover lateral continuity and active inward zoom recovery.
+
+The isolated production renderer passes 144 cases across both movement modes,
+both viewpoints, zoom on/off and 25/50/75/100/150/200% speed. Comparing 144,120
+samples at identical song positions gives a maximum position/distance/pose
+difference below 5e-13; fixed-distance cases match exactly. All 24 constant-100%
+reference traces match the preceding implementation. Speed-changing lifecycle
+traces are checked for continuity and the new deadlines, rather than equality
+to the old rate-dependent schedule. Warm frames retain all evidence and motion
+caches without chart analysis.
+
+Paired RTX 4080 renderer samples at 100% remain at 60 FPS with 16.7 ms p95
+frame intervals in both viewpoints. Warm moving draw CPU means are
+0.919/0.968 ms for baseline Straight/Angled and 0.927/0.967 ms after the change.
+These are bounded isolated Chromium measurements with visual effects disabled,
+not native Electron gameplay with audio. Native apps were closed during this
+validation; their saved session/profile files were preserved.
+
+Fresh local chart passages from Alison Hell, Absolution, Rats and Ride the
+Lightning also pass 48 production-renderer cases with automatic zoom enabled,
+both viewpoints and movement modes, and 50/100/200% speeds. The Ride tapping
+area retains its frets 5–12 target. The tuning panel passes 50% conversion and
+wide/narrow/split-pane placement checks without writing saved values.

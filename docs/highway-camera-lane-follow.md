@@ -1,11 +1,10 @@
 # Stable camera lane following
 
-This is the current lateral-camera policy for Stable Straight and Stable
-RS+-inspired (Angled). Other camera modes keep their existing behavior.
-See [Stable camera restructuring](stable-camera-restructure.md) for module
-APIs, control units and the acceptance procedure. Earlier comfort-zone,
-hysteresis and shared-centre descriptions in the historical camera notes
-are superseded by this policy.
+This is a historical description of the earlier Stable camera policy.
+The current threshold, tapping, movement-mode and song-time timing contracts
+are in [Stable camera restructuring](stable-camera-restructure.md).
+Preparation, departure delay and travel stretch described below no longer
+govern Stable Straight or Stable RS+-inspired (Angled).
 
 ## Camera positions
 

@@ -261,7 +261,7 @@ test('blocked storage keeps scoped live settings and teardown removes subscripti
     assert.deepEqual(h.errors,[]);
 });
 
-const exactTiming={mode:'reach-centres',movementMode:'reach-centres',departureReason:'requested',
+const exactTiming={timeBasis:'song',mode:'reach-centres',movementMode:'reach-centres',departureReason:'requested',
     reachedCentre:true,retargeted:false,requestedStartBeforeMs:600,requestedArriveAfterMs:100,
     nominalStart:9.3,nominalEnd:10,start:9.4,end:10.1,appliedLeadMs:600,appliedDurationMs:700,
     requestedStart:9.4,requestedEnd:10.1,actualFirstLaneArrivalTime:10.1,
@@ -270,9 +270,9 @@ const exactTiming={mode:'reach-centres',movementMode:'reach-centres',departureRe
 test('readout explains exact arrivals, continuing paths and superseded destinations honestly', () => {
     const h=load({h3d_bg_cameraMode:'stable'}),o=h.create(),field=name=>o.query(`[data-camera-timing-field="${name}"]`);
     o.setTiming(exactTiming,{decision:'follow',reason:'lasting-lane'},'scheduled');o.toggle.click();
-    assert.equal(field('starts').textContent,'Starts 600 ms before this lane.');
-    assert.equal(field('travel').textContent,'Travel to this centre: 700 ms.');
-    assert.equal(field('lateness').textContent,'Centre reached 100 ms after its lane begins.');
+    assert.equal(field('starts').textContent,'Starts 600 ms at 100% before this lane.');
+    assert.equal(field('travel').textContent,'Travel to this centre: 700 ms at 100%.');
+    assert.equal(field('lateness').textContent,'Centre reached 100 ms at 100% after its lane begins.');
     assert.equal(field('limit').textContent,'Reach every centre: requested departure and arrival applied.');
     assert.equal(field('departure').textContent,'Song movement start: 9.400 s (requested trigger 9.400 s).');
     assert.match(field('arrival').textContent,/10.100 s/);
@@ -285,7 +285,7 @@ test('readout explains exact arrivals, continuing paths and superseded destinati
     o.setTiming({...exactTiming,mode:'latest-destination',movementMode:'latest-destination',
         retargeted:true,reachedCentre:false,retargetTime:9.7,end:9.7,actualFirstLaneArrivalTime:null,
         actualArriveAfterMs:null,appliedLatenessMs:null,appliedDurationMs:300});
-    assert.equal(field('travel').textContent,'Moves toward this target for 300 ms, then redirects.');
+    assert.equal(field('travel').textContent,'Moves toward this target for 300 ms at 100%, then redirects.');
     assert.equal(field('lateness').textContent,'Scheduled arrival superseded: the next destination takes over.');
     assert.equal(field('arrival').textContent,'Redirected at 9.700 s; superseded arrival was 10.100 s.');
     assert.match(field('limit').textContent,/interrupted centres may be skipped/);
@@ -304,6 +304,35 @@ test('controls precede diagnostics and exact duration is a readout, not another 
     assert.equal(details.tagName,'DETAILS');assert.equal(details.getAttribute('open'),null);
     assert.equal(o.query('[data-camera-duration]').tagName,'P');
     assert.equal(o.root.querySelectorAll('[data-camera-input="number"]').length,3);
+});
+
+test('speed updates show real duration without rescaling saved song-time inputs',()=>{
+    const initial={h3d_bg_cameraMode:'stable',h3d_bg_stableCameraStartBeforeMs:'600',
+        h3d_bg_stableCameraArriveAfterMs:'100',h3d_bg_stableCameraExcursionThreshold:'500'};
+    const h=load(initial),o=h.create(),duration=o.query('[data-camera-duration]');
+    const field=name=>o.query(`[data-camera-timing-field="${name}"]`);
+    o.toggle.click();
+    for(const rate of [.25,.5,.75,1,1.5,2]) {
+        o.setTiming(exactTiming,null,'scheduled',rate);
+        assert.deepEqual(values(o),[600,100,500]);
+        assert.match(duration.textContent,/700 ms at 100%/);
+        if(rate!==1) {
+            assert.ok(duration.textContent.includes(`${Math.round(700/rate)} ms at ${rate*100}%`));
+            assert.ok(field('starts').textContent.includes(`${Math.round(600/rate)} ms at ${rate*100}%`));
+            assert.ok(field('lateness').textContent.includes(`${Math.round(100/rate)} ms at ${rate*100}%`));
+        }
+        const count=duration.textWrites;
+        for(let frame=0;frame<120;frame++)o.setTiming(exactTiming,null,'scheduled',rate);
+        assert.equal(duration.textWrites,count,'warm frames must not rewrite the duration');
+    }
+    o.setTiming(null,null,'paused',.5);
+    assert.match(duration.textContent,/1400 ms at 50%/,'the effective duration remains available without a move');
+    const count=duration.textWrites;o.toggle.click();o.setTiming(null,null,'paused',2);
+    assert.equal(duration.textWrites,count,'closed panels must not render speed updates');
+    o.toggle.click();assert.match(duration.textContent,/350 ms at 200%/);
+    assert.deepEqual(h.writes,[]);
+    assert.deepEqual(Object.fromEntries(h.data),initial);
+    for(const key of keys.slice(0,2))assert.match(o.input(key).getAttribute('aria-label'),/ms at 100%/);
 });
 
 test('warm frames and closed panels do not rewrite diagnostics', () => {

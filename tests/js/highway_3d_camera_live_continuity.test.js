@@ -116,23 +116,24 @@ test('a future-path revision cancels an active direct resume even when the curre
     const timeline = [[0, 1], [2, 9]]
         .map(([time, fret]) => ({ time, minX: (fret - 1) * 10, maxX: (fret + 3) * 10 }));
     const h = controller(500, 2, 'straight', timeline);
-    // A rate change creates actual resume motion while the slower nominal
-    // path still rests. New future waypoints then change the path without
-    // changing that resting sample. Reach mode groups all overlapping moves,
-    // so changing only the short-lane threshold no longer creates this case.
+    // Shortening the lead during a pan creates actual resume motion while
+    // the newly delayed nominal path rests. Speed alone no longer shifts
+    // song-time windows. Future waypoints then change the path without
+    // changing that resting sample.
     h.settings({ startBeforeMs: 1100 });
-    advance(h, 0, .5, 2);
-    h.settings({ rate: 1 }); h.frame(.5, 0);
-    const before = advance(h, .5, .6), nominal = { ...h.planCache().result };
-    assert.ok(before.resumeUntil > 1.31, 'fixture starts with a longer direct resume');
+    advance(h, 0, 1.1, 2);
+    h.settings({ rate: 1, startBeforeMs: 250 }); h.frame(1.1, 0);
+    const before = advance(h, 1.1, 1.2), nominal = { ...h.planCache().result };
+    assert.ok(before.resumeUntil > 1.91, 'fixture starts with a longer direct resume');
     assert.ok(velocity(before)>0,'fixture is moving despite a resting nominal sample');
-    h.setRegionTimeline([...timeline, {time:2.6,minX:120,maxX:160},{time:3.2,minX:160,maxX:200}]);
-    const changed = h.frame(.6, 0), plan = h.planCache().result;
+    assert.equal(nominal.moving,false,'the revised nominal departure is still in the future');
+    h.setRegionTimeline([...timeline, {time:2.2,minX:120,maxX:160},{time:2.4,minX:160,maxX:200}]);
+    const changed = h.frame(1.2, 0), plan = h.planCache().result;
     near(plan.x, nominal.x); near(plan.velocity, nominal.velocity);
     assert.equal(plan.transit, true);
     assertContinuous(before, changed);
-    assert.ok(changed.resumeUntil <= .6, 'future waypoints supersede the old direct resume');
-    assertRejoined(h, advance(h, .6, 1.31));
+    assert.ok(changed.resumeUntil <= 1.2, 'future waypoints supersede the old direct resume');
+    assertRejoined(h, advance(h, 1.2, 1.91));
 });
 
 test('equivalent metadata rebuilds cannot keep restarting a finite local handoff', () => {
