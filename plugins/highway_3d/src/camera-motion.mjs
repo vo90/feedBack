@@ -423,17 +423,29 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
             duration / state.resumeRate, (now - state.resumeStart) / duration, out);
     }
 
-    // A finite zoom return, with a quiet period before narrowing. Keep its
-    // original start while the requirement relaxes; restarting every frame
-    // would turn the return into an endless asymptote. Rising requirements
-    // cancel it immediately, including the anticipated next playing area.
+    // A finite zoom return, with a quiet period before narrowing. Each
+    // segment keeps its endpoint; a closer requirement follows in another
+    // gentle segment without restarting the wait. Rising requirements cancel
+    // recovery, including the anticipated next playing area.
     function hwyCameraZoom(state, required, dt, smoothing = 0.5) {
-        if (required > (state.zoomRequired ?? required) + Math.max(1e-8, required * 0.00001)) {
+        const calm = Math.max(0, Math.min(1, smoothing));
+        const tolerance = Math.max(1e-8, required * 0.00001);
+        if (required > (state.zoomRequired ?? required) + tolerance
+            || Number.isFinite(state.zoomReturnTo) && required > state.zoomReturnTo + tolerance) {
             state.quietZoomTime = 0;
         }
         state.zoomRequired = required;
+        // The renderer already resets this clock for reframing, visibility
+        // corrections, Follow off and zoom off. Those resets invalidate any
+        // captured segment as well. Freeze timing through live smoothing edits.
+        if (!state.quietZoomTime || !Number.isFinite(state.zoomReturnStart)) {
+            state.zoomReturnTo = NaN;
+            state.zoomReturnStart = 0.4 + calm * 0.2;
+            state.zoomReturnDuration = 0.6 + calm * 0.4;
+        }
         if (required >= state.distance - 1e-8) {
             state.quietZoomTime = 0;
+            state.zoomReturnTo = NaN;
             state.zoomReturnFrom = state.distance;
             const motion = hwyCameraRejoin(state.distance - required, state.zoomVelocity || 0, dt, 10);
             state.distance = required + motion.offset;
@@ -441,12 +453,11 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
         } else {
             if (!state.quietZoomTime) state.zoomReturnFrom = state.distance;
             state.quietZoomTime += dt;
-            const calm = Math.max(0, Math.min(1, smoothing));
-            const wait = 0.4 + calm * 0.2;
+            const waiting = !Number.isFinite(state.zoomReturnTo);
             // An outward visibility correction must come to rest smoothly
             // when its geometry disappears, rather than stop in one frame.
             const velocity = state.zoomVelocity || 0;
-            if (state.quietZoomTime <= wait + 1e-9 && Math.abs(velocity) > 1e-10) {
+            if (waiting && state.quietZoomTime <= state.zoomReturnStart + 1e-9 && Math.abs(velocity) > 1e-10) {
                 const decay = Math.exp(-dt / .12);
                 const distance = state.distance + velocity * .12 * (1 - decay);
                 state.distance = Math.max(required, distance);
@@ -454,11 +465,33 @@ export function createCameraMotion({ isRenderableNote, isUnpitchedMute }) {
                 state.zoomReturnFrom = state.distance;
                 return;
             }
-            const duration = 0.6 + calm * 0.4;
-            const u = Math.max(0, Math.min(1, (state.quietZoomTime - wait) / duration));
-            const eased = u * u * u * (10 + u * (-15 + 6 * u));
-            state.distance = state.zoomReturnFrom + (required - state.zoomReturnFrom) * eased;
-            state.zoomVelocity = (required - state.zoomReturnFrom) * 30 * u * u * (1 - u) * (1 - u) / duration;
+            if (waiting && state.quietZoomTime <= state.zoomReturnStart) {
+                state.distance = state.zoomReturnFrom;
+                state.zoomVelocity = (required - state.zoomReturnFrom) * 0;
+                return;
+            }
+            if (waiting) state.zoomReturnTo = required;
+            // At most the active segment and one segment to today's latest
+            // requirement can finish in a frame. Carry excess song time over
+            // the boundary, so the transition does not depend on frame rate.
+            for (let segment = 0; segment < 2; segment++) {
+                const target = state.zoomReturnTo, duration = state.zoomReturnDuration;
+                const u = Math.max(0, Math.min(1, (state.quietZoomTime - state.zoomReturnStart) / duration));
+                const eased = u * u * u * (10 + u * (-15 + 6 * u));
+                state.distance = state.zoomReturnFrom + (target - state.zoomReturnFrom) * eased;
+                state.zoomVelocity = (target - state.zoomReturnFrom) * 30 * u * u * (1 - u) * (1 - u) / duration;
+                if (u < 1) break;
+                if (required >= target - 1e-8) {
+                    // No pending destination owns time beyond this endpoint.
+                    // A new closer request must not inherit that elapsed time.
+                    state.quietZoomTime = state.zoomReturnStart + duration;
+                    break;
+                }
+                state.distance = state.zoomReturnFrom = target;
+                state.zoomReturnTo = required;
+                state.zoomReturnStart += duration;
+                state.zoomReturnDuration = 0.6 + calm * 0.4;
+            }
         }
         if (Math.abs(state.distance - required) < 1e-8) state.distance = required;
     }

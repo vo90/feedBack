@@ -64,7 +64,13 @@ camera bounds; distant unused anchor ranges cannot force a zoom change.
 
 Distance anticipates visible requirements and returns gently after them;
 closely repeated excursions can retain their wider view. These intervals also
-use song time. Visibility fitting keeps the chosen horizontal centre and can
+use song time. Each inward return keeps its destination and easing curve. If
+a closer view becomes possible during that return, it finishes the current
+segment, then continues toward the latest closer requirement without another
+quiet wait. This can add one gentle segment instead of abruptly changing zoom.
+Increasing visibility needs can still interrupt recovery. Live zoom-smoothing
+edits apply to the next wait or segment, leaving an active interval unchanged.
+Visibility fitting keeps the chosen horizontal centre and can
 widen promptly when required. **Automatic zoom** off freezes distance until
 an explicit reframe; playback speed changes do not override that setting.
 

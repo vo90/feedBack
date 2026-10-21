@@ -24157,6 +24157,7 @@
             reset: -1, song: null, notes: null, chords: null, anchors: null, anchorCount: -1, aspect: 0,
             quietZoomTime: 0, quietPanTime: 0, centreCandidateX: NaN,
             zoomReturnFrom: 0, zoomRequired: 0, zoomVelocity: 0, collectCentre: 0,
+            zoomReturnTo: NaN, zoomReturnStart: NaN, zoomReturnDuration: 0,
             pointCount: 0, viewPointCount: 0, minX: 0, maxX: 0,
             targetX: 0, targetDistance: 0, correction: false,
             focusValid: false, focusX: 0, focusMinX: 0, focusMaxX: 0,

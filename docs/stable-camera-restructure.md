@@ -138,6 +138,20 @@ can introduce small differences between rates; zoom remains a visibility
 controller rather than a precomputed exact distance curve. Transport freshness,
 seek detection and the presentation clock retain their real-time safeguards.
 
+Inward recovery captures its destination when the quiet hold ends, then keeps
+that destination and its easing curve until the segment finishes. A closer
+requirement during travel is handled by a following gentle segment toward the
+latest requirement, without a new quiet hold. The camera eases through the
+intermediate distance, so reaching the closest view can take one extra segment.
+Renewed wider requirements still cancel inward recovery; outward visibility
+response and the repeated-excursion hold retain their existing behavior.
+
+Zoom smoothing is captured for each quiet interval and return segment. Live
+edits take effect at the next interval or segment rather than remapping an
+active curve. Completed segments cannot donate elapsed time to a target first
+seen later. The helper evaluates at most two segments per frame using scalar
+state; it adds no chart scans or growing queue.
+
 ## Settings and lane policy
 
 The in-song panel, settings page and split-screen controls expose both new

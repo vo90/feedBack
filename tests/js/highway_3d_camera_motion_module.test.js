@@ -14,9 +14,10 @@ const stop = (time, x, lasting = true, lead = .6) => ({
 const close = (actual, expected, tolerance = 1e-9) =>
     assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} != ${expected}`);
 
-// This numerical fingerprint was captured from dd9ed24 before extraction.
-// It covers complete curves rather than implementation text, including real
-// speed conversion, capped timing, intermediate reversals, and zoom recovery.
+// These lateral curves were originally captured from dd9ed24 before extraction.
+// The lateral-only fingerprint was verified against dc4c037 before changing
+// zoom recovery; dynamic zoom has separate regression tests. This still covers
+// complete curves, real speed conversion, capped timing and reversals.
 function numericalTrace(api) {
     const values = [];
     for (const rate of [.5, 1, 1.75]) {
@@ -40,19 +41,12 @@ function numericalTrace(api) {
                 }
             }
         }
-        const zoom = { distance: 10, zoomVelocity: 0, quietZoomTime: 0 };
-        for (let frame = 0; frame < 480; frame++) {
-            const required = frame < 30 ? 10 : frame < 50 ? 16
-                : frame < 65 ? 11 : frame < 95 ? 17 : frame < 220 ? 11 : 8;
-            api.hwyCameraZoom(zoom, required, rate / 60, .5);
-            values.push(zoom.distance, zoom.zoomVelocity, zoom.quietZoomTime);
-        }
     }
     return createHash('sha256').update(JSON.stringify(values)).digest('hex');
 }
 
-test('extracted motion and zoom retain the frozen numerical trajectory', () => {
-    assert.equal(numericalTrace(motion), '10480459b56c4b070f370d8345ac0c8f73d9e9c9cf900d34114e16e471a09ab3');
+test('extracted lateral motion retains the frozen numerical trajectory', () => {
+    assert.equal(numericalTrace(motion), 'c30ea1f6b7b03db571bb9a482490176e62f3681ba0cd65420ef6d9929f5258c3');
 });
 
 test('journey diagnostics distinguish first-lane lead from complete travel', () => {
