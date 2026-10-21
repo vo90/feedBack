@@ -26323,10 +26323,26 @@
             default: BG_DEFAULTS.cameraLockZoom,
         },
     ];
+    // Hosts edit the same scoped settings as the gameplay overlay. Reading raw
+    // storage would miss legacy timing inheritance and failed-write fallbacks;
+    // replaying a global setter to notify renderers would overwrite that base.
+    const isPanelSetting = (panelIndex, key) => Number.isSafeInteger(panelIndex) && panelIndex >= 0
+        && createFactory.panelControls.some(control => control.key === key);
+    createFactory.getPanelSetting = (panelIndex, key) => isPanelSetting(panelIndex, key)
+        ? _bgReadSetting('panel' + panelIndex, key) : undefined;
+    createFactory.setPanelSetting = (panelIndex, key, value) => {
+        if (!isPanelSetting(panelIndex, key)) return false;
+        _bgWriteScoped('panel' + panelIndex, key, _bgCoerce(key, String(value)));
+        return true;
+    };
+
     // Static metadata exposed on the factory:
     //   panelControls      - optional, host-readable descriptors for a
     //                        curated per-panel control surface. Renderer
     //                        values still flow through _bgLoadSettings().
+    //   getPanelSetting / setPanelSetting - scoped host access by panel index
+    //                        and exposed control key; writes notify live views
+    //                        without changing global defaults or other panels.
     //   contextType        - required canvas context type. highway.js
     //                        replaces the <canvas> element when the
     //                        requested type differs from the current one,
