@@ -597,7 +597,7 @@ test('live journey timing edits preserve the current pose and velocity before re
     }
 });
 
-test('pause, follow and speed changes preserve a tuned progressive journey and settle at its actual arrival',()=>{
+test('pause and speed edits retain journey arrivals while Follow gets its smooth recovery window',()=>{
     for(const preset of ['straight','angled']) for(const change of ['pause','follow-off','slower','faster']) {
         const h=journeyController(preset),before=advance(h,0,4.03);let rate=1,time=4.03;
         if(change==='pause'||change==='follow-off') {
@@ -612,7 +612,8 @@ test('pause, follow and speed changes preserve a tuned progressive journey and s
         if(change==='slower'||change==='faster') near(state.planVelocity+state.rejoinVelocity,
             before.planVelocity+before.rejoinVelocity);
         const end=h.planCache().stops.motion.at(-1).end;
-        state=advance(h,time,end,rate);
+        const settledAt=change==='follow-off'?Math.max(end,time+.7*rate):end;
+        state=advance(h,time,settledAt,rate);
         near(state.x,180);near(state.planVelocity+state.rejoinVelocity,0);
         assert.deepEqual(h.planCache().semanticStops.map(stop=>stop.firstFret),[1,5,9,13,17]);
     }
@@ -631,7 +632,7 @@ test('loop wraps and seeks discard a live timing correction and match a fresh tu
     }
 });
 
-test('pause and follow changes in the late tail settle at the actual scheduled arrival',()=>{
+test('pause retains the late-tail deadline while Follow resumes smoothly beyond it',()=>{
     for(const preset of ['straight','angled']) for(const hold of ['pause','follow-off']) {
         const h=controller(preset),before=advance(h,0,4.05);
         let time=4.05;
@@ -639,9 +640,10 @@ test('pause and follow changes in the late tail settle at the actual scheduled a
         const held=h.frame(time,.03,hold!=='pause');assert.equal(held.x,before.x);
         h.settings({follow:true});let state=h.frame(time,0,true),previous=state.x;
         assert.equal(state.x,before.x);
+        const settledAt=hold==='follow-off'?Math.max(4.21,time+.7):4.21;
         for(let i=1;i<=40;i++) {
-            const next=time+(4.21-time)*i/40;
-            state=h.frame(next,(4.21-time)/40);
+            const next=time+(settledAt-time)*i/40;
+            state=h.frame(next,(settledAt-time)/40);
             assert.ok(state.x>=previous-1e-8&&state.x<=180+1e-8,`${preset}/${hold}: late resume reversed or overshot`);
             previous=state.x;
         }

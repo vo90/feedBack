@@ -134,6 +134,22 @@ test('a held plan rejoins locally instead of chasing its distant next arrival', 
     close(s.rejoinEnd, 1.7);
 });
 
+test('Follow recovery preserves the actual pose when an invalid plan uses the fallback centre', () => {
+    for (const x of [0, undefined]) for (const following of [false, true]) {
+        const s = state({ following, followResumePending: true });
+        const p = plan({ valid: false, x, velocity: 0, moving: false });
+        const live = controller();
+        live.update(s, p, 1, 1, 100);
+        close(s.x, 2);
+        close(s.motionDiagnostics.actualVelocity, 0);
+        assert.equal(s.motionMode, 'follow-rejoin');
+        remember(s, p, 1);
+        live.update(s, p, 1.71, 1, 100);
+        close(s.x, 100);
+        close(s.motionDiagnostics.actualVelocity, 0);
+    }
+});
+
 test('removing a tuned settling tail retains its previous direct destination deadline', () => {
     const s = state(), p = plan({ x: 8, arrivalTime: 5, arrivalX: 1, arrivalLaneTime: 5 });
     controller().update(s, p, 1, 1, 0);

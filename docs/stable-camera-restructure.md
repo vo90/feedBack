@@ -97,6 +97,26 @@ while rejoining the new schedule. A live speed edit likewise preserves the
 current lateral pose and real velocity, so its brief handoff can depart from
 the nominal path. Replay the passage to compare nominal timing.
 
+Re-enabling Follow normally uses a 700 ms real-time recovery from the held pose
+into the current cached path. Its blend follows changes in that path during recovery;
+it does not keep pursuing an obsolete destination. An imminent lane arrival
+cannot shorten this window, so recovery can miss that nominal arrival. The
+tuning panel identifies this temporary exception as "Follow resumed". Ordinary
+scheduled movement still uses the selected song-time start and arrival values.
+Live edits during recovery preserve actual position and velocity and restart
+the recovery window. Pause holds the view; seek and explicit reframing clear
+the correction. Visibility preview samples the same recovery as the camera.
+
+An interrupted direct recovery can retain its current destination when its
+newly delayed nominal departure is still behind the actual camera. Its deadline
+is extended if necessary to provide the recovery window, but only if one cached
+sample at the original arrival confirms no next move starts inside that window.
+Otherwise recovery blends into the changing path. It cannot claim an obsolete
+destination after a path revision or compress recovery to an imminent arrival.
+If a live edit preserves substantial forward velocity close to that resting
+destination, existing smooth braking may finish early and hold through the
+recovery window, avoiding an overshoot. Initial Follow resumption starts at rest.
+
 ### Fixed distance
 
 Turning Automatic zoom off retains the displayed distance; lateral following

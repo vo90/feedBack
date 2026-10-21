@@ -6851,6 +6851,7 @@
                     : 'No lane decision available.';
             const modes = { paused: 'Paused: camera held.', 'follow-off': 'Follow is off: camera held.',
                 'local-rejoin': 'Live change: smoothly rejoining the lane path.',
+                'follow-rejoin': 'Follow resumed: smoothly catching up; arrival timing resumes after recovery.',
                 'direct-resume': 'Live change: smoothly finishing the current move.',
                 'arrival-hold': 'Arrived early during a live correction; holding until the planned arrival.',
                 reset: 'Reframed at the current song position.', resize: 'View resized.',
@@ -24162,6 +24163,7 @@
             regionTime: NaN, regionSource: '', regionMinX: NaN, regionMaxX: NaN,
             panPending: false,
             planRevision: -1, planMotionRevision: -1, planX: 0, planVelocity: 0, planTransit: false, planMoving: false, following: false,
+            followResumePending: false, followRecovery: false,
             rejoinOffset: 0, rejoinVelocity: 0,
             safetyOffset: 0, safetyVelocity: 0,
         };
@@ -25000,6 +25002,11 @@
             const prediction = Math.min(AHEAD, 0.15);
             const closeDistance = plan.closeDistance;
             const snap = reset || !s.initialized || (seek && stableCameraFollow);
+            // Latch Follow independently of diagnostic mode: a resize or
+            // pause can intervene before playback resumes. Explicit reframes
+            // while following already establish the new pose immediately.
+            if (!stableCameraFollow) s.followResumePending = true;
+            else if (snap) s.followResumePending = s.followRecovery = false;
             s.clockReset = seek;
             s.correction = false;
             if (snap) {
@@ -25061,8 +25068,8 @@
                         : future.valid ? s.x + future.x - plan.x : s.x;
                     if (!(frameTime < s.resumeUntil) && frameTime < s.rejoinEnd && future.valid) {
                         const futurePlanX = future.x;
-                        futureX = futurePlanX + hwyCameraJoinAt(s.rejoinStartOffset || 0, s.rejoinStartVelocity || 0,
-                            s.rejoinStart || 0, s.rejoinEnd, futureTime, _stablePlan.rate, future).x;
+                        futureX = futurePlanX + stableMotionController.sampleJoin(s, future,
+                            futureTime, _stablePlan.rate, future).x;
                     }
                     const panDistance = stableSolve(futureX, viewDistance, prediction, .96, true,
                         _stableViewPoints, s.viewPointCount, v).distance;
