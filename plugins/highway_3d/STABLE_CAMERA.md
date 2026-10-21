@@ -40,6 +40,11 @@ progressive runs use the explicit rules in the behavior contract. Notes,
 labels and other visible geometry determine the distance needed to fit;
 they do not select a competing horizontal target.
 
+A confirmed empty no-guitar/silence section ends the preceding run and riff
+history. The next passage chooses its own home, so an old climb cannot force
+later short replies to move the camera. Ordinary section changes and long held
+lanes retain their existing behavior; the threshold does not move these boundaries.
+
 Repeated marked tapping inside one wide lane centres the full played area,
 even without lane changes, including figures where every note is tapped.
 The ordered figure must repeat twice; a travelling run does not become a hold

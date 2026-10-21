@@ -8,6 +8,88 @@
  * invent another home, change a pattern boundary, or restore a removed target.
  */
 export function createCameraSemantics({ NFRETS, isRenderableNote }) {
+    // Authored sections and playback attacks can differ at millisecond wire
+    // precision. Assign coincident attacks to the resumed passage, consistently
+    // with the existing chart-anchor coincidence tolerance.
+    const boundaryEpsilon = 0.000501;
+    function compileMusicalBreaks(context) {
+        const sections = (context.sections || []).filter(row => Number.isFinite(row?.time))
+            .slice().sort((a, b) => a.time - b.time);
+        const quiet = row => /^(noguitar|silence)$/.test(String(row?.name || '').trim().toLowerCase());
+        const intervals = [];
+        for (let index = 0; index < sections.length;) {
+            const start = sections[index].time;
+            let allQuiet = true;
+            while (index < sections.length && sections[index].time === start) allQuiet = quiet(sections[index++]) && allQuiet;
+            if (!allQuiet) continue;
+            // Adjacent quiet labels describe one break, not several resumptions.
+            while (index < sections.length && quiet(sections[index])) {
+                const time = sections[index].time;
+                let end = index;
+                while (end < sections.length && sections[end].time === time) end++;
+                if (!sections.slice(index, end).every(quiet)) break;
+                index = end;
+            }
+            const end = sections[index]?.time;
+            // Overlapping coincidence windows cannot prove a distinct rest.
+            if (Number.isFinite(end) && end - start > boundaryEpsilon * 2) intervals.push({start, end});
+        }
+        if (!intervals.length) return [];
+        const count = Number.isInteger(context.stringCount) && context.stringCount > 0 ? context.stringCount : 6;
+        // Open strings and muted/unpitched strikes are activity too. An
+        // otherwise ambiguous note on a real string cannot prove silence.
+        const valid = note => note && Number.isInteger(note.s) && note.s >= 0 && note.s < count;
+        const sustain = value => value === undefined || value === null ? 0
+            : Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : Infinity;
+        const duration = note => Math.max(sustain(note?.sus), sustain(note?.let_ring_sus));
+        const events = [];
+        for (const note of context.notes || []) if (Number.isFinite(note?.t) && valid(note))
+            events.push({time: note.t, end: note.t + duration(note)});
+        for (const chord of context.chords || []) {
+            if (!Number.isFinite(chord?.t) || chord.h3dSynth) continue;
+            const members = (chord.notes || []).filter(valid);
+            if (!members.length) continue;
+            let length = duration(chord);
+            for (const note of members) length = Math.max(length, duration(note));
+            events.push({time: chord.t, end: chord.t + length});
+        }
+        events.sort((a, b) => a.time - b.time);
+        const breaks = [];
+        let cursor = 0, soundingUntil = -Infinity;
+        for (const interval of intervals) {
+            let occupied = soundingUntil > interval.start + boundaryEpsilon;
+            while (cursor < events.length && events[cursor].time < interval.end - boundaryEpsilon) {
+                const event = events[cursor++];
+                if (event.time >= interval.start - boundaryEpsilon
+                    || event.end > interval.start + boundaryEpsilon) occupied = true;
+                soundingUntil = Math.max(soundingUntil, event.end);
+            }
+            if (!occupied) breaks.push(interval);
+        }
+        return breaks;
+    }
+
+    function compileBreakOwnership(spans, route, musicalBreaks) {
+        const segments = new Int32Array(route.length), resets = new Int32Array(route.length).fill(-1);
+        const sharedHomes = new Uint8Array(route.length);
+        let boundary = 0, segment = 0;
+        for (let index = 0; index < route.length; index++) {
+            const span = spans[route[index]];
+            while (boundary < musicalBreaks.length && musicalBreaks[boundary].end < span.end - boundaryEpsilon) {
+                const resume = musicalBreaks[boundary++].end;
+                segment++;
+                if (resume > span.time + boundaryEpsilon) {
+                    // The unchanged lane is both the old run's endpoint and
+                    // the new passage's initial home. Reset outgoing history.
+                    if (index + 1 < route.length) resets[index + 1] = index;
+                    sharedHomes[index] = 1;
+                } else resets[index] = index;
+            }
+            segments[index] = segment;
+        }
+        return {segments, resets, sharedHomes};
+    }
+
     function collectRiffVariationEvidence(spans, context = null) {
         context = context || {};
         const result = new Map(), beats = context.beats || [];
@@ -159,12 +241,18 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
         return value < Math.min(a, b) - 1e-8 || value > Math.max(a, b) + 1e-8;
     }
 
-    function compileTravel(spans, route) {
+    function compileTravel(spans, route, resets) {
         const size = route.length, spike = new Uint8Array(size);
+        const segmentStart = new Int32Array(size);
+        for (let index = 0, start = 0; index < size; index++) {
+            if (resets[index] >= 0) start = resets[index];
+            segmentStart[index] = start;
+        }
         // A single peak interrupting an otherwise continuing local direction
         // is not the end of that run. This decision uses original neighbours,
         // never the current threshold's surviving destinations.
         for (let i = 2; i + 2 < size; i++) {
+            if (segmentStart[i + 2] > i - 2) continue;
             const p = position(spans[route[i - 2]]), a = position(spans[route[i - 1]]);
             const x = position(spans[route[i]]), b = position(spans[route[i + 1]]);
             const q = position(spans[route[i + 2]]), direction = Math.sign(b - a);
@@ -187,6 +275,13 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
         };
         for (let k = 1; k < spine.length; k++) {
             const at = spine[k], before = spine[k - 1];
+            if (resets[at] >= 0) {
+                direction = steps = 0; latest = -1; peaks.length = troughs.length = 0;
+                if (resets[at] === at) {
+                    progressiveStart[at] = -1; previousSpine = at;
+                    continue;
+                }
+            }
             for (let i = previousSpine + 1; i < at; i++) progressiveStart[i] = latest;
             const value = position(spans[route[at]]), previous = position(spans[route[before]]);
             const nextDirection = Math.sign(value - previous);
@@ -216,7 +311,7 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
             active += marks[i];
             protectedRoute[i] = active > 0 && !spike[i] ? 1 : 0;
         }
-        return { spike, protectedRoute, progressiveStart };
+        return { spike, protectedRoute, progressiveStart, segmentStart };
     }
 
     function hwyCompileCameraEvidence(regions, { context = null } = {}) {
@@ -229,9 +324,18 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
                 indices: [i], homeIndex: i - 1, requiredDuration: -Infinity,
                 interval: variations.get(i), patternId: null });
         }
-        const count = route.length, travel = compileTravel(spans, route);
+        const musicalBreaks = compileMusicalBreaks(context);
+        const {segments, resets, sharedHomes} = compileBreakOwnership(spans, route, musicalBreaks);
+        const count = route.length, travel = compileTravel(spans, route, resets);
         const nextSame = new Int32Array(count).fill(-1), seen = new Map();
         for (let i = count - 1; i >= 0; i--) {
+            if (i + 1 < count && segments[i] !== segments[i + 1]) {
+                seen.clear();
+                // A straddling home may finish a real pre-break return as
+                // well as begin the next passage, without lending later
+                // destinations back across the break.
+                if (sharedHomes[i + 1]) seen.set(spans[route[i + 1]].base, i + 1);
+            }
             const base = spans[route[i]].base;
             nextSame[i] = seen.get(base) ?? -1; seen.set(base, i);
         }
@@ -257,6 +361,7 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
         for (let i = 0; i < count; i++) {
             const middle = nextSame[i], end = middle >= 0 ? nextSame[middle] : -1;
             if (middle <= i + 1 || end <= middle + 1 || middle - i !== end - middle
+                || segments[i] !== segments[middle]
                 || cycleBlocked[i] || cycleBlocked[middle]
                 || travel.progressiveStart[end] >= i) continue;
             let same = true;
@@ -311,7 +416,8 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
                 start: spans[homeIndex].time, end: spans[homeIndex].time, cycles: [],
                 proofStart: spans[route[single ? first : proofStart[first]]].time,
                 proofEnd: spans[route[single ? nextSame[first] : proofEnd[first]]].time };
-            while (hasReturn(i) && !takeover[i] && nextSame[i] <= nextSectionHome[i]) {
+            while (hasReturn(i) && segments[i] === segments[first]
+                && !takeover[i] && nextSame[i] <= nextSectionHome[i]) {
                 const end = nextSame[i];
                 if (end - i !== length) break;
                 let same = true;
@@ -352,12 +458,13 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
         let uncertainty = uncertainReturn[0];
         for (let i = 1; i + 1 < count; i++) {
             uncertainty += uncertainReturn[i];
-            if (owned[i] || reserved[i] || travel.protectedRoute[i] || uncertainty > 0) continue;
+            if (owned[i] || reserved[i] || travel.protectedRoute[i] || uncertainty > 0
+                || travel.segmentStart[i + 1] > i - 1) continue;
             const a = spans[route[i - 1]], x = spans[route[i]], b = spans[route[i + 1]];
             if (a.base === b.base || !outside(position(x), position(a), position(b))) continue;
             // The next step already reaches past this turn: it can be the
             // opening of an advancing zigzag, not an isolated excursion.
-            if (!travel.spike[i] && i + 2 < count) {
+            if (!travel.spike[i] && i + 2 < count && travel.segmentStart[i + 2] <= i - 1) {
                 const turn = position(x) - position(b), following = position(spans[route[i + 2]]) - position(b);
                 if (turn * following > 0 && Math.abs(following) >= Math.abs(turn)) {
                     reserved[i] = reserved[i + 1] = 1;
@@ -366,9 +473,9 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
             }
             // A neighbouring outlier would make the proposed home/target
             // ambiguous. The continuing-trend prepass is positive evidence.
-            if (!travel.spike[i] && ((i > 1 && !owned[i - 1]
+            if (!travel.spike[i] && ((i > 1 && travel.segmentStart[i + 1] <= i - 2 && !owned[i - 1]
                 && outside(position(a), position(spans[route[i - 2]]), position(b)))
-                || (i + 2 < count && !owned[i + 1]
+                || (i + 2 < count && travel.segmentStart[i + 2] <= i - 1 && !owned[i + 1]
                     && outside(position(b), position(a), position(spans[route[i + 2]]))))) continue;
             candidates.push({ kind: 'ignored-overshoot', reason: 'isolated-off-route-spike',
                 indices: [route[i]], homeIndex: route[i - 1], requiredDuration: x.duration,
@@ -377,7 +484,7 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
         }
         const protectedIndices = [];
         for (let i = 0; i < count; i++) if (travel.protectedRoute[i]) protectedIndices.push(route[i]);
-        return { spans, patterns, candidates, protectedIndices };
+        return { spans, patterns, candidates, protectedIndices, musicalBreaks };
     }
 
     // Reattach a compiled chart's decisions to a new view of the same ordered

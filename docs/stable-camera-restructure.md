@@ -220,6 +220,16 @@ lane destinations; removing a waypoint can still change the interpolated path.
 - Three consecutive moves in one direction protect the route, including its
   start and turn. Advancing zigzags protect travel when both highs and lows move
   in the same direction. Replies around a fixed home do not meet that test.
+- A chart-marked no-guitar or silence section ends that travel history when
+  its interval is clear of attacks and sounding sustains. Open strings and
+  muted strikes count as activity. The resumed passage establishes its own
+  riff home; it cannot borrow repetition evidence from before the break.
+  Ordinary section labels and long held lanes do not reset a genuine run.
+  If the same lane spans the break, its centre stays unchanged and it remains
+  the preceding run's endpoint while becoming the resumed passage's home.
+  These boundaries are compiled from the chart, independently of the threshold.
+  The existing 0.501 ms timestamp tolerance assigns rounded resume attacks to
+  the new passage; it does not change the lane-duration threshold comparison.
 - An isolated peak outside an otherwise continuing route may be held. Ambiguous
   travel follows, instead of inventing a detour from slider-dependent neighbours.
 - Exact note/measure proofs still protect established riff variations regardless
