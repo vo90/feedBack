@@ -41,7 +41,9 @@ labels and other visible geometry determine the distance needed to fit;
 they do not select a competing horizontal target.
 
 Repeated marked tapping inside one wide lane centres the full played area,
-even without lane changes. Adjacent proven variations share one steady centre
+even without lane changes, including figures where every note is tapped.
+The ordered figure must repeat twice; a travelling run does not become a hold
+just because it uses tapping. Adjacent proven variations share one steady centre
 across their combined range. This also works with a zero short-lane threshold;
 it does not override a lane already held at another home. Ordinary extended
 lanes and isolated taps retain the normal four-fret focus.

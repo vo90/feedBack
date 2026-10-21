@@ -264,18 +264,23 @@ Notes sustained into the area from before its start and slide endpoints are not
 part of these bounds.
 
 Repeated tapping inside one wide lane can also select an area without requiring
-lane changes or a short-lane hold. A marked tapped attack closes each figure.
-Each figure includes an untapped approach or return before its closing tap.
+lane changes or a short-lane hold. For mixed tapping/legato figures, a marked
+tapped attack closes each figure after its untapped approach or return.
 Two consecutive figures must have the same ordered note/string/tap/hammer/pull
 sequence, contain at least two attacks and span more than four fret columns.
 All positions must lie inside the lane. Ordinary width extensions, isolated
 taps and protected progressive lanes keep their normal focus.
-This conservative delimiter does not recognize figures consisting entirely of
-marked taps. A leading tap closes the preceding incomplete figure; recognized
-ownership starts with the next proven approach rather than borrowing that tap.
+
+When every attack is tapped, repetition supplies the figure boundary instead.
+Two complete consecutive copies of the ordered note/string/technique sequence
+must be present. A figure can start on any note and can repeat a note internally;
+its recognition does not depend on an untapped note or a fixed phrase length.
+An advancing climb, descent or zigzag does not qualify merely because its notes
+are tapped. The played sequence must actually repeat within the same lane and
+section, and the existing progressive-lane protection still takes precedence.
 
 Adjacent proven figures share one steady centre over their combined fret
-range. At most one connecting tapped figure can join different proven figures;
+range. For mixed figures, at most one connecting tapped figure can join them;
 every string/fret position in that connector must occur in either neighboring
 proof, and no connecting attack gap may exceed the longest gap within those
 proofs (apart from timestamp rounding). A longer pause or a new position splits
@@ -283,12 +288,32 @@ the areas. Matching final prefixes are included; a different ordinary fretted
 attack, lane boundary or section boundary ends the area. At the chart's end,
 the final matched attack/sustain or following beat gives a finite end.
 
+For all-tap figures, overlapping proofs select the earliest start, then the
+furthest proven end, then the shortest figure. Completed figures do not
+overlap; a matching partial return yields to a new proven figure. Both complete
+copies must support the passage's cadence: no attack gap may exceed the smaller
+of their longest internal gaps, apart from timestamp
+rounding. This prevents a single long rest becoming valid through a different
+choice of starting note. A connector between proven all-tap variants must be
+shorter than their two figure lengths combined, use only their proven
+string/fret positions, remain entirely tapped and keep the proven cadence.
+When a compressed interval fails that cadence check, its first and last
+two-copy windows and the pieces beside its longest gap are checked separately.
+More complicated uneven rhythms can remain unrecognized; this bounded check
+avoids searching every shifted copy. Existing mixed-figure focus retains its
+interval when an all-tap continuation shares its closing tap; the new proof
+applies only outside that already-owned interval.
+
 This single-lane proof is compiled independently of the short-lane threshold.
 It applies while its host lane remains followed; it cannot resurrect a lane
 that the semantic plan holds at another home. Existing multi-lane tapping
 evidence retains ownership wherever the two forms would overlap. Recognition
 is cached with the musical evidence; threshold, timing, speed and view edits
 do not rescan the notes.
+All-tap repetition uses compressed adjacent-repeat intervals during that
+compile, without enumerating every repeated substring or imposing a maximum
+figure length. Its temporary repetition and range indexes are discarded after
+the areas are built.
 
 The usual motion planner handles entering and leaving the area with the saved
 start-before, arrive-after and movement mode. Automatic zoom keeps its existing

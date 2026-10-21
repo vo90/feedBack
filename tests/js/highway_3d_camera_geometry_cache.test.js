@@ -316,12 +316,12 @@ test('chart replacement after a geometry-only refresh rebuilds the musical cache
     assert.equal(h.counts.evidence,2);assert.equal(h.counts.tapping,2);assert.equal(h.counts.attacks,1);
 });
 
-test('single wide-lane tapping reuses its proof across timing, speed, threshold and view changes',()=>{
+test('mixed and all-tap wide-lane figures reuse proof across timing, speed, threshold and view changes',()=>{
     const rows=[{time:0,fret:9,width:9},{time:4,fret:5,width:4}];
-    const chart={notes:[0,.9].flatMap(t=>[
-        {t,s:0,f:9},{t:t+.3,s:0,f:12,ho:true},{t:t+.6,s:0,f:17,tp:true},
-    ]),sections:[{time:0,name:'tapping'},{time:4,name:'verse'}],beats:[]};
-    for(const movementMode of ['reach-centres','latest-destination']) {
+    for(const allTap of [false,true]) for(const movementMode of ['reach-centres','latest-destination']) {
+        const chart={notes:[0,.9].flatMap(t=>[
+            {t,s:0,f:9,tp:allTap},{t:t+.3,s:0,f:12,ho:true,tp:allTap},{t:t+.6,s:0,f:17,tp:true},
+        ]),sections:[{time:0,name:'tapping'},{time:4,name:'verse'}],beats:[]};
         const h=harness(rows,chart,true), settings={movementMode,startBeforeMs:400,arriveAfterMs:50};
         h.configure(settings);
         const first=h.run(1.5), proof=first.musicalEvidence, areas=first.tappingAreas;
