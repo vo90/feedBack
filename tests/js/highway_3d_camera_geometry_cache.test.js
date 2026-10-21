@@ -128,8 +128,16 @@ test('threshold and timing edits reuse structural and tapping evidence without r
         assert.equal(current.cameraEvidence,evidence);
         assert.equal(current.tappingAreas,areas);
     }
-    const selections=h.counts.selection;
-    for(const change of [{rate:.5},{rate:2},{smoothing:.8},{startBeforeMs:450},
+    const selections=h.counts.selection,preparedStops=h.run().stops;
+    for(const rate of [.25,.5,.75,1,1.5,2]) {
+        h.configure({rate});
+        const current=h.run();
+        assert.equal(current.stops,preparedStops,'speed changes must retain prepared song-time stops');
+        assert.equal(current.rate,rate,'the live sampler still receives the actual playback rate');
+        assert.equal(current.cameraEvidence,evidence);
+        assert.equal(current.tappingAreas,areas);
+    }
+    for(const change of [{smoothing:.8},{startBeforeMs:450},
         {arriveAfterMs:1000},{movementMode:'latest-destination'}]) {
         h.configure(change);
         const current=h.run();

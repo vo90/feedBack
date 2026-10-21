@@ -6707,7 +6707,7 @@
         root.style.cssText = 'position:absolute;left:108px;top:clamp(76px,14%,116px);z-index:3;width:320px;max-width:calc(100% - 120px);pointer-events:none;font:12px/1.4 system-ui,sans-serif;color:#e5edf7;';
         const cleanups = [], controls = [];
         let expanded = false, destroyed = false, timing = null, renderedTiming;
-        let decision = null, motionMode = '';
+        let decision = null, motionMode = '', playbackRate = 1;
         const listen = (element, event, handler) => {
             element.addEventListener(event, handler);
             cleanups.push(() => element.removeEventListener(event, handler));
@@ -6756,7 +6756,7 @@
         movementLabel.appendChild(movement); fields.appendChild(movementLabel);
         const movementHelp = element('p', '', 'margin:0 0 8px;color:#adc0d7;');
         movementHelp.dataset.cameraMovementHelp = ''; fields.appendChild(movementHelp);
-        fields.appendChild(element('p', 'Timing uses real playback milliseconds. Release a slider to apply.', 'margin:0 0 8px;color:#adc0d7;'));
+        fields.appendChild(element('p', 'Timing uses milliseconds at 100% speed. It scales automatically with playback speed. Release a slider to apply.', 'margin:0 0 8px;color:#adc0d7;'));
         const durationReadout = element('p', '', 'margin:8px 0;color:#e5edf7;');
         durationReadout.dataset.cameraDuration = '';
         const timingBox = element('div', '', 'margin:8px 0;padding:8px;border:1px solid #50637b;border-radius:5px;color:#adc0d7;');
@@ -6766,7 +6766,7 @@
         const timingDetails = element('details', '', 'margin-top:6px;');
         timingDetails.dataset.cameraTimingDetails = '';
         timingDetails.appendChild(element('summary', 'Timing details', 'cursor:pointer;'));
-        timingDetails.appendChild(element('p', 'Durations use real playback milliseconds. Song timestamps identify the scheduled movement; a live edit can temporarily blend into that path.', 'margin:4px 0 0;'));
+        timingDetails.appendChild(element('p', 'Saved durations use milliseconds at 100% speed; the current-speed equivalent is shown below. Song timestamps identify the scheduled movement; a live edit can temporarily blend into that path.', 'margin:4px 0 0;'));
         const timingLines = {};
         for (const name of ['decision', 'mode', 'starts', 'travel', 'lateness', 'limit',
             'requested', 'departure', 'arrival']) {
@@ -6778,8 +6778,8 @@
         }
         timingBox.appendChild(timingDetails);
         const rows = [
-            ['stableCameraStartBeforeMs', 'Start before next lane (ms)', 25, 3000, 25],
-            ['stableCameraArriveAfterMs', 'Arrive after next lane (ms)', 0, 3000, 25],
+            ['stableCameraStartBeforeMs', 'Start before next lane (ms at 100%)', 25, 3000, 25],
+            ['stableCameraArriveAfterMs', 'Arrive after next lane (ms at 100%)', 0, 3000, 25],
             ['stableCameraExcursionThreshold', 'Short-lane threshold (ms)', 0, 3000, 50],
         ];
         const read = key => _bgReadSetting(_bgPanelKey(getCanvas()), key);
@@ -6863,21 +6863,23 @@
                 return;
             }
             const ms = value => Math.round(value) + ' ms';
+            const duration = value => ms(value) + ' at 100%'
+                + (playbackRate === 1 ? '' : ' (' + ms(value / playbackRate) + ' at ' + Math.round(playbackRate * 100) + '%)');
             const seconds = value => value.toFixed(3) + ' s';
             timingLines.starts.textContent = Number.isFinite(timing.appliedLeadMs)
                 ? (timing.departureReason === 'continuing-path' ? 'Continues from the previous centre ' : 'Starts ')
-                    + ms(Math.abs(timing.appliedLeadMs)) + (timing.appliedLeadMs >= 0 ? ' before' : ' after') + ' this lane.'
+                    + duration(Math.abs(timing.appliedLeadMs)) + (timing.appliedLeadMs >= 0 ? ' before' : ' after') + ' this lane.'
                 : '';
             timingLines.travel.textContent = Number.isFinite(timing.appliedDurationMs)
                 ? (timing.retargeted ? 'Moves toward this target for ' : 'Travel to this centre: ')
-                    + ms(timing.appliedDurationMs) + (timing.retargeted ? ', then redirects.' : '.') : '';
+                    + duration(timing.appliedDurationMs) + (timing.retargeted ? ', then redirects.' : '.') : '';
             timingLines.lateness.textContent = timing.retargeted
                 ? 'Scheduled arrival superseded: the next destination takes over.'
                 : Number.isFinite(timing.actualArriveAfterMs)
-                    ? 'Centre reached ' + ms(timing.actualArriveAfterMs) + ' after its lane begins.' : '';
+                    ? 'Centre reached ' + duration(timing.actualArriveAfterMs) + ' after its lane begins.' : '';
             timingLines.requested.textContent = Number.isFinite(timing.requestedStartBeforeMs)
                 ? 'Requested: start ' + ms(timing.requestedStartBeforeMs) + ' before; arrive '
-                    + ms(timing.requestedArriveAfterMs) + ' after.' : '';
+                    + ms(timing.requestedArriveAfterMs) + ' after, at 100% speed.' : '';
             timingLines.departure.textContent = 'Song movement start: ' + seconds(timing.start)
                 + ' (requested trigger ' + seconds(timing.requestedStart) + ').';
             timingLines.arrival.textContent = timing.retargeted
@@ -6892,15 +6894,25 @@
                         ? 'Reach every centre: already moving through this sequence. Arrival is exact; start-before governs departure from a hold.'
                         : 'Reach every centre: requested departure and arrival applied.';
         }
-        function setTiming(value, nextDecision = null, nextMode = '') {
-            if (destroyed || (timing === value && decision === nextDecision && motionMode === nextMode)) return;
-            timing = value; decision = nextDecision; motionMode = nextMode;
+        function renderDuration() {
+            const duration = read('stableCameraStartBeforeMs') + read('stableCameraArriveAfterMs');
+            durationReadout.textContent = 'Uninterrupted transition duration: ' + duration + ' ms at 100%'
+                + (playbackRate === 1 ? '.' : '; ' + Math.round(duration / playbackRate)
+                    + ' ms at ' + Math.round(playbackRate * 100) + '%.');
+        }
+        function setTiming(value, nextDecision = null, nextMode = '', nextRate = 1) {
+            const rate = Number.isFinite(nextRate) && nextRate >= .1 && nextRate <= 4 ? nextRate : 1;
+            if (destroyed || (timing === value && decision === nextDecision && motionMode === nextMode
+                && playbackRate === rate)) return;
+            const rateChanged = playbackRate !== rate;
+            timing = value; decision = nextDecision; motionMode = nextMode; playbackRate = rate;
+            if (rateChanged && expanded) renderDuration();
             renderTiming(true);
         }
         function setExpanded(value, restoreFocus = false) {
             expanded = value; panel.hidden = !value;
             toggle.setAttribute('aria-expanded', String(value));
-            if (value) renderTiming(true);
+            if (value) { renderDuration(); renderTiming(true); }
             if (restoreFocus) toggle.focus();
         }
         function sync(key) {
@@ -6922,8 +6934,7 @@
                 control.range.value = control.number.value = String(read(control.key));
                 control.range.disabled = control.number.disabled = !follow.checked;
             }
-            durationReadout.textContent = 'Uninterrupted transition duration: '
-                + (read('stableCameraStartBeforeMs') + read('stableCameraArriveAfterMs')) + ' ms.';
+            renderDuration();
             if (!follow.checked) status.textContent = 'Turn on Follow hand position to adjust movement.';
             else if (status.textContent === 'Turn on Follow hand position to adjust movement.') status.textContent = '';
         }
@@ -24183,14 +24194,14 @@
         let _stableVector = null;
 
         function stableSupportReset() {
-            // Playback rate and clipping planes stay fixed throughout one
-            // collection. Keep the original arithmetic order at each point.
+            // Visibility horizons use song time, matching the highway at every
+            // playback speed. Clipping planes stay fixed during collection.
             const c = _stableCollect;
-            c.horizon = Math.min(AHEAD, 0.9 * _stableCam.rate);
+            c.horizon = Math.min(AHEAD, 0.9);
             c.near = 8 * K; c.far = dZ(c.horizon);
-            c.fadeDuration = 0.3 * _stableCam.rate;
+            c.fadeDuration = 0.3;
             c.fullZ = dZ(Math.max(0, c.horizon - c.fadeDuration));
-            const prediction = Math.min(AHEAD, .15 * _stableCam.rate);
+            const prediction = Math.min(AHEAD, .15);
             c.predictionZ = dZ(prediction); c.binDepth = TS * AHEAD;
             _stablePointSamples = 0;
             _stableCam.minX = Infinity; _stableCam.maxX = -Infinity;
@@ -24712,7 +24723,7 @@
         function stableCameraPlan(bundle, now, baseDistance) {
             const cache = _stablePlan, rows = stableRegionAnchors(bundle);
             // Honour explicit speed exactly. Estimates need a small dead band:
-            // coarse audio ticks must not repeatedly reclassify brief regions.
+            // coarse audio ticks must not repeatedly restart the live handoff.
             const declaredRate = bundle.playbackRate ?? bundle.speed;
             const explicit = Number.isFinite(declaredRate) && declaredRate >= 0.1 && declaredRate <= 4;
             const rate = explicit ? declaredRate : !cache.rows || Math.abs(_stableCam.rate - cache.rate) > 0.1
@@ -24783,9 +24794,10 @@
                 cache.timeline = cache.semanticStops.timeline || [];
                 cache.excursionThreshold = stableCameraExcursionThreshold;
             }
-            const timingChanged = semanticsChanged || cache.rate !== rate || cache.smoothing !== cameraSmoothing;
+            const timingChanged = semanticsChanged || cache.smoothing !== cameraSmoothing;
             if (timingChanged) {
-                cache.stops = hwyPrepareCameraStops(cache.semanticStops, bundle.notes, bundle.chords, rate, nStr, cache.attacks);
+                // Preparation supplies zoom anticipation only; keep it in song time.
+                cache.stops = hwyPrepareCameraStops(cache.semanticStops, bundle.notes, bundle.chords, 1, nStr, cache.attacks);
                 cache.smoothing = cameraSmoothing;
                 const leads = new Map(cache.stops.map(stop => [stop.time, stop.lead]));
                 const compositionDistances = new Map();
@@ -24814,8 +24826,9 @@
                             plannedViewDistance: distanceAt(region, stop.x) });
                     }
                 }
-                cache.preparedAttacks = cache.attacks; cache.rate = rate;
+                cache.preparedAttacks = cache.attacks;
             }
+            cache.rate = rate;
             // Motion controls change only the cached time curve, never chart
             // analysis or projected shapes. Rejoin continuously next frame.
             const key = [geometryKey, rate, cameraSmoothing, stableCameraDepartureDelay,
@@ -24852,7 +24865,7 @@
                     if (cache.stops[mid].time <= now) a = mid + 1; else b = mid;
                 }
                 const next = cache.stops[a];
-                if (next && next.time - now <= 1.3 * rate) {
+                if (next && next.time - now <= 1.3) {
                     cache.result.direction = Math.sign(next.x - cache.result.x);
                 }
             }
@@ -24873,9 +24886,9 @@
             cache.result.distance = zoomRegions[Math.max(0, zoomLo - 1)]?.plannedViewDistance || baseDistance;
             cache.result.returnFloor = baseDistance;
             for (let i = zoomLo; i < Math.min(zoomRegions.length, zoomLo + 32); i++) {
-                const row = zoomRegions[i], until = (row.time - now) / rate;
+                const row = zoomRegions[i], until = row.time - now;
                 if (until > 1.3) break;
-                // Do not start closing only to reopen during the 800ms return.
+                // Do not start closing only to reopen during the 800ms song-time return.
                 // This holds an existing wider view, never widens early.
                 cache.result.returnFloor = Math.max(cache.result.returnFloor, row.plannedViewDistance);
                 const u = Math.max(0, Math.min(1, 1 - until / (row.lead || 0.6)));
@@ -24932,6 +24945,9 @@
             }
             const declaredRate = bundle.playbackRate ?? bundle.speed;
             if (Number.isFinite(declaredRate) && declaredRate >= 0.1 && declaredRate <= 4) s.rate = declaredRate;
+            // Zoom phase and velocity use song seconds. Speed edits preserve
+            // its position and scale its motion with the highway immediately.
+            const songDt = dt * s.rate;
             const reframe = !s.active || s.reset !== _stableCameraResetSerial
                 || s.preset !== stableCameraPreset || s.lefty !== _leftyCached || s.strings !== nStr
                 || s.song !== _songKey;
@@ -24981,7 +24997,7 @@
             // Only a short safety look-ahead belongs here: projecting a whole
             // future lane to the strike line before the scheduled pan has
             // happened would override that pan with a faster correction.
-            const prediction = Math.min(AHEAD, 0.15 * s.rate);
+            const prediction = Math.min(AHEAD, 0.15);
             const closeDistance = plan.closeDistance;
             const snap = reset || !s.initialized || (seek && stableCameraFollow);
             s.clockReset = seek;
@@ -25034,7 +25050,7 @@
                     // pan, but never reserve this region after its boundary. Live
                     // geometry and the final guard still protect surviving tails.
                     const nextRegion = _stablePlan.regions[plan.regionIndex + 1];
-                    const futureTime = Math.min(frameTime + .4 * s.rate,
+                    const futureTime = Math.min(frameTime + .4,
                         nextRegion ? Math.max(frameTime, nextRegion.time) : Infinity);
                     const future = hwyCameraPlanAt(_stablePlan.stops, futureTime,
                         _stablePlan.rate, cameraSmoothing, _stableViewFuturePlan,
@@ -25057,7 +25073,7 @@
                     const neutralDistance = Math.max(panDistance, regionDistance, plan.distance,
                         Math.min(s.distance, plan.returnFloor));
                     s.targetDistance = neutralDistance;
-                    hwyCameraZoom(s, neutralDistance, dt, zoomSmoothing);
+                    hwyCameraZoom(s, neutralDistance, songDt, zoomSmoothing);
                 }
             } else if (!focus.valid || !stableCameraFollow) {
                 // No usable position and Follow off hold the pose. Silence
@@ -25070,7 +25086,7 @@
                     // disable secondary visibility protection.
                     const fit = stableSolve(s.x, baseDistance, prediction, 0.84, true);
                     s.targetX = s.x; s.targetDistance = Math.max(s.distance, fit.distance);
-                    s.distance += (s.targetDistance - s.distance) * (1 - Math.exp(-dt / 0.16));
+                    s.distance += (s.targetDistance - s.distance) * (1 - Math.exp(-songDt / 0.16));
                 }
             }
             s.planRevision = plan.revision;
@@ -25117,7 +25133,7 @@
             if (cameraMode === 'stable') {
                 stableCamUpdate(bundle, _frameNow);
                 stableCameraTuningOverlay?.setTiming(_stablePlan.result.valid ? _stablePlan.result.timing : null,
-                    _stablePlan.result.valid ? _stablePlan.result.decision : null, _stableCam.motionMode);
+                    _stablePlan.result.valid ? _stablePlan.result.decision : null, _stableCam.motionMode, _stablePlan.rate);
                 return;
             }
             if (_stableCam.active) {
@@ -26233,9 +26249,9 @@
             default: BG_DEFAULTS.stableCameraMovementMode },
         { key: 'stableCameraAutoZoom', label: 'Automatic zoom (Stable)', type: 'toggle',
             default: BG_DEFAULTS.stableCameraAutoZoom },
-        { key: 'stableCameraStartBeforeMs', label: 'Start before next lane (ms)', type: 'range',
+        { key: 'stableCameraStartBeforeMs', label: 'Start before next lane (ms at 100%)', type: 'range',
             min: 25, max: 3000, step: 25, default: BG_DEFAULTS.stableCameraStartBeforeMs },
-        { key: 'stableCameraArriveAfterMs', label: 'Arrive after next lane (ms)', type: 'range',
+        { key: 'stableCameraArriveAfterMs', label: 'Arrive after next lane (ms at 100%)', type: 'range',
             min: 0, max: 3000, step: 25, default: BG_DEFAULTS.stableCameraArriveAfterMs },
         { key: 'stableCameraExcursionThreshold', label: 'Stable short-lane threshold (ms)', type: 'range',
             min: 0, max: 3000, step: 50, default: BG_DEFAULTS.stableCameraExcursionThreshold },

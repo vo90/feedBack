@@ -667,22 +667,24 @@ test('changing speed mid-pan preserves pose and velocity without reversing befor
 });
 
 test('a second speed change preserves actual resume velocity even while nominal plans are both resting',()=>{
-    // The original 1.1-second approach must already be moving at .5 seconds
-    // at double speed, so the rate edit creates the resume under test.
+    // Shorten the lead during an active pan so the new nominal path rests
+    // while the live camera resumes. Speed edits alone keep song-time windows.
     const h=harness();h.settings({rate:2,startBeforeMs:1100});
     h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:2,minX:100,maxX:140}]);
     h.frame(0,0);
-    for(let i=1;i<=50;i++) h.frame(i*.01,.005);
-    h.settings({rate:1});h.frame(.5,0);
+    for(let i=1;i<=110;i++) h.frame(i*.01,.005);
+    h.settings({rate:1,startBeforeMs:250});h.frame(1.1,0);
     let before;
-    for(let i=1;i<=10;i++) before=h.frame(.5+i*.01,.01);
+    for(let i=1;i<=10;i++) before=h.frame(1.1+i*.01,.01);
     const velocity=before.planVelocity+before.rejoinVelocity;
     assert.ok(velocity>0,'fixture must still be resuming towards the future lane');
+    assert.equal(h.planCache().result.moving,false,'the nominal path must still be resting');
     h.settings({rate:.5});
-    const changed=h.frame(.6,0),epsilon=.000001;
+    const changed=h.frame(1.2,0),epsilon=.000001;
     assert.equal(changed.x,before.x);
+    assert.equal(h.planCache().result.moving,false,'the second speed edit must keep the nominal path resting');
     assert.ok(Math.abs(changed.planVelocity+changed.rejoinVelocity-velocity)<1e-8);
-    const next=h.frame(.6+epsilon,epsilon/.5);
+    const next=h.frame(1.2+epsilon,epsilon/.5);
     const actualVelocity=(next.x-changed.x)/epsilon*.5;
     assert.ok(Math.abs(actualVelocity-velocity)<.01,
         `rendered velocity changed from ${velocity} to ${actualVelocity}`);
@@ -690,19 +692,21 @@ test('a second speed change preserves actual resume velocity even while nominal 
 
 test('pause and follow-off retain a pending resumed destination without backtracking',()=>{
     for(const hold of ['pause','follow-off']) {
-        // Explicit lead keeps the pending-resume scenario independent of
-        // the shorter default lead used for ordinary direct timing.
+        // A shorter lead postpones the nominal path while the in-flight
+        // camera retains a pending direct resume at the same destination.
         const h=harness();h.settings({rate:2,startBeforeMs:1100});
         h.setRegionTimeline([{time:0,minX:20,maxX:60},{time:2,minX:100,maxX:140}]);
         h.frame(0,0);
-        for(let i=1;i<=50;i++) h.frame(i*.01,.005);
-        h.settings({rate:1});h.frame(.5,0);
+        for(let i=1;i<=110;i++) h.frame(i*.01,.005);
+        h.settings({rate:1,startBeforeMs:250});h.frame(1.1,0);
         let before;
-        for(let i=1;i<=10;i++) before=h.frame(.5+i*.01,.01);
+        for(let i=1;i<=10;i++) before=h.frame(1.1+i*.01,.01);
         assert.ok(before.planVelocity+before.rejoinVelocity>0,
             'fixture must be resuming before pause or Follow-off');
-        let time=.6;
-        if(hold==='follow-off') {h.settings({follow:false});time=.7;}
+        assert.equal(h.planCache().result.moving,false,'the nominal path waits while the live resume moves');
+        assert.ok(before.resumeUntil>1.2,'the pending direct destination has not arrived');
+        let time=1.2;
+        if(hold==='follow-off') {h.settings({follow:false});time=1.3;}
         const held=h.frame(time,.1,hold!=='pause');
         assert.equal(held.x,before.x);
         h.settings({follow:true});
@@ -873,11 +877,11 @@ test('the stable camera entry point forwards the render clock and reports curren
             if (enabled !== letRingTrailsVisible) throw new Error('Camera ignored let-ring visibility');
             return bundle;
         };
-        const _stablePlan = {result:{valid:false,timing:null}};
+        const _stablePlan = {rate:.5,result:{valid:false,timing:null}};
         const _stableCam = {motionMode:'scheduled'};
-        let call, nextPlan, reportedTiming, reportedDecision, reportedMode;
-        const stableCameraTuningOverlay = {setTiming(timing,decision,mode) {
-            reportedTiming = timing; reportedDecision = decision; reportedMode = mode;
+        let call, nextPlan, reportedTiming, reportedDecision, reportedMode, reportedRate;
+        const stableCameraTuningOverlay = {setTiming(timing,decision,mode,rate) {
+            reportedTiming = timing; reportedDecision = decision; reportedMode = mode; reportedRate = rate;
         }};
         function stableCamUpdate(bundle, frameTime) {
             call = {bundle, frameTime};
@@ -887,7 +891,7 @@ test('the stable camera entry point forwards the render clock and reports curren
         return (bundle, result) => {
             nextPlan = result;
             camUpdate(bundle);
-            return {...call, reportedTiming, reportedDecision, reportedMode};
+            return {...call, reportedTiming, reportedDecision, reportedMode, reportedRate};
         };
     `)();
     const bundle = {currentTime:108.719,isPlaying:true};
@@ -899,6 +903,7 @@ test('the stable camera entry point forwards the render clock and reports curren
     assert.equal(call.reportedTiming, timing, 'the overlay receives the plan updated during this frame');
     assert.equal(call.reportedDecision, decision, 'the overlay receives cached semantic evidence');
     assert.equal(call.reportedMode, 'scheduled');
+    assert.equal(call.reportedRate, .5, 'the overlay receives the current playback rate for duration conversion');
     const invalid = run(bundle, {valid:false,timing,decision});
     assert.equal(invalid.reportedTiming, null, 'an invalid plan must not expose stale timing');
     assert.equal(invalid.reportedDecision, null, 'an invalid plan must not expose stale semantic evidence');
@@ -1119,8 +1124,14 @@ test('near geometry cannot turn a suppressed detour into an opposing safety pan'
 
 // A frozen pre-optimization collector is the numerical oracle: compare ordered
 // samples, support arrays and the actual controller, not a duplicate of the guard.
+// Preserve the independent scalar collector and its point/support arithmetic.
+// Only its three time inputs change to the approved original-song durations;
+// the frozen file remains intact for reviewing the old rate-dependent policy.
 const collectionBaseline = fs.readFileSync(path.join(__dirname,
-    'fixtures/highway_3d_stable_collection.baseline.txt'), 'utf8');
+    'fixtures/highway_3d_stable_collection.baseline.txt'), 'utf8')
+    .replaceAll('.15 * _stableCam.rate', '.15')
+    .replaceAll('0.9 * _stableCam.rate', '0.9')
+    .replaceAll('0.3 * _stableCam.rate', '0.3');
 // Exact scalar support helpers from b2dbcb686008f766da0042cbb8ba882ad792ff7b.
 // Keep the reference independent of the candidate's numeric-storage handoff.
 const supportBaseline = `
@@ -1261,9 +1272,9 @@ test('support handoff preserves exact extrema and tie order across repeated poin
 test('collection matches ordered legacy support at clipping, fading and prediction boundaries', async () => {
     const T = await realThree;
     for (const rate of [.1, .5, .75, 1, 2, 4]) {
-        const horizon = Math.min(3, .9 * rate), far = -horizon * 230;
-        const full = -Math.max(0, horizon - .3 * rate) * 230;
-        const predicted = -Math.min(3, .15 * rate) * 230;
+        const horizon = Math.min(3, .9), far = -horizon * 230;
+        const full = -Math.max(0, horizon - .3) * 230;
+        const predicted = -Math.min(3, .15) * 230;
         const planes = [far, full, predicted, 0, 8];
         const objects = [];
         for (const plane of planes) for (const epsilon of [0, 1e-11, 1e-7, .25]) {

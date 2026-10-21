@@ -252,7 +252,7 @@ function harness(subject = source, three = null) {
                 }
                 const all=Float64Array.from(rawPoints.flat());
                 const selected=_stableViewPoints.slice();
-                const prediction=Math.min(AHEAD,.15*_stableCam.rate);
+                const prediction=Math.min(AHEAD,.15);
                 return [[prediction,.96,_stableViewBasis],[0,.96,_stableViewBasis]]
                     .flatMap(([prediction,margin,basis])=>[false,true].map(fixed=>({
                         exact:{...stableSolve(35,100,prediction,margin,fixed,all,all.length,basis)},

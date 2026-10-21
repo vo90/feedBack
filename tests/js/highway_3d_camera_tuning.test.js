@@ -548,14 +548,14 @@ test('both movement modes preserve repeated-riff and same-base extension filteri
     }
 });
 
-test('both Stable presets honor direct start and arrival in real playback time',()=>{
+test('both Stable presets honor direct start and arrival at the same song positions',()=>{
     for(const preset of ['straight','angled']) for(const rate of [.5,1,2]) {
         const h=controller(preset);h.settings({rate});h.frame(0,0);
         const segment=h.planCache().stops.motion[0];
-        near(segment.start,4-.7*rate);near(segment.end,4+.21*rate);
+        near(segment.start,4-.7);near(segment.end,4+.21);
         const atOnset=advance(h,0,4,rate);
         assert.ok(atOnset.x<180,'a requested late arrival must still be travelling at the lane onset');
-        const state=advance(h,4,4+.21*rate,rate);
+        const state=advance(h,4,4+.21,rate);
         assert.equal(state.x,180);assert.equal(state.planVelocity+state.rejoinVelocity,0);
     }
 });
@@ -649,14 +649,14 @@ test('pause and follow changes in the late tail settle at the actual scheduled a
     }
 });
 
-test('rate changes within the late tail preserve pose and converge to the rescheduled arrival',()=>{
+test('rate changes within the late tail preserve pose and converge to the fixed song-time arrival',()=>{
     for(const rate of [.5,2]) {
         const h=controller(),before=advance(h,0,4.03);
         h.settings({rate});let state=h.frame(4.03,0),previous=state.x;
         assert.equal(state.x,before.x);
         near(state.planVelocity+state.rejoinVelocity,before.planVelocity+before.rejoinVelocity);
         const end=h.planCache().result.arrivalTime;
-        assert.ok(end>4.03&&end<=4+.25*rate+1e-9);
+        near(end,4.21);
         for(let i=1;i<=60;i++) {
             state=h.frame(4.03+(end-4.03)*i/60,(end-4.03)/60/rate);
             assert.ok(state.x>=previous-1e-8&&state.x<=180+1e-8,'rate adjustment reversed or overshot');previous=state.x;

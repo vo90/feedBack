@@ -221,6 +221,21 @@ test('every settings script remains valid JavaScript', () => {
     }
 });
 
+test('timing controls describe original-song values without migrating saved preferences',()=>{
+    const initial={h3d_bg_cameraMode:'stable',h3d_bg_stableCameraStartBeforeMs:'400',
+        h3d_bg_stableCameraArriveAfterMs:'50',h3d_bg_stableCameraExcursionThreshold:'500'};
+    const h=load(initial);
+    assert.equal(h.el('stable-start-before').value,'400');
+    assert.equal(h.el('stable-arrive-after').value,'50');
+    assert.deepEqual(h.writes,[]);
+    assert.deepEqual(Object.fromEntries(h.data),initial);
+    for(const id of ['start-before','arrive-after']) {
+        assert.match(html.match(new RegExp(`<label for="h3d-stable-${id}"[^>]*>([^<]+)`))[1],/ms at 100%/);
+    }
+    assert.match(html,/400 ms means 800 ms of real time at 50% speed/);
+    assert.match(html,/Automatic zoom also follows song time/);
+});
+
 test('movement and zoom hydrate without writes and reject invalid saved choices', () => {
     for (const preset of ['straight', 'angled']) {
         const initial = {h3d_bg_cameraMode:'stable',h3d_bg_stableCameraPreset:preset,
