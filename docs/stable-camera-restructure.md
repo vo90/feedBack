@@ -55,6 +55,15 @@ Saved numbers do not change when playback speed changes. At 50%, 400 ms before
 means 800 ms of real time, and 50 ms after means 100 ms of real time. The panel
 shows both the saved basis and the current-speed equivalent.
 
+The split-screen **3D settings** popover uses the highway factory's scoped
+`getPanelSetting(panelIndex, key)` / `setPanelSetting(panelIndex, key, value)`
+bridge. It resolves values exactly like the renderer and gameplay tuning menu,
+including saved preparation-time inheritance and session-only storage fallback.
+Only exposed panel controls and valid non-negative panel indices are accepted.
+An edit writes that panel's override and notifies live views without writing the
+global default. Global settings and other panels retain their values. Opening
+the popover only reads settings; it never migrates or saves them.
+
 Distance determines speed. At 400 ms before and 50 ms after, targets less than
 450 ms apart in song time have overlapping windows at every playback speed.
 Both movement modes keep the same path, grouping and redirects at the same
