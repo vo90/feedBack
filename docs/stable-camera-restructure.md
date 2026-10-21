@@ -225,6 +225,12 @@ lane destinations; removing a waypoint can still change the interpolated path.
 - Exact note/measure proofs still protect established riff variations regardless
   of this duration control. Zero disables duration-based suppression.
 
+Each held cycle's diagnostic interval identifies the supporting pair used for
+its duration requirement, which can differ from the pair that first established
+the pattern. Equal-duration pairs retain the existing earliest-proof choice.
+Single replies cite their own home-span start through return-home start. These cached
+intervals explain the decision; they do not change ownership or movement timing.
+
 ### Held tapping areas
 
 A proven lane pattern can become a tapping area when at least two adjacent
