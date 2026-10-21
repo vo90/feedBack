@@ -329,7 +329,10 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
                 }
                 candidates.push({ kind: 'ignored-excursion', reason: pattern.kind,
                     indices, homeIndex, requiredDuration: cycle.requiredDuration,
-                    interval: { start: pattern.proofStart, end: pattern.proofEnd },
+                    // Cite this cycle's threshold proof, which may differ from
+                    // the pair that first established the enclosing pattern.
+                    interval: { start: spans[route[single ? i : proofStart[i]]].time,
+                        end: spans[route[single ? end : proofEnd[i]]].time },
                     patternId: pattern.id, cycleIndex: pattern.cycles.length - 1 });
                 i = end;
                 pattern.endIndex = route[end]; pattern.end = spans[route[end]].time;
