@@ -72,11 +72,13 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
     function compileBreakOwnership(spans, route, musicalBreaks) {
         const segments = new Int32Array(route.length), resets = new Int32Array(route.length).fill(-1);
         const sharedHomes = new Uint8Array(route.length);
-        let boundary = 0, segment = 0;
+        const segmentTimes = new Float64Array(route.length).fill(-Infinity);
+        let boundary = 0, segment = 0, resumedAt = -Infinity;
         for (let index = 0; index < route.length; index++) {
             const span = spans[route[index]];
             while (boundary < musicalBreaks.length && musicalBreaks[boundary].end < span.end - boundaryEpsilon) {
                 const resume = musicalBreaks[boundary++].end;
+                resumedAt = resume;
                 segment++;
                 if (resume > span.time + boundaryEpsilon) {
                     // The unchanged lane is both the old run's endpoint and
@@ -86,8 +88,9 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
                 } else resets[index] = index;
             }
             segments[index] = segment;
+            segmentTimes[index] = resumedAt;
         }
-        return {segments, resets, sharedHomes};
+        return {segments, resets, sharedHomes, segmentTimes};
     }
 
     function collectRiffVariationEvidence(spans, context = null) {
@@ -325,7 +328,7 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
                 interval: variations.get(i), patternId: null });
         }
         const musicalBreaks = compileMusicalBreaks(context);
-        const {segments, resets, sharedHomes} = compileBreakOwnership(spans, route, musicalBreaks);
+        const {segments, resets, sharedHomes, segmentTimes} = compileBreakOwnership(spans, route, musicalBreaks);
         const count = route.length, travel = compileTravel(spans, route, resets);
         const nextSame = new Int32Array(count).fill(-1), seen = new Map();
         for (let i = count - 1; i >= 0; i--) {
@@ -406,8 +409,89 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
                 }
             }
         }
+        // A repeated outer route can begin on an occasional reply rather than
+        // its recurring home. Change ownership only when both complete proof
+        // cycles independently identify the same unambiguous home. Cache each
+        // first-return vote and proof pair: their intervals are disjoint per
+        // fret (pairs overlap at most twice), so this remains O(rows * frets).
+        const cycleVotes = new Map(), pairHomes = new Map(), promotedHomes = new Map();
+        const visitStart = new Int32Array(count);
+        for (let at = 0; at < count; at++) visitStart[at] = at > 0
+            && segments[at] === segments[at - 1] && spans[route[at]].base === spans[route[at - 1]].base
+            ? visitStart[at - 1] : at;
+        const voteStartTime = start => Math.max(spans[route[visitStart[start]]].time, segmentTimes[start]);
+        const voteForHome = start => {
+            if (cycleVotes.has(start)) return cycleVotes.get(start);
+            const end = nextSame[start], votes = new Map();
+            let total = 0, previous = null, valid = true;
+            // A proof can start at the last alias left by a removed variation.
+            // Include that whole initial semantic visit, not only its suffix.
+            for (let at = visitStart[start]; at < end; at++) {
+                const span = spans[route[at]], time = at === visitStart[start] ? voteStartTime(start) : span.time;
+                // A coalesced home may straddle a verified musical break. Its
+                // old time still owns the old run endpoint, but the new vote
+                // must not borrow any pre-resume dwell.
+                const dwell = spans[route[at + 1]].time - time;
+                if (!Number.isFinite(dwell) || dwell < 0) { valid = false; break; }
+                const vote = votes.get(span.base) || { visits: 0, dwell: 0 };
+                // Removing a proven note variation can leave adjacent equal
+                // homes. It is still one visit, and its removed duration stays
+                // with that home rather than disappearing from the vote.
+                if (span.base !== previous) vote.visits++;
+                vote.dwell += dwell; total += dwell;
+                votes.set(span.base, vote); previous = span.base;
+            }
+            let winner = null;
+            if (valid && total > 0) {
+                let visits = 0, tied = false;
+                for (const [base, vote] of votes) {
+                    if (vote.visits > visits) { winner = base; visits = vote.visits; tied = false; }
+                    else if (vote.visits === visits) tied = true;
+                }
+                if (tied || votes.get(winner).dwell <= total - votes.get(winner).dwell + 1e-9) winner = null;
+            }
+            cycleVotes.set(start, winner);
+            return winner;
+        };
+        const homeForPair = start => {
+            if (pairHomes.has(start)) return pairHomes.get(start);
+            const middle = nextSame[start], end = localProofEnd[start];
+            let home = voteForHome(start);
+            if (!home || home === spans[route[start]].base || home !== voteForHome(middle)) home = null;
+            // Check the UNION of the two cycles, including a return across
+            // their middle boundary. Every completed return of the proposed
+            // home must already qualify; dropping a coherent parent cannot
+            // expose an unproven multi-lane reply. An incomplete final tail
+            // contributes neither proof nor a veto and must earn any later
+            // continuation through the ordinary return rules.
+            for (let at = start; home && at < end; at++) {
+                if (spans[route[at]].base !== home) continue;
+                const back = nextSame[at];
+                if (back === at + 1 || back > end || back < 0) continue;
+                if (!hasReturn(at) || takeover[at] || back > nextSectionHome[at]) home = null;
+            }
+            pairHomes.set(start, home);
+            return home;
+        };
+        for (let i = 0; i < count; i++) {
+            if (takeover[i] || !repeated[i] || nextSame[i] <= i + 2
+                || nextSame[i] > nextSectionHome[i]) continue;
+            const start = proofStart[i], end = proofEnd[i], home = homeForPair(start);
+            if (!home) continue;
+            for (let at = i + 1; at < nextSame[i]; at++) {
+                if (spans[route[at]].base !== home || !hasReturn(at) || takeover[at]
+                    || nextSame[at] >= nextSame[i] || nextSame[at] > nextSectionHome[at]) continue;
+                // Store the actual winner, not just a skipped parent. Otherwise
+                // an earlier eligible reply could accidentally win the scan.
+                promotedHomes.set(i, { start: at, previousHomeIndex: route[i],
+                    interval: { start: voteStartTime(start), end: spans[route[end]].time } });
+                break;
+            }
+        }
         const owned = new Uint8Array(count);
         for (let i = 0; i < count;) {
+            const promotion = promotedHomes.get(i);
+            if (promotion) i = promotion.start;
             if (!hasReturn(i) || takeover[i] || nextSame[i] > nextSectionHome[i]) { i++; continue; }
             const first = i, length = nextSame[i] - i, single = length === 2;
             const homeIndex = route[first], home = describeHome(spans[homeIndex]);
@@ -416,8 +500,11 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
                 start: spans[homeIndex].time, end: spans[homeIndex].time, cycles: [],
                 proofStart: spans[route[single ? first : proofStart[first]]].time,
                 proofEnd: spans[route[single ? nextSame[first] : proofEnd[first]]].time };
+            if (promotion) pattern.homeSelection = { reason: 'recurring-majority-home',
+                previousHomeIndex: promotion.previousHomeIndex, homeIndex,
+                interval: promotion.interval };
             while (hasReturn(i) && segments[i] === segments[first]
-                && !takeover[i] && nextSame[i] <= nextSectionHome[i]) {
+                && !takeover[i] && !promotedHomes.has(i) && nextSame[i] <= nextSectionHome[i]) {
                 const end = nextSame[i];
                 if (end - i !== length) break;
                 let same = true;
