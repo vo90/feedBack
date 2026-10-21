@@ -1,4 +1,45 @@
 /**
+ * Exact adjacent-repeat proofs over attack keys. Main–Lorentz crossing tests
+ * use four linear Z scans at each split: O(n log n) chart-build work. A range
+ * of valid starts is one periodic interval, never a list of all its squares.
+ * No chart timing, camera state, hashes, or arbitrary maximum period is used.
+ */
+export function compileTandemRuns(keys) {
+    const output = [];
+    const z = rows => {
+        const values = new Int32Array(rows.length);
+        for (let index = 1, left = 0, right = 0; index < rows.length; index++) {
+            if (index < right) values[index] = Math.min(right - index, values[index - left]);
+            while (index + values[index] < rows.length && rows[values[index]] === rows[index + values[index]]) values[index]++;
+            if (index + values[index] > right) { left = index; right = index + values[index]; }
+        }
+        return values;
+    };
+    const visit = (rows, shift) => {
+        const length = rows.length;
+        if (length < 2) return;
+        const middle = length >>> 1, a = rows.slice(0, middle), b = rows.slice(middle);
+        visit(a, shift); visit(b, shift + middle);
+        const ra = a.slice().reverse(), rb = b.slice().reverse(), separator = Symbol();
+        const z1 = z(ra), z2 = z([...b, separator, ...a]);
+        const z3 = z([...ra, separator, ...rb]), z4 = z(b);
+        for (let centre = 0; centre < length; centre++) {
+            const left = centre < middle;
+            const period = left ? middle - centre : centre - middle + 1;
+            const before = left ? z1[middle - centre] || 0 : z3[length + middle - centre] || 0;
+            const after = left ? z2[length - middle + 1 + centre] || 0 : z4[centre - middle + 1] || 0;
+            const from = Math.max(1, period - after);
+            const through = Math.min(period - (left ? 1 : 0), before);
+            if (from > through) continue;
+            const position = offset => shift + (left ? centre - offset : centre - period - offset + 1);
+            output.push({first: position(through), last: position(from) + 2 * period, period});
+        }
+    };
+    visit(keys, 0);
+    return output;
+}
+
+/**
  * Phrase composition for held tapping riffs and proven single-lane figures.
  * Compilation reads the chart once;
  * threshold edits only select already-proven areas. Playback samples the normal
@@ -18,6 +59,134 @@ export function createCameraTapping({ NFRETS, isRenderableNote, isUnpitchedMute 
     // exactly one cycle, even when its timestamp rounds just before the lane.
     // Stop sampling below stays exact; this only assigns chart evidence.
     const eventBoundary = (events, time) => lowerBound(events, time - 0.000501);
+
+    // These indexes are temporary chart-build data. Queries do not rescan a
+    // potentially long candidate, and only selected disjoint figures receive
+    // materialized signatures/pitch sets.
+    const rangeIndex = (values, compare) => {
+        const levels = [values];
+        for (let width = 2; width <= values.length; width *= 2) {
+            const previous = levels[levels.length - 1], half = width / 2, next = [];
+            for (let index = 0; index + width <= values.length; index++) next.push(compare(previous[index], previous[index + half]));
+            levels.push(next);
+        }
+        return (first, last) => {
+            if (last <= first) return 0;
+            const level = Math.floor(Math.log2(last - first)), width = 2 ** level;
+            return compare(levels[level][first], levels[level][last - width]);
+        };
+    };
+
+    function compileAllTapGroups(events, first, last, span, rounding) {
+        const groups = [];
+        for (let begin = first; begin < last;) {
+            if (!events[begin].shape.every(note => note.tap)) { begin++; continue; }
+            let end = begin + 1;
+            while (end < last && events[end].shape.every(note => note.tap)) end++;
+            const rows = events.slice(begin, end), keys = rows.map(event => event.key);
+            let firstFret = Infinity, lastFret = -Infinity;
+            for (const event of rows) {
+                firstFret = Math.min(firstFret, event.firstFret);
+                lastFret = Math.max(lastFret, event.lastFret);
+            }
+            if (rows.length < 4 || lastFret - firstFret <= 3 || new Set(keys).size === keys.length) {
+                begin = end; continue;
+            }
+            const low = rangeIndex(rows.map(event => event.firstFret), Math.min);
+            const high = rangeIndex(rows.map(event => event.lastFret), Math.max);
+            const gaps = rows.slice(1).map((event, index) => event.time - rows[index].time);
+            const largestGap = rangeIndex(gaps.map((_, index) => index),
+                (a, b) => gaps[a] >= gaps[b] ? a : b);
+            const gap = (a, b) => b > a ? gaps[largestGap(a, b)] : 0;
+            const validProof = candidate => {
+                const {first: a, last: b, period: p} = candidate;
+                if (p < 2 || high(a, b) - low(a, b) <= 3
+                    || low(a, b) < span.firstFret || high(a, b) > span.lastFret) return false;
+                // A rest cannot become valid by rotating the figure so it
+                // falls inside one copy. Both full copies must prove the
+                // cadence that covers this interval and its matching tail.
+                candidate.maxGap = Math.min(gap(a, a + p - 1), gap(a + p, a + 2 * p - 1));
+                return gap(a, b - 1) <= candidate.maxGap + rounding;
+            };
+            // A whole repeated phrase is the common case. Its prefix function
+            // proves the shortest period in linear time; only irregular runs
+            // need the general tandem search. A failed cadence proof falls
+            // back too, so valid figures beside a rest remain discoverable.
+            const prefix = new Int32Array(keys.length);
+            for (let index = 1; index < keys.length; index++) {
+                let matched = prefix[index - 1];
+                while (matched && keys[index] !== keys[matched]) matched = prefix[matched - 1];
+                if (keys[index] === keys[matched]) matched++;
+                prefix[index] = matched;
+            }
+            const period = Math.max(2, keys.length - prefix[keys.length - 1]);
+            const full = {first: 0, last: rows.length, period};
+            const candidates = [];
+            if (keys.length >= 2 * period && validProof(full)) candidates.push(full);
+            else for (const proof of compileTandemRuns(keys)) {
+                if (proof.period < 2) continue;
+                if (validProof(proof)) { candidates.push(proof); continue; }
+                // A compressed proof can contain a rest beside a valid
+                // phrase, or start on the slower boundary of a repeated
+                // rhythm. Check its edge windows and both sides of its
+                // longest gap. Four constant-time alternatives preserve
+                // those cases without enumerating every shifted square.
+                // More complicated uneven rhythms remain conservative.
+                const {first: a, last: b, period: p} = proof, cut = largestGap(a, b - 1) + 1;
+                for (const [first, last] of [[a, a + 2 * p], [b - 2 * p, b], [a, cut], [cut, b]]) {
+                    const piece = {first, last, period: p};
+                    if (last - first >= 2 * p && validProof(piece)) candidates.push(piece);
+                }
+            }
+            candidates.sort((a, b) => a.first - b.first || b.last - a.last || a.period - b.period);
+            let consumed = 0;
+            for (const candidate of candidates) {
+                if (candidate.first < consumed) continue;
+                const {first: a, last: b, period: p, maxGap} = candidate;
+                let tail = b;
+                while (tail < rows.length && keys[tail] === keys[a + (tail - a) % p]
+                    && rows[tail].time - rows[tail - 1].time <= maxGap + rounding) tail++;
+                const pitches = new Set(), shape = [];
+                for (let index = a; index < a + p; index++) {
+                    shape.push(rows[index].shape);
+                    rows[index].shape.forEach(note => pitches.add(`${note.string}/${note.fret}`));
+                }
+                groups.push({first: begin + a, last: begin + tail, period: p,
+                    proofLast: begin + a + Math.floor((b - a) / p) * p,
+                    firstFret: low(a, b), lastFret: high(a, b), maxGap, pitches,
+                    signatures: [JSON.stringify(shape)]});
+                // A matching partial return is optional ownership. A complete
+                // next figure may begin there and reclaim the shared prefix.
+                consumed = a + Math.floor((b - a) / p) * p;
+            }
+            begin = end;
+        }
+        const joined = [];
+        for (const group of groups) {
+            const previous = joined[joined.length - 1];
+            let merge = !!previous && group.first >= previous.proofLast
+                && group.first - previous.last < previous.period + group.period;
+            if (merge) {
+                const maxGap = Math.max(previous.maxGap, group.maxGap) + rounding;
+                // All-tap notation has no special final tap to delimit a
+                // connector. Permit less than two neighboring full figures,
+                // with only already-proven pitches and no cadence break.
+                for (let index = previous.last; merge && index <= group.first; index++) {
+                    merge = events[index].time - events[index - 1].time <= maxGap;
+                    if (index < group.first) merge &&= events[index].shape.every(note => note.tap
+                        && (previous.pitches.has(`${note.string}/${note.fret}`) || group.pitches.has(`${note.string}/${note.fret}`)));
+                }
+            }
+            if (merge) {
+                previous.last = group.last; previous.proofLast = group.proofLast; previous.period = group.period;
+                previous.firstFret = Math.min(previous.firstFret, group.firstFret);
+                previous.lastFret = Math.max(previous.lastFret, group.lastFret);
+                previous.maxGap = group.maxGap; previous.pitches = group.pitches;
+                previous.signatures.push(...group.signatures);
+            } else joined.push({...group});
+        }
+        return joined;
+    }
 
     // A tap closes a figure. Comparing adjacent figures is linear in attacks;
     // there is no arbitrary period search or per-frame chart work. A figure
@@ -105,6 +274,25 @@ export function createCameraTapping({ NFRETS, isRenderableNote, isUnpitchedMute 
                         previous.signatures.push(...group.signatures);
                     } else joined.push({ ...group });
                 }
+                // Keep the established mixed-tag proof unchanged. All-tap
+                // figures fill only intervals it does not already own.
+                const allTapGroups = [];
+                let mixedIndex = 0;
+                for (const group of compileAllTapGroups(events, first, last, span, rounding)) {
+                    while (mixedIndex < joined.length && joined[mixedIndex].last <= group.first) mixedIndex++;
+                    let uncovered = group.first, index = mixedIndex;
+                    while (index < joined.length && joined[index].first < group.last) {
+                        if (joined[index].first > uncovered) allTapGroups.push({...group,
+                            first: uncovered, last: Math.min(group.last, joined[index].first)});
+                        uncovered = Math.max(uncovered, joined[index].last); index++;
+                    }
+                    // Evidence may share a closing tap with a mixed figure;
+                    // only ownership is clipped, so its proven continuation
+                    // remains eligible without altering the older focus.
+                    if (uncovered < group.last) allTapGroups.push({...group, first: uncovered});
+                }
+                joined.push(...allTapGroups);
+                joined.sort((a, b) => a.first - b.first);
                 for (const group of joined) {
                     const areaStart = Math.max(start, events[group.first].time);
                     let areaEnd = group.last < last ? Math.min(end, events[group.last].time) : end;
