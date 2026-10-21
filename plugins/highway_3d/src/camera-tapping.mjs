@@ -12,6 +12,11 @@ export function createCameraTapping({ NFRETS, isRenderableNote, isUnpitchedMute 
         }
         return low;
     };
+    // Match the chart's anchor coincidence tolerance. Use the same shifted
+    // boundary on both sides of each half-open cycle so an attack belongs to
+    // exactly one cycle, even when its timestamp rounds just before the lane.
+    // Stop sampling below stays exact; this only assigns chart evidence.
+    const eventBoundary = (events, time) => lowerBound(events, time - 0.000501);
 
     function hwyCompileTappingAreas(evidence, { notes = [], chords = [], stringCount = 6 } = {}) {
         const spans = evidence?.spans || [], patterns = evidence?.patterns || [];
@@ -49,12 +54,16 @@ export function createCameraTapping({ NFRETS, isRenderableNote, isUnpitchedMute 
                     group.endIndex = endIndex;
                     const home = spans[endIndex];
                     let tailEnd = home?.time;
-                    let cursor = lowerBound(events, home?.time ?? Infinity);
+                    let cursor = eventBoundary(events, home?.time ?? Infinity);
+                    const last = eventBoundary(events, home?.end ?? Infinity);
                     const shape = JSON.parse(group.signature);
                     for (let offset = 0; offset < shape.length && cursor < events.length
-                        && events[cursor].time < home.end; offset++, cursor++) {
+                        && cursor < last; offset++, cursor++) {
                         if (JSON.stringify(events[cursor].shape) !== JSON.stringify(shape[offset])) break;
-                        tailEnd = Math.min(home.end, events[cursor + 1]?.time ?? Infinity);
+                        // A next attack owned by the relocation ends this dwell
+                        // at its lane boundary, without a rounding-sized stop.
+                        tailEnd = cursor + 1 < last
+                            ? Math.max(home.time, events[cursor + 1].time) : home.end;
                     }
                     group.end = tailEnd;
                     if (group.end > group.start) areas.push(group);
@@ -64,7 +73,7 @@ export function createCameraTapping({ NFRETS, isRenderableNote, isUnpitchedMute 
             for (const cycle of pattern.cycles || []) {
                 const start = spans[cycle.startIndex]?.time, end = spans[cycle.endIndex]?.time;
                 if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) { finish(); continue; }
-                const first = lowerBound(events, start), last = lowerBound(events, end);
+                const first = eventBoundary(events, start), last = eventBoundary(events, end);
                 let firstFret = Infinity, lastFret = -Infinity, hasTap = false;
                 const signature = [];
                 for (let index = first; index < last; index++) {

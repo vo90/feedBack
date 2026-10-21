@@ -215,6 +215,12 @@ marked tap, and cover more than one fret. All participating fretted notes and
 real chord members determine the bounds, including hammer-ons and pull-offs.
 Open strings, unpitched mutes and synthetic chord overlays do not widen it.
 This is ordered-note evidence, not a claim of identical rhythm or sustain.
+Cycle and final-return boundaries use the chart's existing 0.501 ms coincidence
+tolerance in original song time. An attack within that tolerance before a
+boundary belongs to the new interval, exactly once. The final return also ends
+at the relocation boundary when its next attack coincides with that boundary,
+avoiding a rounding-sized visit to the old home. This evidence lookup does not
+change lane times, threshold comparisons or motion timing.
 
 Once the threshold holds every cycle in that fixed area, its camera target is
 the physical midpoint between the first fret's left edge and the last fret's
