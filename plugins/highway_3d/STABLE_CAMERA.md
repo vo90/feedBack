@@ -40,6 +40,12 @@ progressive runs use the explicit rules in the behavior contract. Notes,
 labels and other visible geometry determine the distance needed to fit;
 they do not select a competing horizontal target.
 
+Repeated marked tapping inside one wide lane centres the full played area,
+even without lane changes. Adjacent proven variations share one steady centre
+across their combined range. This also works with a zero short-lane threshold;
+it does not override a lane already held at another home. Ordinary extended
+lanes and isolated taps retain the normal four-fret focus.
+
 During a tapping area's matching final return, open strings and unpitched dead
 notes keep its centred focus. The next different fretted attack (including a
 pitched palm mute), or the next lane boundary, ends that hold. Entering and

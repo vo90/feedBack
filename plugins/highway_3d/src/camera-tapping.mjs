@@ -1,5 +1,6 @@
 /**
- * Phrase composition for held tapping riffs. Compilation reads the chart once;
+ * Phrase composition for held tapping riffs and proven single-lane figures.
+ * Compilation reads the chart once;
  * threshold edits only select already-proven areas. Playback samples the normal
  * camera path, including its normal entry/exit timing and movement policy.
  */
@@ -18,9 +19,122 @@ export function createCameraTapping({ NFRETS, isRenderableNote, isUnpitchedMute 
     // Stop sampling below stays exact; this only assigns chart evidence.
     const eventBoundary = (events, time) => lowerBound(events, time - 0.000501);
 
-    function hwyCompileTappingAreas(evidence, { notes = [], chords = [], stringCount = 6 } = {}) {
+    // A tap closes a figure. Comparing adjacent figures is linear in attacks;
+    // there is no arbitrary period search or per-frame chart work. A figure
+    // must repeat before it can own any camera interval.
+    function compileSingleLaneAreas(evidence, events, sections, beats, protectedSpans) {
+        const areas = [];
+        const sectionRows = [...new Set(sections.map(row => row?.time).filter(Number.isFinite))]
+            .sort((a, b) => a - b).map(time => ({ time }));
+        const beatRows = beats.filter(row => Number.isFinite(row?.time)).slice().sort((a, b) => a.time - b.time);
+        const rounding = .000501 * 2;
+        const pitchKey = note => `${note.string}/${note.fret}`;
+        for (const span of evidence.spans || []) {
+            if (!(span.lastFret - span.firstFret > 3) || protectedSpans.has(span.sourceIndex)) continue;
+            const boundaries = [span.time];
+            for (let index = lowerBound(sectionRows, span.time); index < sectionRows.length
+                && sectionRows[index].time < span.end; index++) {
+                if (sectionRows[index].time > span.time) boundaries.push(sectionRows[index].time);
+            }
+            boundaries.push(span.end);
+            for (let part = 0; part + 1 < boundaries.length; part++) {
+                const start = boundaries[part], end = boundaries[part + 1];
+                const first = eventBoundary(events, start), last = eventBoundary(events, end), units = [];
+                let begin = first;
+                for (let cursor = first; cursor < last; cursor++) {
+                    if (!events[cursor].hasTap) continue;
+                    const unit = { first: begin, last: cursor + 1, firstFret: Infinity, lastFret: -Infinity,
+                        maxGap: 0, pitches: new Set(), signature: '' };
+                    const shape = [];
+                    for (let index = begin; index <= cursor; index++) {
+                        const event = events[index];
+                        shape.push(event.shape);
+                        unit.firstFret = Math.min(unit.firstFret, event.firstFret);
+                        unit.lastFret = Math.max(unit.lastFret, event.lastFret);
+                        if (index > begin) unit.maxGap = Math.max(unit.maxGap, event.time - events[index - 1].time);
+                        event.shape.forEach(note => unit.pitches.add(pitchKey(note)));
+                    }
+                    unit.signature = JSON.stringify(shape);
+                    unit.valid = unit.last - unit.first >= 2 && unit.lastFret - unit.firstFret > 3
+                        && unit.firstFret >= span.firstFret && unit.lastFret <= span.lastFret;
+                    units.push(unit); begin = cursor + 1;
+                }
+                const same = (a, b) => a.valid && b.valid && a.signature === b.signature
+                    && events[b.first].time - events[a.last - 1].time <= Math.max(a.maxGap, b.maxGap) + rounding;
+                const groups = [];
+                for (let index = 0; index < units.length;) {
+                    const initial = index;
+                    while (index + 1 < units.length && same(units[index], units[index + 1])) index++;
+                    if (index > initial) {
+                        const firstUnit = units[initial], lastUnit = units[index];
+                        let tail = lastUnit.last, offset = 0;
+                        // The final partial return belongs to the proven figure,
+                        // but a new ordinary attack ends its ownership exactly.
+                        while (tail < last && offset < lastUnit.last - lastUnit.first
+                            && events[tail].key === events[lastUnit.first + offset].key
+                            && events[tail].time - events[tail - 1].time <= lastUnit.maxGap + rounding) {
+                            tail++; offset++;
+                        }
+                        groups.push({ firstUnit: initial, lastUnit: index, first: firstUnit.first, last: tail,
+                            firstFret: firstUnit.firstFret, lastFret: firstUnit.lastFret,
+                            signatures: [firstUnit.signature] });
+                    }
+                    index++;
+                }
+                const joined = [];
+                for (const group of groups) {
+                    const previous = joined[joined.length - 1];
+                    let merge = !!previous && group.firstUnit - previous.lastUnit <= 2;
+                    if (merge) {
+                        const a = units[previous.lastUnit], b = units[group.firstUnit];
+                        const maxGap = Math.max(a.maxGap, b.maxGap) + rounding;
+                        // At most one connecting tapped figure may bridge two
+                        // proven variants. It can change legato technique, but
+                        // every string/fret must already occur in either proof,
+                        // and its cadence cannot be slower than those proofs.
+                        for (let index = a.last; merge && index <= b.first; index++) {
+                            merge = events[index].time - events[index - 1].time <= maxGap;
+                            if (index < b.first) merge &&= events[index].shape.every(note =>
+                                a.pitches.has(pitchKey(note)) || b.pitches.has(pitchKey(note)));
+                        }
+                    }
+                    if (merge) {
+                        previous.last = group.last; previous.lastUnit = group.lastUnit;
+                        previous.firstFret = Math.min(previous.firstFret, group.firstFret);
+                        previous.lastFret = Math.max(previous.lastFret, group.lastFret);
+                        previous.signatures.push(...group.signatures);
+                    } else joined.push({ ...group });
+                }
+                for (const group of joined) {
+                    const areaStart = Math.max(start, events[group.first].time);
+                    let areaEnd = group.last < last ? Math.min(end, events[group.last].time) : end;
+                    if (!Number.isFinite(areaEnd)) {
+                        const final = events[group.last - 1];
+                        areaEnd = final.time;
+                        for (let index = group.first; index < group.last; index++) areaEnd = Math.max(areaEnd, events[index].end);
+                        const nextBeat = beatRows[lowerBound(beatRows, final.time + rounding)];
+                        if (nextBeat) areaEnd = Math.max(areaEnd, nextBeat.time);
+                    }
+                    if (!(areaEnd > areaStart)) continue;
+                    areas.push({ id: `single/${span.sourceIndex}/${group.first}`, kind: 'single-lane',
+                        startIndex: span.sourceIndex, endIndex: span.sourceIndex, sourceBase: span.base,
+                        start: areaStart, end: areaEnd, firstFret: group.firstFret, lastFret: group.lastFret,
+                        signatures: group.signatures, cycles: [] });
+                }
+            }
+        }
+        return areas;
+    }
+
+    function hwyCompileTappingAreas(evidence, { notes = [], chords = [], stringCount = 6, sections = [], beats = [] } = {}) {
         const spans = evidence?.spans || [], patterns = evidence?.patterns || [];
-        if (!patterns.length) return [];
+        if (!spans.length) return [];
+        const protectedSpans = new Set(evidence.protectedIndices || []);
+        const hasSingleLaneCandidate = spans.some(span => span.lastFret - span.firstFret > 3
+            && !protectedSpans.has(span.sourceIndex));
+        // Ordinary charts retain the old cheap exit: do not collect, inspect,
+        // or sort attacks when neither kind of tapping area can exist.
+        if (!patterns.length && !hasSingleLaneCandidate) return [];
         const count = Number.isInteger(stringCount) && stringCount > 0 ? stringCount : 6;
         const events = [];
         // Only attacks with a meaningful fret position participate in tapping
@@ -37,7 +151,9 @@ export function createCameraTapping({ NFRETS, isRenderableNote, isUnpitchedMute 
                 string: note.s, fret: note.f, tap: !!(note.tp || note.tap),
                 hammer: !!note.ho, pull: !!note.po,
             })).sort((a, b) => a.string - b.string || a.fret - b.fret);
-            events.push({ time, shape, hasTap: shape.some(note => note.tap),
+            events.push({ time, end: time + Math.max(0, ...fretted.map(note =>
+                Number.isFinite(Number(note.sus)) ? Number(note.sus) : 0)),
+                shape, key: JSON.stringify(shape), hasTap: shape.some(note => note.tap),
                 firstFret: Math.min(...shape.map(note => note.fret)),
                 lastFret: Math.max(...shape.map(note => note.fret)) });
         };
@@ -104,6 +220,19 @@ export function createCameraTapping({ NFRETS, isRenderableNote, isUnpitchedMute 
         for (let index = 0; index + 1 < areas.length; index++) {
             if (areas[index].end > areas[index + 1].start) areas[index].end = areas[index + 1].start;
         }
+        // Existing multi-lane evidence keeps ownership even when the current
+        // threshold does not activate it. This extension cannot change that
+        // established threshold policy or progressively travelling lanes.
+        const singleAreas = [], multiLaneAreas = areas.length;
+        let existingIndex = 0;
+        const candidates = hasSingleLaneCandidate
+            ? compileSingleLaneAreas(evidence, events, sections, beats, protectedSpans) : [];
+        for (const area of candidates) {
+            while (existingIndex < multiLaneAreas && areas[existingIndex].end <= area.start) existingIndex++;
+            if (existingIndex >= multiLaneAreas || areas[existingIndex].start >= area.end) singleAreas.push(area);
+        }
+        areas.push(...singleAreas);
+        areas.sort((a, b) => a.start - b.start || a.end - b.end);
         return areas;
     }
 
@@ -113,9 +242,15 @@ export function createCameraTapping({ NFRETS, isRenderableNote, isUnpitchedMute 
             new Set((pattern.activeCycles || []).map(cycle => `${cycle.startIndex}/${cycle.endIndex}`))]));
         const active = [];
         for (const area of areas) {
-            const cycles = patterns.get(area.patternId);
-            if (!cycles) continue;
-            if (!area.cycles.every(cycle => cycles.has(`${cycle.startIndex}/${cycle.endIndex}`))) continue;
+            if (area.kind === 'single-lane') {
+                const host = stops.timeline?.[area.startIndex];
+                if (!host || host.base !== area.sourceBase || host.explanation?.decision === 'hold'
+                    || host.explanation?.reason === 'return-home') continue;
+            } else {
+                const cycles = patterns.get(area.patternId);
+                if (!cycles) continue;
+                if (!area.cycles.every(cycle => cycles.has(`${cycle.startIndex}/${cycle.endIndex}`))) continue;
+            }
             const left = xFret(area.firstFret - 1), right = xFret(area.lastFret);
             if (!Number.isFinite(left) || !Number.isFinite(right) || !(area.end > area.start)) continue;
             active.push({ ...area, x: (left + right) / 2, minX: Math.min(left, right), maxX: Math.max(left, right) });

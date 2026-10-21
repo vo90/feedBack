@@ -231,7 +231,7 @@ the pattern. Equal-duration pairs retain the existing earliest-proof choice.
 Single replies cite their own home-span start through return-home start. These cached
 intervals explain the decision; they do not change ownership or movement timing.
 
-### Held tapping areas
+### Tapping areas
 
 A proven lane pattern can become a tapping area when at least two adjacent
 cycles have the same ordered note/string/tap/hammer/pull sequence, contain a
@@ -262,6 +262,33 @@ extension; an ordinary fretted attack on the same lane does. The next lane
 boundary still caps the area, even if only open or dead notes follow the return.
 Notes sustained into the area from before its start and slide endpoints are not
 part of these bounds.
+
+Repeated tapping inside one wide lane can also select an area without requiring
+lane changes or a short-lane hold. A marked tapped attack closes each figure.
+Each figure includes an untapped approach or return before its closing tap.
+Two consecutive figures must have the same ordered note/string/tap/hammer/pull
+sequence, contain at least two attacks and span more than four fret columns.
+All positions must lie inside the lane. Ordinary width extensions, isolated
+taps and protected progressive lanes keep their normal focus.
+This conservative delimiter does not recognize figures consisting entirely of
+marked taps. A leading tap closes the preceding incomplete figure; recognized
+ownership starts with the next proven approach rather than borrowing that tap.
+
+Adjacent proven figures share one steady centre over their combined fret
+range. At most one connecting tapped figure can join different proven figures;
+every string/fret position in that connector must occur in either neighboring
+proof, and no connecting attack gap may exceed the longest gap within those
+proofs (apart from timestamp rounding). A longer pause or a new position splits
+the areas. Matching final prefixes are included; a different ordinary fretted
+attack, lane boundary or section boundary ends the area. At the chart's end,
+the final matched attack/sustain or following beat gives a finite end.
+
+This single-lane proof is compiled independently of the short-lane threshold.
+It applies while its host lane remains followed; it cannot resurrect a lane
+that the semantic plan holds at another home. Existing multi-lane tapping
+evidence retains ownership wherever the two forms would overlap. Recognition
+is cached with the musical evidence; threshold, timing, speed and view edits
+do not rescan the notes.
 
 The usual motion planner handles entering and leaving the area with the saved
 start-before, arrive-after and movement mode. Automatic zoom keeps its existing

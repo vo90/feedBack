@@ -315,3 +315,34 @@ test('chart replacement after a geometry-only refresh rebuilds the musical cache
     assert.deepEqual(visiblePlan(current),visiblePlan(fresh.run()));
     assert.equal(h.counts.evidence,2);assert.equal(h.counts.tapping,2);assert.equal(h.counts.attacks,1);
 });
+
+test('single wide-lane tapping reuses its proof across timing, speed, threshold and view changes',()=>{
+    const rows=[{time:0,fret:9,width:9},{time:4,fret:5,width:4}];
+    const chart={notes:[0,.9].flatMap(t=>[
+        {t,s:0,f:9},{t:t+.3,s:0,f:12,ho:true},{t:t+.6,s:0,f:17,tp:true},
+    ]),sections:[{time:0,name:'tapping'},{time:4,name:'verse'}],beats:[]};
+    for(const movementMode of ['reach-centres','latest-destination']) {
+        const h=harness(rows,chart,true), settings={movementMode,startBeforeMs:400,arriveAfterMs:50};
+        h.configure(settings);
+        const first=h.run(1.5), proof=first.musicalEvidence, areas=first.tappingAreas;
+        assert.equal(areas.length,1);
+        assert.equal(areas[0].kind,'single-lane');
+        assert.deepEqual([areas[0].firstFret,areas[0].lastFret],[9,17]);
+        const scans=h.scans.notes;
+        for(const change of [{threshold:0},{threshold:200},{threshold:500},
+            {rate:.5},{rate:2},{preset:'angled'},{lefty:true},{aspect:1.2},
+            {startBeforeMs:450},{arriveAfterMs:1000}]) {
+            Object.assign(settings,change);h.configure(change);
+            const actual=h.run(1.5), fresh=harness(rows,chart,true);fresh.configure(settings);
+            assert.equal(actual.musicalEvidence,proof);
+            assert.equal(actual.tappingAreas,areas);
+            assert.deepEqual(visiblePlan(actual),visiblePlan(fresh.run(1.5)),JSON.stringify(settings));
+            assert.equal(h.scans.notes,scans);
+        }
+        const counts={...h.counts}, stops=h.run().stops;
+        for(let frame=0;frame<240;frame++)assert.equal(h.run(frame/60).stops,stops);
+        assert.deepEqual(h.counts,counts);
+        assert.equal(h.scans.notes,scans);
+        assert.equal(h.counts.evidence,1);assert.equal(h.counts.tapping,1);
+    }
+});
