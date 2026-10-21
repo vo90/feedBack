@@ -64,6 +64,15 @@ An edit writes that panel's override and notifies live views without writing the
 global default. Global settings and other panels retain their values. Opening
 the popover only reads settings; it never migrates or saves them.
 
+Camera range controls declare `commitOn: 'change'`: dragging previews the number,
+then release applies it once, like the gameplay tuning menu. Leaving a dirty
+control or pressing Enter also commits it; unchanged values do not write again.
+Unmarked ranges such as glow retain live adjustment. X-pan smoothing declares
+`disabledWhen: { key: 'cameraMode', equals: 'stable' }`, evaluated against the
+panel's effective setting. Its saved value remains available for legacy views.
+The popover explains why it is disabled and refreshes availability on opening,
+mode edits and user interaction, without polling or work during rendered frames.
+
 Distance determines speed. At 400 ms before and 50 ms after, targets less than
 450 ms apart in song time have overlapping windows at every playback speed.
 Both movement modes keep the same path, grouping and redirects at the same

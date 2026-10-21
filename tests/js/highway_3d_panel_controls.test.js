@@ -211,3 +211,18 @@ test('per-panel camera tuning exposes direct start and arrival timing with the t
         assert.deepEqual([control.min, control.max, control.step, control.default], [min, max, step, initial], key);
     }
 });
+
+test('panel camera sliders opt into release commits and Stable identifies inactive X-pan smoothing', () => {
+    const controls = cloneJson(loadHighway3dStatics().feedBackViz_highway_3d.panelControls);
+    const cameraRanges = new Set(['stableCameraStartBeforeMs', 'stableCameraArriveAfterMs',
+        'stableCameraExcursionThreshold', 'cameraSmoothing', 'cameraLockZoom']);
+    for (const control of controls.filter(control => control.type === 'range')) {
+        assert.equal(control.commitOn, cameraRanges.has(control.key) ? 'change' : undefined, control.key);
+    }
+    const smoothing = controls.find(control => control.key === 'cameraSmoothing');
+    assert.deepEqual(smoothing.disabledWhen, { key: 'cameraMode', equals: 'stable' });
+    assert.match(smoothing.disabledReason, /Start before.*Arrive after.*movement mode/);
+    const mode = controls.find(control => control.key === smoothing.disabledWhen.key);
+    assert.ok(mode.options.some(option => option.id === smoothing.disabledWhen.equals));
+    assert.equal(smoothing.default, .5, 'UI availability must not change the saved-setting default');
+});

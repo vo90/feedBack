@@ -26288,11 +26288,11 @@
         { key: 'stableCameraAutoZoom', label: 'Automatic zoom (Stable)', type: 'toggle',
             default: BG_DEFAULTS.stableCameraAutoZoom },
         { key: 'stableCameraStartBeforeMs', label: 'Start before next lane (ms at 100%)', type: 'range',
-            min: 25, max: 3000, step: 25, default: BG_DEFAULTS.stableCameraStartBeforeMs },
+            min: 25, max: 3000, step: 25, commitOn: 'change', default: BG_DEFAULTS.stableCameraStartBeforeMs },
         { key: 'stableCameraArriveAfterMs', label: 'Arrive after next lane (ms at 100%)', type: 'range',
-            min: 0, max: 3000, step: 25, default: BG_DEFAULTS.stableCameraArriveAfterMs },
+            min: 0, max: 3000, step: 25, commitOn: 'change', default: BG_DEFAULTS.stableCameraArriveAfterMs },
         { key: 'stableCameraExcursionThreshold', label: 'Stable short-lane threshold (ms)', type: 'range',
-            min: 0, max: 3000, step: 50, default: BG_DEFAULTS.stableCameraExcursionThreshold },
+            min: 0, max: 3000, step: 50, commitOn: 'change', default: BG_DEFAULTS.stableCameraExcursionThreshold },
         {
             key: 'notationStyle', label: 'Notation style', type: 'select',
             options: [{ id: 'current', label: 'Current' }, { id: 'rsplus', label: 'RS+ inspired' }],
@@ -26312,6 +26312,9 @@
             key: 'cameraSmoothing',
             label: 'Camera smoothing (X-pan)',
             type: 'range',
+            commitOn: 'change',
+            disabledWhen: { key: 'cameraMode', equals: 'stable' },
+            disabledReason: 'Stable uses Start before, Arrive after and movement mode instead of X-pan smoothing.',
             min: 0,
             max: 1,
             step: 0.05,
@@ -26327,6 +26330,7 @@
             key: 'cameraLockZoom',
             label: 'Locked zoom (legacy views)',
             type: 'range',
+            commitOn: 'change',
             min: 0,
             max: 1,
             step: 0.05,
@@ -26350,6 +26354,9 @@
     //   panelControls      - optional, host-readable descriptors for a
     //                        curated per-panel control surface. Renderer
     //                        values still flow through _bgLoadSettings().
+    //                        commitOn:'change' previews a range until release;
+    //                        disabledWhen compares an effective scoped setting.
+    //                        Both are UI hints, not saved-value migrations.
     //   getPanelSetting / setPanelSetting - scoped host access by panel index
     //                        and exposed control key; writes notify live views
     //                        without changing global defaults or other panels.
