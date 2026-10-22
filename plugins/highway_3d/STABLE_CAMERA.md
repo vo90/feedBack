@@ -54,6 +54,15 @@ with 558 ms visits to lane 8 and 139 ms visits to lane 6, a 500 ms threshold hol
 the lane-6 reply while following lane 8; a 1000 ms threshold holds both at lane 7.
 The preceding genuine climb retains its destinations.
 
+A long stay can also establish a new home across overlapping single replies.
+For `A → B → A → B → A → B`, the first B stay must outweigh all the other
+completed stays combined, including the preceding A, and both returns to B must
+already be valid. This avoids treating a brief old-lane reply as home after a
+clear relocation. It does not change home when the threshold changes: the
+threshold still decides whether each individual reply is short enough to hold.
+Balanced alternation, incomplete evidence and ambiguous multi-lane riffs keep
+their existing handling.
+
 Repeated marked tapping inside one wide lane centres the full played area,
 even without lane changes, including figures where every note is tapped.
 The ordered figure must repeat twice; a travelling run does not become a hold

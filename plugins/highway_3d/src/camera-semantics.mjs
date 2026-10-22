@@ -488,9 +488,36 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
                 break;
             }
         }
+        // A single-return chain can retain its old home after the camera has
+        // genuinely relocated. A fixed A→B→A→B→A→B proof permits a handoff:
+        // both B returns already qualify, and B's first visit alone occupies
+        // more time than every other finite visit in the proof combined.
+        // This is stronger than a small A/B timing difference and does not
+        // depend on the threshold, its maximum, or a later third destination.
+        const relocationHomes = new Map();
+        const singleReturn = at => hasReturn(at) && nextSame[at] === at + 2
+            && !takeover[at] && nextSame[at] <= nextSectionHome[at];
+        for (let i = 0; i + 5 < count; i++) {
+            if (!singleReturn(i) || !singleReturn(i + 1) || !singleReturn(i + 2) || !singleReturn(i + 3)
+                || segments[i] !== segments[i + 5] || promotedHomes.has(i) || promotedHomes.has(i + 1)) continue;
+            const start = voteStartTime(i), end = spans[route[i + 5]].time;
+            let previous = start, valid = Number.isFinite(start);
+            for (let at = i + 1; valid && at <= i + 5; at++) {
+                const time = spans[route[at]].time;
+                valid = Number.isFinite(time) && time >= previous; previous = time;
+            }
+            const leading = spans[route[i + 2]].time - spans[route[i + 1]].time;
+            if (!valid || !(leading > end - start - leading + 1e-9)) continue;
+            // Existing return eligibility excludes protected away waypoints;
+            // same-base variation aliases cannot supply extra returns. The
+            // canonical start above retains their dwell and clips a verified
+            // quiet break without changing the coalesced camera stop.
+            relocationHomes.set(i, { start: i + 1, previousHomeIndex: route[i],
+                reason: 'dominant-single-return-relocation', interval: { start, end } });
+        }
         const owned = new Uint8Array(count);
         for (let i = 0; i < count;) {
-            const promotion = promotedHomes.get(i);
+            const promotion = promotedHomes.get(i) || relocationHomes.get(i);
             if (promotion) i = promotion.start;
             if (!hasReturn(i) || takeover[i] || nextSame[i] > nextSectionHome[i]) { i++; continue; }
             const first = i, length = nextSame[i] - i, single = length === 2;
@@ -500,11 +527,12 @@ export function createCameraSemantics({ NFRETS, isRenderableNote }) {
                 start: spans[homeIndex].time, end: spans[homeIndex].time, cycles: [],
                 proofStart: spans[route[single ? first : proofStart[first]]].time,
                 proofEnd: spans[route[single ? nextSame[first] : proofEnd[first]]].time };
-            if (promotion) pattern.homeSelection = { reason: 'recurring-majority-home',
+            if (promotion) pattern.homeSelection = { reason: promotion.reason || 'recurring-majority-home',
                 previousHomeIndex: promotion.previousHomeIndex, homeIndex,
                 interval: promotion.interval };
             while (hasReturn(i) && segments[i] === segments[first]
-                && !takeover[i] && !promotedHomes.has(i) && nextSame[i] <= nextSectionHome[i]) {
+                && !takeover[i] && !promotedHomes.has(i) && !relocationHomes.has(i)
+                && nextSame[i] <= nextSectionHome[i]) {
                 const end = nextSame[i];
                 if (end - i !== length) break;
                 let same = true;

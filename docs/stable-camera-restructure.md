@@ -211,6 +211,16 @@ lane destinations; removing a waypoint can still change the interpolated path.
 
 - Same-base extensions retain their initial four-fret centre.
 - A single out-and-back reply belongs to the preceding home.
+- An overlapping chain of single returns can establish a new home after a
+  dominant stay. The fixed proof is `A → B → A → B → A → B`: both complete
+  returns to B must already be eligible, and the first B visit must last longer
+  than the preceding A visit and all other completed visits in that proof
+  combined. The final B visit supplies the return boundary, not extra dwell.
+  This replaces only single-return ownership, stays within one musical segment
+  and preserves protected travel. Ties, ordinary alternating rhythms and
+  incomplete proofs keep their existing ownership. The decision is cached and
+  independent of the threshold; each later reply still needs to be individually
+  shorter than the threshold to be held. A long stay alone does not reset a run.
 - Multi-lane riffs require two adjacent cycles with the same ordered lane bases.
   Each away lane in the supporting pair must be individually shorter than the
   threshold; elapsed time for the whole trip is never used.
