@@ -117,10 +117,11 @@ test('both lane layouts use analytic RS+ default edges while preserving other st
 
 test('analytic divider and edge materials have shared ownership and are released on teardown', () => {
     assert.ok(/_ownedSharedMats\.push\(mLaneDivider, mLaneDividerExt, mRsLaneDivider\)/.test(src));
-    assert.ok(/_ownedSharedMats\.push\(mHandPositionEdge, mHandPositionFill, mRsLaneEdge\)/.test(src));
+    assert.ok(/_ownedSharedMats\.push\(mHandPositionEdge, mRsLaneEdge\)/.test(src));
     assert.ok(/for \(const m of _ownedSharedMats\) m\?\.dispose\?\.\(\)/.test(src));
     assert.ok(/mLaneDivider = mRsLaneDivider = gLanePlane/.test(src));
-    assert.ok(/mHandPositionEdge = mHandPositionFill = null/.test(src));
+    assert.ok(/mHandPositionEdge = null/.test(src));
+    assert.ok(!src.includes('mHandPositionFill'), 'no competing handshape floor material');
     assert.ok(/mRsLaneEdge = null/.test(src));
 });
 

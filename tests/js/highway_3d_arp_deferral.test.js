@@ -12,6 +12,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { extractFunction } = require('./test_utils');
+const { buildHandshapeGuidance } = require('../../plugins/highway_3d/src/hand-position-guidance.mjs');
 
 const SCREEN_JS = path.join(__dirname, '..', '..', 'plugins', 'highway_3d', 'screen.js');
 const SRC = fs.readFileSync(SCREEN_JS, 'utf8');
@@ -392,6 +393,63 @@ test('a note exactly on the stale hand-shape end is excluded', () => {
         nextStopBefore: 21,
         temporalStopBefore: 20.25,
     }), false);
+});
+
+test('rejecting a stale shape preserves its negative-only boundary through chord-gem inference', () => {
+    const ch = { t: 20, id: 0, notes: [{ s: 0, f: 5 }, { s: 1, f: 7 }] };
+    const notes = [{ t: 20, s: 0, f: 5 }, { t: 20.25, s: 1, f: 7 }];
+    const raw = [{ chord_id: 1, start_time: 20, end_time: 20.25, arp: true }];
+    const templates = [{ frets: [5, 7, -1, -1, -1, -1] }, { frets: [3, 5, -1, -1, -1, -1] }];
+    const evidence = buildHandshapeGuidance({ notes, chords: [ch], handShapes: raw, templates });
+    assert.deepEqual(evidence.handShapes, [], 'stale fingering cannot become a positive visual');
+    const lookup = handShapeHintHarness();
+    const boundary = lookup(ch, evidence.handShapes, templates, raw);
+    assert.equal(boundary.covered, false);
+    assert.equal(boundary.explicit, false);
+    assert.equal(boundary.hs, null);
+    assert.equal(boundary.fallbackInferenceStopBefore, 20.25);
+    const fixture = { ch, chordShape: shape([[0, 5], [1, 7]]), notes,
+        hss: evidence.handShapes, nextStopBefore: 21 };
+    assert.equal(infer(fixture), true, 'dropping the raw timing boundary reproduces the false arpeggio');
+    assert.equal(infer({ ...fixture, temporalStopBefore: boundary.fallbackInferenceStopBefore }), false,
+        'real chord gems remain visible after invalid shape filtering');
+});
+
+test('a validated authored arpeggio keeps positive coverage despite unrelated raw timing metadata', () => {
+    const ch = { t: 20, id: 0, notes: [{ s: 0, f: 5 }, { s: 1, f: 7 }] };
+    const notes = [{ t: 20, s: 0, f: 5 }, { t: 20.25, s: 1, f: 7 }];
+    const valid = { chord_id: 0, start_time: 20, end_time: 20.5, arp: true };
+    const raw = [{ chord_id: 1, start_time: 20, end_time: 20.25, arp: true }, valid];
+    const templates = [{ frets: [5, 7, -1, -1, -1, -1] }, { frets: [3, 5, -1, -1, -1, -1] }];
+    const evidence = buildHandshapeGuidance({ notes, chords: [ch], handShapes: raw, templates });
+    assert.deepEqual(evidence.handShapes, [valid]);
+    const boundary = handShapeHintHarness()(ch, evidence.handShapes, templates, raw);
+    assert.equal(boundary.covered, true);
+    assert.equal(boundary.explicit, true);
+    assert.equal(boundary.hs, valid);
+    assert.equal(boundary.fallbackInferenceStopBefore, null);
+    assert.equal(infer({ ch, chordShape: shape([[0, 5], [1, 7]]), notes,
+        hss: evidence.handShapes, timeWin: { tLo: 19.94, tHi: 20.56 },
+        temporalStopBefore: boundary.fallbackInferenceStopBefore }), true);
+});
+
+test('raw metadata cannot restore positive coverage and raw-reference changes invalidate timing hints', () => {
+    const lookup = handShapeHintHarness(), ch = { t: 20, id: 0 }, accepted = [], templates = [];
+    const matchingRaw = [{ chord_id: 0, start_time: 20, end_time: 21, arp: true }];
+    const rejected = lookup(ch, accepted, templates, matchingRaw);
+    assert.equal(rejected.covered, false);
+    assert.equal(rejected.explicit, false);
+    assert.equal(rejected.hs, null);
+    assert.equal(rejected.fallbackInferenceStopBefore, null);
+    const firstRaw = [{ chord_id: 1, start_time: 20, end_time: 20.25 }];
+    const first = lookup(ch, accepted, templates, firstRaw);
+    assert.equal(first.fallbackInferenceStopBefore, 20.25);
+    assert.equal(lookup(ch, accepted, templates, firstRaw), first);
+    const secondRaw = [{ chord_id: 1, start_time: 20, end_time: 20.75 }];
+    assert.equal(lookup(ch, accepted, templates, secondRaw).fallbackInferenceStopBefore, 20.75);
+    assert.equal(lookup(ch, accepted, templates, firstRaw).fallbackInferenceStopBefore, 20.25);
+    assert.equal(lookup(ch, accepted, templates, [...firstRaw, ...secondRaw]).fallbackInferenceStopBefore, null,
+        'ambiguous raw ends remain insufficient negative evidence');
 });
 
 test('fallback inference keeps its legacy lookahead when there is no later chord', () => {

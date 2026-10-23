@@ -5432,6 +5432,7 @@
     let threeLoadPromise = null;
     let scrapeGeometry = null;
     let lyricLayout = null;
+    let buildHandshapeGuidance, composeHandPositionLanes;
     function loadThree() {
         if (!threeLoadPromise) {
             threeLoadPromise = Promise.all([import('/static/js/pick-scrapes.js').then(m => { scrapeGeometry = m; }),
@@ -5453,6 +5454,9 @@
                 }),
                 import(CAMERA_MODULE_BASE + 'camera-controller.mjs').then(m => {
                     createCameraController = m.createCameraController;
+                }),
+                import(CAMERA_MODULE_BASE + 'hand-position-guidance.mjs').then(m => {
+                    ({ buildHandshapeGuidance, composeHandPositionLanes } = m);
                 })])
                 .then(([, three]) => three)
                 .then(mod => { T = mod; return mod; })
@@ -9619,7 +9623,7 @@
         let mLaneOdd = null, mLaneEven = null, gLanePlane = null;
         /** Shared lane dividers and hand-position edges. */
         let mLaneDivider = null, mLaneDividerExt = null;
-        let mHandPositionEdge = null, mHandPositionFill = null;
+        let mHandPositionEdge = null;
         let mRsLaneDivider = null, gLaneDivider = null, gRsLaneDivider = null;
         let mRsLaneEdge = null;
 
@@ -12964,17 +12968,13 @@
                 color: 0x62b9be, transparent: true, opacity: 0.72,
                 depthTest: false, depthWrite: false, fog: false,
             });
-            mHandPositionFill = new T.MeshBasicMaterial({
-                color: 0x62b9be, transparent: true, opacity: 0.07,
-                depthTest: false, depthWrite: false, fog: false, side: T.DoubleSide,
-            });
             // Keep the subdued cyan/depth policy, but stabilize subpixel coverage
-            // on RS+ default main lanes. Additional handshape guides stay boxes.
+            // on RS+ default main lanes.
             mRsLaneEdge = rsLaneDividerMaterial();
             mRsLaneEdge.uniforms.uColor.value.copy(mHandPositionEdge.color);
             mRsLaneEdge.uniforms.uOpacity.value = mHandPositionEdge.opacity;
             mRsLaneEdge.depthTest = false;
-            _ownedSharedMats.push(mHandPositionEdge, mHandPositionFill, mRsLaneEdge);
+            _ownedSharedMats.push(mHandPositionEdge, mRsLaneEdge);
 
             // Chord frame palette (frame alpha 128, fill gradient alpha 32; MeshBasic).
             const chR = CHORD_BOX_TEAL_HEX >> 16 & 255;
@@ -15548,9 +15548,9 @@
          * authored arpeggio markers only; note inference is handled separately
          * by the callers that still need it for non-visual behavior.
          *
-         * Cached per chord: result depends only on (ch, hss, chordTemplates),
-         * all chart-static for the lifetime of an arrangement. The cache is
-         * swapped on (hss, templates) ref change so an arrangement switch
+         * Cached per chord: accepted shapes supply positive metadata; raw
+         * shapes can only bound fallback inference. The cache is swapped on
+         * accepted/raw shapes or template ref change so an arrangement switch
          * cannot resurrect stale entries. Empty-input case bypasses the cache
          * — it returns a fresh sentinel anyway and isn't hot enough to share.
          */
@@ -15562,12 +15562,14 @@
         });
         let _hintCache = new WeakMap();
         let _hintCacheHsRef = null;
+        let _hintCacheRawHsRef = null;
         let _hintCacheTplRef = null;
-        function chordHandShapeArpeggioHint(ch, hss, chordTemplates) {
-            if (!hss || hss.length === 0) return _HINT_NONE;
-            if (_hintCacheHsRef !== hss || _hintCacheTplRef !== chordTemplates) {
+        function chordHandShapeArpeggioHint(ch, hss, chordTemplates, rawHandShapes = hss) {
+            if (!hss?.length && !rawHandShapes?.length) return _HINT_NONE;
+            if (_hintCacheHsRef !== hss || _hintCacheRawHsRef !== rawHandShapes || _hintCacheTplRef !== chordTemplates) {
                 _hintCache = new WeakMap();
                 _hintCacheHsRef = hss;
+                _hintCacheRawHsRef = rawHandShapes;
                 _hintCacheTplRef = chordTemplates;
             }
             const cached = _hintCache.get(ch);
@@ -15578,7 +15580,7 @@
             let result = _HINT_NONE;
             let fallbackCandidateCount = 0;
             let fallbackInferenceStopBefore = null;
-            for (let i = 0; i < hss.length; i++) {
+            for (let i = 0; i < (hss?.length || 0); i++) {
                 const hs = hss[i];
                 const tLo = hsStart(hs);
                 const tHi = hsEnd(hs);
@@ -15602,7 +15604,13 @@
                     if (atStart) break;
                     continue;
                 }
-
+            }
+            for (let i = 0; result === _HINT_NONE && i < (rawHandShapes?.length || 0); i++) {
+                const hs = rawHandShapes[i];
+                const tLo = hsStart(hs);
+                const tHi = hsEnd(hs);
+                const hsCid = hsChordIdNorm(hs);
+                const sameId = hsCid === cid || Number(hsCid) === Number(cid);
                 // Some legacy charts attach a stale/wrong chord id to a hand-shape
                 // that still starts at the real chord onset. Its shape and arp flags
                 // are untrustworthy, but a single well-formed raw end is useful as
@@ -15700,39 +15708,6 @@
                     holdEnd.material.opacity = 0.72;
                     holdEnd.position.set((xl + xr) * 0.5, y, dZ(hold.end - now));
                     holdEnd.scale.set(Math.abs(xr - xl), 1, 0.22 * K);
-                }
-            }
-        }
-
-        // The regular lane already draws anchor-backed position guidance.
-        // Additional hand-shape guides only fill missing/mismatched bounds,
-        // including picked passages without a visible chord frame.
-        function drawHandPositionGuides(now, model) {
-            const rows = model.guides;
-            const boardY = S_BASE - NH / 2 - 2 * K;
-            for (let i = firstVisibleChordGuide(model.guidesPrefixEnds, now); i < rows.length; i++) {
-                const guide = rows[i];
-                if (guide.start >= now + AHEAD) break;
-                if (guide.end <= now) continue;
-                const nearTime = Math.max(now, guide.start);
-                const farTime = Math.min(now + AHEAD, guide.end);
-                const length = (farTime - nearTime) * TS;
-                if (length <= 0) continue;
-                const xl = xFret(guide.dMin), xr = xFret(guide.dMax);
-                const zMid = dZ((nearTime + farTime) * 0.5 - now);
-                const positionFill = pLane.get();
-                positionFill.material = mHandPositionFill;
-                positionFill.position.set((xl + xr) * 0.5, boardY + 0.025 * K, zMid);
-                positionFill.rotation.x = -Math.PI / 2;
-                positionFill.scale.set(Math.abs(xr - xl), length, 1);
-                positionFill.renderOrder = 1;
-                for (let side = 0; side < 2; side++) {
-                    const positionRail = pLaneDivider.get();
-                    positionRail.material = mHandPositionEdge;
-                    setLaneDividerGeometry(positionRail);
-                    positionRail.position.set(side === 0 ? xl : xr, boardY + 0.03 * K, zMid);
-                    positionRail.scale.set(1, 1, length);
-                    positionRail.renderOrder = 2;
                 }
             }
         }
@@ -16808,6 +16783,7 @@
         function _ensureFretMarkerGoldIndex(bundle, notes, chords, beats, anchors) {
             const old = _fretMarkerGoldCache;
             const handShapes = bundle.handShapes, templates = bundle.chordTemplates;
+            const rawHandShapes = bundle.h3dRawHandShapes ?? handShapes;
             const rawChords = bundle.chords;
             if (old && old.notes === notes && old.noteCount === (notes?.length || 0)
                 && old.chords === chords && old.chordCount === (chords?.length || 0)
@@ -16815,6 +16791,7 @@
                 && old.beats === beats && old.beatCount === (beats?.length || 0)
                 && old.anchors === anchors && old.anchorCount === (anchors?.length || 0)
                 && old.handShapes === handShapes && old.shapeCount === (handShapes?.length || 0)
+                && old.rawHandShapes === rawHandShapes
                 && old.templates === templates && old.strings === nStr
                 && old.linkTargets === _linkNextTargetSet
                 && old.repeatNotes === _coincidentRepeatNoteSet
@@ -16864,7 +16841,7 @@
                 const isRepeat = !ch.h3dStrum && sig !== null && prevChordSig === sig
                     && Math.abs(ch.t - prevChordTime) < 0.5;
                 if (!ch.h3dSynth) { prevChordSig = sig; prevChordTime = ch.t; }
-                const hint = chordHandShapeArpeggioHint(ch, handShapes, templates);
+                const hint = chordHandShapeArpeggioHint(ch, handShapes, templates, rawHandShapes);
                 const lavender = !ch.h3dStrum && chordUsesArpeggioFrame(ch, hint);
                 const synth = suppressSynthChordForNotes(ch);
                 let bounds = ch.h3dStrum ? ch.bounds : null;
@@ -16942,6 +16919,7 @@
                 notes, noteCount: notes?.length || 0, chords, chordCount: chords?.length || 0,
                 rawChords, rawChordCount: rawChords?.length || 0, beats, beatCount: beats?.length || 0,
                 anchors, anchorCount: anchors?.length || 0, handShapes, shapeCount: handShapes?.length || 0,
+                rawHandShapes,
                 templates, strings: nStr, linkTargets: _linkNextTargetSet,
                 repeatNotes: _coincidentRepeatNoteSet, allowed: _fretLabelAllowed,
                 holdModel: _chordGuideCache?.model, strumFrames: _authoredStrumCache, byFret,
@@ -17185,6 +17163,9 @@
                 _scrapeAnchorUniform = _h3dFretUniform;
             }
             const effectiveAnchors = cameraMode === 'stable' ? stableRegionAnchors(bundle) : _scrapeAnchors;
+            // Keep archived input intact. Every handshape visual uses the same
+            // chart-static evidence; camera updates still receive the source bundle.
+            bundle = { ...bundle, h3dRawHandShapes: bundle.handShapes, handShapes: _guidanceLanes.evidence.handShapes };
             pbBeg(0);
             _trailYieldFrameId++;
             for (const event of _visibleTrailEvents) {
@@ -18237,7 +18218,6 @@
             drawHandShapeArpBrackets(now,
                 ensureArpeggioBracketGuides(bundle.handShapes, bundle.chordTemplates, anchors));
             drawChordHoldGuides(now, _chordGuideCache.model);
-            drawHandPositionGuides(now, _chordGuideCache.model);
 
             // Fret span of the dynamic highway lane (wire dMin .. dMax). Reused
             // so fret-column measure markers stay inside the same horizontal
@@ -19071,7 +19051,7 @@
                         ? chordOpenBoxW
                         : openNoteLaneBoxW(ch.t);
 
-                    const hsHintFrame = chordHandShapeArpeggioHint(ch, bundle.handShapes, bundle.chordTemplates);
+                    const hsHintFrame = chordHandShapeArpeggioHint(ch, bundle.handShapes, bundle.chordTemplates, bundle.h3dRawHandShapes);
                     const hsTimeWinFrame = hsHintFrame.hs
                         ? { tLo: hsStart(hsHintFrame.hs) - 0.06, tHi: hsEnd(hsHintFrame.hs) + 0.06 }
                         : null;
@@ -24619,6 +24599,7 @@
             _laneIntervalCache.reset();
             _laneSegLen = _laneSegments.length = 0;
             _guidanceLanes.notes = _guidanceLanes.chords = _guidanceLanes.anchors = _guidanceLanes.result = null;
+            _guidanceLanes.handShapes = _guidanceLanes.templates = _guidanceLanes.evidence = _guidanceLanes.base = null;
             const cache = _stableRegions;
             cache.notes = cache.chords = cache.anchors = null;
             cache.noteCount = cache.chordCount = cache.anchorCount = -1;
@@ -24632,17 +24613,29 @@
             _stablePlan.geometryKey = '';
         }
 
-        const _guidanceLanes = { notes: null, chords: null, anchors: null, result: null, noteCount: -1, chordCount: -1, anchorCount: -1, strings: 0 };
+        const _guidanceLanes = {
+            notes: null, chords: null, anchors: null, handShapes: null, templates: null,
+            evidence: null, base: null, result: null, noteCount: -1, chordCount: -1,
+            anchorCount: -1, shapeCount: -1, templateCount: -1, strings: 0,
+        };
         function resolvedGuidanceAnchors(bundle) {
             const c = _guidanceLanes;
-            if (c.notes !== bundle.notes || c.chords !== bundle.chords || c.anchors !== bundle.anchors
+            if (!c.evidence || c.notes !== bundle.notes || c.chords !== bundle.chords || c.anchors !== bundle.anchors
+                || c.handShapes !== bundle.handShapes || c.templates !== bundle.chordTemplates
                 || c.noteCount !== (bundle.notes?.length || 0) || c.chordCount !== (bundle.chords?.length || 0)
-                || c.anchorCount !== (bundle.anchors?.length || 0) || c.strings !== nStr) {
-                c.result = hwyResolveChordLanes(bundle.chords,
+                || c.anchorCount !== (bundle.anchors?.length || 0)
+                || c.shapeCount !== (bundle.handShapes?.length || 0)
+                || c.templateCount !== (bundle.chordTemplates?.length || 0) || c.strings !== nStr) {
+                c.evidence = buildHandshapeGuidance({ notes: bundle.notes, chords: bundle.chords,
+                    handShapes: bundle.handShapes, templates: bundle.chordTemplates, stringCount: nStr });
+                c.base = hwyResolveChordLanes(bundle.chords,
                     hwyResolveGuidanceAnchors(bundle.notes, bundle.chords, bundle.anchors), bundle.notes, nStr);
+                c.result = composeHandPositionLanes(c.base, c.evidence.grips, { eventGrips: c.evidence.eventGrips });
                 c.notes = bundle.notes; c.chords = bundle.chords; c.anchors = bundle.anchors;
+                c.handShapes = bundle.handShapes; c.templates = bundle.chordTemplates;
                 c.noteCount = bundle.notes?.length || 0; c.chordCount = bundle.chords?.length || 0;
                 c.anchorCount = bundle.anchors?.length || 0;
+                c.shapeCount = bundle.handShapes?.length || 0; c.templateCount = bundle.chordTemplates?.length || 0;
                 c.strings = nStr;
             }
             return c.result;
@@ -24654,7 +24647,11 @@
             if (c.notes !== notes || c.chords !== chords || c.anchors !== anchors
                 || c.noteCount !== (notes?.length || 0) || c.chordCount !== (chords?.length || 0)
                 || c.anchorCount !== (anchors?.length || 0) || c.strings !== nStr || c.uniform !== _h3dFretUniform) {
-                c.rows = hwyResolveChordLanes(chords, hwyBuildPlayingRegions(notes, chords, anchors, nStr), notes, nStr);
+                // Compose last: inferred regions and chord repair must not
+                // narrow a supported complete grip back to its first notes.
+                c.rows = composeHandPositionLanes(hwyResolveChordLanes(chords,
+                    hwyBuildPlayingRegions(notes, chords, _guidanceLanes.base, nStr), notes, nStr),
+                    _guidanceLanes.evidence.grips, { eventGrips: _guidanceLanes.evidence.eventGrips });
                 c.notes = notes; c.chords = chords; c.anchors = anchors;
                 c.noteCount = notes?.length || 0; c.chordCount = chords?.length || 0;
                 c.anchorCount = anchors?.length || 0; c.strings = nStr; c.uniform = _h3dFretUniform;
@@ -25675,7 +25672,7 @@
             if (gFHXLines) { gFHXLines.dispose(); gFHXLines = null; }
             mLaneOdd = mLaneEven = mLaneDivider = mRsLaneDivider = gLanePlane = gGhostFretPlane = null;
             gLaneDivider = gRsLaneDivider = null;
-            mHandPositionEdge = mHandPositionFill = null;
+            mHandPositionEdge = null;
             mRsLaneEdge = null;
             chordFrameGradTex = chordFrameGradTexRs = chordFrameGradTexArp = null;
             pFretColMarker = null;
@@ -25700,6 +25697,8 @@
             _coincidentRepeatNotesRef = null;
             _coincidentRepeatChordsRef = null;
             _boxedChordMembership = null;
+            _hintCache = new WeakMap();
+            _hintCacheHsRef = _hintCacheRawHsRef = _hintCacheTplRef = null;
             prevLowFretBonus = 0;
             prevLockActive = false;
             _camSnapped = false;
