@@ -364,9 +364,9 @@ test('frame history is per clock and disabled diagnostics allocate no ring stora
     assert.equal(arrays, 0); assert.equal(a.diagnostics(), null);
 });
 
-// Recover the complete pre-filter clock, and pin its body to fef2502. The hash
-// makes this an independent frozen reference even though the unchanged code is
-// shared with the candidate, rather than embedding a second large clock body.
+// Remove only correction-velocity filtering for the jitter comparison below.
+// Validate this derived oracle against the independent frozen scalar-wall clock
+// when the two input intervals match; retain newer zoom timing in both variants.
 const velocitySource = currentSource.replace(/\r\n/g, '\n');
 let unfilteredSource = velocitySource
     .replace('        let correctionVelocity = NaN;\n', '')
@@ -380,10 +380,91 @@ const inspectVelocity = factory(velocitySource.replace(
     '            frameMotionDelta() { return frameMotionDt; },',
     '            frameMotionDelta() { return frameMotionDt; },\n            testVelocity() { return correctionVelocity; },'));
 
-test('velocity filtering changes only its scalar state and normal correction in the frozen clock', () => {
-    assert.equal(require('node:crypto').createHash('sha256').update(unfilteredSource).digest('hex'),
-        '586dae3699cd09c090692bcd30fb72ff4e9ef65c42930df2b14ea418bd89a9fb');
+test('unfiltered oracle retains independent scalar timing and transport lifecycle behavior', () => {
     assert.notEqual(unfilteredSource, velocitySource);
+    assert.doesNotMatch(unfilteredSource, /\b(?:correctionVelocity|boundedCorrection|appliedCorrection)\b/,
+        'the comparison clock must not retain any correction-velocity filtering');
+    for (const rate of [.25, 1, 2]) {
+        const clock = unfiltered(), legacy = reference();
+        clock.trace(true); legacy.trace(true);
+        const rows = [
+            [0, 10, {}], [10, 10 + .034 * rate, {}],
+            [20, 10 + .008 * rate, {}], [30, 10 + .051 * rate, {}],
+            [40, 9, {state: 'paused'}], [50, 10 + .05 * rate, {}],
+            [310, 10 + .05 * rate, {sampledAt: 50, freshAt: 50}],
+            [400, 10 + .05 * rate, {sampledAt: 50, freshAt: 50}],
+            [410, 10 + .41 * rate, {}],
+            [420, 10 + .42 * rate, {generation: 2, rate: rate / 2}],
+            [430, 10 + .43 * rate, {endTime: 10 + .415 * rate}],
+            [440, 2, {epoch: 2}], [450, 1, {epoch: 2, state: 'rewind'}],
+            [460, .5, {epoch: 3, state: 'count-in'}], [470, .51, {epoch: 3}],
+        ];
+        for (const [wall, position, options] of rows) {
+            const args = [wall, position, wall + 10000, {rate, ...options}];
+            assert.equal(sample(clock, ...args), sample(legacy, ...args),
+                `unfiltered timing at ${wall}ms and ${rate}x`);
+        }
+        const currentTrace = clock.diagnostics(), legacyTrace = legacy.diagnostics();
+        assert.deepEqual(Array.from(currentTrace.fields), Array.from(legacyTrace.fields));
+        assert.deepEqual(Array.from(currentTrace.reasons), Array.from(legacyTrace.reasons));
+        for (let i = 0; i < rows.length; i++)
+            assert.deepEqual(Array.from(currentTrace.rows[i]), Array.from(legacyTrace.rows[i]));
+        clock.reset(); legacy.reset();
+        assert.equal(sample(clock, 1000, 20, 11000), sample(legacy, 1000, 20, 11000));
+    }
+});
+
+test('filtering preserves camera intervals and zoom holds without spending recovery jumps', () => {
+    const filtered = make(), plain = unfiltered();
+    const rows = [
+        [0, 10, {}, 0],
+        [10, 10.013, {}, NaN], [20, 10.017, {}, NaN],
+        [30, 9.9, {state: 'paused'}, 0], [40, 10.04, {}, NaN],
+        [300, 10.04, {sampledAt: 40, freshAt: 40}, .25],
+        [400, 10.04, {sampledAt: 40, freshAt: 40}, 0],
+        [410, 10.41, {}, 0], [420, 10.42, {}, NaN],
+        [430, 10.43, {endTime: 10.425}, 'remaining'],
+        [440, 10.425, {state: 'ended', endTime: 10.425}, 0],
+        [450, 2, {epoch: 2}, 0],
+        [460, 1, {epoch: 2, state: 'rewind'}, 0],
+        [470, .5, {epoch: 3, state: 'count-in'}, 0],
+    ];
+    const intervals = [];
+    for (const clock of [filtered, plain]) {
+        let previous;
+        const frames = [];
+        clock.trace(true);
+        for (const [wall, position, options, expected] of rows) {
+            const time = sample(clock, wall, position, wall + 100, options);
+            if (Number.isNaN(expected)) assert.ok(Number.isNaN(clock.zoomSongDelta()), `${wall}: normal fallback`);
+            else assert.equal(clock.zoomSongDelta(), expected === 'remaining' ? time - previous : expected,
+                `${wall}: only usable song time may drive zoom`);
+            if (expected === 'remaining') assert.ok(time > previous && time === 10.425);
+            frames.push(clock.frameMotionDelta());
+            previous = time;
+        }
+        intervals.push(frames);
+    }
+    // Filtering may change displayed time and its delta, but not the audio
+    // target, transport metadata, or the chosen camera interval.
+    const a = filtered.diagnostics(), b = plain.diagnostics();
+    for (let i = 0; i < rows.length; i++) for (const column of [0, 2, 3, 4, 5, 6, 7, 8, 9, 11])
+        assert.equal(a.rows[i][column], b.rows[i][column]);
+    assert.deepEqual(intervals[0], intervals[1]);
+    assert.deepEqual(intervals[0], [NaN, .01, .01, NaN, NaN, NaN, NaN, NaN, .01, NaN, NaN, NaN, NaN, NaN]);
+    for (const clock of [filtered, plain]) {
+        clock.reset();
+        sample(clock, 0, 10, 100);
+        sample(clock, 10, 10.01, 110);
+        const held = sample(clock, 300, 10.01, 400, {sampledAt: 10, freshAt: 10});
+        const end = sample(clock, 310, 11, 410, {endTime: 10.5});
+        assert.equal(end, 10.5);
+        assert.ok(end - held > .2, 'fixture must recover a real source gap at song end');
+        assert.equal(clock.zoomSongDelta(), 0, 'recovery reaching the end must not spend the catch-up jump');
+        clock.reset();
+        assert.ok(Number.isNaN(clock.zoomSongDelta()));
+        assert.ok(Number.isNaN(clock.frameMotionDelta()));
+    }
 });
 
 test('a short correction-velocity filter reduces known-truth callback jitter without moving the audio target', () => {
