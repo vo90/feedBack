@@ -2,9 +2,8 @@
 // highway.setNoteStateProvider / getNoteStateProvider / getNoteState,
 // bundle.getNoteState, isDefaultRenderer, and the _noteState
 // normalization rules. The createHighway closure owns canvas + WebGL
-// lifecycle that's too heavy for a vm sandbox, so — like the other
-// highway tests in this dir — these lock in the wiring by inspecting
-// the source rather than executing it.
+// lifecycle that's too heavy for a vm sandbox. Wiring is source-checked;
+// small judgment/culling blocks run independently of the graphics setup.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -137,12 +136,45 @@ test('default 2D renderer threads note state into drawNote / drawSustains / chor
         'chord-note path must key the lookup by the chord time and gate on the provider');
 });
 
-test('3D highway captures bundle.getNoteState and overrides legacy hit/miss with the provider verdict', () => {
+test('3D highway honors provider verdicts and legacy fallback without lighting guidance-only notes', () => {
     const src = fs.readFileSync(highway3dJs, 'utf8');
     assert.match(src, /_ndGetNoteState\s*=\s*\(bundle\s*&&\s*typeof\s+bundle\.getNoteState\s*===\s*['"]function['"]\)\s*\?\s*bundle\.getNoteState\s*:\s*null/, 'update() must capture bundle.getNoteState into _ndGetNoteState');
-    // Provider verdict wins: miss => not _showHit; otherwise provider state
-    // or the legacy fallback (`hit`) plus the pre-hit ghost window preview.
-    assert.match(src, /const\s+_showHit\s*=\s*\(\s*_ndState\s*===\s*['"]miss['"]\s*\)\s*\?\s*false\s*:\s*\(\s*_ndState\s*\?\s*_ndGood\s*:\s*\(\s*hit\s*\|\|\s*\(\s*n\.f\s*>\s*0\s*&&\s*inGhostWin\s*\)\s*\)\s*\)/, '_showHit must honor a provider "miss" and fall back to the hit/ghost heuristic only with no verdict');
+    const query = extractBlock(src, 'if (!guidanceOnly && !scrape && _ndGetNoteState)');
+    const showHit = src.match(/const\s+_showHit\s*=\s*[^;]+;/);
+    assert.ok(showHit, 'missing _showHit declaration');
+    // Execute the production provider lookup and final hit expression. No
+    // canvas, materials or sustain latch are needed for these short notes.
+    const evaluate = new Function('guidanceOnly', 'verdict', 'hit', 'fret', 'inGhostWin', 'hasProvider = true', `
+        const n = { t: 1, f: fret }, sourceNote = n, scrape = false;
+        const _ndProbed = false, _ndProbedState = null;
+        let _ndGood = false, _ndState = null, _ndCs = null, _ndCsIsObj = false;
+        let calls = 0;
+        const _ndGetNoteState = hasProvider ? () => { calls++; return verdict; } : null;
+        ${query}
+        ${showHit[0]}
+        return { showHit: _showHit, calls };
+    `);
+    const cases = [
+        { name: 'miss overrides both proximity and preview', verdict: 'miss', hit: true, ghost: true, expected: false },
+        { name: 'object miss overrides proximity', verdict: { state: 'miss' }, hit: true, expected: false },
+        { name: 'hit lights a note outside proximity', verdict: 'hit', expected: true },
+        { name: 'active object lights a note outside proximity', verdict: { state: 'active' }, expected: true },
+        { name: 'no verdict falls back to proximity', hit: true, expected: true },
+        { name: 'no verdict falls back to a fretted preview', ghost: true, expected: true },
+        { name: 'open notes have no fretted preview', fret: 0, ghost: true, expected: false },
+        { name: 'no verdict outside proximity and preview stays unlit', expected: false },
+    ];
+    for (const { name, verdict = null, hit = false, fret = 3, ghost = false, expected } of cases) {
+        assert.deepEqual(evaluate(false, verdict, hit, fret, ghost), { showHit: expected, calls: 1 }, name);
+        assert.deepEqual(evaluate(true, verdict, hit, fret, ghost), { showHit: false, calls: 0 },
+            `guidance-only: ${name}`);
+        if (verdict === null) {
+            assert.deepEqual(evaluate(false, null, hit, fret, ghost, false), { showHit: expected, calls: 0 },
+                `no provider: ${name}`);
+            assert.deepEqual(evaluate(true, null, hit, fret, ghost, false), { showHit: false, calls: 0 },
+                `guidance-only without provider: ${name}`);
+        }
+    }
 });
 
 test('3D highway captures _ndHasProvider via bundle.getNoteStateProvider (feedBack#254)', () => {
@@ -163,6 +195,44 @@ test('3D highway captures _ndHasProvider via bundle.getNoteStateProvider (feedBa
     assert.match(src, /ndVerdictT0\s*=\s*_ndHasProvider/, 'ndVerdictT0 outer-loop extension must gate on _ndHasProvider');
     assert.match(src, /if\s*\(\s*_ndHasProvider\s*&&\s*chordTailHoldS\s*<\s*NOTEDETECT_GEM_VERDICT_WINDOW/,
         'chord-frame hold floor must gate on _ndHasProvider');
-    assert.match(src, /if\s*\(\s*!_ndHasProvider\s*\|\|\s*dt\s*<\s*-NOTEDETECT_GEM_VERDICT_WINDOW\s*\)\s*return/,
-        'drawNote smart-cull provider probe must gate on _ndHasProvider');
+});
+
+test('3D smart culling extends real verdicts but never probes expired guidance-only notes', () => {
+    const src = fs.readFileSync(highway3dJs, 'utf8');
+    const cull = extractBlock(src, 'if (_overLinger && (!hasSus || now > susEnd) && !arpGhostShouldRun)');
+    const windowDeclaration = src.match(/const\s+NOTEDETECT_GEM_VERDICT_WINDOW\s*=\s*[^;]+;/);
+    assert.ok(windowDeclaration, 'missing verdict-window constant');
+    const verdictWindow = new Function(`${windowDeclaration[0]} return NOTEDETECT_GEM_VERDICT_WINDOW;`)();
+    const evaluate = new Function('context', `
+        const { guidanceOnly, _ndHasProvider, dt, arpGhostShouldRun, _ndGetNoteState } = context;
+        const _overLinger = true, hasSus = false, now = 1, susEnd = 0;
+        ${windowDeclaration[0]}
+        const n = { t: now + dt, s: 0 }, sourceNote = n;
+        const _susVerdictLatch = new Map();
+        let _ndProbed = false, _ndProbedState = null;
+        ${cull}
+        return { probed: _ndProbed, verdict: _ndProbedState };
+    `);
+    const cases = [
+        { name: 'hit remains visible within verdict window', verdict: 'hit', keep: true, calls: 1 },
+        { name: 'active object remains visible within verdict window', verdict: { state: 'active' }, keep: true, calls: 1 },
+        { name: 'miss remains visible within verdict window', verdict: 'miss', keep: true, calls: 1 },
+        { name: 'silent provider does not extend lifetime', verdict: null, calls: 1 },
+        { name: 'invalid verdict does not extend lifetime', verdict: 'unknown', calls: 1 },
+        { name: 'provider exception does not extend lifetime', throws: true, calls: 1 },
+        { name: 'no registered provider is not probed', provider: false, calls: 0 },
+        { name: 'verdict past the window is not probed', dt: -verdictWindow - 0.001, calls: 0 },
+        { name: 'verdict exactly at the window remains eligible', dt: -verdictWindow, verdict: 'hit', keep: true, calls: 1 },
+        { name: 'expired guidance-only note is not probed', guidance: true, verdict: 'hit', calls: 0 },
+        { name: 'active arpeggio guidance keeps its projection without probing', guidance: true, arp: true, keep: true, calls: 0 },
+    ];
+    for (const { name, guidance = false, provider = true, dt = -0.2, arp = false, verdict = null, throws = false, keep = false, calls: expectedCalls } of cases) {
+        let calls = 0;
+        const result = evaluate({ guidanceOnly: guidance, _ndHasProvider: provider, dt, arpGhostShouldRun: arp,
+            _ndGetNoteState() { calls++; if (throws) throw new Error('provider unavailable'); return verdict; } });
+        assert.equal(result !== undefined, keep, name);
+        assert.equal(calls, expectedCalls, `${name}: provider calls`);
+        if (keep) assert.deepEqual(result, { probed: calls > 0, verdict: calls > 0 ? verdict : null },
+            `${name}: retain the probe result for the later draw path`);
+    }
 });
