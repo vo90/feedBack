@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { buildHandshapeGuidance, composeHandPositionLanes } = require('../../plugins/highway_3d/src/hand-position-guidance.mjs');
 
 const source = fs.readFileSync(path.join(__dirname, '../../plugins/highway_3d/screen.js'), 'utf8');
 function extract(name) {
@@ -15,7 +16,7 @@ function extract(name) {
 function harness() {
     const start = source.indexOf('const _stableRegions = {');
     const end = source.indexOf('function stableRegionReset()', start);
-    return new Function(`
+    return new Function('buildHandshapeGuidance', 'composeHandPositionLanes', `
         let nStr=6, _h3dFretUniform=true, lefty=false, builds=0;
         const NFRETS=24, CHORD_ANCHOR_TIME_EPS=.000501;
         const isUnpitchedMute=n=>n.f>24;
@@ -43,10 +44,12 @@ function harness() {
             region:(b,t)=>({...stablePlayingRegion(b,t)}),
             count:()=>builds,
             cache:()=>_stableRegions,
+            guidance:()=>_guidanceLanes,
+            resolved:resolvedGuidanceAnchors,
             reset:stableRegionReset,
             options(o){ if(o.strings)nStr=o.strings; if('uniform'in o)_h3dFretUniform=o.uniform; if('lefty'in o)lefty=o.lefty; }
         };
-    `)();
+    `)(buildHandshapeGuidance, composeHandPositionLanes);
 }
 const bundle = () => ({notes:[],chords:[],anchors:[{time:0,fret:2,width:4},{time:10,fret:10,width:4}]});
 
@@ -108,5 +111,35 @@ test('teardown releases all chart references and the last returned region row', 
     assert.equal(h.cache().chords,null);
     assert.equal(h.cache().anchors,null);
     assert.deepEqual(h.cache().rows,[]);
+    for (const key of ['handShapes','templates','evidence','base','result']) assert.equal(h.guidance()[key],null);
     h.region(b,1); assert.equal(h.count(),2);
+});
+
+test('handshape and template replacements or streamed growth invalidate both lane views', () => {
+    const h=harness(), b=bundle();
+    b.anchors=[{time:0,fret:3,width:4}];
+    b.notes=[{t:1,s:1,f:3},{t:1.2,s:2,f:5},{t:1.4,s:3,f:7}];
+    b.chordTemplates=[{frets:[-1,3,5,7,-1,-1]}];
+    b.handShapes=[{start_time:1,end_time:2,chord_id:0}];
+    const stable=h.rows(b), lookahead=h.resolved(b), evidence=h.guidance().evidence;
+    assert.deepEqual([h.region(b,1.5).dMin,h.region(b,1.5).dMax],[2,7]);
+    for(let i=0;i<2000;i++) {
+        assert.equal(h.rows({...b,currentTime:i%3}),stable);
+        assert.equal(h.resolved(b),lookahead);
+        assert.equal(h.guidance().evidence,evidence);
+    }
+    b.handShapes=[...b.handShapes]; h.rows(b);
+    assert.notEqual(h.guidance().evidence,evidence);
+    b.handShapes.push({start_time:3,end_time:4,chord_id:0}); h.rows(b);
+    b.chordTemplates=[{frets:[-1,3,5,-1,-1,-1]}]; h.rows(b);
+    assert.deepEqual([h.region(b,1.5).dMin,h.region(b,1.5).dMax],[2,6]);
+    b.chordTemplates.push({frets:[-1,3,5,7,-1,-1]}); h.rows(b);
+    assert.equal(h.count(),5);
+});
+
+test('empty streaming metadata can rebuild after teardown', () => {
+    const h=harness(), b={notes:null,chords:null,anchors:null,handShapes:null,chordTemplates:null};
+    h.rows(b); h.reset();
+    assert.doesNotThrow(()=>h.rows(b));
+    assert.ok(h.guidance().evidence);
 });

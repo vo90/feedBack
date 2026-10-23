@@ -12,7 +12,7 @@ function harness() {
         const NFRETS=24, nStr=6, S_COL=Array(6), _oobStringWarned=true;
         const ARP_INFER_MIN_HAND_SHAPE_SPAN_S=.2;
         const _HINT_NONE=Object.freeze({explicit:false,covered:false,hs:null,fallbackInferenceStopBefore:null});
-        let _hintCache=new WeakMap(), _hintCacheHsRef=null, _hintCacheTplRef=null;
+        let _hintCache=new WeakMap(), _hintCacheHsRef=null, _hintCacheRawHsRef=null, _hintCacheTplRef=null;
         const _ARP_CID_NULL={}, _arpCidCache=new WeakMap();
         const _ARP_BOUNDS_NULL={}, _arpBoundsCache=new WeakMap();
         // Isolate occurrence selection from the independently tested inference

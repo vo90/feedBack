@@ -99,18 +99,35 @@ for (const members of [[3,-1,-1,-1,-1,-1],[3,5,-1,-1,-1,-1]]) {
   add('handshape-unplayed-'+phantom.length,base({notes:[note({t:10,s:4,f:1})],
     chordTemplates:[{name:'',frets:members}],handShapes:[shape(10,12)]}),[],
     {image:true,absentGems:phantom,presentGems:[{t:10,s:4,f:1}],stemNotes:[{t:10,s:4,f:1}],
-      exactFrames:0,positionNotes:phantom,sampleTimes:[9.7,10,10.03,10.5,9.7]});
+      exactFrames:0,absentPositionNotes:phantom,sampleTimes:[9.7,10,10.03,10.5,9.7]});
 }
 add('handshape-coincident',base({notes:[note({t:10,s:1,f:3,sus:.6})],
   handShapes:[shape(10,12)]}),[],{image:true,absentGems:[{t:10,s:2,f:5}],
   presentGems:[{t:10,s:1,f:3}],stemNotes:[{t:10,s:1,f:3}],exactFrames:0,
   wantTrailOnsets:[10],sampleTimes:[9.7,10,10.03,10.3,9.7]});
-add('handshape-explicit-preview',base({chordTemplates:[{...template,arp:true}],
+// An arpeggio flag alone cannot justify phantom fingering or a blue frame.
+add('handshape-explicit-unplayed',base({chordTemplates:[{...template,arp:true}],
   handShapes:[shape(10,12,0,{arp:true})]}),[],{image:true,
   absentGems:[{t:10,s:1,f:3},{t:10,s:2,f:5}],
+  absentPositionNotes:[{t:10,s:1,f:3},{t:10,s:2,f:5}],exactFrames:0});
+// The same authored grip remains visible when actual picked notes support it.
+add('handshape-explicit-preview',base({chordTemplates:[{...template,arp:true}],
+  notes:[note({t:10,s:1,f:3,sus:.3}),note({t:10.5,s:2,f:5,sus:.3})],
+  handShapes:[shape(10,12,0,{arp:true})]}),[],{image:true,
+  absentGems:[{t:10,s:2,f:5}],presentGems:[{t:10,s:1,f:3},{t:10.5,s:2,f:5}],
   positionNotes:[{t:10,s:1,f:3},{t:10,s:2,f:5}],exactFrames:1});
 add('handshape-real-chord',base({chords:[chord(10,.6)],handShapes:[shape(10,12)]}),[[10,10.6]],
   {image:true,presentGems:[{t:10,s:1,f:3},{t:10,s:2,f:5}],exactFrames:1});
+// A rejected grip's finite end is still negative-only timing evidence: the
+// later picked note must not retroactively turn the real chord into an arp.
+add('rejected-handshape-timing-veto',base({currentTime:19.7,
+  anchors:[{time:0,fret:5,width:4}],
+  chordTemplates:[{name:'A5',frets:[5,7,-1,-1,-1,-1]},
+    {name:'Stale grip',frets:[3,5,-1,-1,-1,-1]}],
+  chords:[20,21].map(t=>chord(t,0,{notes:[note({s:0,f:5}),note({s:1,f:7})]})),
+  notes:[note({t:20,s:0,f:5}),note({t:20.25,s:1,f:7})],
+  handShapes:[shape(20,20.25,1)]}),[],{image:true,wantFrames:2,
+    presentGems:[{t:20,s:1,f:7},{t:21,s:1,f:7}],noArpeggioFrames:true});
 for (const origin of ['source', 'user', 'generated', 'unknown']) {
   for (const cameraMode of ['lookahead', 'stable']) for (const lefty of [false, true]) {
     const lo = 1, hi = 5;
@@ -170,8 +187,12 @@ add('open-unequal',base({chords:[chord(10,0,{notes:[note({s:1,f:0,sus:1.5}),note
 add('linked-slide',base({chords:[chord(10,1,{notes:pair(1).map(n=>({...n,sl:n.f+2,ln:true}))}),
   chord(11,1,{notes:pair(1).map(n=>({...n,f:n.f+2}))})]}),null,{image:true,wantRibbons:true});
 for(const now of [9.7,10.6]) add('anchor-change-'+now,base({currentTime:now,chords:[chord(10,2)],anchors:[{time:0,fret:3,width:4},{time:10.4,fret:9,width:4}]}),[[10,12]],{image:true,noTrails:true});
+// Both chord members support this full grip through the authored handshape.
+// Keep its position in the single main lane after the one-second hold ends;
+// the unrelated anchor resumes only when the handshape itself ends at 13.
 for(const now of [10.5,11.5])add('guide-anchor-change-'+now,base({currentTime:now,chords:[chord(10,1)],handShapes:[shape(10,13)],
-  anchors:[{time:0,fret:3,width:4},{time:11,fret:8,width:4}]}),now<11?[[10,11]]:[],{image:true,wantPositionGuide:[11,13]});
+  anchors:[{time:0,fret:3,width:4},{time:11,fret:8,width:4}]}),now<11?[[10,11]]:[],
+    {image:true,wantUnifiedPosition:[[11,3,6],[12.999,3,6],[13.001,8,11]]});
 add('equivalent-template',base({chords:[chord()],chordTemplates:[template,{...template}],handShapes:[shape(10,12,1)]}),[[10,12]],{image:false});
 add('gap',base({chords:[chord(10),chord(11)],handShapes:[shape(10,10.4),shape(11,11.5)]}),[[10,10.4],[11,11.5]],{image:true});
 add('no-duplicate-open-trail',base({chords:[chord(10,0,{notes:[note({s:1,f:0,sus:1}),note({s:2,f:2,sus:1})]})],
@@ -233,8 +254,9 @@ async function main() {
       if(u.origin!=='http://hold-fixture.test')return route.fulfill({status:403,body:'External network forbidden.'});
       if(u.pathname==='/')return route.fulfill({contentType:'text/html',body:'<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:#101820}#host{position:relative;width:100vw;height:100vh}canvas{width:100%;height:100%;display:block}</style><div id="host"><canvas id="highway"></canvas></div><script src="/screen.js"></script>'});
       if(u.pathname==='/screen.js')return route.fulfill({contentType:'text/javascript',body:served});
-      const file=path.resolve(repo,'.'+decodeURIComponent(u.pathname));
-      if(file.startsWith(repo+path.sep)&&fs.existsSync(file)&&fs.statSync(file).isFile())return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.png')?'image/png':'application/octet-stream',body:fs.readFileSync(file)});
+      const relative=decodeURIComponent(u.pathname).replace(/^\/api\/plugins\/highway_3d\/(?:g\/camera-\d+\/)?src\//,'/plugins/highway_3d/src/');
+      const file=path.resolve(repo,'.'+relative);
+      if(file.startsWith(repo+path.sep)&&fs.existsSync(file)&&fs.statSync(file).isFile())return route.fulfill({contentType:/\.m?js$/.test(file)?'text/javascript':file.endsWith('.png')?'image/png':'application/octet-stream',body:fs.readFileSync(file)});
       return route.fulfill({status:404,body:'Unknown fixture asset'});
     });
     await page.goto('http://hold-fixture.test/');
@@ -269,6 +291,7 @@ async function main() {
         for(const n of scenario.presentGems||[])check(proof.notes.filter(g=>sameNote(g.note,n)).length===1,scenario.name+': missing/duplicate gem '+JSON.stringify(n));
         for(const n of scenario.stemNotes||[])check(proof.stems.filter(g=>sameNote(g.note,n)).length===1,scenario.name+': missing/duplicate stem '+JSON.stringify(n));
         for(const n of scenario.positionNotes||[])check(proof.positions.some(g=>sameNote(g.note,n)&&g.mesh.visible&&g.mesh.material.opacity>0),scenario.name+': missing hand-position ghost '+JSON.stringify(n));
+        for(const n of scenario.absentPositionNotes||[])check(!proof.positions.some(g=>sameNote(g.note,n)&&g.mesh.visible&&g.mesh.material.opacity>0),scenario.name+': unsupported hand-position ghost '+JSON.stringify(n));
         if(scenario.exactFrames!==undefined)check(proof.frames.length===scenario.exactFrames,scenario.name+': unexpected frame count');
       }
       check(proof.renderer.calls>0,scenario.name+': no draw calls');
@@ -290,8 +313,15 @@ async function main() {
       }
       if(!reference&&scenario.wantRibbons)check(proof.ribbons.length>0,scenario.name+': moving technique ribbon lost');
       if(!reference&&scenario.wantFrames)check(proof.frames.length===scenario.wantFrames,scenario.name+': repeated strum frames lost');
-      if(!reference&&scenario.wantPositionGuide){const [start,end]=scenario.wantPositionGuide;
-        check(proof.positionRails.filter(g=>g.start===start&&g.end===end).length===2,scenario.name+': hand-shape guidance lost after anchor change');}
+      if(!reference&&scenario.noArpeggioFrames)check(!proof.frames.some(f=>f.isArpeggioFrame),scenario.name+': rejected handshape produced a blue arpeggio frame');
+      if(!reference&&scenario.wantUnifiedPosition){
+        check(proof.positionRails.length===0,scenario.name+': duplicate hand-position rails');
+        for(const [time,first,last] of scenario.wantUnifiedPosition){
+          const lane=proof.lanes.filter(a=>a.time<=time+.000501).at(-1);
+          check(lane&&lane.fret===first&&lane.fret+lane.width-1===last,
+            scenario.name+': unified hand position at '+time+' should be '+first+'-'+last);
+        }
+      }
       if(!reference&&scenario.wantTrailOnsets)for(const onset of scenario.wantTrailOnsets)
         check([...proof.trails,...proof.ribbons].some(t=>t.note.t===onset),scenario.name+': missing independent trail at '+onset);
       if(!reference&&scenario.trailStrings) {
@@ -334,6 +364,8 @@ async function main() {
           samples.push(sample);
           if(!reference)for(const n of scenario.absentGems||[])
             check(!sample.notes.some(g=>sameNote(g.note,n)),`${scenario.name}: phantom gem at playback/seek ${time}`);
+          if(!reference)for(const n of scenario.absentPositionNotes||[])
+            check(!sample.positions.some(g=>sameNote(g.note,n)&&g.mesh.visible&&g.mesh.material.opacity>0),`${scenario.name}: unsupported hand-position ghost at playback/seek ${time}`);
           if(!reference)for(const n of scenario.presentGems||[]) {
             const authored=scenario.b.notes.find(a=>sameNote(a,n));
             if(authored&&time<=n.t+(authored.sus||0))check(sample.notes.filter(g=>sameNote(g.note,n)).length===1,
