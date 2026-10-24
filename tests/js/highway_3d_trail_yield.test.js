@@ -1500,8 +1500,8 @@ test('rendering and eligibility share one rendered footprint model', () => {
     assert.doesNotMatch(crossingBody, /trailYieldSettings\.(?:gemInFront|includeTrails)/);
     assert.match(src, /_trailYieldEventsByFret\[f\][\s\S]{0,350}?trailYieldEventMatchesRenderedFootprint/);
     assert.match(src, /for\s*\(let f = 0; f <= NFRETS/);
-    assert.match(src, /collectTrailYieldTargetsForStrand\([\s\S]{0,350}?xBase\s*\+\s*offsets\[si\],/);
-    assert.match(src, /collectTrailYieldTargetsForStrand\([\s\S]{0,350}?xBase,/);
+    assert.match(src, /collectTrailYieldTargetsForStrand\([\s\S]{0,350}?trailBaseX\s*\+\s*offsets\[si\],/);
+    assert.match(src, /collectTrailYieldTargetsForStrand\([\s\S]{0,350}?trailBaseX,/);
 });
 
 test('3D settings expose one shared width and separate passing-note and endpoint timing', () => {

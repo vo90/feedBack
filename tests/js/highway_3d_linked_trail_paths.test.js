@@ -141,7 +141,7 @@ test('a non-drawable member ends a visibility path without changing attack suppr
     assert.ok(original.attacks.has(b), 'visibility eligibility does not resurrect a suppressed attack');
 });
 
-test('an open lane-position change splits only the discontinuous join', () => {
+test('a rejected geometry join splits only that edge of a continuation chain', () => {
     const a = n({ f: 0, ln: true }), b = n({ t: 11, f: 0, ln: true }), c = n({ t: 12, f: 0 });
     const original = build([a, b, c]);
     const model = helpers().hwyBuildLinkedTrailPaths(original.links, { canJoin: (source, target) => target !== b });

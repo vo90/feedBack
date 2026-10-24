@@ -33,11 +33,11 @@ const linkBuilder=served.match(/function hwyBuildLinkedTrailPaths\([^)]*\) \{/);
 if (linkBuilder) served = once(served,linkBuilder[0],
     linkBuilder[0]+' if(window.__trailBuilds!==undefined)window.__trailBuilds++;');
 served = once(served, 'bodyGeom.attributes.position.needsUpdate = true;', `bodyGeom.attributes.position.needsUpdate = true;
- if(window.__trailProbe)window.__trailProbe.strands.push({kind:'ribbon',note:{...n},nominalBodyWidth:bodyTw,nominalOutlineWidth:outlineTw,trailEnd,yieldWindows:Array.from({length:yieldCount},(_,i)=>[yieldStarts[i],yieldEnds[i]]),yieldSettings:{...yieldSettings},
+ if(window.__trailProbe)window.__trailProbe.strands.push({kind:'ribbon',note:{...n},nominalBodyWidth:bodyTw,nominalBodyHeight:bodyTh,nominalOutlineWidth:outlineTw,nominalOutlineHeight:outlineTh,trailEnd,yieldWindows:Array.from({length:yieldCount},(_,i)=>[yieldStarts[i],yieldEnds[i]]),yieldSettings:{...yieldSettings},
  samples:times.map((t,i)=>{const o=i*12;return {t,body:Array.from(bodyPositions.slice(o,o+12)),outline:Array.from(outlinePositions.slice(o,o+12)),alpha:bodyColors?bodyColors[i*16+3]:1};})});`);
 served = once(served, 'tr.scale.set(tw, th, segLen);', `tr.scale.set(tw, th, segLen);
  if(window.__trailProbe){const sample=(t,z,bw,bh,ow,oh)=>({t,body:[xOff-bw/2,y-bh/2,z,xOff+bw/2,y-bh/2,z,xOff+bw/2,y+bh/2,z,xOff-bw/2,y+bh/2,z],outline:[xOff-ow/2,y-oh/2,z,xOff+ow/2,y-oh/2,z,xOff+ow/2,y+oh/2,z,xOff-ow/2,y+oh/2,z],alpha:1});
- window.__trailProbe.strands.push({kind:'box',note:{...n},nominalBodyWidth:tr.scale.x,nominalOutlineWidth:trOut.scale.x,samples:[sample(now-(zCenter+segLen/2)/TS,zCenter+segLen/2,tr.scale.x,tr.scale.y,trOut.scale.x,trOut.scale.y),sample(now-(zCenter-segLen/2)/TS,zCenter-segLen/2,tr.scale.x,tr.scale.y,trOut.scale.x,trOut.scale.y)]});}`);
+ window.__trailProbe.strands.push({kind:'box',note:{...n},nominalBodyWidth:tr.scale.x,nominalBodyHeight:tr.scale.y,nominalOutlineWidth:trOut.scale.x,nominalOutlineHeight:trOut.scale.y,samples:[sample(now-(zCenter+segLen/2)/TS,zCenter+segLen/2,tr.scale.x,tr.scale.y,trOut.scale.x,trOut.scale.y),sample(now-(zCenter-segLen/2)/TS,zCenter-segLen/2,tr.scale.x,tr.scale.y,trOut.scale.x,trOut.scale.y)]});}`);
 served = once(served, 'const core = pNote.get();', `const core = pNote.get();
  if(window.__trailProbe)window.__trailProbe.gems.push({note:{...n},fromChord});`);
 const gemRegistrar=served.match(/function trailYieldRegisterGem\([^)]*\) \{/)[0];
@@ -73,9 +73,32 @@ for(const technique of ['tr','vb'])add('linked-'+technique,base({notes:[note({su
 add('chord-to-single',base({chords:[{t:10,id:0,notes:[note({sus:1,ln:true}),note({s:2,f:7,sus:.3})]}],notes:[note({t:11,sus:.4,slu:2}),obstacle({t:11.5})]}),{image:true,seams:[[10,11]],expectFull:[10,11]});
 add('single-to-chord',base({notes:[note({sus:1,ln:true}),obstacle({t:11.2})],chords:[{t:11,id:0,notes:[note({t:11,sus:1}),note({t:11,s:2,f:7,sus:.4})]}]}),{seams:[[10,11]],expectNarrow:true});
 add('arpeggio-to-single',base({notes:[note({sus:1,ln:true}),note({t:10.3,s:2,f:7}),note({t:11,sus:1}),obstacle()],handShapes:[{start_time:10,end_time:10.9,chord_id:0,arpeggio:true}]}),{image:true,seams:[[10,11]]});
-// A chart moves open-string display geometry with its anchor. These disjoint
-// strands must not be falsely joined or acquire narrowing from a hidden attack.
-add('open-anchor-change',base({notes:[note({f:0,sus:1,ln:true}),note({t:11,f:0,sus:1})],anchors:[{time:0,fret:3,width:4},{time:11,fret:7,width:5}]}),{image:true,expectFull:[10,11]});
+// A hand-position change does not re-strike a tied open string. Both visible
+// rails retain their head's position and cross-section through the chain.
+add('open-anchor-change',base({notes:[note({f:0,sus:1,ln:true}),note({t:11,f:0,sus:1})],anchors:[{time:0,fret:3,width:4},{time:11,fret:7,width:5}]}),{image:true,expectFull:[10,11],openSeams:[[10,11]],hidden:[{t:11,s:0}],seekTimes:[10.99,11.05,11.5,9.8]});
+add('open-new-attack-anchor-change',base({notes:[note({f:0,sus:1}),note({t:11,f:0,sus:1})],anchors:[{time:0,fret:3,width:4},{time:11,fret:7,width:5}]}),{openDisjoint:[10,11]});
+// The final D5 in Cirice: a 167 ms chord continues as standalone notes while
+// the lane moves from fret 1 to fret 2. Rounded source timing differs by 23 us.
+// Keep that timing, the yellow 1->2 slide and the authored handshape changes.
+function openChordContinuation(orientation='normal') {
+    const start=352.846985,end=353.014008;
+    return base({currentTime:352.5,inverted:orientation==='inverted',lefty:orientation==='lefty',
+        tuning:[-2,-2,-2,-2,-2,-2],
+        notes:[note({t:end,s:0,f:0,sus:6.5}),note({t:end,s:1,f:2,sus:6.5})],
+        chords:[{t:start,id:0,notes:[note({t:start,s:0,f:0,sus:.167,ln:true}),note({t:start,s:1,f:1,sus:.167,sl:2,ln:true})]}],
+        chordTemplates:[{name:'D5',frets:[0,1,-1,-1,-1,-1],fingers:[0,1,-1,-1,-1,-1]},
+            {name:'D5',frets:[0,2,-1,-1,-1,-1],fingers:[0,1,-1,-1,-1,-1]}],
+        anchors:[{time:0,fret:7,width:4},{time:start,fret:1,width:4},{time:end,fret:2,width:4}],
+        handShapes:[{start_time:start,end_time:352.958008,chord_id:0},
+            {start_time:end,end_time:359.791992,chord_id:1}],
+        beats:Array.from({length:22},(_,i)=>({time:350+i/3,measure:i%4===0?i/4:-1}))});
+}
+for(const orientation of ['normal','lefty','inverted','foreground-trails'])add('open-chord-continuation-'+orientation,openChordContinuation(orientation),{
+    image:true,mode:orientation==='foreground-trails'?3:1,openSeams:[[352.846985,353.014008]],
+    seams:[[352.846985,353.014008,1]],roundedSeams:true,
+    hidden:[{t:353.014008,s:0},{t:353.014008,s:1}],
+    seekTimes:orientation==='normal'?[352.99,353.05,356,352.5]:[],
+});
 add('hidden-continuation-unsplit',base({notes:[note({t:9.8,s:1,sus:1.5}),note({sus:2})]}),{expectNarrow:true});
 add('hidden-continuation-split',base({notes:[note({t:9.8,s:1,sus:1.2,ln:true}),note({sus:2}),note({t:11,s:1,sus:.3})]}),{expectNarrow:true,hidden:[{t:11,s:1}]});
 add('target-linked-trail',base({notes:[note({sus:2}),note({t:10.2,s:1,sus:.8,ln:true}),note({t:11,s:1,sus:.8,sl:8})]}),{mode:3,expectNarrow:true});
@@ -119,8 +142,28 @@ function validateScene(s,p){
     for(const strand of p.strands)for(const sample of strand.samples)for(const kind of ['body','outline'])check(sample[kind].every(Number.isFinite),s.name+': nonfinite '+kind+' geometry');
     if(reference)return;
     const ss=s.sourceString??0;
-    for(const [left,right] of s.seams||[]){const a=sourceStrands(p,left,ss).find(r=>Math.abs(r.samples.at(-1).t-right)<.0011),b=sourceStrands(p,right,ss)[0];check(a&&b,`${s.name}: missing connected seam ${left}-${right}`);if(!a||!b)continue;
-        for(const kind of ['body','outline']){const x=dim(a.samples.at(-1),kind),y=dim(b.samples[0],kind);for(const key of s.widthOnly?['width','height']:['width','height','x','y','z'])check(Math.abs(x[key]-y[key])<2e-6,`${s.name}: ${kind} ${key} seam mismatch ${x[key]} vs ${y[key]}`);}}
+    for(const [left,right] of s.openSeams||[]){
+        const rails=onset=>sourceStrands(p,onset,ss).sort((a,b)=>dim(a.samples[0],'body').x-dim(b.samples[0],'body').x);
+        const a=rails(left),b=rails(right);
+        check(a.length===2&&b.length===2,`${s.name}: expected two open rails on each side of ${left}-${right}`);
+        if(a.length!==2||b.length!==2)continue;
+        for(let rail=0;rail<2;rail++){
+            const end=a[rail].samples.at(-1),start=b[rail].samples[0];
+            check(Math.abs(end.t-start.t)<.00005,`${s.name}: open sustain timing gap ${start.t-end.t}`);
+            for(const kind of ['body','outline']){
+                const x=dim(end,kind),y=dim(start,kind);
+                for(const key of ['width','height','x','y'])check(Math.abs(x[key]-y[key])<(s.roundedSeams&&['width','height'].includes(key)?3e-5:2e-6),`${s.name}: open rail ${rail} ${kind} ${key} seam mismatch ${x[key]} vs ${y[key]}`);
+                // Authored rounding remains in time/depth, not in lane position.
+                check(Math.abs(x.z-y.z)<.01,`${s.name}: open rail ${rail} depth gap ${x.z-y.z}`);
+            }
+        }
+    }
+    if(s.openDisjoint){const [left,right]=s.openDisjoint,a=sourceStrands(p,left,ss),b=sourceStrands(p,right,ss);
+        check(a.length===2&&b.length===2,s.name+': missing independent open rails');
+        if(a.length===2&&b.length===2)check(Math.abs(dim(a[0].samples[0],'body').x-dim(b[0].samples[0],'body').x)>.01,s.name+': independent attack incorrectly inherited previous lane');
+        check(p.gems.some(n=>n.note.s===ss&&Math.abs(n.note.t-right)<1e-5),s.name+': independent open attack suppressed');}
+    for(const [left,right,seamString=ss] of s.seams||[]){const a=sourceStrands(p,left,seamString).find(r=>Math.abs(r.samples.at(-1).t-right)<.0011),b=sourceStrands(p,right,seamString)[0];check(a&&b,`${s.name}: missing connected seam ${left}-${right}`);if(!a||!b)continue;
+        for(const kind of ['body','outline']){const x=dim(a.samples.at(-1),kind),y=dim(b.samples[0],kind);for(const key of s.widthOnly?['width','height']:['width','height','x','y','z'])check(Math.abs(x[key]-y[key])<(s.roundedSeams?(key==='z'?.01:['width','height'].includes(key)?3e-5:2e-6):2e-6),`${s.name}: string ${seamString} ${kind} ${key} seam mismatch ${x[key]} vs ${y[key]}`);}}
     if(s.expectNarrow)check(p.strands.filter(r=>r.note.s===ss).some(r=>r.samples.some(v=>dim(v,'body').width/r.nominalBodyWidth<.7)),s.name+': genuine obstacle never narrows source');
     for(const onset of s.expectFull||[])for(const r of sourceStrands(p,onset,ss))check(r.samples.every(v=>dim(v,'body').width/r.nominalBodyWidth>.99),s.name+': false narrowing at '+onset);
     for(const h of s.hidden||[])check(!p.gems.some(n=>n.note.s===h.s&&Math.abs(n.note.t-h.t)<1e-5),s.name+': hidden continuation attack rendered');
@@ -150,12 +193,23 @@ async function main(){
         await page.route('**/*',async route=>{const u=new URL(route.request().url());if(u.origin!=='http://trail-fixture.test')return route.fulfill({status:403,body:'External network forbidden'});
             if(u.pathname==='/')return route.fulfill({contentType:'text/html',body:'<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:#101820}#host{position:relative;width:100vw;height:100vh}canvas{width:100%;height:100%;display:block}</style><div id="host"><canvas id="highway"></canvas></div><script src="/screen.js"></script>'});
             if(u.pathname==='/screen.js')return route.fulfill({contentType:'text/javascript',body:served});
-            const file=path.resolve(repo,'.'+decodeURIComponent(u.pathname));if(file.startsWith(repo+path.sep)&&fs.existsSync(file)&&fs.statSync(file).isFile())return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.png')?'image/png':'application/octet-stream',body:fs.readFileSync(file)});return route.fulfill({status:404,body:'Unknown fixture asset'});});
+            const fixturePath=decodeURIComponent(u.pathname).replace(/^\/api\/plugins\/highway_3d\/(?:g\/camera-\d+\/)?src\//,'/plugins/highway_3d/src/');
+            const file=path.resolve(repo,'.'+fixturePath);if(file.startsWith(repo+path.sep)&&fs.existsSync(file)&&fs.statSync(file).isFile())return route.fulfill({contentType:/\.m?js$/.test(file)?'text/javascript':file.endsWith('.png')?'image/png':'application/octet-stream',body:fs.readFileSync(file)});return route.fulfill({status:404,body:'Unknown fixture asset'});});
         await page.goto('http://trail-fixture.test/');
         await page.evaluate(()=>{window.__capture=()=>{const a=r.__trailAudit();window.__trailProbe={strands:[],gems:[],orders:[]};a.ren.info.autoReset=false;a.ren.info.reset();r.draw(bundle);const p=window.__trailProbe;window.__trailProbe=null;p.orders=p.orders.map(({meshes,...v})=>({...v,orders:meshes.map(m=>m.renderOrder)}));return {time:bundle.currentTime,notation:a.notation,modelBuilds:window.__trailBuilds,renderer:{calls:a.ren.info.render.calls,triangles:a.ren.info.render.triangles,memory:{...a.ren.info.memory}},...p};};});
         async function init(b,mode=1){await page.evaluate(async({b,style,mode})=>{if(window.r)r.destroy();localStorage.clear();const settings={trailYieldEnabled:mode>0,trailYieldGemInFront:mode>=2,trailYieldIncludeTrails:mode===3,style:'off',notationStyle:style,palette:'default',glow:0,vibrancy:.85,cinematic:false,sparks:false,bloom:false,verdictMarks:false,timingFx:false,streakFx:false,hitFx:0,chordDiagramVisible:false,cameraSmoothing:0,zoomSmoothing:0,tiltSmoothing:0};for(const [k,v] of Object.entries(settings)){localStorage.setItem('h3d_bg_'+k,String(v));const setter=window['h3dBgSet'+k[0].toUpperCase()+k.slice(1)];if(typeof setter==='function')setter(v);}window.__trailBuilds=0;window.bundle=b;window.r=feedBackViz_highway_3d();r.init(document.getElementById('highway'),bundle);await r.readyPromise;for(let i=0;i<3;i++)r.draw(bundle);},{b,style,mode});}
         for(const s of scenes.filter(s=>!args.includes('--perf-only')&&(!option('--case')||option('--case').split(',').some(q=>s.name.includes(q))))){
-            await init(s.b,s.mode);const p=await page.evaluate(()=>__capture());validateScene(s,p);results.push({name:s.name,mode:s.mode,realFileSha:s.realFileSha,...p});if(s.image)await page.screenshot({path:path.join(out,s.name+'.png')});console.log(s.name+': '+p.strands.length+' trail strands, '+p.renderer.calls+' calls');}
+            await init(s.b,s.mode);const p=await page.evaluate(()=>__capture());validateScene(s,p);results.push({name:s.name,mode:s.mode,realFileSha:s.realFileSha,...p});if(s.image)await page.screenshot({path:path.join(out,s.name+'.png')});console.log(s.name+': '+p.strands.length+' trail strands, '+p.renderer.calls+' calls');
+            for(const time of s.seekTimes||[]){const q=await page.evaluate(time=>{bundle.currentTime=time;return __capture();},time);results.push({name:s.name+'-seek-'+time,...q});
+                if(!reference){const onset=s.openSeams.at(-1)[1],ss=s.sourceString??0;
+                    const rails=proof=>sourceStrands(proof,onset,ss).sort((a,b)=>dim(a.samples[0],'body').x-dim(b.samples[0],'body').x);
+                    const a=rails(p),b=rails(q);check(a.length===2&&b.length===2,s.name+': seek lost open continuation rails at '+time);
+                    if(a.length===2&&b.length===2)for(let rail=0;rail<2;rail++){
+                        for(const kind of ['body','outline'])for(const key of ['x','y'])check(Math.abs(dim(a[rail].samples[0],kind)[key]-dim(b[rail].samples[0],kind)[key])<2e-6,`${s.name}: seek ${time} changes rail ${rail} ${kind} ${key}`);
+                        for(const key of ['nominalBodyWidth','nominalBodyHeight','nominalOutlineWidth','nominalOutlineHeight'])check(Math.abs(a[rail][key]-b[rail][key])<2e-6,`${s.name}: seek ${time} changes rail ${rail} ${key}`);
+                    }
+                    check(q.modelBuilds===1,s.name+': seek rebuilt linked topology');}}
+        }
         if(!option('--case')&&!args.includes('--perf-only')){
             if(!reference)for(const key of ['straight','bend','hidden-continuation']){const a=results.find(s=>s.name===key+'-unsplit'),b=results.find(s=>s.name===key+'-split');for(let t=10;t<=12+.0001;t+=.025){const aw=widthScaleAt(a,t),bw=widthScaleAt(b,t);check(aw!==null&&bw!==null&&Math.abs(aw-bw)<.07,`${key} partition changes width at ${t.toFixed(3)}: ${aw} vs ${bw}`);}}
             await init(straightSplit());const seeks=[];for(const time of [8,9.8,10.3,10.98,11.02,11.8,12.1,9.8])seeks.push(await page.evaluate(time=>{bundle.currentTime=time;return __capture();},time));

@@ -383,6 +383,14 @@ eligible. `trailOpenLayoutAt` must match the actual chord/standalone rail spans,
 including fallback bounds and rounded anchor timing. Rebuild this metadata when
 the cached hold model changes; never infer a rendered trail from sustain alone.
 
+An open-to-open tie keeps the first member's lane center and width for both
+rails through the entire validated path. `trailLinkedOpenLayout` resolves that
+head layout for emitted geometry and source/target visibility footprints, even
+after a seek leaves the head off screen. Do not restart the rail layout at a
+continuation's anchor or switch to standalone padding after a chord. Authored
+projections and new attacks retain their own lane. Open/fretted transitions and
+ambiguous reused origins remain separate; chart timing and scoring are unchanged.
+
 `hwyTrailPriorityWorldZ` treats trail-first targets as foreground constraints,
 not replacement positions: a target may raise the emitted segment's natural
 sorting depth but must never move it backward. This also applies when an open

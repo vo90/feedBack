@@ -21,7 +21,9 @@ const names = [
     'playedFretSpanCoversShape', 'chordFallbackLaneBounds', 'chordShapeLaneBounds', 'hwyLinkNextTargetNotes',
     'slideInMarks', 'hwyBuildChordHoldGuidance', 'chordGuideTimedRowAt', 'hwyUncoveredHandPositionGuides',
     'chordMemberTrailSuppressed', 'hwyBuildIndependentTrailOrigins', 'hwyBuildLinkedTrailPaths',
-    'openNoteLaneBoxW', 'trailOpenLayoutAt',
+    'openNoteLaneBoxW', 'trailOpenLayoutAt', 'hwyCanJoinIndependentTrails', 'hwyLinkedTrailMemberAt',
+    'trailLinkedOpenLayout', 'trailCrossingTargetStrands', 'trailVisibilitySourceMemberAt',
+    'trailVisibilitySourceNoteAt', 'trailVisibilitySourceCenterXAt', 'trailVisibilitySourceWidthAt',
 ];
 const constants = ['CHORD_ANCHOR_TIME_EPS', 'BEND_LINK_TIME_EPS']
     .map(name => source.match(new RegExp('const ' + name + ' = [^;]+;'))[0]).join('\n') + '\nconst _slideInMarkCache = new WeakMap(), SLIDE_OUT_EMPTY_MARKS = Object.freeze([]);';
@@ -30,12 +32,30 @@ const eventEnd = source.indexOf('    /** Fixed pre-impact ramp window', eventSta
 const h = new Function(`
     const NFRETS=24, MAX_RENDER_STRINGS=8, K=1, NW=5, OPEN_NOTE_PAD_X=2;
     const fretX=f=>f*10, xFret=fretX, xFretMid=f=>(f-.5)*10;
-    const curX=80, _drawAnchors=[];
+    const curX=80, _drawAnchors=[], rsPlusNotation=false, RSPLUS_SUSTAIN_STROKE_SCALE=.5;
+    let _linkedTrailOpenOrigins=new WeakMap();
+    const _trailYieldMatchContext={}, _trailOpenLayoutScratch=new Float64Array(2);
+    const _trailCrossingTargetBases=new Float64Array(4), _trailCrossingTargetWidths=new Float64Array(4);
+    let _trailCrossingTargetBaseCount=0;
+    const slideTrailEnd=()=>null, sustainTrailCenterXAt=(n,base)=>base;
     ${constants}
     ${names.map(extract).join('\n')}
     ${source.slice(eventStart,eventEnd)}
     return { chordMemberTrailSuppressed, hwyBuildIndependentTrailOrigins, hwyBuildChordHoldGuidance,
-        hwyBuildTrailYieldEvents, trailOpenLayoutAt, hwyBuildTrailOcclusionIndex, hwyLinkNextTargetNotes };
+        hwyBuildTrailYieldEvents, trailOpenLayoutAt, hwyBuildTrailOcclusionIndex, hwyLinkNextTargetNotes,
+        hwyCanJoinIndependentTrails, hwyBuildLinkedTrailPaths, trailLinkedOpenLayout,
+        configure(anchors,origins) { _drawAnchors.splice(0,_drawAnchors.length,...anchors); _linkedTrailOpenOrigins=origins; },
+        sourceRail(path,time,strand) {
+            const layout=trailLinkedOpenLayout(path,new Float64Array(2));
+            const scale=Math.max(.22,layout[1]*.96/40);
+            Object.assign(_trailYieldMatchContext,{path,strandIndex:strand,sourceSampleMember:null,
+                trailBodyW:NW*.85*scale,trailW:NW*.85*scale+.4,openWScale:scale,trailEdgePad:.4});
+            return [trailVisibilitySourceCenterXAt(time,NW*.85*scale+.4),trailVisibilitySourceWidthAt(time)];
+        },
+        targetRails(event) {
+            const count=trailCrossingTargetStrands(event);
+            return Array.from({length:count},(_,i)=>[_trailCrossingTargetBases[i],_trailCrossingTargetWidths[i]]);
+        } };
 `)();
 const chord = (durations, extra={}) => ({ t:10, id:0,
     notes:durations.map((sus,s)=>({s,f:s===0?0:5,sus})), ...extra });
@@ -112,7 +132,75 @@ test('reused open notes with different render origins are rejected as ambiguous 
     const origins=h.hwyBuildIndependentTrailOrigins([note],[ch],new Map(),6);
     assert.equal(origins.drawable.has(note),true);
     assert.equal(origins.openOrigins.get(note),false);
+    assert.equal(h.hwyCanJoinIndependentTrails(note,{s:0,f:0},origins.openOrigins),false);
     assert.deepEqual(Object.keys(note).sort(),['f','s','sus','t']);
+});
+
+function linkedFor(notes,chords,anchors) {
+    const holds=modelFor(chords,notes), links=new Map();
+    const attacks=h.hwyLinkNextTargetNotes(notes,chords,1e-6,links);
+    const origins=h.hwyBuildIndependentTrailOrigins(notes,chords,holds.byChord,6);
+    const model=h.hwyBuildLinkedTrailPaths(links,{
+        trailVisible:note=>origins.drawable.has(note),
+        canJoin:(a,b)=>h.hwyCanJoinIndependentTrails(a,b,origins.openOrigins),
+    });
+    h.configure(anchors,origins.openOrigins);
+    const events=h.hwyBuildTrailYieldEvents(notes,chords,6,{
+        trailVisible:note=>origins.drawable.has(note), suppressedAttacks:attacks,linkedPaths:model,
+    }).flat().filter(Boolean);
+    return {model,events,attacks};
+}
+
+test('Cirice open chord tie keeps both rails across the fret-1 to fret-2 lane handoff', () => {
+    const start=352.846985, seam=353.014008;
+    const ch={t:start,id:16,notes:[{s:0,f:0,sus:.167,ln:true},{s:1,f:1,sus:.167,sl:2,ln:true}]};
+    const notes=[{t:seam,s:0,f:0,sus:6.5},{t:seam,s:1,f:2,sus:6.5}];
+    const anchors=[{time:start,fret:1,width:4},{time:seam,fret:2,width:4}];
+    const before=JSON.stringify({ch,notes,anchors});
+    const {model,events,attacks}=linkedFor(notes,[ch],anchors);
+    const p=model.byNote.get(ch.notes[0]).path;
+    assert.equal(model.byNote.get(notes[0]).path,p);
+    assert.equal(p.start,start); assert.equal(p.end,seam+6.5);
+    assert.equal(attacks.has(notes[0]),true);
+    assert.deepEqual(Array.from(h.trailLinkedOpenLayout(p,new Float64Array(2))),[20,40]);
+    const expected=[[5.6,4.48],[34.4,4.48]];
+    const near=(a,b)=>assert.ok(Math.abs(a-b)<1e-9,`${a} != ${b}`);
+    // Queries before and after the join, including a seek back into the root,
+    // must agree with the rendered target strands used for occlusion.
+    for(const time of [seam+6,seam,seam-.05,start+.02]) for(let strand=0;strand<2;strand++) {
+        h.sourceRail(p,time,strand).forEach((v,i)=>near(v,expected[strand][i]));
+    }
+    for(const note of [ch.notes[0],notes[0]]) {
+        const event=events.find(e=>e.sourceNote===note);
+        assert.equal(event.gemVisible,note===ch.notes[0]);
+        assert.equal(event.trailVisible,true);
+        h.targetRails(event).forEach((rail,s)=>rail.forEach((v,i)=>near(v,expected[s][i])));
+    }
+    assert.equal(model.byNote.get(ch.notes[1]).path,model.byNote.get(notes[1]).path,'fretted slide path is retained');
+    assert.equal(JSON.stringify({ch,notes,anchors}),before,'chart onsets, holds and lane metadata remain unchanged');
+});
+
+test('an open tie chain retains its first lane width, with fresh attacks using the new lane', () => {
+    const notes=[{t:10,s:0,f:0,sus:1,ln:true},{t:11,s:0,f:0,sus:1,ln:true},
+        {t:12,s:0,f:0,sus:1},{t:13,s:0,f:0,sus:1}];
+    const anchors=[{time:10,fret:3,width:4},{time:11,fret:8,width:6},{time:12,fret:15,width:2}];
+    const {model,events}=linkedFor(notes,[],anchors);
+    const p=model.byNote.get(notes[0]).path;
+    assert.equal(model.byNote.get(notes[2]).path,p);
+    assert.equal(model.byNote.has(notes[3]),false,'a new attack starts a separate layout');
+    assert.deepEqual(Array.from(h.trailLinkedOpenLayout(p,new Float64Array(2))),[40,44]);
+    assert.deepEqual(h.targetRails(events.find(e=>e.t===12)),h.targetRails(events.find(e=>e.t===10)));
+    assert.notDeepEqual(h.targetRails(events.find(e=>e.t===13)),h.targetRails(events.find(e=>e.t===10)));
+    assert.equal(h.hwyCanJoinIndependentTrails({f:0},{f:2},new WeakMap()),false);
+    assert.equal(h.hwyCanJoinIndependentTrails({f:2},{f:0},new WeakMap()),false);
+});
+
+test('fretted mutes drawn as open bars keep their existing per-onset footprint', () => {
+    h.configure([{time:10,fret:3,width:4},{time:11,fret:8,width:6}],new WeakMap());
+    const event={t:11,end:12,f:0,sourceFret:5,standaloneTrailVisible:true};
+    const ordinary=h.targetRails(event);
+    event.linkedPath={path:{members:[{onset:10,note:{f:5}}]}};
+    assert.deepEqual(h.targetRails(event),ordinary,'an authored fretted mute does not inherit an open tie layout');
 });
 
 test('incoming techniques bypass shared holds in actual trail origins and crossing events', () => {

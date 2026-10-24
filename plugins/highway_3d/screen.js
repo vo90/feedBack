@@ -3589,6 +3589,12 @@
         return { drawable, openOrigins };
     }
 
+    /** Open ties retain their first lane; unrelated or ambiguous origins stay separate. */
+    function hwyCanJoinIndependentTrails(source, destination, openOrigins) {
+        if ((source.f === 0) !== (destination.f === 0)) return false;
+        return source.f > 0 || (openOrigins.get(source) !== false && openOrigins.get(destination) !== false);
+    }
+
     /** Validated, renderer-only sustained paths. Attack suppression stays independent. */
     function hwyBuildLinkedTrailPaths(links, options = null) {
         const outgoing = new Map(), incoming = new Map(), byNote = new WeakMap(), paths = [];
@@ -17441,21 +17447,8 @@
                 _linkedTrailPaths = hwyBuildLinkedTrailPaths(bendLinks, {
                     trailVisible: note => origins.drawable.has(note),
                     visualStartForNote: slideInVisualStart,
-                    canJoin: (source, destination, sourceTime, targetTime) => {
-                        if ((source.f === 0) !== (destination.f === 0)) return false;
-                        if (source.f > 0) return true;
-                        // Open rails use the authored lane span, not a fret center.
-                        // A changed span is a real drawing discontinuity; do not
-                        // pretend its two rails form one physical strand.
-                        const a = _linkedTrailOpenOrigins.get(source);
-                        const b = _linkedTrailOpenOrigins.get(destination);
-                        if (a === false || b === false) return false;
-                        trailOpenLayoutAt(sourceTime, a, effectiveAnchors, _trailOpenLayoutScratch);
-                        const center = _trailOpenLayoutScratch[0], width = _trailOpenLayoutScratch[1];
-                        trailOpenLayoutAt(targetTime, b, effectiveAnchors, _trailOpenLayoutScratch);
-                        return Math.abs(center - _trailOpenLayoutScratch[0]) < 1e-8
-                            && Math.abs(width - _trailOpenLayoutScratch[1]) < 1e-8;
-                    },
+                    canJoin: (source, destination) => hwyCanJoinIndependentTrails(
+                        source, destination, _linkedTrailOpenOrigins),
                 });
                 _linkNextTargetNotesRef = notes;
                 _linkNextTargetChordsRef = bundle.chords;
@@ -20768,6 +20761,15 @@
             return out;
         }
 
+        // A held open string has no fret change. Keep both rails attached to
+        // its original slab even when a tied continuation changes hand lane
+        // or moves between chord and standalone notation. Resolve from the
+        // head on every draw so seeking and mirrored fret spacing agree.
+        function trailLinkedOpenLayout(path, out) {
+            const head = path.members[0];
+            return trailOpenLayoutAt(head.onset, _linkedTrailOpenOrigins.get(head.note), _drawAnchors, out);
+        }
+
         function trailYieldAddTargetXBounds(center, width, bounds) {
             const halfW = Math.max(0, width) * 0.5;
             bounds[0] = Math.min(bounds[0], center - halfW);
@@ -20845,7 +20847,8 @@
             for (let origin = 0; origin < 2; origin++) {
                 if (origin === 0 && !event.standaloneTrailVisible) continue;
                 if (origin === 1 && !event.chordTrailMeta) continue;
-                trailOpenLayoutAt(event.t, origin === 0 ? null : event.chordTrailMeta,
+                if (event.linkedPath?.path.members[0].note.f === 0) trailLinkedOpenLayout(event.linkedPath.path, _trailOpenLayoutScratch);
+                else trailOpenLayoutAt(event.t, origin === 0 ? null : event.chordTrailMeta,
                     _drawAnchors, _trailOpenLayoutScratch);
                 const baseX = _trailOpenLayoutScratch[0];
                 const scale = Math.max(0.22, _trailOpenLayoutScratch[1] * 0.96 / (40 * K));
@@ -20880,8 +20883,7 @@
             if (member && member.slideSt === undefined) member.slideSt = slideTrailEnd(n);
             let base = member && n.f > 0 ? xNote(n) : ctx.strandBaseX;
             if (ctx.path && n.f === 0) {
-                trailOpenLayoutAt(n.t, _linkedTrailOpenOrigins.get(member.note),
-                    _drawAnchors, _trailOpenLayoutScratch);
+                trailLinkedOpenLayout(ctx.path, _trailOpenLayoutScratch);
                 const center = _trailOpenLayoutScratch[0];
                 const scale = Math.max(0.22, _trailOpenLayoutScratch[1] * 0.96 / (40 * K));
                 base = center + (ctx.strandIndex === 0 ? -1 : 1) * NW * 3 * scale;
@@ -20893,9 +20895,7 @@
             const ctx = _trailYieldMatchContext;
             const note = trailVisibilitySourceNoteAt(chartTime);
             if (!ctx.path || note.f > 0) return ctx.trailW;
-            const member = trailVisibilitySourceMemberAt(chartTime);
-            trailOpenLayoutAt(note.t, _linkedTrailOpenOrigins.get(member.note),
-                _drawAnchors, _trailOpenLayoutScratch);
+            trailLinkedOpenLayout(ctx.path, _trailOpenLayoutScratch);
             const scale = Math.max(0.22, _trailOpenLayoutScratch[1] * 0.96 / (40 * K));
             return ctx.trailBodyW / ctx.openWScale * scale + ctx.trailEdgePad;
         }
@@ -22802,8 +22802,15 @@
                     const remSus = susEnd - susStart;
                     const sliceDur = Math.min(remSus, AHEAD, now + AHEAD - susStart);
                     if (sliceDur > (hasLeadIn ? 1e-6 : 0.01)) {
-                        let tw = NW * 0.85 * (n.f === 0 ? openWScale : 1);
-                        let th = NH * 0.12 * (n.f === 0 ? openWScale : 1) * openSlabThickMul;
+                        const visibilityPath = _linkedTrailPaths.byNote.get(n)?.path;
+                        let trailBaseX = xBase, trailOpenWScale = openWScale;
+                        if (n.f === 0 && visibilityPath?.members[0].note.f === 0) {
+                            trailLinkedOpenLayout(visibilityPath, _trailOpenLayoutScratch);
+                            trailBaseX = _trailOpenLayoutScratch[0];
+                            trailOpenWScale = Math.max(0.22, _trailOpenLayoutScratch[1] * 0.96 / OPEN_NOTE_WORLD_W);
+                        }
+                        let tw = NW * 0.85 * (n.f === 0 ? trailOpenWScale : 1);
+                        let th = NH * 0.12 * (n.f === 0 ? trailOpenWScale : 1) * openSlabThickMul;
                         if (n.pick_scrape_marks?.length) { tw = NW * .38; th = NH * .12; }
                         // Keep one cross-section through linked segments, including
                         // when an arpeggio member continues as a standalone note.
@@ -22845,7 +22852,7 @@
                         // No degenerate-small-offset fallback needed.
                         let offsets = SINGLE_SUS_OFFSETS;
                         if (n.f === 0) {
-                            const openTrailOffset = scrape ? 0 : NW * 3 * openWScale;
+                            const openTrailOffset = scrape ? 0 : NW * 3 * trailOpenWScale;
                             _trailYieldOpenOffsetsScratch[0] = -openTrailOffset;
                             _trailYieldOpenOffsetsScratch[1] = openTrailOffset;
                             offsets = scrape ? SINGLE_SUS_OFFSETS : _trailYieldOpenOffsetsScratch;
@@ -22853,7 +22860,6 @@
                         let yieldCount = 0;
                         let matchedEventCount = 0;
                         const visibleYieldEnd = susStart + sliceDur;
-                        const visibilityPath = _linkedTrailPaths.byNote.get(n)?.path;
                         const visibilityEnd = visibilityPath?.end ?? susEnd;
                         const includeTargetTrails = trailYieldIncludeTrails;
                         // Only visible relationships need mesh-to-mesh edges.
@@ -22887,7 +22893,7 @@
                             ctx.trailW = tw + trailEdgePad;
                             ctx.trailBodyW = tw;
                             ctx.trailEdgePad = trailEdgePad;
-                            ctx.openWScale = openWScale;
+                            ctx.openWScale = trailOpenWScale;
                             ctx.susEnd = susEnd;
 
                             if (n.f === 0) {
@@ -22900,7 +22906,7 @@
                                     const strandCount = collectTrailYieldTargetsForStrand(
                                         n, now, susEnd, visibleYieldEnd,
                                         starts, ends, targetTrailEnds, matchedEvents,
-                                        xBase + offsets[si],
+                                        trailBaseX + offsets[si],
                                         occlusionCount,
                                         includeTargetTrails
                                             ? _trailYieldOpenPriorityTimesScratch
@@ -22918,7 +22924,7 @@
                                     _trailYieldStartsScratch, _trailYieldEndsScratch,
                                     _trailYieldTargetTrailEndsScratch,
                                     _trailYieldMatchedEventsScratch,
-                                    xBase,
+                                    trailBaseX,
                                     occlusionCount,
                                     includeTargetTrails
                                         ? _trailYieldPriorityTimesScratch
@@ -22951,7 +22957,7 @@
                         let sameStringYield = false;
                         for (let si = 0; si < offsets.length; si++) {
                             _sameStringTargetsScratch[si] = sameStringTrailTargetTime(
-                                n, now, visibleYieldEnd, visibilityEnd, xBase + offsets[si], slideSt, si,
+                                n, now, visibleYieldEnd, visibilityEnd, trailBaseX + offsets[si], slideSt, si,
                             );
                             sameStringYield ||= Number.isFinite(_sameStringTargetsScratch[si]);
                         }
@@ -23029,13 +23035,13 @@
                         if (!ribbonSusTrail) {
                             const len = sliceDur * TS;
                             const zPos = dZ(susStart - now) - len / 2;
-                            emitSusStrip(x, len, zPos);
+                            emitSusStrip(trailBaseX + slideXNow, len, zPos);
                         } else {
                             // Same depth-based renderOrder as box trail — ribbon center
                             // at susStart + sliceDur/2, using TS so it matches dZ().
                             const _ribDt = Math.max(0, susStart + sliceDur / 2 - now);
                             for (let si = 0; si < offsets.length; si++) {
-                                const strandX = xBase + offsets[si];
+                                const strandX = trailBaseX + offsets[si];
                                 const strandYieldStarts = n.f === 0
                                     ? _trailYieldOpenStartsScratch[si]
                                     : _trailYieldStartsScratch;
