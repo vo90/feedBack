@@ -21,6 +21,19 @@ function slideTarget(note) {
     return null;
 }
 
+function slideMotion(note, time, duration, target) {
+    if (!(note.f > 0) || !(duration > 0) || target === null || target === note.f) return null;
+    // Match targetedSlideInterval in the renderer. A timed slide can leave a
+    // real stationary prefix/tail; its moving portion is never a held grip.
+    const i = note.slide_interval;
+    const interval = i && Number.isInteger(note.sl) && note.sl >= 0 && note.sl <= 48
+        && !(note.slu >= 0) && !note.mt
+        && Number.isFinite(i.start) && Number.isFinite(i.end)
+        && i.start >= 0 && i.end > i.start && i.end <= duration + 0.0000011 ? i : null;
+    return { start: time + (interval ? interval.start : 0),
+        end: time + (interval ? interval.end : duration), target, writtenEnd: time + duration };
+}
+
 function contact(note, time, count) {
     if (!note || !Number.isFinite(time)) return null;
     const string = note.s, value = note.f;
@@ -39,6 +52,7 @@ function contact(note, time, count) {
     // Even an unpitched attack ends the preceding note's ownership of a string.
     return { time, string, fret: value, evidence, end: time + (evidence ? duration : 0),
         target: evidence && duration > 0 ? target : null, targetTime: time + duration,
+        motion: evidence ? slideMotion(note, time, duration, target) : null,
         linked: evidence && flag(note.ln) };
 }
 
@@ -130,10 +144,21 @@ function eventGripsFromContacts(index) {
     for (const rows of index.strings) {
         for (const row of rows) {
             if (!row.evidence) continue;
-            const values = [row.fret, row.target].filter(value => value > 0);
-            if (!values.length) continue;
-            result.push({ start: row.time, end: Math.max(row.end, row.time + 2 * TIME_EPS),
-                low: Math.min(...values), high: Math.max(...values) });
+            // Slide paths belong to the trail/camera motion model, not to a
+            // simultaneous hand-position span. Preserve the actual onset and
+            // stationary portions without pinning a moving note to its source.
+            // Keep motion separate from target evidence: a repick can prevent
+            // arrival without turning the interrupted slide into a held note.
+            const sourceEnd = row.motion ? Math.min(row.end, row.motion.start) : row.end;
+            if (row.fret > 0) result.push({ start: row.time,
+                end: Math.max(sourceEnd, row.time + 2 * TIME_EPS), low: row.fret, high: row.fret });
+            if (row.motion && row.motion.target > 0) {
+                // A bare linkNext does not establish a destination hold beyond
+                // the written sustain. Real following notes supply their own.
+                const end = Math.min(row.end, row.motion.writtenEnd);
+                if (end > row.motion.end) result.push({ start: row.motion.end, end,
+                    low: row.motion.target, high: row.motion.target });
+            }
         }
     }
     return result.sort((a, b) => a.start - b.start || a.end - b.end);

@@ -23,6 +23,8 @@ const style = option('--style', 'rsplus');
 const width = Number(option('--width', 1280)), height = Number(option('--height', 720));
 const sourcePath = path.join(repo, 'plugins/highway_3d/screen.js');
 const source = fs.readFileSync(sourcePath, 'utf8');
+const guidancePath = path.join(repo, 'plugins/highway_3d/src/hand-position-guidance.mjs');
+const guidanceSource = fs.existsSync(guidancePath) ? fs.readFileSync(guidancePath) : null;
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const failures = [], errors = [], results = [];
 const check = (condition, message) => { if (!condition) failures.push(message); };
@@ -67,8 +69,11 @@ if (served.includes('const rl = pSusRail.get();')) {
 if(served.includes('const positionRail = pLaneDivider.get();'))served=once(served,'const positionRail = pLaneDivider.get();',
   'const positionRail = pLaneDivider.get(); if(window.__holdProbe)window.__holdProbe.positionRails.push({start:guide.start,end:guide.end,dMin:guide.dMin,dMax:guide.dMax,nearTime,farTime,mesh:positionRail});');
 served = once(served, 'bodyGeom.attributes.position.needsUpdate = true;', `bodyGeom.attributes.position.needsUpdate = true;
- if(window.__holdProbe)window.__holdProbe.ribbons.push({note:{...n},end:susStart+sliceDur});`);
-served = once(served, "contextType: 'webgl2',", `__holdAudit(){return {ren,cam,scene,fretWorld:xFret,style:typeof rsPlusNotation==='undefined'?'current':rsPlusNotation?'rsplus':'current'};},contextType: 'webgl2',`);
+ if(window.__holdProbe)window.__holdProbe.ribbons.push({note:{...n},end:susStart+sliceDur,
+   ...(window.bundle?.slideAudit?{points:Array.from({length:S+1},(_,i)=>({time:times[i],
+     world:[(bodyPositions[i*12]+bodyPositions[i*12+3])/2,(bodyPositions[i*12+1]+bodyPositions[i*12+7])/2,bodyPositions[i*12+2]],
+     corners:Array.from({length:4},(_,j)=>Array.from(bodyPositions.slice(i*12+j*3,i*12+j*3+3)))}))}:{})});`);
+served = once(served, "contextType: 'webgl2',", `__holdAudit(){return {ren,cam,scene,fretWorld:xFret,fretMidWorld:xFretMid,style:typeof rsPlusNotation==='undefined'?'current':rsPlusNotation?'rsplus':'current'};},contextType: 'webgl2',`);
 
 const note = values => ({sus:0,sl:-1,slu:-1,bn:0,ho:false,po:false,hm:false,hp:false,pm:false,mt:false,fhm:false,vb:false,tr:false,ac:false,tp:false,...values});
 const pair = (sus=0) => [note({s:1,f:3,sus}),note({s:2,f:5,sus})];
@@ -186,6 +191,35 @@ add('open-unequal',base({chords:[chord(10,0,{notes:[note({s:1,f:0,sus:1.5}),note
   chordTemplates:[{name:'A5',frets:[-1,0,2,-1,-1,-1],fingers:[-1,-1,1,-1,-1,-1]}]}),[],{image:true,wantOpenTrail:true});
 add('linked-slide',base({chords:[chord(10,1,{notes:pair(1).map(n=>({...n,sl:n.f+2,ln:true}))}),
   chord(11,1,{notes:pair(1).map(n=>({...n,f:n.f+2}))})]}),null,{image:true,wantRibbons:true});
+// Reduced Chasing Light passages and longer equivalents: a slide's route is
+// visible geometry, not a chord grip spanning its source and destination.
+for (const cameraMode of ['lookahead', 'stable']) {
+  const slideCases = [
+    {name:'chasing-light-up',t:88.207,shapeStart:88.207001,shapeEnd:88.296997,
+      source:[3,5],target:[5,7],duration:.09,targetTime:88.297,anchorTime:88.296997,key:'sl',linked:true},
+    {name:'chasing-light-down',t:90.846,shapeStart:90.846001,shapeEnd:92.985001,
+      source:[3,5],target:[2,4],duration:.987,key:'slu'},
+    ...['sl','slu'].flatMap(key=>[
+      {name:'long-up-'+key,t:10,source:[3,5],target:[15,17],duration:2,key,linked:true},
+      {name:'long-down-'+key,t:10,source:[15,17],target:[3,5],duration:2,key,linked:true},
+    ]),
+  ];
+  for (const row of slideCases) {
+    const end=row.t+row.duration, targetTime=row.targetTime??end;
+    const low=row.source[0], targets=row.target.map((f,s)=>note({t:targetTime,s,f,sus:.572}));
+    const b=base({cameraMode,slideAudit:true,currentTime:row.t-.2,
+      anchors:[{time:0,fret:low,width:4},
+        ...(row.linked?[{time:row.anchorTime??targetTime,fret:row.target[0],width:4}]:[])],
+      chordTemplates:[{name:'Power chord',frets:[...row.source,-1,-1,-1,-1]}],
+      chords:[{t:row.t,id:0,notes:row.source.map((f,s)=>note({s,f,sus:row.duration,[row.key]:row.target[s],ln:!!row.linked}))}],
+      notes:row.linked?targets:[],
+      handShapes:[shape(row.shapeStart??row.t,row.shapeEnd??end)]});
+    add('slide-position-'+row.name+'-'+cameraMode,b,null,{image:true,wantRibbons:true,sharedLane:true,
+      frameBounds:[[row.t,low-1,low+3]],
+      slidePath:row.source.map((f,s)=>({t:row.t,s,f,target:row.target[s],end,unpitched:row.key==='slu'})),
+      sampleTimes:[row.t,row.t+row.duration*.5,end-.02,end+.05,row.t-.2]});
+  }
+}
 for(const now of [9.7,10.6]) add('anchor-change-'+now,base({currentTime:now,chords:[chord(10,2)],anchors:[{time:0,fret:3,width:4},{time:10.4,fret:9,width:4}]}),[[10,12]],{image:true,noTrails:true});
 // Both chord members support this full grip through the authored handshape.
 // Keep its position in the single main lane after the one-second hold ends;
@@ -256,7 +290,7 @@ async function main() {
       if(u.pathname==='/screen.js')return route.fulfill({contentType:'text/javascript',body:served});
       const relative=decodeURIComponent(u.pathname).replace(/^\/api\/plugins\/highway_3d\/(?:g\/camera-\d+\/)?src\//,'/plugins/highway_3d/src/');
       const file=path.resolve(repo,'.'+relative);
-      if(file.startsWith(repo+path.sep)&&fs.existsSync(file)&&fs.statSync(file).isFile())return route.fulfill({contentType:/\.m?js$/.test(file)?'text/javascript':file.endsWith('.png')?'image/png':'application/octet-stream',body:fs.readFileSync(file)});
+      if(file.startsWith(repo+path.sep)&&fs.existsSync(file)&&fs.statSync(file).isFile())return route.fulfill({contentType:/\.m?js$/.test(file)?'text/javascript':file.endsWith('.png')?'image/png':'application/octet-stream',body:file===guidancePath&&guidanceSource?guidanceSource:fs.readFileSync(file)});
       return route.fulfill({status:404,body:'Unknown fixture asset'});
     });
     await page.goto('http://hold-fixture.test/');
@@ -268,6 +302,14 @@ async function main() {
         a.ren.info.autoReset=false;a.ren.info.reset();r.draw(bundle);
         const p=window.__holdProbe;window.__holdProbe=null;
         const result={style:a.style,time:bundle.currentTime,modelBuilds:window.__holdBuilds,renderer:{calls:a.ren.info.render.calls,triangles:a.ren.info.render.triangles,memory:{...a.ren.info.memory}}};
+        if(bundle.slideAudit) {
+          result.camera={position:a.cam.position.toArray(),rotation:a.cam.rotation.toArray()};
+          for(const ribbon of p.ribbons) for(const point of ribbon.points||[]) {
+            point.ndc=a.cam.position.clone().set(...point.world).project(a.cam).toArray();
+            point.ndcCorners=point.corners.map(c=>a.cam.position.clone().set(...c).project(a.cam).toArray());
+            delete point.corners;
+          }
+        }
         for(const k of Object.keys(p))result[k]=p[k].map(({mesh,...x})=>mesh?({...x,mesh:__mesh(mesh)}):x);
         return result;
       };
@@ -285,6 +327,43 @@ async function main() {
       await init(scenario.b);
       const proof=await page.evaluate(()=>__capture());
       results.push({name:scenario.name,expected:scenario.expected,realFileSha:scenario.realFileSha,...proof});
+      const slideExpected=scenario.slidePath?await page.evaluate(({paths,bounds})=>{
+        const a=r.__holdAudit();
+        return {paths:paths.map(p=>({...p,sourceX:a.fretMidWorld(p.f),targetX:a.fretMidWorld(p.target)})),
+          frames:bounds.map(([t,lo,hi])=>({t,lo,hi,center:(a.fretWorld(lo)+a.fretWorld(hi))/2,
+            width:Math.abs(a.fretWorld(hi)-a.fretWorld(lo))}))};
+      },{paths:scenario.slidePath,bounds:scenario.frameBounds}):null;
+      const validateSlide=(snapshot,label)=>{
+        if(!slideExpected)return;
+        for(const expected of slideExpected.frames) {
+          if(snapshot.time>Math.max(...slideExpected.paths.map(p=>p.end)))continue;
+          const frame=snapshot.frames.find(f=>Math.abs(f.t-expected.t)<1e-6&&!f.isArpeggioFrame);
+          if(snapshot.time<expected.t-.000501)check(!!frame,label+': upcoming real slide chord frame missing');
+          if(frame)check(Math.abs(frame.outerWidth-expected.width)<1e-7&&Math.abs(frame.mesh.position[0]-expected.center)<1e-7,
+            label+': slide frame must keep its compact onset position');
+          const lane=snapshot.lanes.filter(a=>a.time<=expected.t+.000501).at(-1);
+          check(lane&&lane.fret-1===expected.lo&&lane.fret+lane.width-1===expected.hi,
+            label+': slide onset floor and frame must share a compact position');
+        }
+        for(const expected of slideExpected.paths) {
+          if(snapshot.time>=expected.end-.03)continue;
+          const ribbons=snapshot.ribbons.filter(r=>Math.abs(r.note.t-expected.t)<1e-6&&r.note.s===expected.s);
+          check(ribbons.length>0,label+': moving slide ribbon lost on string '+expected.s);
+          const points=ribbons.flatMap(r=>r.points||[]).filter(p=>p.time<=expected.end+1e-6);
+          check(points.length>1,label+': slide geometry was not captured');
+          for(const point of points) {
+            const progress=Math.max(0,Math.min(1,(point.time-expected.t)/(expected.end-expected.t)));
+            const eased=expected.unpitched?1-Math.sin((1-progress)*Math.PI/2):Math.pow(Math.sin(progress*Math.PI/2),3);
+            const x=expected.sourceX+(expected.targetX-expected.sourceX)*eased;
+            check(Math.abs(point.world[0]-x)<.001,label+': slide trajectory changed on string '+expected.s);
+            check(point.ndc.every(Number.isFinite),label+': invalid projected slide geometry');
+            check(point.ndcCorners.every(c=>c.every(v=>Number.isFinite(v)&&Math.abs(v)<=1.001)),
+              label+': camera clipped the slide ribbon on string '+expected.s);
+          }
+          check(points.some(p=>Math.abs(p.time-expected.end)<1e-5&&Math.abs(p.world[0]-expected.targetX)<.001),
+            label+': slide ribbon no longer reaches its destination');
+        }
+      };
       const sameNote=(a,b)=>Math.abs(a.t-b.t)<1e-6&&a.s===b.s&&a.f===b.f;
       if(!reference) {
         for(const n of scenario.absentGems||[])check(!proof.notes.some(g=>sameNote(g.note,n)),scenario.name+': phantom gem '+JSON.stringify(n));
@@ -356,12 +435,16 @@ async function main() {
           }
         }
       }
+      if(!reference)validateSlide(proof,scenario.name);
       if(scenario.image)await page.screenshot({path:path.join(out,scenario.name+'.png')});
       if(scenario.sampleTimes) {
         const samples=[];
         for(const time of scenario.sampleTimes) {
           const sample=await page.evaluate(time=>{bundle.currentTime=time;bundle.isPlaying=true;return __capture();},time);
           samples.push(sample);
+          if(!reference)validateSlide(sample,scenario.name+' seek '+time);
+          if(scenario.slidePath&&time===scenario.sampleTimes[1])
+            await page.screenshot({path:path.join(out,scenario.name+'-mid-slide.png')});
           if(!reference)for(const n of scenario.absentGems||[])
             check(!sample.notes.some(g=>sameNote(g.note,n)),`${scenario.name}: phantom gem at playback/seek ${time}`);
           if(!reference)for(const n of scenario.absentPositionNotes||[])
@@ -372,6 +455,8 @@ async function main() {
               `${scenario.name}: missing/duplicate real gem at playback/seek ${time}`);
           }
         }
+        if(scenario.slidePath)check(JSON.stringify(samples.at(-1).lanes)===JSON.stringify(proof.lanes),
+          scenario.name+': lane timeline changed after forward/backward seeks');
         results.push({name:scenario.name+'-playback-seek',samples});
       }
       console.log(`${scenario.name}: ${proof.rails.length} rails, ${proof.trails.length} trails, ${proof.ribbons.length} ribbons`);
@@ -398,7 +483,10 @@ async function main() {
     }
     check(errors.length===0,'Browser errors: '+errors.join('\n'));
   }finally{await browser.close();}
-  fs.writeFileSync(path.join(out,'results.json'),JSON.stringify({sourcePath,sourceSha:sha(source),sourceNormalizedLfSha:sha(source.replace(/\r\n/g,'\n')),reference,style,width,height,failures,errors,results},null,2));
+  check(sha(fs.readFileSync(sourcePath))===sha(source),'Renderer source changed during validation');
+  if(guidanceSource)check(sha(fs.readFileSync(guidancePath))===sha(guidanceSource),'Guidance module changed during validation');
+  fs.writeFileSync(path.join(out,'results.json'),JSON.stringify({sourcePath,sourceSha:sha(source),sourceNormalizedLfSha:sha(source.replace(/\r\n/g,'\n')),
+    guidancePath:guidanceSource?guidancePath:null,guidanceSha:guidanceSource?sha(guidanceSource):null,reference,style,width,height,failures,errors,results},null,2));
   console.log(JSON.stringify({out,cases:results.length,failures,errors},null,2));
   if(failures.length)process.exitCode=1;
 }

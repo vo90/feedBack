@@ -76,9 +76,111 @@ test('slide destination and arpeggio share one lane; unsupported low-string grip
     assert.deepEqual(model.handShapes.map(h => h.chord_id), [0]);
     assert.deepEqual(model.grips.map(g => [g.low, g.high]), [[4, 5]]);
     assert.deepEqual(spanAt(rows, 9.9), [1, 4]);
-    assert.deepEqual(spanAt(rows, 10.05), [1, 5], 'current slide source and destination coexist');
+    assert.deepEqual(spanAt(rows, 10.05), [1, 5], 'the supported destination grip retains its authored preparation position');
     for (const t of [10.152, 10.303, 10.601, 10.7]) assert.deepEqual(spanAt(rows, t), [4, 7]);
     assertOneTimeline(rows);
+});
+
+test('power-chord slide travel does not widen its source hand position', () => {
+    for (const [key, target, duration] of [['sl', 5, 0.09], ['slu', 2, 0.987], ['sl', 15, 3]]) {
+        const chart = freeze({
+            notes: [],
+            chords: [{ t: 10, id: 0, notes: [
+                { s: 0, f: 3, [key]: target, sus: duration },
+                { s: 1, f: 5, [key]: target + 2, sus: duration },
+            ] }],
+            anchors: [{ time: 0, fret: 3, width: 4 }, { time: 10 + duration, fret: target, width: 4 }],
+            handShapes: [{ chord_id: 0, start_time: 10, end_time: 10 + duration }],
+            chordTemplates: [{ frets: [3, 5, -1, -1, -1, -1] }],
+        });
+        const before = JSON.stringify(chart), { model, rows } = resolve(chart);
+        assert.deepEqual(model.handShapes, chart.handShapes, 'source grip validation is unchanged');
+        for (const t of [10, 10.0005, 10 + duration / 2, 10 + duration - 0.002]) {
+            assert.deepEqual(spanAt(rows, t), [3, 6]);
+        }
+        assert.deepEqual(spanAt(rows, 10 + duration), [target, target + 3]);
+        assert.equal(JSON.stringify(chart), before);
+        assertOneTimeline(rows);
+    }
+});
+
+test('a moving source cannot pin an accepted destination grip after its authored position change', () => {
+    const chart = freeze({
+        notes: [{ t: 10, s: 0, f: 3, sl: 5, sus: 1 }, { t: 10, s: 1, f: 5, sl: 7, sus: 1 }],
+        chords: [],
+        anchors: [{ time: 0, fret: 3, width: 4 }, { time: 10.3, fret: 5, width: 4 }],
+        handShapes: [{ chord_id: 0, start_time: 10, end_time: 12 }],
+        chordTemplates: [{ frets: [5, 7, -1, -1, -1, -1] }],
+    });
+    const { model, rows } = resolve(chart);
+    assert.deepEqual(model.handShapes, chart.handShapes, 'slide arrivals still validate destination guidance');
+    assert.deepEqual(spanAt(rows, 10), [3, 7], 'the accepted destination still prepares over the source position');
+    for (const t of [10.3, 10.5, 10.999, 11.2]) assert.deepEqual(spanAt(rows, t), [5, 8]);
+});
+
+function timedDemands(note, replacements = []) {
+    return buildHandshapeGuidance({ notes: [note, ...replacements] }).eventGrips;
+}
+
+test('repicking during motion does not turn an unreachable slide target into a held source', () => {
+    for (const key of ['sl', 'slu', 'su']) {
+        const demands = timedDemands({ t: 10, s: 0, f: 3, [key]: 12, sus: 1 },
+            [{ t: 10.5, s: 0, f: 3, mt: true }]);
+        assert.deepEqual(demands, [{ start: 10, end: 10.001002, low: 3, high: 3 }]);
+    }
+    assert.deepEqual(timedDemands({ t: 10, s: 0, f: 3, sl: 3, sus: 1 },
+        [{ t: 10.5, s: 0, f: 3, mt: true }]),
+    [{ start: 10, end: 10.5, low: 3, high: 3 }], 'a same-fret marker remains a real stationary hold');
+});
+
+test('authored slide intervals retain only their genuine stationary prefix and tail', () => {
+    const note = freeze({ t: 10, s: 0, f: 3, sl: 12, sus: 4, slide_interval: { start: 1, end: 2 } });
+    assert.deepEqual(timedDemands(note), [
+        { start: 10, end: 11, low: 3, high: 3 }, { start: 12, end: 14, low: 12, high: 12 },
+    ]);
+    for (const [time, expected] of [
+        [10.5, [{ start: 10, end: 10.5, low: 3, high: 3 }]],
+        [11.5, [{ start: 10, end: 11, low: 3, high: 3 }]],
+        [13, [{ start: 10, end: 11, low: 3, high: 3 }, { start: 12, end: 13, low: 12, high: 12 }]],
+    ]) assert.deepEqual(timedDemands(note, [{ t: time, s: 0, f: 3, mt: true }]), expected);
+});
+
+test('invalid or unpitched slide intervals follow the ordinary motion policy', () => {
+    const base = { t: 10, s: 0, f: 3, sl: 12, sus: 4 };
+    for (const extra of [
+        { slide_interval: { start: -1, end: 2 } },
+        { slide_interval: { start: 2, end: 1 } },
+        { slide_interval: { start: 1, end: 5 } },
+        { slide_interval: { start: NaN, end: 2 } },
+        { slide_interval: { start: 1, end: 2 }, slu: 12 },
+        { slide_interval: { start: 1, end: 2 }, mt: true },
+    ]) assert.deepEqual(timedDemands({ ...base, ...extra }),
+        [{ start: 10, end: 10.001002, low: 3, high: 3 }]);
+});
+
+test('a linked slide does not invent a destination hold beyond its written sustain', () => {
+    const laterPick = { t: 12, s: 0, f: 12, sus: 0.5 };
+    assert.deepEqual(timedDemands({ t: 10, s: 0, f: 3, sl: 12, sus: 1, ln: true }, [laterPick]), [
+        { start: 10, end: 10.001002, low: 3, high: 3 }, { start: 12, end: 12.5, low: 12, high: 12 },
+    ]);
+});
+
+test('moving and stationary strings keep independent timed position ownership', () => {
+    const chart = freeze({
+        notes: [
+            { t: 10, s: 4, f: 15, sus: 2 }, { t: 10, s: 5, f: 17, sus: 2 },
+            { t: 10, s: 0, f: 3, sl: 12, sus: 1 }, { t: 10, s: 1, f: 5, sus: 0.8 },
+        ],
+        chords: [], anchors: [{ time: 0, fret: 15, width: 4 }],
+        handShapes: [{ chord_id: 0, start_time: 10, end_time: 12 }],
+        chordTemplates: [{ frets: [-1, -1, -1, -1, 15, 17] }],
+    });
+    const { model, rows } = resolve(chart);
+    assert.deepEqual(model.handShapes, chart.handShapes);
+    assert.deepEqual(spanAt(rows, 10.0005), [3, 18], 'the slide source remains covered at attack');
+    for (const t of [10.01, 10.5, 10.79]) assert.deepEqual(spanAt(rows, t), [5, 18],
+        'the genuine stationary low note remains covered after the other string starts moving');
+    for (const t of [10.81, 11, 11.9]) assert.deepEqual(spanAt(rows, t), [15, 18]);
 });
 
 test('a partial chord does not invalidate a larger grip supported by the surrounding picks', () => {

@@ -70,7 +70,7 @@ function harness() {
         ${fn('trailCrossingTargetStrands')}
         ${fn('ensureSlideRibbonCapacity')}
         ${fn('slideRibbonUpdatePair')}
-        function dimensions(n, openWScale=1, susTrailMatchArpFrame=false) {
+        function dimensions(n, trailOpenWScale=1, susTrailMatchArpFrame=false) {
             const openSlabThickMul=n.f===0?1.5:1;
             ${sizing}
             return {tw,th,outlineW:tw+trailEdgePad,outlineH:th+trailEdgePad};
