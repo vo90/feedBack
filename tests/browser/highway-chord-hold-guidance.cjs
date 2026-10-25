@@ -52,6 +52,8 @@ for (const anchor of ['const line = pConnectorLine.get();', 'const dl = pDropLin
 }
 served = once(served, 'const fill = pChordFrameFill.get();', `const fill = pChordFrameFill.get();
  if(window.__holdProbe)window.__holdProbe.frames.push({t:ch.t,isRepeat,isArpeggioFrame,compactRepeatFrame,outerWidth:width,borderWidth:ftSide,mesh:fill});`);
+served = once(served, 'const xl = pFHXLines.get();', `const xl = pFHXLines.get();
+ if(window.__holdProbe)window.__holdProbe.fretHandMutes.push({t:ch.t,mesh:xl});`);
 served = once(served, 'const tr = pSus.get();', `const tr = pSus.get();
  if(window.__holdProbe)window.__holdProbe.trails.push({note:{...n},mesh:tr});`);
 if (served.includes('const holdRail = pSusRail.get();')) {
@@ -160,6 +162,28 @@ for (const cameraMode of ['lookahead', 'stable']) {
   add('provenance-wrong-handshape-'+cameraMode, base({cameraMode,
     anchors:[{time:0,fret:2,width:4,guidanceOrigin:'source'}], chords:[chord(10)],
     handShapes:[shape(10,12,99)]}),[], {image:true,frameBounds:[[10,1,5]]});
+}
+// A parent D5 label does not make its unplayed A5 part of a D7/G7 attack.
+// Preserve the authored 7–10 lane, including fret-hand-muted compact repeats.
+// A genuinely sustaining A5 is the positive control for retaining a wider grip.
+for (const cameraMode of ['lookahead', 'stable']) for (const lefty of [false, true]) {
+  for (const outsidePlayed of [false, true]) {
+    const times = [10, 10.25, 10.5], first = outsidePlayed ? 5 : 7;
+    add(`partial-position-${outsidePlayed ? 'held' : 'unplayed'}-${cameraMode}-${lefty}`,
+      base({cameraMode,lefty,
+        anchors:[{time:0,fret:7,width:4,guidanceOrigin:'source'}],
+        chordTemplates:[{name:'D5',frets:[-1,5,7,7,-1,-1]},
+          {name:'',frets:[-1,-1,7,7,-1,-1]}],
+        notes:outsidePlayed ? [note({t:9.8,s:1,f:5,sus:1})] : [],
+        chords:times.map((t,i)=>chord(t,0,{id:1,hd:i>0,
+          notes:[2,3].map(s=>note({s,f:7,fhm:i>0}))})),
+        handShapes:[shape(10,10.75)]}),null,
+      {image:true,wantFrames:3,sharedLane:true,noArpeggioFrames:true,
+        frameBounds:times.map(t=>[t,first-1,10]),
+        wantUnifiedPosition:[[10,first,10],[10.5,first,10]],
+        fretHandMuteTimes:times.slice(1),
+        sampleTimes:[9.7,10.1,10.4,10.8,9.7]});
+  }
 }
 for(const now of [9.7,10,10.4,10.99,11,11.01,12.5]) add('known-one-second-'+now,
   base({currentTime:now,chords:[chord(10,1)],handShapes:[shape()]}),now<11?[[10,11]]:[],{image:[9.7,10.4,11.01].includes(now),noTrails:true});
@@ -298,7 +322,7 @@ async function main() {
       window.__mesh=m=>({position:m.position.toArray(),scale:m.scale.toArray(),visible:m.visible,renderOrder:m.renderOrder,
         material:{color:m.material.color?.getHexString(),opacity:m.material.opacity,type:m.material.type,depthTest:m.material.depthTest,depthWrite:m.material.depthWrite,fog:m.material.fog}});
       window.__capture=()=>{
-        const a=r.__holdAudit();window.__holdProbe={notes:[],stems:[],positions:[],frames:[],trails:[],ribbons:[],rails:[],caps:[],legacyRails:[],positionRails:[]};
+        const a=r.__holdAudit();window.__holdProbe={notes:[],stems:[],positions:[],frames:[],fretHandMutes:[],trails:[],ribbons:[],rails:[],caps:[],legacyRails:[],positionRails:[]};
         a.ren.info.autoReset=false;a.ren.info.reset();r.draw(bundle);
         const p=window.__holdProbe;window.__holdProbe=null;
         const result={style:a.style,time:bundle.currentTime,modelBuilds:window.__holdBuilds,renderer:{calls:a.ren.info.render.calls,triangles:a.ren.info.render.triangles,memory:{...a.ren.info.memory}}};
@@ -435,6 +459,14 @@ async function main() {
           }
         }
       }
+      if(!reference)for(const t of scenario.fretHandMuteTimes||[]) {
+        const frame=proof.frames.find(f=>Math.abs(f.t-t)<1e-6);
+        const mute=proof.fretHandMutes.find(m=>Math.abs(m.t-t)<1e-6);
+        check(frame?.compactRepeatFrame&&!!mute,scenario.name+': missing compact fret-hand mute '+t);
+        if(frame&&mute)check(Math.abs(mute.mesh.position[0]-frame.mesh.position[0])<1e-7
+          && Math.abs(mute.mesh.scale[0]*2-frame.mesh.scale[0])<1e-7,
+          scenario.name+': mute symbol does not fit its chord box '+t);
+      }
       if(!reference)validateSlide(proof,scenario.name);
       if(scenario.image)await page.screenshot({path:path.join(out,scenario.name+'.png')});
       if(scenario.sampleTimes) {
@@ -443,6 +475,11 @@ async function main() {
           const sample=await page.evaluate(time=>{bundle.currentTime=time;bundle.isPlaying=true;return __capture();},time);
           samples.push(sample);
           if(!reference)validateSlide(sample,scenario.name+' seek '+time);
+          if(!reference&&scenario.wantUnifiedPosition)for(const [at,first,last] of scenario.wantUnifiedPosition) {
+            const lane=sample.lanes.filter(a=>a.time<=at+.000501).at(-1);
+            check(lane&&lane.fret===first&&lane.fret+lane.width-1===last,
+              scenario.name+': hand position changed after seek '+time);
+          }
           if(scenario.slidePath&&time===scenario.sampleTimes[1])
             await page.screenshot({path:path.join(out,scenario.name+'-mid-slide.png')});
           if(!reference)for(const n of scenario.absentGems||[])

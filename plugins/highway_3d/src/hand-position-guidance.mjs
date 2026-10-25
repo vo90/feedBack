@@ -217,7 +217,11 @@ export function buildHandshapeGuidance(input = {}) {
         decision.status = 'supported';
         decision.reason = supportedEnd < end ? 'supported-until-replacement' : 'matching-musical-contacts';
         decision.handShape = display;
-        const positive = [...members.values()].filter(value => value > 0);
+        // A partial voicing can support the parent handshape as context without
+        // requiring its unplayed strings. Only musically matched contacts may
+        // extend the lane; matching still includes separate picks, carried
+        // sustains and reached slide destinations across the supported interval.
+        const positive = [...matched].map(string => members.get(string)).filter(value => value > 0);
         if (positive.length) grips.push({ start, end: supportedEnd,
             low: Math.min(...positive), high: Math.max(...positive), shape: display, index: shapeIndex });
     }
