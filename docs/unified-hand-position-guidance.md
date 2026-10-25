@@ -103,3 +103,55 @@ cover those corrections; the policy module used by the replay is unchanged.
 A final nine-chart representative replay also passed on the completed renderer,
 with unchanged inputs and no chord or supported-grip coverage failures in either
 camera mode.
+
+## Sliding chord correction
+
+The initial composition treated each slide's source and destination as a single
+simultaneous contact span for its entire sustain. Because both chord frames and
+the main floor correctly consume the same position, this enlarged both of them:
+a 3/5 chord sliding to 15/17 could create a 3–17 box. The correction belongs in
+the shared position demands, rather than in a separate box-width override.
+
+Keep handshape validation and slide-destination evidence unchanged. A moving
+note supplies its source at onset (the existing 1.002 ms exact-onset interval),
+but its travel path is not a held grip. A valid authored `slide_interval` retains
+the actual stationary source prefix and destination tail. Both are clipped by
+the next pick on the same string; an interrupted slide remains classified as
+moving even when it can no longer provide destination evidence. A link flag by
+itself does not invent a destination hold after the written sustain. Ordinary
+stationary notes retain their full clipped duration and can still require a
+genuinely wide position alongside another supported grip.
+
+The existing position timeline, camera visibility constraints, and sustain
+ribbons continue to describe movement. No new lane is drawn, and no frame-only
+bounds are introduced. The source chart, accepted handshapes, slide timing,
+geometry and authored positions are unchanged.
+
+Regression coverage includes both camera pipelines with their actual region
+builder and cache, both fret-spacing modes, short upward and downward slides,
+long pitched and unpitched slides, delayed slide intervals, interruptions,
+stationary remote holds, difficulty replacement, and reverse seeks. Actual
+WebGL checks compare main-floor and frame bounds and inspect the moving
+ribbon's path, endpoints and camera visibility in both notation styles.
+
+Correction validation:
+
+- All 1,947 highway JavaScript tests pass across 160 test files. The new policy
+  regressions fail against the previous module. Two existing sustain tests also
+  needed their harness parameter updated to the renderer's current
+  `trailOpenWScale` name; their behavioral assertions are unchanged.
+- A read-only replay of ten complete library charts covers 265 sliding chords
+  and 3,972 total chord onsets in each of four camera/spacing combinations.
+  In every combination, 242 slide frames narrow, 23 remain unchanged, none grow,
+  and no chord-onset coverage failure or frame/main-lane mismatch occurs.
+  Input hashes and the complete accepted-handshape, decision and validated-grip
+  arrays remain identical.
+- Chasing Light's 88.207 s upward slide changes from 3–7 to 3–6, followed by
+  its authored 5–8 destination position. Its 90.846 s downward slide changes
+  from 2–6 to 3–6. Other checks include Everything Zen (1–12 to 1–4),
+  Digital Bath (12–17 to 14–17), Stray Cat Strut (1–16 to 13–16), and
+  Always Alright's already compact 2–5 position, which stays unchanged.
+- The complete isolated WebGL hold suite passes in both notation styles,
+  including twelve new slide scenarios per style, forward/backward seek
+  samples, exact ribbon paths/endpoints and viewport containment. The new
+  compact-width checks reproduce the old failure on the unchanged baseline.
