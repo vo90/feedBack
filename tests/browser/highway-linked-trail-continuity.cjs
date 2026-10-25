@@ -40,6 +40,9 @@ served = once(served, 'tr.scale.set(tw, th, segLen);', `tr.scale.set(tw, th, seg
  window.__trailProbe.strands.push({kind:'box',note:{...n},nominalBodyWidth:tr.scale.x,nominalBodyHeight:tr.scale.y,nominalOutlineWidth:trOut.scale.x,nominalOutlineHeight:trOut.scale.y,samples:[sample(now-(zCenter+segLen/2)/TS,zCenter+segLen/2,tr.scale.x,tr.scale.y,trOut.scale.x,trOut.scale.y),sample(now-(zCenter-segLen/2)/TS,zCenter-segLen/2,tr.scale.x,tr.scale.y,trOut.scale.x,trOut.scale.y)]});}`);
 served = once(served, 'const core = pNote.get();', `const core = pNote.get();
  if(window.__trailProbe)window.__trailProbe.gems.push({note:{...n},fromChord});`);
+const noteDrawer=served.match(/function drawNote\([^)]*\) \{/)[0];
+served = once(served, noteDrawer, `${noteDrawer}
+ if(window.__trailProbe&&_collectNoteDraws&&guidanceOnly)window.__trailProbe.guides.push({note:{...n},fromChord});`);
 const gemRegistrar=served.match(/function trailYieldRegisterGem\([^)]*\) \{/)[0];
 served = once(served, gemRegistrar, `${gemRegistrar}
  if(window.__trailProbe&&event)window.__trailProbe.orders.push({kind:'gem',t:event.t,s:event.s,f:event.f,meshes:[outline,core,face].filter(Boolean)});`);
@@ -113,9 +116,26 @@ for (const offset of [0, .000002, -.000002]) {
     add('hidden-synth-real-attack-'+offset,{...b,notes:[...b.notes,note({t:11.4,s:3,f:9})]},
         {sourceString:3,expectNarrow:true});
 }
-add('visible-synth-preview',base({notes:[note({s:3,f:9,sus:2})],
+// Handshapes provide fingering guidance, never invented attacks. Keep an
+// otherwise identical authored chord as the visible-preview positive control.
+// Strings 2/3 are below source string 1, so any narrowing proves cross-string
+// overlap rather than the independent same-string trail-end policy.
+const previewGuidance=()=>base({notes:[note({s:1,f:9,sus:2})],
     handShapes:[{start_time:11,end_time:12,chord_id:0}],
-    chordTemplates:[{name:'',frets:[-1,-1,9,9,-1,-1]}]}),{sourceString:3,expectNarrow:true});
+    chordTemplates:[{name:'',frets:[-1,-1,9,9,-1,-1]}]});
+const previewMembers=[{t:11,s:2,f:9},{t:11,s:3,f:9}];
+add('unsupported-handshape-preview',previewGuidance(),{sourceString:1,expectFull:[10],
+    scales:[[10.95,1]],hidden:previewMembers,suppressedTrails:previewMembers,absentGuidance:previewMembers,image:true});
+// Two held contacts support this handshape. It reaches drawNote as fingering
+// guidance, yet neither its same-string hint nor its other member is an attack.
+add('supported-handshape-guidance',{
+    ...previewGuidance(),currentTime:10.8,notes:[note({s:2,f:9,sus:2}),note({s:3,f:9,sus:2})],
+},{sourceString:3,expectFull:[10],scales:[[10.95,1]],guidance:previewMembers,
+    hidden:previewMembers,suppressedTrails:previewMembers,image:true});
+for(const mode of [0,1])add('visible-authored-chord-preview-mode-'+mode,
+    {...previewGuidance(),chords:[{t:11,id:0,notes:previewMembers.map(n=>note(n))}]},
+    {mode,sourceString:1,visible:previewMembers,expectNarrow:mode===1,
+        expectFull:mode===0?[10]:[],scales:[[10.95,mode===1?.3:1]],image:true});
 add('real-gap',base({notes:[note({sus:.8,ln:true}),note({t:11,sus:1}),obstacle()]}),{gap:[10.8,11]});
 add('new-attack',base({notes:[note({sus:1}),note({t:11,sus:1}),obstacle()]}));
 add('ambiguous-target',base({notes:[note({sus:1,ln:true}),note({t:11,sus:1}),note({t:11,sus:.7,sl:7}),obstacle()]}));
@@ -167,6 +187,12 @@ function validateScene(s,p){
     if(s.expectNarrow)check(p.strands.filter(r=>r.note.s===ss).some(r=>r.samples.some(v=>dim(v,'body').width/r.nominalBodyWidth<.7)),s.name+': genuine obstacle never narrows source');
     for(const onset of s.expectFull||[])for(const r of sourceStrands(p,onset,ss))check(r.samples.every(v=>dim(v,'body').width/r.nominalBodyWidth>.99),s.name+': false narrowing at '+onset);
     for(const h of s.hidden||[])check(!p.gems.some(n=>n.note.s===h.s&&Math.abs(n.note.t-h.t)<1e-5),s.name+': hidden continuation attack rendered');
+    for(const v of s.visible||[]){
+        check(p.gems.some(n=>n.fromChord&&n.note.s===v.s&&n.note.f===v.f&&Math.abs(n.note.t-v.t)<1e-5),s.name+': authored preview gem missing');
+        check(p.orders.some(r=>r.kind==='gem'&&r.s===v.s&&r.f===v.f&&Math.abs(r.t-v.t)<1e-5&&r.orders.length>=2),s.name+': authored preview has no rendered body/outline');
+    }
+    for(const g of s.guidance||[])check(p.guides.some(n=>n.fromChord&&n.note.s===g.s&&n.note.f===g.f&&Math.abs(n.note.t-g.t)<1e-5),s.name+': supported handshape did not reach guidance drawing');
+    for(const g of s.absentGuidance||[])check(!p.guides.some(n=>n.note.s===g.s&&Math.abs(n.note.t-g.t)<1e-5),s.name+': unsupported handshape acquired guidance');
     if(s.gap)check(!p.strands.filter(r=>r.note.s===ss).some(r=>r.samples[0].t<s.gap[1]-1e-5&&r.samples.at(-1).t>s.gap[0]+1e-5),s.name+': authored gap bridged');
     if(s.fade){const r=sourceStrands(p,11,ss)[0];check(r?.samples.at(-1).alpha<.05,s.name+': authored slide-out fade missing');}
     for(const [time,scale] of s.scales||[])check(Math.abs(widthScaleAt(p,time,ss)-scale)<.02,`${s.name}: expected scale ${scale} at ${time}, got ${widthScaleAt(p,time,ss)}`);
@@ -196,7 +222,7 @@ async function main(){
             const fixturePath=decodeURIComponent(u.pathname).replace(/^\/api\/plugins\/highway_3d\/(?:g\/camera-\d+\/)?src\//,'/plugins/highway_3d/src/');
             const file=path.resolve(repo,'.'+fixturePath);if(file.startsWith(repo+path.sep)&&fs.existsSync(file)&&fs.statSync(file).isFile())return route.fulfill({contentType:/\.m?js$/.test(file)?'text/javascript':file.endsWith('.png')?'image/png':'application/octet-stream',body:fs.readFileSync(file)});return route.fulfill({status:404,body:'Unknown fixture asset'});});
         await page.goto('http://trail-fixture.test/');
-        await page.evaluate(()=>{window.__capture=()=>{const a=r.__trailAudit();window.__trailProbe={strands:[],gems:[],orders:[]};a.ren.info.autoReset=false;a.ren.info.reset();r.draw(bundle);const p=window.__trailProbe;window.__trailProbe=null;p.orders=p.orders.map(({meshes,...v})=>({...v,orders:meshes.map(m=>m.renderOrder)}));return {time:bundle.currentTime,notation:a.notation,modelBuilds:window.__trailBuilds,renderer:{calls:a.ren.info.render.calls,triangles:a.ren.info.render.triangles,memory:{...a.ren.info.memory}},...p};};});
+        await page.evaluate(()=>{window.__capture=()=>{const a=r.__trailAudit();window.__trailProbe={strands:[],gems:[],guides:[],orders:[]};a.ren.info.autoReset=false;a.ren.info.reset();r.draw(bundle);const p=window.__trailProbe;window.__trailProbe=null;p.orders=p.orders.map(({meshes,...v})=>({...v,orders:meshes.map(m=>m.renderOrder)}));return {time:bundle.currentTime,notation:a.notation,modelBuilds:window.__trailBuilds,renderer:{calls:a.ren.info.render.calls,triangles:a.ren.info.render.triangles,memory:{...a.ren.info.memory}},...p};};});
         async function init(b,mode=1){await page.evaluate(async({b,style,mode})=>{if(window.r)r.destroy();localStorage.clear();const settings={trailYieldEnabled:mode>0,trailYieldGemInFront:mode>=2,trailYieldIncludeTrails:mode===3,style:'off',notationStyle:style,palette:'default',glow:0,vibrancy:.85,cinematic:false,sparks:false,bloom:false,verdictMarks:false,timingFx:false,streakFx:false,hitFx:0,chordDiagramVisible:false,cameraSmoothing:0,zoomSmoothing:0,tiltSmoothing:0};for(const [k,v] of Object.entries(settings)){localStorage.setItem('h3d_bg_'+k,String(v));const setter=window['h3dBgSet'+k[0].toUpperCase()+k.slice(1)];if(typeof setter==='function')setter(v);}window.__trailBuilds=0;window.bundle=b;window.r=feedBackViz_highway_3d();r.init(document.getElementById('highway'),bundle);await r.readyPromise;for(let i=0;i<3;i++)r.draw(bundle);},{b,style,mode});}
         for(const s of scenes.filter(s=>!args.includes('--perf-only')&&(!option('--case')||option('--case').split(',').some(q=>s.name.includes(q))))){
             await init(s.b,s.mode);const p=await page.evaluate(()=>__capture());validateScene(s,p);results.push({name:s.name,mode:s.mode,realFileSha:s.realFileSha,...p});if(s.image)await page.screenshot({path:path.join(out,s.name+'.png')});console.log(s.name+': '+p.strands.length+' trail strands, '+p.renderer.calls+' calls');
