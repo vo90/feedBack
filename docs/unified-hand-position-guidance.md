@@ -54,8 +54,13 @@ The implementation follows the plan above. Guidance is compiled once from the
 effective arrangement/difficulty and cached across playback and seeking. A
 template needs matching contacts on at least two of its strings; notes may be
 picked separately, carried into the interval, or reached by a timed slide.
-Partial chords do not by themselves invalidate a larger grip. A clearly
-incompatible replacement chord clips or rejects the old presentation interval.
+Partial chords do not by themselves invalidate a larger contextual handshape.
+Only matched template contacts contribute to its lane-width demand: an unused
+parent-chord string cannot widen a position that contains the played notes.
+Separately picked members, compatible incoming sustains and reached slide
+targets can still establish the wider grip. The original handshape and template
+remain available as context. A clearly incompatible replacement chord clips or
+rejects the old presentation interval.
 Unresolved shapes do not create synthetic frames or positional ghosts.
 Rejected metadata can still supply an unambiguous end boundary that prevents
 arpeggio inference from borrowing notes from the next passage. That boundary
@@ -66,6 +71,11 @@ supported grip is active. Their demands end at the clipped musical sustain;
 zero-length attacks retain a 1.002 ms interval for exact-onset coverage. A
 historical resolved chord anchor does not imply a note is still sounding.
 Existing musical sustain rails remain distinct from hand-position guidance.
+
+For example, D7/G7 inside an authored 7–10 position stays at 7–10 when its
+parent D5 handshape also lists an unplayed A5. If A5 has musical support in the
+grip interval, the existing shared composition can extend the lane to 5–10.
+See [partial-chord plan and verification](partial-chord-hand-position.md).
 
 - Highway JavaScript regressions: 1,891 passed, four existing failures. All four
   were reproduced on the unchanged integration baseline: the audio barrier
