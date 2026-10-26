@@ -122,8 +122,18 @@
         return value;
     }
     function snapshot() {
+        const saved = level();
+        const quality = saved?.calibrated === true && saved.method === 'guided-input-v2' && saved.quality?.version === 2
+            && saved.quality.status === 'verified' && saved.quality.candidateGain === gain()
+            && saved.quality.engine === 'native-harmonic-v1' && saved.quality.tuning?.instrument === activeType()
+            && Number.isFinite(saved.quality.silenceThreshold)
+            && saved.quality.silenceThreshold >= .002 && saved.quality.silenceThreshold <= .02
+            ? saved.quality : null;
         return {activeId: state.activeId, activeName: active()?.name || 'Guitar', activeType: activeType(), builtin: active()?.builtin === true,
             gain: gain(), calibrated: level()?.calibrated === true, migrated: state.migrated,
+            calibrationStatus: quality ? 'verified' : saved?.calibrated ? (saved.method === 'manual' ? 'manual' : 'level-only') : 'uncalibrated',
+            calibrationQuality: quality ? clone(quality) : null,
+            silenceThreshold: quality ? quality.silenceThreshold : .02,
             profiles: state.profiles.map(p => ({id: p.id, name: p.name, type: p.type, builtin: p.builtin})),
             revision: revision(), routeKey: route.key, routeLabel: route.label, route: clone(route),
             locked: session()?.isLocked() === true, loaded, busy, applied, error};

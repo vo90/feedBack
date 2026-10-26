@@ -16,6 +16,11 @@ async function setup(options = {}) {
             {id: 'default-bass', name: 'Bass', type: 'bass', builtin: true, calibrations: {}},
         ]};
     if (options.legacy) state.profiles.push({id: 'old', name: 'Old instrument', type: null, builtin: false, calibrations: {}, legacyGain: 2});
+    if (options.verified) {
+        const measured = JSON.parse(fs.readFileSync(path.join(base, 'tests/fixtures/input-calibration-v2.json'), 'utf8'));
+        state.profiles[0].calibrations[JSON.stringify(['guitar-input-v1', 'ASIO', 'Test interface', 0])] =
+            {gain: 2.5, calibrated: true, ...measured};
+    }
     const writes = [], settingsWrites = [];
     let game = {instrument: 'guitar', string_count: 6, tuning: 'Standard', reference_pitch: 440, pathway: 'songs', active_instrument_profile: 'guitar-lead'};
     function select(id) {
@@ -53,13 +58,13 @@ async function setup(options = {}) {
                 case 'duplicate': {
                     const profile = {id: 'g' + state.revision, name: body.name, type: body.type || p.type, builtin: false,
                         calibrations: body.action === 'duplicate' ? structuredClone(p.calibrations) : {}};
-                    if (body.calibration) profile.calibrations[body.calibration.routeKey] = {...body.calibration, calibrated: true};
+                    if (body.calibration) profile.calibrations[body.calibration.routeKey] = {gain: body.calibration.gain, ...body.calibration.metadata, calibrated: true};
                     state.profiles.push(profile); select(profile.id); break;
                 }
                 case 'select': select(p.id); break;
                 case 'classify': p.type = body.type; select(p.id); break;
                 case 'rename': p.name = body.name; break;
-                case 'save-gain': p.calibrations[body.routeKey] = {gain: body.gain, calibrated: true}; break;
+                case 'save-gain': p.calibrations[body.routeKey] = {gain: body.gain, ...body.metadata, method: body.metadata?.method || 'manual', calibrated: true}; break;
                 case 'delete':
                     state.profiles = state.profiles.filter(profile => profile.id !== p.id);
                     if (state.activeId === p.id) select('default-' + (p.type || state.currentType));
@@ -204,7 +209,23 @@ test('calibration measurement is draft-only and final Save carries its exact res
         assert.equal(created.calibration.metadata.method, 'guided-level-v1');
         assert.equal(created.calibration.metadata.rawPeak, 0.125);
         assert.equal(await page.evaluate(() => window.applied.at(-1)), 2);
-        assert.equal(await host.locator('[data-guitar-status]').textContent(), 'Saved');
+        assert.equal(await host.locator('[data-guitar-status]').textContent(), 'Level saved · unverified');
+    } finally { await page.close(); }
+});
+
+test('verified status survives reload and a manual adjustment visibly removes it', async () => {
+    const f = await setup({verified: true}), {page} = f;
+    try {
+        const host = settings(page);
+        assert.equal(await host.locator('[data-guitar-status]').textContent(), 'Detection verified');
+        await f.reload();
+        assert.equal(await host.locator('[data-guitar-status]').textContent(), 'Detection verified');
+        await page.evaluate(async () => {
+            const profiles = window.feedBack.guitarProfiles;
+            await profiles.saveGain(1.5, await profiles.captureContext());
+        });
+        assert.equal(await host.locator('[data-guitar-status]').textContent(), 'Manual gain · unverified');
+        assert.equal(await page.evaluate(() => window.feedBack.guitarProfiles.getSnapshot().silenceThreshold), .02);
     } finally { await page.close(); }
 });
 

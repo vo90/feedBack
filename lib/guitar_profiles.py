@@ -11,6 +11,7 @@ import tempfile
 import threading
 import uuid
 from datetime import datetime, timezone
+from input_calibration_quality import verified_quality, CalibrationQualityError
 
 LOCK = threading.RLock()
 MAX_PROFILES = 32
@@ -83,6 +84,11 @@ def load(path, kind="guitar", guitar_role="guitar-lead"):
                 route_key(key)
                 gain_value(level["gain"])
                 assert type(level.get("calibrated")) is bool
+                if level.get("method") == "guided-input-v2":
+                    assert level["calibrated"] and "rawPeak" in level and "noisePeak" in level
+                    quality = verified_quality(level.get("quality"), level["gain"], level["rawPeak"], level["noisePeak"])
+                    assert quality["tuning"]["instrument"] == profile.get("type")
+                    level["quality"] = quality
         assert state["activeId"] in ids
         if state["version"] == 1:
             assert "default" in ids
@@ -148,7 +154,7 @@ def read(path, kind="guitar", guitar_role="guitar-lead"):
         return load(path, kind, guitar_role)
 
 
-def calibration(data):
+def calibration(data, instrument=None):
     meta = data.get("metadata") or {}
     if not isinstance(meta, dict):
         raise ProfileError("Invalid calibration details.")
@@ -161,6 +167,16 @@ def calibration(data):
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1000:
                 raise ProfileError("Invalid measured input level.")
             level[field] = value
+    if meta.get("method") == "guided-input-v2":
+        try:
+            if "rawPeak" not in level or "noisePeak" not in level:
+                raise CalibrationQualityError("Input measurements are missing. Calibrate again.")
+            level["quality"] = verified_quality(meta.get("quality"), level["gain"], level.get("rawPeak"), level.get("noisePeak"))
+            if level["quality"]["tuning"]["instrument"] != instrument:
+                raise CalibrationQualityError("The instrument type changed. Calibrate again.")
+        except CalibrationQualityError as error:
+            raise ProfileError(str(error)) from error
+        level["method"] = "guided-input-v2"
     return level
 
 
@@ -198,11 +214,17 @@ def update(path, data, kind="guitar", guitar_role="guitar-lead"):
                            "calibrations": copy.deepcopy(profile["calibrations"]) if action == "duplicate" else {}}
             if action == "duplicate" and "legacyGain" in profile:
                 new_profile["legacyGain"] = profile["legacyGain"]
+            if action == "duplicate":
+                # A new instrument can inherit a starting gain, but its own notes
+                # must pass verification before it uses a quieter silence gate.
+                for key, level in new_profile["calibrations"].items():
+                    if level.get("method") == "guided-input-v2":
+                        new_profile["calibrations"][key] = {"gain": level["gain"], "calibrated": True, "method": "manual"}
             if action == "create" and data.get("calibration") is not None:
                 measured = data["calibration"]
                 if not isinstance(measured, dict):
                     raise ProfileError("Invalid calibration details.")
-                new_profile["calibrations"][route_key(measured.get("routeKey"))] = calibration(measured)
+                new_profile["calibrations"][route_key(measured.get("routeKey"))] = calibration(measured, new_profile["type"])
             state["profiles"].append(new_profile)
             state["activeId"] = new_profile["id"]
         elif action == "select":
@@ -232,7 +254,7 @@ def update(path, data, kind="guitar", guitar_role="guitar-lead"):
             key = route_key(data.get("routeKey"))
             if key not in profile["calibrations"] and len(profile["calibrations"]) >= MAX_ROUTES:
                 raise ProfileError("This instrument already has 64 saved input setups.")
-            profile["calibrations"][key] = calibration(data)
+            profile["calibrations"][key] = calibration(data, profile["type"])
             profile.pop("legacyGain", None)
         else:
             raise ProfileError("Unknown instrument operation.")

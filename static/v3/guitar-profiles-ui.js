@@ -197,7 +197,9 @@
         get('form-title').textContent = draft.kind === 'duplicate' ? 'Name for the copy' : 'Instrument name';
         get('draft-name').textContent = `${draft.name.trim()} (${typeLabel(draft.type)})`;
         get('review').textContent = `${draft.name.trim()} · ${typeLabel(draft.type)}`;
-        get('review-gain').textContent = draft.calibration ? `Input gain ${db(draft.calibration.gain)} will be saved for this audio input.` : 'Input level has not been calibrated. You can calibrate it later.';
+        get('review-gain').textContent = draft.calibration
+            ? `Input gain ${db(draft.calibration.gain)} will be saved for this audio input. ${draft.calibration.metadata?.quality?.status === 'verified' ? 'Normal and soft notes verified on every string.' : 'Input level measured; note detection has not been verified.'}`
+            : 'Input level has not been calibrated. You can calibrate it later.';
         get('back').hidden = !creating || draft.step === 'type';
         get('submit').hidden = creating && draft.step === 'calibration';
         get('submit').textContent = draft.kind === 'classify' ? 'Save and select' : !creating ? 'Save' : draft.step === 'review' ? 'Save instrument' : 'Next';
@@ -220,7 +222,10 @@
             select.value = s.activeId;
             get('classify').value = selected?.type || '';
             get('gain').textContent = 'Input gain ' + db(s.gain);
-            get('status').textContent = !s.loaded ? 'Loading…' : !s.applied ? 'Not applied' : s.calibrated ? 'Saved' : 'Not calibrated';
+            get('status').textContent = !s.loaded ? 'Loading…' : !s.applied ? 'Not applied'
+                : s.calibrationStatus === 'verified' ? 'Detection verified'
+                : s.calibrationStatus === 'manual' ? 'Manual gain · unverified'
+                : s.calibrated ? 'Level saved · unverified' : 'Not calibrated';
             get('route').textContent = s.routeLabel;
             if (document.activeElement !== get('slider')) get('slider').value = 20 * Math.log10(s.gain);
             get('message').textContent = s.locked ? 'Close the song before changing instruments or input levels.' : notice || s.error || (!selected?.type ? 'Choose Guitar or Bass under Manage for this saved instrument.' : !s.routeKey ? s.routeLabel : '');

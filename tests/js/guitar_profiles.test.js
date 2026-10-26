@@ -104,6 +104,64 @@ test('fresh user can calibrate the built-in Guitar without adding anything', asy
     assert.equal(f.applied.at(-1).gain, 2.5);
 });
 
+test('verified evidence recalls with its instrument and route; manual gain removes the quiet-gate override', async () => {
+    const initial = fixture(); await initial.service.ready;
+    const state = initial.state();
+    const metadata = JSON.parse(fs.readFileSync(path.join(__dirname, '../fixtures/input-calibration-v2.json'), 'utf8'));
+    state.profiles[0].calibrations['interface-1'] = {gain: 2.5, calibrated: true, ...metadata};
+    const f = fixture({state}); await f.service.ready;
+    assert.equal(f.service.getSnapshot().calibrationStatus, 'verified');
+    assert.equal(f.service.getSnapshot().silenceThreshold, .002);
+    const snapshot = f.service.getSnapshot();
+    snapshot.calibrationQuality.checks.length = 0;
+    assert.equal(f.service.getSnapshot().calibrationQuality.checks.length, 12, 'snapshot cannot modify persisted evidence');
+    await f.service.select('default-bass');
+    assert.equal(f.service.getSnapshot().silenceThreshold, .02);
+    assert.equal(f.service.getSnapshot().calibrationQuality, null);
+    await f.service.select('default-guitar');
+    assert.equal(f.service.getSnapshot().silenceThreshold, .002);
+    f.route({key: 'another-input'}); await f.service.refresh();
+    assert.equal(f.service.getSnapshot().calibrationStatus, 'uncalibrated');
+    assert.equal(f.service.getSnapshot().silenceThreshold, .02);
+    f.route({key: 'interface-1'}); await f.service.refresh();
+    assert.equal(f.service.getSnapshot().silenceThreshold, .002);
+    await f.service.saveGain(1.5, await f.service.captureContext());
+    assert.notEqual(f.service.getSnapshot().calibrationStatus, 'verified');
+    assert.equal(f.service.getSnapshot().silenceThreshold, .02);
+    assert.equal(f.service.getSnapshot().calibrationQuality, null);
+});
+
+test('legacy, manual and inconsistent evidence never enable a verified gate', async () => {
+    const initial = fixture(); await initial.service.ready;
+    for (const method of ['manual', 'guided-level-v1', 'guided-input-v2']) {
+        const state = initial.state();
+        state.profiles[0].calibrations['interface-1'] = {gain: 2, calibrated: true, method,
+            quality: {version: 2, status: 'verified', candidateGain: 3, silenceThreshold: .002}};
+        const f = fixture({state}); await f.service.ready;
+        assert.notEqual(f.service.getSnapshot().calibrationStatus, 'verified');
+        assert.equal(f.service.getSnapshot().silenceThreshold, .02);
+        assert.equal(f.service.getSnapshot().calibrationQuality, null);
+    }
+});
+
+test('unverified state or mismatched native evidence cannot enable a quiet gate', async () => {
+    const initial = fixture(); await initial.service.ready;
+    const measured = JSON.parse(fs.readFileSync(path.join(__dirname, '../fixtures/input-calibration-v2.json'), 'utf8'));
+    for (const fault of ['uncalibrated', 'engine', 'family', 'threshold']) {
+        const state = initial.state();
+        const saved = {gain: 2.5, calibrated: true, ...structuredClone(measured)};
+        if (fault === 'uncalibrated') saved.calibrated = false;
+        if (fault === 'engine') saved.quality.engine = 'browser';
+        if (fault === 'family') saved.quality.tuning.instrument = 'bass';
+        if (fault === 'threshold') saved.quality.silenceThreshold = .001;
+        state.profiles[0].calibrations['interface-1'] = saved;
+        const f = fixture({state}); await f.service.ready;
+        assert.notEqual(f.service.getSnapshot().calibrationStatus, 'verified');
+        assert.equal(f.service.getSnapshot().silenceThreshold, .02);
+        assert.equal(f.service.getSnapshot().calibrationQuality, null);
+    }
+});
+
 test('initialization and retry stay unloaded until gain application and UI synchronization finish', async () => {
     for (const retry of [false, true]) {
         const f = fixture();
