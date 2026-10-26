@@ -185,6 +185,34 @@ for (const cameraMode of ['lookahead', 'stable']) for (const lefty of [false, tr
         sampleTimes:[9.7,10.1,10.4,10.8,9.7]});
   }
 }
+// Gilmour's Greatest Solos, Lead, 24:31: a dangling link on a long-expired
+// high-E15 must not expand the following D7/G7 and G5/B5 frames from 5–8 to 5–15.
+// A real written hold and an unbroken same-fret link remain positive controls.
+for (const cameraMode of ['lookahead', 'stable']) for (const lefty of [false, true]) {
+  for (const contact of ['dangling', 'linked', 'held']) {
+    const times = [1471.04895, 1471.515991], start = 1463.578003, end = 1474.551025;
+    const high = contact === 'dangling' ? 8 : 15;
+    const outside = note({t:start,s:5,f:15,
+      sus:contact === 'dangling' ? 1.321 : contact === 'linked' ? times[0]-start : end-start,
+      ln:contact !== 'held',vb:true});
+    add(`linked-position-gilmour-${contact}-${cameraMode}-${lefty}`,
+      base({cameraMode,lefty,currentTime:1470.7,
+        anchors:[{time:1470.11499,fret:5,width:4,guidanceOrigin:'source'},
+          {time:1471.983032,fret:5,width:4,guidanceOrigin:'source'}],
+        chordTemplates:[{name:'D5',frets:[-1,-1,7,7,-1,-1]},
+          {name:'C3',frets:[-1,-1,-1,5,5,-1]}],
+        notes:[outside,...(contact === 'linked' ? [note({t:times[0],s:5,f:15,sus:end-times[0]})] : []),
+          note({t:end,s:5,f:13})],
+        chords:[chord(times[0],0,{id:0,notes:[2,3].map(s=>note({s,f:7}))}),
+          chord(times[1],0,{id:1,notes:[3,4].map(s=>note({s,f:5,sus:1.868,ln:true,vb:true}))})],
+        handShapes:[shape(times[0],1471.10498,0),shape(times[1],1473.384033,1)]}),null,
+      {image:true,wantFrames:2,sharedLane:true,noArpeggioFrames:true,
+        frameBounds:times.map(t=>[t,4,high]),
+        wantUnifiedPosition:times.map(t=>[t,5,high]),
+        ...(contact === 'linked' ? {absentGems:[{t:times[0],s:5,f:15}],wantRibbons:true} : {}),
+        sampleTimes:[1470.7,1471.06,1472,1473.5,1470.7]});
+  }
+}
 for(const now of [9.7,10,10.4,10.99,11,11.01,12.5]) add('known-one-second-'+now,
   base({currentTime:now,chords:[chord(10,1)],handShapes:[shape()]}),now<11?[[10,11]]:[],{image:[9.7,10.4,11.01].includes(now),noTrails:true});
 for(const now of [9.7,10.05,10.11]) add('short-known-'+now,

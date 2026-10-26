@@ -72,6 +72,33 @@ zero-length attacks retain a 1.002 ms interval for exact-onset coverage. A
 historical resolved chord anchor does not imply a note is still sounding.
 Existing musical sustain rails remain distinct from hand-position guidance.
 
+Physical contacts use the written sustain, clipped by the next attack on that
+string. `linkNext` may bridge only a positive sustain's contiguous rounding seam
+(at most 1 ms, matching linked-trail geometry), with a matching same-fret or
+slide-target destination. Coincident destination records must agree on a
+playable fret. An expired, missing-duration, incompatible or ambiguous link
+cannot invent a hold until an arbitrary later pick. Attack suppression retains
+its existing separate compatibility rules; ordinary holds, valid linked notes
+and slide arrivals retain their written contacts.
+
+This prevents an old high-E fret-15 note whose 1.321-second sustain ends at
+24:24.899 from claiming the string until an unrelated fret-13 attack at
+24:34.551. The later D7/G7 and G5/B5 chords keep their authored 5–8 position
+instead of widening to 5–15. Policy and renderer regressions cover this case,
+valid ties and slides, real long sustains, rounding, replacement attacks,
+backward seeks and difficulty changes without editing chart data.
+
+Linked-contact correction validation: 1,754 highway 3D JavaScript tests pass.
+The original policy fails five new policy tests and 16 renderer/cache cases;
+the real WebGL baseline fails all four dangling-link camera/handedness cases
+while valid-link and written-hold controls already pass. With the correction,
+Current and RS+ each pass 113 WebGL scenarios and 189 playback/seek samples,
+with no browser errors. Frame bounds and sustain-trail screenshots were checked.
+A read-only replay of eight complete charts in eight camera/spacing/provenance
+combinations passes 21,608 chord checks: 88 frames narrow, none grow, all played
+frets remain covered, and inputs are unchanged. Both reported frames remain
+5–8. The replay is a bounded sample, not an exhaustive library audit.
+
 For example, D7/G7 inside an authored 7–10 position stays at 7–10 when its
 parent D5 handshape also lists an unplayed A5. If A5 has musical support in the
 grip interval, the existing shared composition can extend the lane to 5–10.

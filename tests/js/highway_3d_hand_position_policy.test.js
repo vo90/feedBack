@@ -51,11 +51,11 @@ test('a positioned muted technique retains its known frets, matching playable re
     }
 });
 
-test('a linked contact can continue to the next known same-string attack', () => {
+test('a dangling link without written duration cannot validate an earlier handshape', () => {
     const model = build({ notes: [note(0.5, 0, 3, { ln: true }), note(3, 0, 7), note(1.1, 1, 5)] });
-    assert.equal(model.handShapes.length, 1);
-    const unlinked = build({ notes: [note(0.5, 0, 3), note(3, 0, 7), note(1.1, 1, 5)] });
-    assert.equal(unlinked.handShapes.length, 0);
+    assert.equal(model.handShapes.length, 0);
+    assert.deepEqual(model.decisions[0].matchedStrings, [1]);
+    assert.equal(model.eventGrips[0].end, .5 + 2 * .000501);
 });
 
 test('slide targets count only when reached before the shape ends and the string is not repicked first', () => {
