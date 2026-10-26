@@ -1,5 +1,7 @@
 // Presentation-only hand positions. Musical events and source metadata remain intact.
 const TIME_EPS = 0.000501;
+// Match the renderer's physical linked-trail seam, not its attack grace window.
+const LINK_TIME_EPS = 0.001;
 const MAX_FRET = 24;
 const flag = value => value === true || value === 1 || value === '1';
 const fret = value => Number.isInteger(value) && value >= 0 && value <= MAX_FRET;
@@ -76,18 +78,29 @@ function buildContacts(notes, chords, count) {
     }
     for (const rows of strings) {
         rows.sort((a, b) => a.time - b.time);
-        let next = Infinity;
+        let next = Infinity, nextFret = null;
         for (let end = rows.length; end > 0;) {
             let start = end - 1;
             while (start > 0 && rows[start - 1].time === rows[end - 1].time) start--;
             for (let i = start; i < end; i++) {
                 const row = rows[i];
-                // An old written sustain cannot claim a string after its next pick.
-                row.end = Math.min(row.linked && Number.isFinite(next)
+                // A bare linkNext is not a held contact until the next arbitrary
+                // pick. Bridge only a compatible, positive written sustain's
+                // rounding seam; expired/missing durations keep their own end.
+                const linkedSeam = row.linked && row.end > row.time
+                    && Math.abs(next - row.end) <= LINK_TIME_EPS + 1e-9
+                    && nextFret !== null && nextFret === (row.target ?? row.fret);
+                row.end = Math.min(linkedSeam
                     ? Math.max(row.end, next) : row.end, next);
                 if (row.targetTime > row.end + TIME_EPS) row.target = null;
             }
             next = rows[start].time;
+            // Coincident destinations must agree on one playable contact.
+            // Do not choose a different link according to input array order.
+            nextFret = rows[start].fret;
+            for (let i = start; i < end; i++) {
+                if (!rows[i].evidence || rows[i].fret !== nextFret) { nextFret = null; break; }
+            }
             end = start;
         }
     }
